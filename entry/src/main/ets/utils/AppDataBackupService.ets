@@ -907,6 +907,7 @@ export class AppDataBackupService {
     rule.chapterUrl = AppDataBackupService.ruleString(raw, 'chapterUrl', 'chapterurl');
     rule.nextTocUrl = AppDataBackupService.ruleString(raw, 'nextTocUrl', 'nexttocurl');
     rule.isVip = AppDataBackupService.ruleString(raw, 'isVip', 'isvip');
+    rule.isVolume = AppDataBackupService.ruleString(raw, 'isVolume', 'isvolume');
     rule.isPay = AppDataBackupService.ruleString(raw, 'isPay', 'ispay');
     rule.updateTime = AppDataBackupService.ruleString(raw, 'updateTime', 'updatetime');
     rule.chapterListAddition = AppDataBackupService.ruleString(raw, 'chapterListAddition');

@@ -27,6 +27,7 @@ export class StageWebRuntimeRequest {
   maxTotalResponseBytes: number = 16 * 1024 * 1024;
   maxInputBytes: number = 20 * 1024 * 1024;
   maxRequestCount: number = 12;
+  maxReplaySteps: number = 20;
   stage: string = SourceRuntimeStage.URL;
   ownerId: string = '';
   debugContext: BookSourceDebugContext | null = null;
@@ -50,7 +51,9 @@ export class StageWebRuntimeRequest {
       this.maxResponseBytes = 4 * 1024 * 1024;
       this.maxTotalResponseBytes = 8 * 1024 * 1024;
       this.maxInputBytes = 16 * 1024 * 1024;
-      this.maxRequestCount = 8;
+      // Catalogs may fetch several pages per volume; retain finite per-stage limits.
+      this.maxRequestCount = 512;
+      this.maxReplaySteps = 576;
     } else if (this.stage === SourceRuntimeStage.CONTENT ||
       this.stage === SourceRuntimeStage.READER_ACTION) {
       this.maxResponseBytes = 6 * 1024 * 1024;
@@ -464,7 +467,8 @@ export class BookSourceStageWebRuntime {
     // that is the runaway pattern the request guard exists to stop. Distinct legitimate
     // requests (a source fetching several categories/tabs) are bounded separately.
     const issuedSpecs: Record<string, number> = {};
-    for (let stepIndex = 0; stepIndex < 20; stepIndex++) {
+    const replayLimit = Math.max(20, Math.min(request.maxReplaySteps, 576));
+    for (let stepIndex = 0; stepIndex < replayLimit; stepIndex++) {
       this.ensureNotCancelled(request);
       const script = this.buildScript(request, responses, stringResults, cookies, cacheState,
         fixedNow, randomSeed, journal.responseHeaders);
@@ -532,10 +536,10 @@ export class BookSourceStageWebRuntime {
         issuedSpecs[spec] = (issuedSpecs[spec] || 0) + 1;
         const repeatCount = issuedSpecs[spec];
         requestCount++;
-        // Distinct legitimate requests are allowed up to a hard ceiling tied to the 20-pass
-        // replay limit; reissuing the SAME spec repeatedly (cached response never consumed)
+        // Distinct legitimate requests use a stage-specific ceiling; reissuing the SAME
+        // spec repeatedly (cached response never consumed)
         // trips the tighter runaway threshold regardless of budget.
-        const distinctLimit = Math.max(request.maxRequestCount || 12, 16);
+        const distinctLimit = Math.min(512, Math.max(request.maxRequestCount || 12, 16));
         const repeatLimit = Math.max(1, Math.min(request.maxRequestCount || 12, 12));
         console.info('[StageWebRuntime] fetch #' + requestCount +
           ' step=' + stepIndex + (reissued ? ' reissue=' + repeatCount : '') +
@@ -1080,7 +1084,8 @@ export class BookSourceStageWebRuntime {
       `return list.map(function(item){return elementFromHtml(item);});}` +
       `const cookieData=Object.assign({},S.cookies||{});const cookie={getCookie:function(k){k=String(k??'');` +
       `if(Object.prototype.hasOwnProperty.call(cookieData,k))return cookieData[k]??'';if(!pendingCookie)pendingCookie=k;return '';},` +
-      `getKey:function(k,n){const v=this.getCookie(k);const m=String(v).match(new RegExp('(?:^|;\\\\s*)'+n+'=([^;]*)'));return m?m[1]:'';},` +
+      `getKey:function(k,n){const parts=String(this.getCookie(k)).split(';');n=String(n);` +
+      `for(const part of parts){const i=part.indexOf('=');if(i>=0&&part.slice(0,i).trim()===n)return part.slice(i+1).trim();}return '';},` +
       `setCookie:function(k,v){k=String(k??'');v=String(v??'');cookieData[k]=v;cookieOps.push({operation:'set',url:k,value:v,name:''});return v;},` +
       `replaceCookie:function(k,v){k=String(k??'');v=String(v??'');cookieData[k]=v;cookieOps.push({operation:'replace',url:k,value:v,name:''});return v;},` +
       `removeCookie:function(k,n){k=String(k??'');n=String(n??'');cookieOps.push({operation:'remove',url:k,value:'',name:n});` +

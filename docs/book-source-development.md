@@ -791,6 +791,10 @@ ArkWeb 提供真实 ECMAScript 语义，但**不等于完整 Android、Rhino、N
 
 ### 编码 `data:` 地址与显式请求
 
+阶段目录脚本支持对象数组和逐项 `JSON.stringify` 的字符串数组；按 `isVolume` 规则跳过分卷标题，`isVip` 接受 `true` 和 `1`。目录阶段最多允许 512 次网络请求、576 轮主机动作重放，并保留响应大小和取消保护；其他阶段仍使用较小预算。正文阶段的章节地址若带 URL options，脚本 `baseUrl` 保留这些参数，便于登录后重建 POST 请求。`java.getCookie(url, name)` 按 Cookie 名精确匹配，支持分号后的空格和包含等号的值。
+
+可运行 `node scripts/stage-source-compat-check.mjs` 验证上述兼容路径；追加外部书源 JSON 路径时，还会运行分卷目录和登录后正文重取样例。测试执行项目生成的 JS 桥及目录转换器，但 HTTP、数据库和 WebView 使用模拟实现，不能替代真机登录与站点接口验证。整段脚本重放仍按请求规格缓存结果，不提供同一请求的即时重新发送或 `java.sleep` 延时语义。
+
 应用支持标准 `data:` 文本以及 `data:;base64,<负载>,{...}` 形式。Base64 负载和尾部选项会分别解析，避免把请求选项误当成正文；编码章节地址中的 `/` 或形似 `name=value` 的 Base64 片段不会再被旧式虚拟章节参数解析截断。
 
 尾部选项对象显式声明 `type` 时，正文阶段按 Android 阅读的字节串约定，把解码后的内容以十六进制文本交给规则脚本，脚本内通常用 `java.hexDecodeToString(result)` 还原；未声明 `type`、但正文规则自身调用 `java.hexDecodeToString(result)` 等字节串函数的旧写法，也会得到同样的十六进制输入。

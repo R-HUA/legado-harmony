@@ -1690,9 +1690,14 @@ export class WebBookService {
     const records: Record<string, Object>[] = [];
     const items: string[] = [];
     for (const value of values) {
-      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
-      records.push(value as Record<string, Object>);
-      items.push(JSON.stringify(value));
+      let record = value;
+      // Legado list scripts also return individually serialized objects.
+      if (typeof record === 'string') {
+        try { record = JSON.parse(record) as Object; } catch (_) { continue; }
+      }
+      if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
+      records.push(record as Record<string, Object>);
+      items.push(JSON.stringify(record));
       if (maxItems > 0 && items.length >= maxItems) break;
     }
     if (items.length === 0) return chapters;
@@ -1715,6 +1720,7 @@ export class WebBookService {
       new RuleFieldRequest('chapterName', tocRule.chapterName || ''),
       new RuleFieldRequest('chapterUrl', tocRule.chapterUrl || ''),
       new RuleFieldRequest('isVip', tocRule.isVip || ''),
+      new RuleFieldRequest('isVolume', tocRule.isVolume || ''),
       new RuleFieldRequest('updateTime', tocRule.updateTime || '')
     ];
     fieldRequest.timeoutMs = 30000;
@@ -1735,7 +1741,8 @@ export class WebBookService {
       if (index > 0) await parsingSlice.checkpoint();
       const record = records[index];
       const fields = index < parsedFields.length ? parsedFields[index] : {};
-      const isVolume = record['isVolume'] === true || String(record['isVolume'] || '') === 'true';
+      const isVolume = fields['isVolume'] === 'true' || fields['isVolume'] === '1' ||
+        record['isVolume'] === true || String(record['isVolume'] || '') === 'true';
       const title = this.cleanChapterTitle(fields['chapterName'] || String(record['title'] || ''));
       let url = fields['chapterUrl'] || String(record['url'] || '');
       if (!title || isVolume || !url) continue;
@@ -1748,7 +1755,7 @@ export class WebBookService {
       chapter.url = url;
       chapter.bookUrl = book.bookUrl;
       chapter.index = chapters.length;
-      chapter.isVip = fields['isVip'] === 'true' || record['v'] === true;
+      chapter.isVip = fields['isVip'] === 'true' || fields['isVip'] === '1' || record['v'] === true;
       chapter.variable = BookUrlResolver.setVariableJson(chapter.variable, 'baseUrl', baseUrl);
       const updateTime = fields['updateTime'] || String(record['t'] || '');
       if (updateTime) chapter.variable = BookUrlResolver.setVariableJson(chapter.variable, 'updateTime', updateTime);
@@ -1791,7 +1798,9 @@ export class WebBookService {
       const response = await new AnalyzeUrl(source, this.http).fetch(chapter.url, undefined, debugContext);
       if (!response.success || !response.body) return '';
       content = response.body;
-      baseUrl = BookUrlResolver.effectiveBase(response, chapter.url, book.bookUrl || source.bookSourceUrl);
+      // Preserve POST options for scripts which rebuild the chapter request after login.
+      baseUrl = /,\s*\{/.test(chapter.url) ? chapter.url :
+        BookUrlResolver.effectiveBase(response, chapter.url, book.bookUrl || source.bookSourceUrl);
       if (source.bookSourceType === 1 || (Number(book.type) & 32) !== 0) {
         const mediaUrl = this.extractAudioSourceRegexUrl(source.contentRule.sourceRegex || '',
           response.url || baseUrl, content, baseUrl);

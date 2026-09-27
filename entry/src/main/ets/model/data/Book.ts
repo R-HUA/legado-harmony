@@ -379,6 +379,7 @@ export class TocRule {
   chapterUrl: string = '';
   nextTocUrl: string = '';
   isVip: string = '';
+  isVolume: string = '';
   isPay: string = '';
   updateTime: string = '';
   chapterListAddition: string = '';

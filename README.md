@@ -230,6 +230,7 @@ node scripts/thread-blocking-check.mjs
 node scripts/theme-framework-check.mjs
 node --experimental-strip-types scripts/java-regex-compat-check.mjs
 node --experimental-strip-types scripts/replace-rule-import-check.mjs
+node scripts/stage-source-compat-check.mjs
 ```
 
 - `neutral-source-engine-check`：检查是否引入固定内容接口、默认凭据或站点专用后端。
