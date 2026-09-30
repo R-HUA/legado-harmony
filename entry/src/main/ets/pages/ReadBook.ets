@@ -46,6 +46,8 @@ import { AdaptiveColorPicker } from '../components/AdaptiveColorPicker';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { ReaderThemeBackground } from '../components/ReaderThemeBackground';
 import { ReaderPageCurlPainter } from '../components/ReaderPageCurlPainter';
+import { ReaderPagedImage } from '../components/ReaderPagedImage';
+import { ReaderPagedImageCache, ReaderPagedImageLease } from '../core/reader/ReaderPagedImageCache';
 import { ReaderEmulationFlipPainter, ReaderEmulationFlipRegion } from '../components/ReaderEmulationFlipPainter';
 import { ReaderTtsPlayerPanel } from '../components/ReaderTtsPlayerPanel';
 import { TtsCatalogSheet, CatalogTitleDataSource } from '../components/TtsCatalogSheet';
@@ -327,6 +329,7 @@ struct ReadBookPage {
   private readerComicScroller: ListScroller = new ListScroller();
   private readerComicPageDataSource: ReaderComicPageDataSource = new ReaderComicPageDataSource();
   private readerComicImageRatioCache: Map<string, number> = new Map();
+  private readerPagedImageSettled: Set<string> = new Set();
   private readerComicImageRatioLoading: Set<string> = new Set();
   private readerComicScrollRestoreSerial: number = 0;
   private readerComicScrollRestoring: boolean = false;
@@ -1001,6 +1004,7 @@ struct ReadBookPage {
   }
 
   aboutToDisappear() {
+    this.readerPagedImageSettled.clear();
     AppStorage.setOrCreate<boolean>('shelfReaderDirectTransition', false);
     this.resetReaderScreenOrientation();
     this.readerPageVisible = false;
@@ -6446,6 +6450,7 @@ struct ReadBookPage {
     this.displayPageRenderKey++;
     this.pageRenderVersion++;
     this.refreshCurrentReaderV2RetainedPages();
+    this.prefetchNearbyReaderImages();
   }
 
   parseAreaDimension(value: Length): number {
@@ -17432,7 +17437,7 @@ struct ReadBookPage {
     contentRenderVersion: number = this.pageRenderVersion, pageRenderIdentity: string = '', pageStart: number = -1,
     documentSource: string = this.pagedContentText, pageLineHeight: number = this.getEffectiveReaderLineHeight()) {
     if (LocalBookService.isEpubImageMarker(paragraph.text)) {
-      this.readerEpubImage(paragraph.text)
+      this.readerEpubImage(paragraph.text, pageRenderIdentity)
     } else if (this.hasInlineReaderSourceAction(paragraph.text)) {
       this.readerInlineSourceActionParagraph(paragraph, chapterIndex, ttsHighlightActive, ttsRenderVersion,
         contentRenderVersion, pageRenderIdentity, pageStart, documentSource, pageLineHeight)
@@ -17532,15 +17537,70 @@ struct ReadBookPage {
   }
 
   @Builder
-  readerEpubImage(marker: string) {
-    Image(this.getReaderEpubImageUri(marker))
-      .width('100%')
-      .height(this.getReaderEpubImageHeight())
-      // sourceSize 同时指定宽高会在解码阶段把漫画压成屏幕比例，
-      // 这里交给 ImageFit.Contain 按原始宽高比缩放。
-      .objectFit(ImageFit.Contain)
-      .draggable(false)
-      .clip(true)
+  readerEpubImage(marker: string, surfaceKey: string) {
+    ReaderPagedImage({
+      uri: this.getReaderEpubImageUri(marker),
+      widthPx: this.toMeasurePx(this.getReaderPageColumnWidth()),
+      heightPx: this.toMeasurePx(this.getReaderEpubImageHeight()),
+      heightVp: this.getReaderEpubImageHeight(),
+      hintColor: this.getTextColor(),
+      onSettled: () => {
+        this.readerPagedImageSettled.add(`${surfaceKey}\n${this.getReaderEpubImageUri(marker)}`);
+        while (this.readerPagedImageSettled.size > 192) {
+          const oldest = this.readerPagedImageSettled.values().next().value as string;
+          this.readerPagedImageSettled.delete(oldest);
+        }
+      }
+    })
+  }
+
+  readerPageImageUris(text: string): string[] {
+    const markers = (text || '').match(/\[\[LEGADO_EPUB_IMAGE:[^\]]+\]\]/g) || [];
+    const uris: string[] = [];
+    for (const marker of markers) {
+      const uri = this.getReaderEpubImageUri(marker);
+      if (uri && !uris.includes(uri)) uris.push(uri);
+    }
+    return uris;
+  }
+
+  acquireReaderPageImages(text: string): ReaderPagedImageLease[] {
+    return this.readerPageImageUris(text).map((uri: string): ReaderPagedImageLease =>
+      ReaderPagedImageCache.acquire(uri, this.toMeasurePx(this.getReaderPageColumnWidth()),
+        this.toMeasurePx(this.getReaderEpubImageHeight())));
+  }
+
+  prefetchNearbyReaderImages(): void {
+    if (this.isReaderContinuousScrollSurfaceActive()) return;
+    // Prepare only the adjacent spread. Do not download/decode every illustration in the chapter.
+    const step = this.getReaderPageTurnStep();
+    for (const index of [this.currentPageIndex + step, this.currentPageIndex - step]) {
+      if (index < 0 || index >= this.contentPages.length) continue;
+      const text = this.getPageText(index) + this.getSecondaryPageText(index);
+      for (const uri of this.readerPageImageUris(text)) {
+        ReaderPagedImageCache.prefetch(uri, this.toMeasurePx(this.getReaderPageColumnWidth()),
+          this.toMeasurePx(this.getReaderEpubImageHeight()));
+      }
+    }
+  }
+
+  async waitForReaderPageImages(leases: ReaderPagedImageLease[], timeoutMs: number): Promise<void> {
+    if (leases.length === 0) return;
+    let timer: number = -1;
+    await Promise.race([Promise.all(leases.map((lease: ReaderPagedImageLease) => lease.ready)),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); })]);
+    if (timer >= 0) clearTimeout(timer);
+  }
+
+  async waitForReaderImageSurface(surfaceKey: string, text: string, timeoutMs: number): Promise<void> {
+    const uris = this.readerPageImageUris(text);
+    const deadline = Date.now() + timeoutMs;
+    while (uris.length > 0 && Date.now() < deadline && this.readerPageVisible) {
+      const ready = uris.every((uri: string): boolean => Array.from(this.readerPagedImageSettled)
+        .some((key: string): boolean => key.startsWith(surfaceKey) && key.endsWith(`\n${uri}`)));
+      if (ready) break;
+      await this.delay(16);
+    }
   }
 
   @Builder
@@ -22271,9 +22331,18 @@ struct ReadBookPage {
     this.resetSlidePageState();
     const localPageIndex = this.getLocalPageTurnTargetPageIndex(direction);
     if (localPageIndex >= 0) {
-      this.currentPageIndex = localPageIndex;
       const targetText = this.getPageText(localPageIndex);
-      this.commitVisibleCurrentPageText(targetText);
+      const chapterIndex = this.currentChapterIndex;
+      const leases = this.acquireReaderPageImages(targetText + this.getSecondaryPageText(localPageIndex));
+      try {
+        await this.waitForReaderPageImages(leases, 1000);
+        if (chapterIndex !== this.currentChapterIndex || !this.readerPageVisible) return;
+        this.currentPageIndex = localPageIndex;
+        this.commitVisibleCurrentPageText(targetText);
+        if (leases.length > 0) await this.delay(48);
+      } finally {
+        for (const lease of leases) lease.release();
+      }
       this.finishPageTurnAnimation(false);
       if (direction > 0 && this.contentPages.length - this.currentPageIndex <= 3) {
         this.preloadReaderContentLater();
@@ -22320,6 +22389,7 @@ struct ReadBookPage {
     // that retained node painting the previous page until another frame happens to rebuild the surrounding tree,
     // which is especially visible at a cross-chapter handoff. Publish the exact settled page immediately.
     this.refreshCurrentReaderV2RetainedPages();
+    this.prefetchNearbyReaderImages();
   }
 
   commitVisibleCurrentPageTextLater(chapterIndex: number, pageIndex: number): void {
@@ -22420,15 +22490,26 @@ struct ReadBookPage {
     // The incoming surface is already at the viewport origin. Commit and lay out the new current surface behind it,
     // then remove the incoming surface on the next frame. Removing it first caused an intermittent background flash.
     const keepIncomingVisible = this.pageSlideDirection !== 0 && !!this.pageTurnIncomingText;
-    this.commitVisibleCurrentPageText(targetText);
-    if (keepIncomingVisible) {
-      // Cross-chapter pages may contain many bubble ImageSpans. Keep the already-complete preview on top
-      // for a few frames while the new current render group is rasterized behind it.
-      await this.delay(this.pageTurnCrossChapterHandoff ? 48 : 16);
+    const imageText = targetText + this.getSecondaryPageText();
+    const leases = this.acquireReaderPageImages(imageText);
+    try {
+      // Hold the decoded pixels through the declarative remount. Preview and current share the same lease cache.
+      await this.waitForReaderPageImages(leases, 1000);
       if (chapterIndex !== this.currentChapterIndex || pageIndex !== this.currentPageIndex) return;
+      this.commitVisibleCurrentPageText(targetText);
+      if (keepIncomingVisible) {
+        if (leases.length > 0) {
+          await this.waitForReaderImageSurface(this.currentReaderPageRenderIdentity(), imageText, 500);
+        }
+        // Decoding callbacks are not a RenderService frame fence. Give the mounted page a draw/layout pass too.
+        await this.delay(leases.length > 0 || this.pageTurnCrossChapterHandoff ? 48 : 16);
+        if (chapterIndex !== this.currentChapterIndex || pageIndex !== this.currentPageIndex) return;
+      }
+      this.finishPageTurnAnimation(false);
+      this.commitCurrentPageTextLater(chapterIndex, pageIndex, targetText);
+    } finally {
+      for (const lease of leases) lease.release();
     }
-    this.finishPageTurnAnimation(false);
-    this.commitCurrentPageTextLater(chapterIndex, pageIndex, targetText);
   }
 
   prepareIncomingPageTurn(direction: number): void {
@@ -22933,6 +23014,17 @@ struct ReadBookPage {
     for (let attempt = 0; attempt < 30 && this.pageTurnPreviewLoadingKey; attempt++) {
       if (serial !== this.readerPageCurlCaptureSerial || key !== this.readerPageCurlCaptureKey) return;
       await this.delay(20);
+    }
+    const imageLeases = this.acquireReaderPageImages(this.pageTurnIncomingText + this.pageTurnIncomingSecondaryText);
+    try {
+      await this.waitForReaderPageImages(imageLeases, 1000);
+      if (imageLeases.length > 0) {
+        await this.waitForReaderImageSurface(
+          this.incomingReaderPageRenderIdentity(this.pageTurnIncomingRenderVersion, this.pageTurnIncomingText),
+          this.pageTurnIncomingText + this.pageTurnIncomingSecondaryText, 500);
+      }
+    } finally {
+      for (const lease of imageLeases) lease.release();
     }
     // Let the incoming cross-chapter preview and its ImageSpans finish one layout pass before rasterizing.
     await this.delay(this.pageTurnCrossChapterHandoff ? 32 : 0);
