@@ -56,6 +56,9 @@ export class JsRuntime {
   private evalExpr(expr: string): string {
     const originalExpr = expr;
     try {
+      // A bound token is already a value. Do not turn it into a quoted JS fragment and
+      // invoke the optional native engine just to unwrap it (notably URL {{key}} templates).
+      if (Object.prototype.hasOwnProperty.call(this.vars, expr)) return this.vars[expr];
       const statements = this.splitStatements(expr);
       if (statements.length > 1) {
         let last = '';
