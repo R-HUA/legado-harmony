@@ -185,7 +185,8 @@ export class ExploreCoordinator {
       }
       console.info('[ExploreCoordinator] response:', resp.statusCode, 'len:', resp.body?.length || 0, 'url:', resp.url);
       if (VerificationSupport.shouldRequestBrowserVerification(source, resp.body, resp.statusCode, entry.url)) {
-        const verifyUrl = VerificationSupport.pickVerificationUrl(source, reqUrl, entry.url);
+        const verifyUrl = VerificationSupport.pickVerificationUrl(source, resp.url || reqUrl,
+          entry.url, resp.body, resp.statusCode);
         VerificationSupport.requestVerification(verifyUrl, `${source.bookSourceName} 验证`, source);
         console.warn('[ExploreCoordinator] source needs browser verification:', source.bookSourceName, verifyUrl);
         return [];

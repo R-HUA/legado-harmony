@@ -303,12 +303,24 @@ export class SearchCoordinator {
         return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
       }
 
+      // Keep a compact diagnosis for ordinary searches; detailed rules/body previews remain
+      // opt-in through BookSourceDebugContext.
+      console.info('[SC] response:', source.bookSourceName, resp.statusCode,
+        'len:', resp.body?.length || 0, 'success:', resp.success);
+      if (debugContext) {
+        debugContext.setOutput('httpStatus', String(resp.statusCode));
+        debugContext.setOutput('responseError', resp.error || '');
+      }
       if (ENABLE_SEARCH_DEBUG_LOG) {
         console.log('[SC] response:', source.bookSourceName, resp.statusCode, 'len:', resp.body?.length || 0);
       }
       if (VerificationSupport.shouldRequestBrowserVerification(source, resp.body, resp.statusCode, source.searchUrl)) {
-        const verifyUrl = VerificationSupport.pickVerificationUrl(source, urlTemplate, source.searchUrl);
+        const verifyUrl = VerificationSupport.pickVerificationUrl(source, resp.url || urlTemplate,
+          source.searchUrl, resp.body, resp.statusCode);
         VerificationSupport.requestVerification(verifyUrl, `${source.bookSourceName} 验证`, source);
+        debugError = `需要登录或网页验证（HTTP ${resp.statusCode}）`;
+        if (debugContext) debugContext.setOutput('verificationUrl', verifyUrl);
+        console.warn('[SC] browser verification:', source.bookSourceName, 'HTTP', resp.statusCode);
         if (ENABLE_SEARCH_DEBUG_LOG) {
           console.warn('[SC] source needs browser verification:', source.bookSourceName, verifyUrl);
         }
@@ -520,6 +532,7 @@ export class SearchCoordinator {
         }
       }
       if (books.length > 0) {
+        console.info('[SC] result:', source.bookSourceName, books.length);
         debugPassed = true;
         if (debugContext) debugContext.setOutput('resultCount', String(books.length));
         return this.sourceResult(books, BookSource.VALIDATION_PASSED, '');

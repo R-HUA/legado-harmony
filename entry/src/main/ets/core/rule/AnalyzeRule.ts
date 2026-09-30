@@ -285,6 +285,10 @@ export class AnalyzeRule {
       return [this.evalTemplateRule(effective)];
     }
 
+    // Explicit CSS uses one selector expression, including comma groups and attribute spaces.
+    // The legacy @ chain must not reinterpret a partially supported CSS selector.
+    if (effective.startsWith('@css:')) return this.evalCss(effective);
+
     if (/^\$\d+$/.test(effective)) {
       const jsonV = this.evalJsonPath(effective);
       if (jsonV !== undefined && jsonV !== null) return [this.jsonValueToString(jsonV)];
@@ -344,6 +348,7 @@ export class AnalyzeRule {
 
   analyzeFirst(rule: string, joinMatches: boolean = true): string {
     if (!rule) return '';
+    rule = rule.replace(/^@xpath:\s*/i, '');
     const originalRule = rule;
     const pureJs = rule.match(/^\s*<js>([\s\S]*?)<\/js>\s*$/i);
     if (pureJs) {
@@ -406,7 +411,8 @@ export class AnalyzeRule {
 
     const literalEffective = this.stripProcessor(rule).trim();
     if (!literalEffective.includes('{{') && !/(^|[^{])\{(\$[.\[]|@\.)/.test(literalEffective) &&
-      (/^(?:https?:|\/|data:)/.test(literalEffective) ||
+      (/^(?:https?:|data:)/.test(literalEffective) ||
+      (literalEffective.startsWith('/') && !literalEffective.startsWith('//')) ||
       literalEffective === 'true' || literalEffective === 'false')) {
       return this.applyProcessor(literalEffective, rule);
     }
@@ -1465,6 +1471,8 @@ export class AnalyzeRule {
         current = current.map(item => this.extractTextNodes(item)).filter(v => v.length > 0);
       } else if (part === 'html') {
         current = current.filter(v => v.length > 0);
+      } else if (part === 'all') {
+        current = current.length > 0 ? [current.join('\n')] : [];
       } else if (this.isAttrName(part)) {
         current = current.map(item => this.extractAttr(item, this.normalizeAttrName(part))).filter(v => v.length > 0);
       } else {
@@ -1620,7 +1628,12 @@ export class AnalyzeRule {
     if (matches.length === 0) return [];
 
     if (attr === 'text') return matches.map(m => this.stripHtml(m));
-    if (attr === 'html') return matches;
+    if (attr === 'ownText') return matches.map(m => this.extractOwnText(m));
+    if (attr === 'textNodes') return matches.map(m => this.extractTextNodes(m));
+    if (attr === 'html') return matches.map(m => m.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ''));
+    // Android Legado @all returns the selected elements' outer HTML, preserving paragraphs
+    // and images for the reader normalizer. It is not an attribute named "all".
+    if (attr === 'all') return [matches.join('\n')];
     if (attr) return matches.map(m => this.extractAttr(m, attr)).filter((v: string) => v.length > 0);
 
     return matches.map(m => this.stripHtml(m));
@@ -1846,10 +1859,12 @@ export class AnalyzeRule {
     excludeIndices: number[]
   } | null {
     let s = sel.trim();
+    let invalidAttribute = false;
     const notAttrs: Array<Record<string, string>> = [];
     s = s.replace(/:not\(\[([^\]]+)\]\)/g, (_: string, body: string) => {
-      const m = body.match(/^([A-Za-z_:][\w:.-]*)([$~^*|]?=)?["']?([^"']*)["']?$/);
-      if (m) notAttrs.push({ name: m[1], op: m[2] || '', value: m[3] || '' });
+      const attr = this.parseAttributeSelector(body);
+      if (attr) notAttrs.push(attr);
+      else invalidAttribute = true;
       return '';
     });
     let nthChild: number | null = null;
@@ -1897,10 +1912,13 @@ export class AnalyzeRule {
 
     const attrs: Array<Record<string, string>> = [];
     s = s.replace(/\[([^\]]+)\]/g, (_: string, body: string) => {
-      const m = body.match(/^([A-Za-z_:][\w:.-]*)([$~^*|]?=)?["']?([^"']*)["']?$/);
-      if (m) attrs.push({ name: m[1], op: m[2] || '', value: m[3] || '' });
+      const attr = this.parseAttributeSelector(body);
+      if (attr) attrs.push(attr);
+      else invalidAttribute = true;
       return '';
     });
+    // Never discard a failed attribute clause and broaden it to every element of the tag.
+    if (invalidAttribute) return null;
 
     let tag = '';
     let id = '';
@@ -1946,6 +1964,19 @@ export class AnalyzeRule {
       }
     }
     return true;
+  }
+
+  private parseAttributeSelector(body: string): Record<string, string> | null {
+    const match = body.trim().match(/^([A-Za-z_:][\w:.-]*)\s*([$~^*|]?=)?\s*([\s\S]*)$/);
+    if (!match) return null;
+    const op = match[2] || '';
+    let value = (match[3] || '').trim();
+    if (!op && value) return null;
+    if (value.startsWith('"') || value.startsWith("'")) {
+      if (value.length < 2 || value.charAt(value.length - 1) !== value.charAt(0)) return null;
+      value = value.substring(1, value.length - 1);
+    }
+    return { name: match[1], op: op, value: value };
   }
 
   private matchExcludedAttrs(attrText: string, attrs: Array<Record<string, string>>): boolean {
@@ -2564,6 +2595,9 @@ export class AnalyzeRule {
       // extraction rule. Route it back through the ordinary analyzer instead of treating it as
       // JavaScript; the latter returns the selector text literally when the expression is invalid.
       if (rule.startsWith('@@')) return this.analyzeFirst(rule.substring(2));
+      // Explicit extraction prefixes remain rules inside templates. Sending them to the JS
+      // fallback returns their source text and leaks selectors into book metadata.
+      if (/^@(?:css|xpath|json):/i.test(rule)) return this.analyzeFirst(rule);
       if ((rule.startsWith('$') || rule.startsWith('@.')) && (rule.includes('##') || rule.includes('@js:'))) {
         return this.analyzeFirst(rule);
       }

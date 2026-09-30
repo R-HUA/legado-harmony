@@ -139,3 +139,4 @@ if (process.argv[2]) {
   console.log('External source: 20 volumes, 22 POSTs, string-array TOC, named Cookie, login retry, ruby and images passed.');
 }
 console.log('Stage source compatibility checks passed. Platform HTTP/WebView/database are mocked.');
+export { BookSourceStageWebRuntime, StageWebRuntimeRequest, request };

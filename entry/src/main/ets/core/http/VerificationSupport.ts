@@ -29,7 +29,8 @@ export class VerificationSupport {
     // responses such as {"message":"...","status":"10003"} hides the real credential
     // problem and cannot repair it. Likewise Cloudflare 521 means its origin is unavailable,
     // not that the client has a challenge to complete.
-    if (this.isStructuredApiResponse(body) || statusCode === 521) {
+    if (this.isStructuredApiResponse(body) || statusCode === 0 ||
+      statusCode === 521 || statusCode === 522 || statusCode === 523 || statusCode === 524) {
       return false;
     }
     if (statusCode >= 200 && statusCode < 300 && this.looksLikeExpectedListResponse(source, body)) {
@@ -40,9 +41,6 @@ export class VerificationSupport {
     }
     if (this.isLoginGateResponse(source, body)) {
       return true;
-    }
-    if (statusCode === 0) {
-      return this.hasBrowserVerifyHint(source, rule || '') || this.hasLoginEntry(source);
     }
     if (!(statusCode === 401 || statusCode === 403 || statusCode === 429 || statusCode === 521 || statusCode === 522 || statusCode === 523 || statusCode === 524)) {
       return false;
@@ -139,7 +137,14 @@ export class VerificationSupport {
     return false;
   }
 
-  static pickVerificationUrl(source: BookSource, requestUrl: string, rule?: string): string {
+  static pickVerificationUrl(source: BookSource, requestUrl: string, rule?: string,
+    body: string = '', statusCode: number = -1): string {
+    // A browser challenge belongs to the failed resource, not the source's login form.
+    // Prefer the response URL (including redirects); request options are not part of a URL.
+    if (statusCode >= 0 && !this.isLoginGateResponse(source, body)) {
+      const target = this.cleanUrl(requestUrl).replace(/,\s*\{[\s\S]*$/, '');
+      if (this.isHttpUrl(target)) return target;
+    }
     const fromRule = this.pickStartBrowserUrl(rule || '') ||
       this.pickStartBrowserUrl(source.searchUrl || '') ||
       this.pickStartBrowserUrl(source.bookInfoRule?.init || '') ||

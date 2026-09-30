@@ -1214,7 +1214,21 @@ export class BookSourceStageWebRuntime {
       `getAppVariant:function(){return 'harmony';},` +
       `refreshExplore:function(){refreshExploreRequested=true;return true;},refreshBookToc:function(){return true;},` +
       `refreshContent:function(){return true;},upConfig:function(){return true;},searchBook:function(){return true;}};` +
-      `function TimeoutCancellationException(){}const Packages={io:{legato:{kazusa:{utils:{` +
+      // Jsoup collection operations share one detached DOM: remove() must affect parent selections.
+      // Parse source HTML without executing page scripts or attaching it to the host document.
+      `function jsoupElements(nodes){const list=Array.from(nodes||[]);return {` +
+      `select:function(q){const found=[];for(const n of list){if(n.nodeType===1&&n.matches(String(q)))found.push(n);` +
+      `if(n.querySelectorAll)for(const e of n.querySelectorAll(String(q)))if(found.indexOf(e)<0)found.push(e);}return jsoupElements(found);},` +
+      `remove:function(){for(const n of list)n.remove();return this;},` +
+      `eachText:function(){return list.map(function(n){return String(n.textContent||'').replace(/\\s+/g,' ').trim();});},` +
+      `text:function(){return this.eachText().join(' ');},size:function(){return list.length;},` +
+      `get:function(i){return jsoupElements([list[Number(i)]]);},` +
+      `attr:function(k){return list.length&&list[0].getAttribute?list[0].getAttribute(String(k))||'':'';},` +
+      `toString:function(){return list.map(function(n){return n.outerHTML||'';}).join('\\n');}};}` +
+      `const org={jsoup:{Jsoup:{parse:function(h){if(typeof DOMParser==='undefined')throw new Error('Jsoup桥接需要DOMParser');` +
+      `return jsoupElements([new DOMParser().parseFromString(String(h??''),'text/html')]);}}}};` +
+      `globalThis.org=org;` +
+      `function TimeoutCancellationException(){}const Packages={org:org,io:{legato:{kazusa:{utils:{` +
       `TimeoutCancellationException:TimeoutCancellationException}}}}};` +
       `function JavaImporter(){return {importClass:function(){return true;},importPackage:function(){return true;}};}` +
       `function importClass(){return true;}function importPackage(){return true;}` +

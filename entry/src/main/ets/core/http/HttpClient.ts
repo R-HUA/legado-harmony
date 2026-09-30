@@ -59,9 +59,10 @@ export class HttpClient {
 
   async execute(req: HttpRequest): Promise<HttpResponse> {
     const startedAt = Date.now();
+    const preparedRequest: HttpRequest = { ...req, headers: this.sessionHeaders(req) };
     let response: HttpResponse;
     try {
-      response = await this.executeInternal(req);
+      response = await this.executeInternal(preparedRequest);
     } catch (error) {
       response = { url: req.url || '', statusCode: 0, headers: {}, body: '', success: false,
         error: error instanceof Error ? error.message : String(error || 'network error') };
@@ -76,9 +77,22 @@ export class HttpClient {
       trace.bodyPreview = response.body || '';
       trace.elapsedMs = Math.max(0, Date.now() - startedAt);
       trace.error = response.success ? '' : (response.error || 'request failed');
+      const cookie = this.findHeader(preparedRequest.headers || {}, 'cookie');
+      trace.cookieNames = cookie.split(';').map((pair: string): string => pair.split('=')[0].trim())
+        .filter((name: string): boolean => /^[A-Za-z0-9_.-]+$/.test(name));
       req.debugContext.addNetwork(trace);
     }
     return response;
+  }
+
+  private sessionHeaders(req: HttpRequest): Record<string, string> {
+    const headers: Record<string, string> = { ...this.defaultHeaders, ...req.headers };
+    const explicitCookie = Object.keys(headers).some((name: string): boolean => name.toLowerCase() === 'cookie');
+    if (!explicitCookie && req.useCookieJar !== false) {
+      const cookie = CookieStore.getCookie(req.url);
+      if (cookie) headers['Cookie'] = cookie;
+    }
+    return headers;
   }
 
   private async executeInternal(req: HttpRequest): Promise<HttpResponse> {
@@ -127,12 +141,8 @@ export class HttpClient {
     let responseTooLarge = false;
     try {
       const method = this.resolveMethod(req.method);
-      const headers: Record<string, string> = { ...this.defaultHeaders, ...req.headers };
+      const headers = req.headers || {};
       const requestData = this.requestData(req);
-      const cookie = req.useCookieJar === false ? '' : CookieStore.getCookie(req.url);
-      if (cookie && !headers['Cookie']) {
-        headers['Cookie'] = cookie;
-      }
       const maxResponseBytes = req.maxResponseBytes || 0;
       if (maxResponseBytes > 0) {
         const chunks: ArrayBuffer[] = [];
@@ -248,10 +258,8 @@ export class HttpClient {
     const client = http.createHttp();
     this.activeClients.add(client);
     try {
-      const headers: Record<string, string> = { ...this.defaultHeaders, ...req.headers };
+      const headers = this.sessionHeaders(req);
       const requestData = this.requestData(req);
-      const cookie = req.useCookieJar === false ? '' : CookieStore.getCookie(req.url);
-      if (cookie && !headers['Cookie']) headers['Cookie'] = cookie;
       const options: http.HttpRequestOptions = {
         method: this.resolveMethod(req.method),
         header: headers,

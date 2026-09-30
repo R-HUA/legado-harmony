@@ -238,7 +238,9 @@ export class BookDisplayHelper {
 
   private static appendTags(target: string[], raw: string): void {
     const protectedDateTimes: string[] = [];
-    const protectedRaw = BookDisplayHelper.protectDateTimes(raw || '', protectedDateTimes);
+    const protectedRaw = BookDisplayHelper.protectDateTimes(raw || '', protectedDateTimes)
+      .replace(/(?:关注|喜欢|羽毛|评论|收藏|点击|阅读|评分)\s*[:：]\s*\d+(?:\.\d+)?(?:万|亿|[kKwW])?/g,
+        (value: string): string => BookDisplayHelper.dateTimeMarker(value, protectedDateTimes));
     const normalized = protectedRaw
       .replace(/<[^>]+>/g, ' ')
       .replace(/&nbsp;/gi, ' ')

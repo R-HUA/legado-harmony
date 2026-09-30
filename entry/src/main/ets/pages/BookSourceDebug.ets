@@ -45,7 +45,7 @@ struct BookSourceDebugPage {
   @State source: BookSource = new BookSource();
   @State sourceUrl: string = '';
   @State keyword: string = '';
-  @State stage: string = 'full';
+  @State stage: string = SourceRuntimeStage.SEARCH;
   @State running: boolean = false;
   @State status: string = '准备就绪';
   @State session: BookSourceDebugSession = new BookSourceDebugSession();
@@ -154,7 +154,18 @@ struct BookSourceDebugPage {
     Column({ space: 10 }) {
       Text('调试阶段').fontSize(16).fontWeight(FontWeight.Medium)
         .fontColor(this.primaryTextColor()).width('100%')
-      Text('默认执行全链路：搜索 → 发现 → 详情 → 目录 → 正文')
+      Row({ space: 10 }) {
+        Button('搜索', { type: ButtonType.Capsule }).height(34).layoutWeight(1)
+          .backgroundColor(this.stage === SourceRuntimeStage.SEARCH ? this.accentColor() : this.inputColor())
+          .fontColor(this.stage === SourceRuntimeStage.SEARCH ? '#FFFFFF' : this.primaryTextColor())
+          .enabled(!this.running).onClick(() => this.stage = SourceRuntimeStage.SEARCH)
+        Button('全链路', { type: ButtonType.Capsule }).height(34).layoutWeight(1)
+          .backgroundColor(this.stage === 'full' ? this.accentColor() : this.inputColor())
+          .fontColor(this.stage === 'full' ? '#FFFFFF' : this.primaryTextColor())
+          .enabled(!this.running).onClick(() => this.stage = 'full')
+      }.width('100%')
+      Text(this.stage === SourceRuntimeStage.SEARCH ? '使用当前书源和已保存的登录状态，仅调试搜索' :
+        '执行搜索 → 发现 → 详情 → 目录 → 正文；搜索无候选时尝试发现')
         .fontSize(13).fontColor(this.subTextColor()).width('100%')
       TextInput({ text: this.keyword, placeholder: this.stageInputPlaceholder() })
         .height(44).width('100%').fontColor(this.primaryTextColor())
@@ -240,6 +251,8 @@ struct BookSourceDebugPage {
           .fontSize(12).fontColor(this.subTextColor()).width('100%')
           .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
           .copyOption(CopyOptions.LocalDevice)
+        Text(`Cookie：${item.cookieNames.length > 0 ? item.cookieNames.join('、') : '未携带'}（仅显示名称）`)
+          .fontSize(12).fontColor(this.subTextColor()).width('100%')
         if (item.bodyPreview) {
           Text(`响应预览：${item.bodyPreview}`).fontSize(11).fontColor(this.subTextColor())
             .width('100%').maxLines(8)
@@ -314,15 +327,17 @@ struct BookSourceDebugPage {
     this.debugSearchLinks = [];
     this.debugExploreLinks = [];
     const debug = new BookSourceDebugContext(this.source.bookSourceUrl, this.source.bookSourceName, this.stage);
-    this.session = debug.session;
+    // Keep UI snapshots separate from the live trace graph and its currentStep reference.
+    this.publishSession(debug);
     try {
       if (this.stage === SourceRuntimeStage.SEARCH) {
         this.coordinator = new SearchCoordinator(1);
         await this.coordinator.search(this.keyword.trim(), (progress) => {
           this.status = progress.status;
           this.collectDebugLinks(debug.session);
-        }, { targetSources: [this.source], validationOnly: false, maxResultsPerSource: 5,
-          maxTotalResults: 5, debugContext: debug, onSourceComplete: async (_source, result) => {
+          this.publishSession(debug);
+        }, { targetSources: [this.source], validationOnly: false,
+          debugContext: debug, onSourceComplete: async (_source, result) => {
             debug.addLog(result.validationStatus === BookSource.VALIDATION_PASSED ? 'info' : 'error',
               result.reason || `返回 ${result.books.length} 本书`);
           } });
@@ -338,7 +353,7 @@ struct BookSourceDebugPage {
         await this.runFullDebug(debug);
       }
       this.collectDebugLinks(debug.session);
-      debug.finish(this.session.steps.some((step: BookSourceDebugStep): boolean => step.status === 'passed') ? 'passed' : 'failed');
+      debug.finish(debug.session.steps.some((step: BookSourceDebugStep): boolean => step.status === 'passed') ? 'passed' : 'failed');
       this.publishSession(debug);
     } catch (error) {
       debug.addLog('error', error instanceof Error ? error.message : String(error));
@@ -417,8 +432,8 @@ struct BookSourceDebugPage {
     candidates = await searchCoordinator.search(this.keyword.trim(), (progress) => {
       this.status = progress.status;
       this.collectDebugLinks(debug.session);
-    }, { targetSources: [this.source], maxResultsPerSource: 1, maxTotalResults: 1,
-      debugContext: debug });
+      this.publishSession(debug);
+    }, { targetSources: [this.source], debugContext: debug });
     if (candidates.length === 0 && !this.source.enabledExplore) {
       debug.addLog('error', '该书源未启用发现，完整链路无法自动取得候选书');
       return;

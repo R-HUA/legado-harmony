@@ -692,8 +692,17 @@ export class WebBookService {
       return data;
     }
     if (!content || this.isBadExtractedContent(content)) {
-      const fallbackContent = this.tryExtractReadableContentFromHtml(body);
-      if (fallbackContent) content = fallbackContent;
+      if (/^@(?:css|xpath|json):/i.test((contentRule.content || '').trim())) {
+        // A declared extraction boundary must not silently become the whole page, a login
+        // form or a report dialog. Surface the failed rule so it can be diagnosed.
+        content = '';
+        const message = '正文规则未匹配到有效内容，请检查正文规则或网站响应';
+        AppStorage.setOrCreate('bookSourceStageLastError', message);
+        if (debugContext) debugContext.addLog('error', message);
+      } else {
+        const fallbackContent = this.tryExtractReadableContentFromHtml(body);
+        if (fallbackContent) content = fallbackContent;
+      }
     }
     if (!content && imageRuleValues.length === 0) return data;
     content = this.applyContentReplaceRule(content, contentRule.replaceRegex, ctx, chapter, debugContext);
@@ -754,7 +763,7 @@ export class WebBookService {
     if (!VerificationSupport.shouldRequestBrowserVerification(source, body, statusCode, rule)) {
       return false;
     }
-    const verifyUrl = VerificationSupport.pickVerificationUrl(source, requestUrl, rule);
+    const verifyUrl = VerificationSupport.pickVerificationUrl(source, requestUrl, rule, body, statusCode);
     VerificationSupport.requestVerification(verifyUrl, `${source.bookSourceName} 验证`, source);
     console.warn('[WS] source needs browser verification:', source.bookSourceName, verifyUrl);
     return true;
@@ -1549,11 +1558,9 @@ export class WebBookService {
     variables: Record<string, string> = {}, debugContext: BookSourceDebugContext | null = null): Promise<string> {
     const code = this.stageRuleCode(rawRule);
     if (!code) return '';
-    const decision = BookSourceRuntimeRouter.decide(stage, `${source.jsLib || ''}\n${code}`);
-    if (decision.runtime !== 'arkweb') {
-      AppStorage.setOrCreate('bookSourceStageLastError', `${stage} 阶段未路由到完整脚本运行层`);
-      return '';
-    }
+    // A complete stage script is already excluded from the synchronous page parser. Execute it
+    // here even when the lightweight router considers its syntax simple; otherwise neither path
+    // runs simple <js> list/init scripts and the caller receives a misleading empty catalog.
     const runtime = BookSourceStageWebRuntime.get();
     if (!await runtime.waitUntilAvailable()) {
       AppStorage.setOrCreate('bookSourceStageLastError', `${stage} 阶段脚本运行环境未就绪`);
@@ -1576,7 +1583,9 @@ export class WebBookService {
       let value = result.value || '';
       const trailingRule = this.stageTrailingRule(rawRule);
       if (value && trailingRule) {
-        const transformed = this.applyStageTrailingRule(value, trailingRule, request.baseUrl);
+        const transformed = stage === SourceRuntimeStage.TOC ? JSON.stringify(
+          new AnalyzeRule(value, request.baseUrl).getElements(trailingRule)) :
+          this.applyStageTrailingRule(value, trailingRule, request.baseUrl);
         console.info('[WS] stage trailing rule:', stage, trailingRule,
           'input:', value.length, 'output:', transformed.length);
         value = transformed;
@@ -1689,15 +1698,24 @@ export class WebBookService {
     const tocRule = source.tocRule;
     const records: Record<string, Object>[] = [];
     const items: string[] = [];
+    const typedItems: RuleValue[] = [];
     for (const value of values) {
       let record = value;
       // Legado list scripts also return individually serialized objects.
       if (typeof record === 'string') {
+        if (/^\s*</.test(record as string)) {
+          records.push({});
+          items.push(record as string);
+          typedItems.push(RuleValue.htmlElement(record as string));
+          if (maxItems > 0 && items.length >= maxItems) break;
+          continue;
+        }
         try { record = JSON.parse(record) as Object; } catch (_) { continue; }
       }
       if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
       records.push(record as Record<string, Object>);
       items.push(JSON.stringify(record));
+      typedItems.push(RuleValue.jsonValue(record, JSON.stringify(record)));
       if (maxItems > 0 && items.length >= maxItems) break;
     }
     if (items.length === 0) return chapters;
@@ -1710,9 +1728,7 @@ export class WebBookService {
     fieldRequest.book = book;
     fieldRequest.stage = SourceRuntimeStage.TOC;
     fieldRequest.ownerId = `stage_toc_fields_${Date.now()}_${book.bookUrl}`;
-    fieldRequest.typedContents = records.map((record: Record<string, Object>, index: number): RuleValue => {
-      return RuleValue.jsonValue(record, items[index] || JSON.stringify(record));
-    });
+    fieldRequest.typedContents = typedItems;
     fieldRequest.contents = items;
     fieldRequest.baseUrl = baseUrl;
     fieldRequest.contextValues = ctx.toPersistentRecord();
@@ -1770,9 +1786,7 @@ export class WebBookService {
     const rawRule = source.contentRule.content || '';
     const code = this.stageRuleCode(rawRule);
     if (!code) return '';
-    const decision = BookSourceRuntimeRouter.decide(SourceRuntimeStage.CONTENT,
-      `${source.jsLib || ''}\n${code}`);
-    if (decision.runtime !== 'arkweb') return '';
+    // Complete content scripts share the same asynchronous stage path as list/init scripts.
     const runtime = BookSourceStageWebRuntime.get();
     if (!await runtime.waitUntilAvailable()) return '';
     let content = '';
