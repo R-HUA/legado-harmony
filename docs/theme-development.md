@@ -139,9 +139,23 @@ BuiltinThemeRegistry.register(theme);
 
 旧的 `highlightColorEnabled`、`shadowColor` 与规则级 `bubbleStyleId` 仍会读取和输出，用于升级和降级兼容。“跟随主题”把强调模式、气泡形状、端饰和主题色作为一个整体继承；“自定义”才允许分别启用文字色、高亮色块、气泡，以及选择气泡样式与颜色。所有气泡模式的正则命中统一使用行内 `ContainerSpan`：命中文字、主题背景、多层 `textShadow` 与左右镜像端饰属于同一个行内单元，不再根据匹配是否覆盖整段切换渲染方式。十三套端饰分别表达玻璃星芒、卷轴、叶片露珠、墨迹印章、霓虹电路、草莓缎带、赤墨档案章、宋式回纹、玫瑰角花、月色鹤影、朱砂剑符、青鸾玉令和皮皮软爪；主题专属样式不再统一追加下划线。强调效果不会改变正文源文本或 TTS 索引，TTS 当前朗读高亮拥有最高显示优先级。
 
+## 设置页标题栏
+
+书架、添加书籍、搜索与发现、阅读、其他设置共用 `SettingsPageLayout`。API 23 及以上使用 HDS 原生标题栏与真实 `Scroller` 绑定：`GRADIENT_BLUR` 在滚动 0～8vp 内过渡，蒙层向标题栏下方延伸 32vp，渐变色使用页面背景色，按钮保留系统材质。标题栏启用 `avoidLayoutSafeArea`，避免与状态栏重叠。API 12～22 保留可用的普通返回标题栏。
+
+2026-10-06 核对了当前官网正文及 API 26 SDK 签名：
+
+- [标题栏设计指南](https://developer.huawei.com/consumer/cn/doc/design-guides/titlebar-0000001929628982)：沉浸光感与渐变模糊职责、渐变颜色与页面一致。
+- [HdsNavigation](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ui-design-hdsnavigation)：`GRADIENT_BLUR` 适用于列表页面，`maskExtraHeight` 默认 32vp；滚动绑定、背景配置与安全区选项。
+- [分段按钮](https://developer.huawei.com/consumer/cn/doc/design-guides/segmentbutton-0000001929853292)及 [SegmentButton API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ohos-arkui-advanced-segmentbutton)：添加书籍页采用页签型分段按钮区分链接与本地文件，分段只切换内容，实际导入由独立主按钮触发。表单在宽窗口限制宽度，输入、结果和操作分层展示，不混排已入库书籍列表。
+
+已在 API 26 设备检查书架设置首屏与滚动中间态，内容能进入标题下方，模糊向内容区渐弱，标题与状态栏不再重叠。添加书籍页已检查两个页签、键盘展开、无匹配提示和返回路径；分段栏位于标题栏下方，键盘展开后主按钮仍可达。深色模式、旧 API 和多窗口仍需单独验收；构建通过不能替代这些检查。
+
 ## 验证清单
 
-付费主题不再需要修改服务端代码。发布客户端版本前，按 `server/README.md` 的“主题目录运营”说明向 `theme_catalog` 幂等写入主题 ID、显示名、价格、有效天数和上架状态；新增迁移时也要把内置主题加入初始化数据。不要删除已发布记录，下架时设置 `enabled = FALSE`，以保留已有权益与历史账本的可追溯性。
+当前全部内置主题与部件均免费开放，不再请求服务端主题目录或兑换权益。主题页直接列出内置主题，已移除右上角主题预览入口。既有服务端目录和账本保留，当前客户端不使用它们决定本地主题权限。
+
+主题、数据同步和朗读设置页复用 `SettingsPageLayout`，通过各自的 `ListScroller` / `Scroller` 绑定原生渐变模糊；旧版 API 沿用共同的普通标题栏回退。弹层保留在页面外层，避免被导航内容遮挡。沿用上文 HdsNavigation 官方依据，不增加独立标题遮罩或固定模糊背板。
 
 - 浅色、深色、跟随系统三种模式均检查一次。
 - 冷启动后主题 ID、颜色覆盖和自定义字体保持不变。

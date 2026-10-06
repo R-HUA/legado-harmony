@@ -5099,7 +5099,7 @@ struct BookshelfPage {
 
   shelfScopeEmptyHint(): string {
     if (this.shelfScope === 'local') {
-      return '请在书架设置中添加本地书籍';
+      return '请在书架设置中添加书籍';
     }
     if (this.shelfScope === 'network') {
       return '搜索并加入喜欢的书籍吧';
@@ -10730,7 +10730,6 @@ struct SettingsPage {
             .width('100%')
             .height(56 + this.statusBarHeight)
 
-          this.accountSummaryCard()
           Column() {
             this.syncMenuItem()
             this.menuItem($r('sys.symbol.externaldrive'), '书源管理', true, () => {
@@ -10796,48 +10795,6 @@ struct SettingsPage {
     .height('100%')
     .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-  }
-
-  @Builder
-  accountSummaryCard() {
-    Row({ space: 12 }) {
-      if (this.accountLoggedIn && this.accountAvatarUrl) {
-        Image(this.accountAvatarUrl)
-          .width(48)
-          .height(48)
-          .borderRadius(24)
-          .objectFit(ImageFit.Cover)
-      } else {
-        Image($r('app.media.ic_default_reader_avatar'))
-          .width(48)
-          .height(48)
-          .borderRadius(24)
-          .objectFit(ImageFit.Cover)
-      }
-
-      Column({ space: 4 }) {
-        Text(this.accountLoggedIn ? this.accountDisplayName : '登录华为账号')
-          .fontSize(16)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.primaryTextColor())
-        Text(this.accountLoggedIn ? `${this.accountPoints} 点` : '首次登录免费送 300 点')
-          .fontSize(12)
-          .fontColor(this.subTextColor())
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(18)
-        .fontColor([this.subTextColor()])
-    }
-    .width('100%')
-    .padding(16)
-    .borderRadius(16)
-    .backgroundColor(this.glassCardColor())
-    .onClick(() => {
-      router.pushUrl({ url: 'pages/AccountCenter' });
-    })
   }
 
   @Builder

@@ -167,7 +167,8 @@ export class TtsSettingsStore {
     settings.installedVoiceKeys = source.installedVoiceKeys || '';
     settings.customVoiceId = source.customVoiceId || '';
     settings.customVoices = source.customVoices || '';
-    settings.cloudVoiceId = source.cloudVoiceId || '';
+    // 已停用的云端音色不再恢复为当前音色，保留系统和自定义音色设置。
+    settings.cloudVoiceId = '';
     return settings;
   }
 }

@@ -1,6 +1,7 @@
 import { authentication } from '@kit.AccountKit';
 import { common, Context } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
+import { AccountCommerceConfig } from './AccountCommerceConfig';
 import { AccountCommerceApi } from './AccountCommerceApi';
 import {
   AccountApiError,
@@ -20,6 +21,9 @@ export class HuaweiAccountService {
   }
 
   static async login(context: common.UIAbilityContext): Promise<AccountSnapshot> {
+    if (!AccountCommerceConfig.COMMERCE_ENABLED) {
+      throw new AccountApiError('账号登录暂不可用', 0, 'SERVICE_DISABLED');
+    }
     const request = new authentication.HuaweiIDProvider().createLoginWithHuaweiIDRequest();
     request.forceLogin = true;
     request.state = util.generateRandomUUID();
@@ -68,6 +72,11 @@ export class HuaweiAccountService {
   }
 
   private static async doRenewSession(context: Context): Promise<void> {
+    // 仅为已启用的旧同步保留会话续期，其他账号服务暂停。
+    if (!AccountCommerceConfig.COMMERCE_ENABLED &&
+      AppStorage.get<boolean>(CloudSyncSettingsStore.STORAGE_ENABLED) !== true) {
+      return;
+    }
     await AccountSessionStore.load(context);
     if (!AccountSessionStore.isLoggedIn()) {
       return;

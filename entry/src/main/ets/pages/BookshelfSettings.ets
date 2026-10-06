@@ -1,3 +1,4 @@
+import { SettingsSelect } from '../components/SettingsSelect';
 import { router } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { syncSystemBars } from '../utils/SystemBars';
@@ -6,11 +7,10 @@ import { Book } from '../model/data/Book';
 import { CoverAlbum, CoverGallerySettings } from '../utils/CoverGallerySettings';
 import { CoverGalleryStore, CoverGallerySnapshot } from '../utils/CoverGalleryStore';
 import { RecentReadCardUpdater } from '../utils/RecentReadCardUpdater';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { SettingsPageLayout } from '../components/SettingsPageLayout';
 import { BookshelfDisplaySettings, BookshelfDisplaySettingsStore } from '../utils/BookshelfDisplaySettingsStore';
 import { SearchExplorePendingBook } from '../utils/SearchExplorePendingBook';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 
 @Entry
 @Component
@@ -62,9 +62,19 @@ struct BookshelfSettingsPage {
     this.syncBars();
   }
 
+  private pageScroller: Scroller = new Scroller();
+
   build() {
+    Stack() {
+      SettingsPageLayout({ pageTitle: '书架设置', darkMode: this.appDarkMode,
+        scroller: this.pageScroller, pageContent: (): void => this.settingsContent() })
+    }
+  }
+
+  @Builder
+  settingsContent() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
+      Scroll(this.pageScroller) {
         Column() {
           this.sectionTitle('书籍信息')
           Column() {
@@ -139,9 +149,9 @@ struct BookshelfSettingsPage {
           .clip(true)
           .backgroundColor(this.cardColor())
 
-          this.sectionTitle('本地书籍')
+          this.sectionTitle('添加书籍')
           Column() {
-            this.navItem('添加书籍', '选择并导入 TXT 和 EPUB 书籍文件', 'pages/LocalBookSettings')
+            this.navItem('添加书籍', '粘贴书籍链接或导入 TXT、EPUB 文件', 'pages/LocalBookSettings')
           }
           .width('calc(100% - 24vp)')
           .margin({ left: 12, right: 12 })
@@ -200,7 +210,6 @@ struct BookshelfSettingsPage {
       .height('100%')
       .align(Alignment.TopStart)
 
-      this.titleBar()
     }
     .width('100%')
     .height('100%')
@@ -514,26 +523,6 @@ struct BookshelfSettingsPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-      Text('书架设置')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
-  }
-
-  @Builder
   sectionTitle(title: string) {
     Text(title)
       .fontSize(13)
@@ -594,27 +583,17 @@ struct BookshelfSettingsPage {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Select(options)
-        .selected(selected)
-        .value(this.optionValue(options, selected))
-        .font({ size: 14 })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(ThemeRuntime.accentColor(this.appDarkMode))
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: options,
+        selectedIndex: selected,
+        selectedLabel: this.optionValue(options, selected),
+        darkMode: this.appDarkMode,
+        textSize: 14,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           onSelect(index);
-        })
+        }
+      })
     }
     .width('calc(100% - 32vp)')
     .constraintSize({ minHeight: 66 })
@@ -639,31 +618,21 @@ struct BookshelfSettingsPage {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Select(this.albumOptions())
-        .selected(this.albumSelectedIndex(dark))
-        .value(this.optionValue(this.albumOptions(), this.albumSelectedIndex(dark)))
-        .font({ size: 14 })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(ThemeRuntime.accentColor(this.appDarkMode))
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial())
+      SettingsSelect({
+        options: this.albumOptions(),
+        selectedIndex: this.albumSelectedIndex(dark),
+        selectedLabel: this.optionValue(this.albumOptions(), this.albumSelectedIndex(dark)),
+        darkMode: this.appDarkMode,
+        textSize: 14,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
+          this.setThemeAlbum(dark, this.albumIdByIndex(index));
+        }
+      })
         .onTouch((event: TouchEvent) => {
           if (event.type === TouchType.Down) {
             this.refreshAlbumOptionsForMenu();
           }
-        })
-        .onSelect((index: number) => {
-          this.setThemeAlbum(dark, this.albumIdByIndex(index));
         })
     }
     .width('calc(100% - 32vp)')

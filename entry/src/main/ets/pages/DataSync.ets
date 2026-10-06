@@ -1,9 +1,9 @@
+import { SettingsPageLayout } from '../components/SettingsPageLayout';
 import { promptAction, router } from '@kit.ArkUI';
 import { AccountSessionStore } from '../account/AccountSessionStore';
 import { CloudSyncSettings, CloudSyncSettingsStore } from '../account/CloudSyncSettingsStore';
 import { CloudSyncCoordinator } from '../account/CloudSyncCoordinator';
 import { CloudSyncStateStore } from '../account/CloudSyncStateStore';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
 import { HdsFeedback } from '../utils/HdsFeedback';
@@ -64,9 +64,12 @@ struct DataSyncPage {
     }
   }
 
-  build() {
+  private pageScroller: Scroller = new Scroller();
+
+  @Builder
+  settingsContent() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
+      Scroll(this.pageScroller) {
         Column() {
           Row()
             .height(56 + this.statusBarHeight)
@@ -169,8 +172,15 @@ struct DataSyncPage {
       .width('100%')
       .height('100%')
       .align(Alignment.TopStart)
+    }
+    .width('100%')
+    .height('100%')
+  }
 
-      this.titleBar()
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      SettingsPageLayout({ pageTitle: '数据同步', darkMode: this.appDarkMode,
+        scroller: this.pageScroller, pageContent: (): void => this.settingsContent() })
     }
     .width('100%')
     .height('100%')
@@ -216,13 +226,6 @@ struct DataSyncPage {
           .fontColor(this.subTextColor())
           .lineHeight(20)
           .width('100%')
-        Button('登录并开启同步')
-          .width('100%')
-          .height(42)
-          .backgroundColor(this.accentColor())
-          .onClick(() => {
-            router.pushUrl({ url: 'pages/AccountCenter' });
-          })
       } else {
         Text(this.lastSyncDescription())
           .fontSize(12)
@@ -332,8 +335,7 @@ struct DataSyncPage {
 
   async setCloudSyncEnabled(value: boolean): Promise<void> {
     if (value && !this.accountLoggedIn) {
-      HdsFeedback.showToast('请先登录华为账号');
-      router.pushUrl({ url: 'pages/AccountCenter' });
+      HdsFeedback.showToast('账号登录暂不可用');
       return;
     }
     this.cloudSyncEnabled = value;
@@ -439,7 +441,7 @@ struct DataSyncPage {
 
   async syncNow(conflictPolicy: string = 'cloud'): Promise<void> {
     if (!this.accountLoggedIn) {
-      router.pushUrl({ url: 'pages/AccountCenter' });
+      HdsFeedback.showToast('账号登录暂不可用');
       return;
     }
     if (!this.cloudSyncEnabled) {
@@ -581,23 +583,5 @@ struct DataSyncPage {
       .padding({ left: 16, right: 16, top: 20, bottom: 8 })
   }
 
-  @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-      Text('数据同步')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
-  }
+
 }

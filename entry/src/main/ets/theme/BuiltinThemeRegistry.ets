@@ -70,7 +70,7 @@ export class BuiltinThemeRegistry {
 
   static isFree(themeId: string): boolean {
     const normalized = (themeId || '').trim();
-    return normalized === ThemeIds.PLAIN_DEFAULT || normalized === BuiltinThemeRegistry.DEFAULT_THEME_ID;
+    return BuiltinThemeRegistry.has(normalized);
   }
 
   static normalizeBuiltinId(themeId: string): string {
@@ -87,7 +87,7 @@ export class BuiltinThemeRegistry {
     const theme = BuiltinThemeRegistry.findById(BuiltinThemeRegistry.normalizeBuiltinId(baseThemeId));
     theme.id = ThemeIds.CUSTOM;
     theme.name = '自定义主题';
-    theme.description = '按浅色与深色模式自由组合已拥有主题';
+    theme.description = '按浅色与深色模式自由组合内置主题';
     return theme;
   }
 

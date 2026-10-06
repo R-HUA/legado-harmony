@@ -52,6 +52,9 @@ export class CloudTtsClient {
   private clients: http.HttpRequest[] = [];
 
   async synthesize(voiceId: string, text: string, speed: number): Promise<CloudTtsAudio> {
+    if (!AccountCommerceConfig.COMMERCE_ENABLED) {
+      throw new AccountApiError('在线朗读暂不可用，请选择系统音色', 0, 'SERVICE_DISABLED');
+    }
     if (!AccountSessionStore.isLoggedIn()) {
       throw new AccountApiError('请先登录华为账号后使用在线音色', 401, 'UNAUTHORIZED');
     }

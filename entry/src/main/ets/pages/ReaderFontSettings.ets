@@ -1,3 +1,4 @@
+import { SettingsSelect } from '../components/SettingsSelect';
 import { router } from '@kit.ArkUI';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ReaderSettings, ReaderSettingsStore } from '../utils/ReaderSettingsStore';
@@ -18,7 +19,6 @@ import {
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
 import { ThemeAccessPolicy } from '../account/ThemeAccessPolicy';
-import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 
 class ReaderCustomFontItem {
   familyName: string = '';
@@ -515,15 +515,6 @@ struct ReaderFontSettingsPage {
     return ThemeRuntime.accentColor(this.appDarkMode);
   }
 
-  /**
-   * Keep the font selectors on this page on the same menu material.  HDS
-   * Select menus otherwise inherit a system shadow that can differ between
-   * the top-level font rows and the nested regex rule rows.
-   */
-  selectMenuMaterial() {
-    return ImmersiveMaterialRuntime.selectMenuMaterial();
-  }
-
   syncBars(): void {
     syncSystemBars(getContext(this), this.appDarkMode, this.pageColor());
   }
@@ -564,28 +555,18 @@ struct ReaderFontSettingsPage {
         .fontSize(16)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
-      Select(this.fontOptions())
-        .selected(this.selectedFontIndex(mode, family))
-        .value(this.selectedFontValue(mode, family))
-        .font({ size: 14 })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .divider(null)
-        .optionBgColor(Color.Transparent)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(this.selectMenuMaterial())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: this.fontOptions(),
+        selectedIndex: this.selectedFontIndex(mode, family),
+        selectedLabel: this.selectedFontValue(mode, family),
+        darkMode: this.appDarkMode,
+        textSize: 14,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           const result = this.modeAndFamilyByIndex(index);
           onChange(result[0], result[1]);
-        })
+        }
+      })
     }
     .width('calc(100% - 32vp)')
     .constraintSize({ minHeight: 64 })
@@ -1250,30 +1231,20 @@ struct ReaderFontSettingsPage {
           .fontSize(15)
           .fontColor(this.primaryTextColor())
           .layoutWeight(1)
-        Select(this.emphasisModeOptions())
-          .selected(this.emphasisModeIndex(this.regexRuleAt(index).emphasisMode))
-          .value(this.emphasisModeLabel(this.regexRuleAt(index).emphasisMode))
-          .font({ size: 13 })
-          .fontColor(this.subTextColor())
-          .backgroundColor(Color.Transparent)
-          .arrowPosition(ArrowPosition.END)
-          .padding({ left: 0, right: 0 })
-          .borderRadius(16)
-          .border({ width: 0 })
-          .divider(null)
-          .opacity(refreshKey >= 0 ? 1 : 1)
-          .optionBgColor(Color.Transparent)
-          .optionFontColor(this.primaryTextColor())
-          .selectedOptionFontColor(this.accentColor())
-          .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-          .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-          .menuBackgroundBlurStyle(BlurStyle.NONE)
-          .menuSystemMaterial(this.selectMenuMaterial())
-          .onSelect((selectedIndex: number) => {
+        SettingsSelect({
+          options: this.emphasisModeOptions(),
+          selectedIndex: this.emphasisModeIndex(this.regexRuleAt(index).emphasisMode),
+          selectedLabel: this.emphasisModeLabel(this.regexRuleAt(index).emphasisMode),
+          darkMode: this.appDarkMode,
+          textSize: 13,
+          textColor: this.subTextColor(),
+          onSelected: (selectedIndex: number) => {
             this.updateRegexRule(index, (target: ReaderRegexFontRule) => {
               target.emphasisMode = this.emphasisModeByIndex(selectedIndex);
             });
-          })
+          }
+        })
+          .opacity(refreshKey >= 0 ? 1 : 1)
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
@@ -1344,30 +1315,20 @@ struct ReaderFontSettingsPage {
               .fontSize(15)
               .fontColor(this.primaryTextColor())
               .layoutWeight(1)
-            Select(this.bubbleStyleOptions())
-              .selected(this.bubbleStyleIndex(this.regexRuleAt(index).bubbleStyleId))
-              .value(this.bubbleStyleLabel(this.regexRuleAt(index).bubbleStyleId))
-              .font({ size: 13 })
-              .fontColor(this.subTextColor())
-              .backgroundColor(Color.Transparent)
-              .arrowPosition(ArrowPosition.END)
-              .padding({ left: 0, right: 0 })
-              .borderRadius(16)
-              .border({ width: 0 })
-              .divider(null)
-              .optionBgColor(Color.Transparent)
-              .optionFontColor(this.primaryTextColor())
-              .selectedOptionFontColor(this.accentColor())
-              .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-              .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-              .menuBackgroundBlurStyle(BlurStyle.NONE)
-              .menuSystemMaterial(this.selectMenuMaterial())
-              .onSelect((selectedIndex: number) => {
+            SettingsSelect({
+              options: this.bubbleStyleOptions(),
+              selectedIndex: this.bubbleStyleIndex(this.regexRuleAt(index).bubbleStyleId),
+              selectedLabel: this.bubbleStyleLabel(this.regexRuleAt(index).bubbleStyleId),
+              darkMode: this.appDarkMode,
+              textSize: 13,
+              textColor: this.subTextColor(),
+              onSelected: (selectedIndex: number) => {
                 const selectedStyleId = this.bubbleStyleByIndex(selectedIndex);
                 this.updateRegexRule(index, (target: ReaderRegexFontRule) => {
                   target.bubbleStyleId = selectedStyleId;
                 });
-              })
+              }
+            })
           }
           .width('100%')
           .alignItems(VerticalAlign.Center)
@@ -1417,28 +1378,18 @@ struct ReaderFontSettingsPage {
         .fontSize(15)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
-      Select(this.fontOptions())
-        .selected(this.selectedFontIndex(mode, family))
-        .value(this.selectedFontValue(mode, family))
-        .font({ size: 13 })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .divider(null)
-        .optionBgColor(Color.Transparent)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(this.selectMenuMaterial())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: this.fontOptions(),
+        selectedIndex: this.selectedFontIndex(mode, family),
+        selectedLabel: this.selectedFontValue(mode, family),
+        darkMode: this.appDarkMode,
+        textSize: 13,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           const result = this.modeAndFamilyByIndex(index);
           onChange(result[0], result[1]);
-        })
+        }
+      })
     }
     .width('100%')
     .constraintSize({ minHeight: 64 })

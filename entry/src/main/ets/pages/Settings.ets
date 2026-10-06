@@ -1,3 +1,4 @@
+import { SettingsSelect } from '../components/SettingsSelect';
 import { router } from '@kit.ArkUI';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { syncSystemBars } from '../utils/SystemBars';
@@ -6,6 +7,7 @@ import { ReaderThemeHelper, ReaderThemeItem } from '../utils/ReaderThemeHelper';
 import { ReaderCustomThemeData, ReaderCustomThemeHelper, ReaderCustomThemeScheme } from '../utils/ReaderCustomThemeHelper';
 import { ReaderBackgroundImageStore } from '../utils/ReaderBackgroundImageStore';
 import { AppThemeModeStore } from '../utils/AppThemeModeStore';
+import { SettingsPageLayout } from '../components/SettingsPageLayout';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { AdaptiveSwitch } from '../components/AdaptiveSwitch';
 import { ReaderFontHelper, ReaderFontItem } from '../utils/ReaderFontHelper';
@@ -13,7 +15,6 @@ import { ReaderSystemFontHelper } from '../utils/ReaderSystemFontHelper';
 import { AdaptiveColorPicker } from '../components/AdaptiveColorPicker';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { EyeTurnController } from '../core/reader/EyeTurnController';
-import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import fs from '@ohos.file.fs';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
@@ -144,9 +145,19 @@ struct SettingsPage {
     }
   }
 
+  private pageScroller: Scroller = new Scroller();
+
   build() {
+    Stack() {
+      SettingsPageLayout({ pageTitle: '阅读设置', darkMode: this.appDarkMode,
+        scroller: this.pageScroller, pageContent: (): void => this.settingsContent() })
+    }
+  }
+
+  @Builder
+  settingsContent() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
+      Scroll(this.pageScroller) {
         Column() {
           this.sectionTitle('App 配色')
           Column() {
@@ -298,7 +309,6 @@ struct SettingsPage {
       .align(Alignment.TopStart)
       .backgroundColor(this.pageColor())
 
-      this.titleBar()
 
     }
     .width('100%')
@@ -1687,11 +1697,6 @@ struct SettingsPage {
     return ThemeRuntime.subTextColor(this.appDarkMode);
   }
 
-  /** Use one deterministic menu material for settings Select controls on API 26+. */
-  selectMenuMaterial() {
-    return ImmersiveMaterialRuntime.selectMenuMaterial();
-  }
-
   accentColor(): string {
     return ThemeRuntime.accentColor(this.appDarkMode);
   }
@@ -1837,27 +1842,6 @@ struct SettingsPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-
-      Text('阅读设置')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
-  }
-
-  @Builder
   sectionTitle(title: string) {
     Text(title)
       .fontSize(13)
@@ -1900,27 +1884,17 @@ struct SettingsPage {
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
 
-      Select(this.readerFontOptions())
-        .selected(this.readerFontSelectedIndex())
-        .value(this.readerFontValue())
-        .font({ size: 14 })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(this.selectMenuMaterial())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: this.readerFontOptions(),
+        selectedIndex: this.readerFontSelectedIndex(),
+        selectedLabel: this.readerFontValue(),
+        darkMode: this.appDarkMode,
+        textSize: 14,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           this.selectReaderFontByIndex(index);
-        })
+        }
+      })
     }
     .width('100%')
     .constraintSize({ minHeight: 56 })
@@ -2130,28 +2104,18 @@ struct SettingsPage {
       if (this.currentReaderThemeIndex() === ReaderThemeHelper.CUSTOM_THEME_INDEX) {
         Column({ space: 10 }) {
           Row({ space: 8 }) {
-            Select(this.customThemeOptions())
-              .selected(this.currentCustomThemeSelectedIndex())
-              .value(this.currentCustomThemeScheme().name)
-              .font({ size: 14 })
-              .fontColor(this.subTextColor())
-              .backgroundColor(Color.Transparent)
-              .arrowPosition(ArrowPosition.START)
-              .padding({ left: 0, right: 0 })
-              .borderRadius(16)
-              .border({ width: 0 })
-              .layoutWeight(1)
-              .divider(null)
-              .optionBgColor(Color.Transparent)
-              .optionFontColor(this.primaryTextColor())
-              .selectedOptionFontColor(this.accentColor())
-              .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-              .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-              .menuBackgroundBlurStyle(BlurStyle.NONE)
-              .menuSystemMaterial(this.selectMenuMaterial())
-              .onSelect((index: number) => {
+            SettingsSelect({
+              options: this.customThemeOptions(),
+              selectedIndex: this.currentCustomThemeSelectedIndex(),
+              selectedLabel: this.currentCustomThemeScheme().name,
+              darkMode: this.appDarkMode,
+              textSize: 14,
+              textColor: this.subTextColor(),
+              onSelected: (index: number) => {
                 this.selectCustomTheme(index);
-              })
+              }
+            })
+              .layoutWeight(1)
             Button('新增')
               .height(36)
               .fontSize(13)
@@ -2191,27 +2155,17 @@ struct SettingsPage {
               .fontSize(14)
               .fontColor(this.primaryTextColor())
             Blank()
-            Select([{ value: '背景色' }, { value: '背景图片' }])
-              .selected(this.currentCustomThemeBackgroundTypeIndex())
-              .value(this.currentCustomThemeBackgroundTypeIndex() === 1 ? '背景图片' : '背景色')
-              .font({ size: 14 })
-              .fontColor(this.subTextColor())
-              .backgroundColor(Color.Transparent)
-              .arrowPosition(ArrowPosition.END)
-              .padding({ left: 0, right: 0 })
-              .borderRadius(16)
-              .border({ width: 0 })
-              .optionBgColor(Color.Transparent)
-              .divider(null)
-              .optionFontColor(this.primaryTextColor())
-              .selectedOptionFontColor(this.accentColor())
-              .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-              .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-              .menuBackgroundBlurStyle(BlurStyle.NONE)
-              .menuSystemMaterial(this.selectMenuMaterial())
-              .onSelect((index: number) => {
+            SettingsSelect({
+              options: [{ value: '背景色' }, { value: '背景图片' }],
+              selectedIndex: this.currentCustomThemeBackgroundTypeIndex(),
+              selectedLabel: this.currentCustomThemeBackgroundTypeIndex() === 1 ? '背景图片' : '背景色',
+              darkMode: this.appDarkMode,
+              textSize: 14,
+              textColor: this.subTextColor(),
+              onSelected: (index: number) => {
                 this.setCurrentCustomThemeBackgroundType(index);
-              })
+              }
+            })
           }
           .width('100%')
           if (this.currentCustomThemeBackgroundTypeIndex() === 0) {
@@ -2244,28 +2198,18 @@ struct SettingsPage {
                   .onClick(() => {
                     this.clearCurrentCustomThemeImage();
                   })
-                Select([{ value: '裁剪填充' }, { value: '完整显示' }, { value: '拉伸铺满' }])
-                  .selected(this.customThemeFitSelectedIndex())
-                  .value(['裁剪填充', '完整显示', '拉伸铺满'][this.customThemeFitSelectedIndex()])
-                  .font({ size: 13 })
-                  .fontColor(this.subTextColor())
-                  .backgroundColor(Color.Transparent)
-                  .arrowPosition(ArrowPosition.END)
-                  .padding({ left: 0, right: 0 })
-                  .borderRadius(16)
-                  .border({ width: 0 })
-                  .layoutWeight(1)
-                  .divider(null)
-                  .optionBgColor(Color.Transparent)
-                  .optionFontColor(this.primaryTextColor())
-                  .selectedOptionFontColor(this.accentColor())
-                  .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-                  .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-                  .menuBackgroundBlurStyle(BlurStyle.NONE)
-                  .menuSystemMaterial(this.selectMenuMaterial())
-                  .onSelect((index: number) => {
+                SettingsSelect({
+                  options: [{ value: '裁剪填充' }, { value: '完整显示' }, { value: '拉伸铺满' }],
+                  selectedIndex: this.customThemeFitSelectedIndex(),
+                  selectedLabel: ['裁剪填充', '完整显示', '拉伸铺满'][this.customThemeFitSelectedIndex()],
+                  darkMode: this.appDarkMode,
+                  textSize: 13,
+                  textColor: this.subTextColor(),
+                  onSelected: (index: number) => {
                     this.setCurrentCustomThemeImageFit(index);
-                  })
+                  }
+                })
+                  .layoutWeight(1)
               }
             }
             .width('100%')
@@ -2292,28 +2236,18 @@ struct SettingsPage {
   @Builder
   typographyStepper() {
     Row({ space: 8 }) {
-      Select(this.typographySettingOptions())
-        .selected(this.typographySettingIndex)
-        .value(this.typographySettingTitle())
-        .font({ size: 15 })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.START)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(this.selectMenuMaterial())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: this.typographySettingOptions(),
+        selectedIndex: this.typographySettingIndex,
+        selectedLabel: this.typographySettingTitle(),
+        darkMode: this.appDarkMode,
+        textSize: 15,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           this.showTypographyValueInput = false;
           this.typographySettingIndex = Math.max(0, Math.min(index, this.typographySettingOptions().length - 1));
-        })
+        }
+      })
       Blank()
         .layoutWeight(1)
       this.settingsSliderStepButton($r('sys.symbol.minus'), `减小${this.typographySettingTitle()}`,
@@ -2519,28 +2453,18 @@ struct SettingsPage {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Select(options)
-        .id(controlId)
-        .selected(selected)
-        .value(this.optionValue(options, selected))
-        .font({ size: 14 })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(this.selectMenuMaterial())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: options,
+        selectedIndex: selected,
+        selectedLabel: this.optionValue(options, selected),
+        darkMode: this.appDarkMode,
+        textSize: 14,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           onSelect(index);
-        })
+        }
+      })
+        .id(controlId)
     }
     .width('calc(100% - 32vp)')
     .constraintSize({ minHeight: 64 })

@@ -434,7 +434,7 @@ export class SystemTtsReader {
     this.optionStyle = options?.style ?? null;
     this.optionLanguage = options?.language ?? null;
     this.optionSpeed = options?.speed ?? null;
-    this.optionCloudVoiceId = options?.cloudVoiceId || '';
+    this.optionCloudVoiceId = '';
     this.optionCloudVoiceName = options?.cloudVoiceName || '';
     this.optionCloudVoiceTier = (options?.cloudVoiceTier || '').toUpperCase() === 'PREMIUM' ?
       'PREMIUM' : 'STANDARD';

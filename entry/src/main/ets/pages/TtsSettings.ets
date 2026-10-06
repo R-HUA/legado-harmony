@@ -1,3 +1,4 @@
+import { SettingsPageLayout } from '../components/SettingsPageLayout';
 import { router, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import picker from '@ohos.file.picker';
@@ -15,7 +16,6 @@ import { HttpTTS } from '../model/data/Book';
 import { HttpClient } from '../core/http/HttpClient';
 import { syncSystemBars } from '../utils/SystemBars';
 import { SystemTtsReader, TtsVoiceOption } from '../utils/SystemTtsReader';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { AdaptiveIconButton } from '../components/AdaptiveIconButton';
 import { TtsSettings, TtsSettingsStore } from '../utils/TtsSettingsStore';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
@@ -76,13 +76,11 @@ struct TtsSettingsPage {
   aboutToAppear(): void {
     this.syncBars();
     this.loadSettingsAndVoices();
-    this.loadTtsCommerce();
   }
 
   onPageShow(): void {
     this.syncBars();
     this.loadSettingsAndVoices();
-    this.loadTtsCommerce();
   }
 
   aboutToDisappear(): void {
@@ -91,9 +89,12 @@ struct TtsSettingsPage {
     this.isPreviewing = false;
   }
 
-  build() {
+  private pageScroller: Scroller = new Scroller();
+
+  @Builder
+  settingsContent() {
     Stack({ alignContent: Alignment.TopStart }) {
-        Scroll() {
+        Scroll(this.pageScroller) {
           Column() {
             this.sectionTitle('朗读音色')
             this.voiceDropdownSelector()
@@ -204,8 +205,6 @@ struct TtsSettingsPage {
           .clip(true)
           .backgroundColor(this.cardColor())
 
-          this.sectionTitle('在线朗读字数')
-          this.ttsCommerceSection()
           }
           .width('100%')
           .padding({ top: 56 + this.statusBarHeight, bottom: this.navBarHeight + 32 })
@@ -214,8 +213,15 @@ struct TtsSettingsPage {
         .width('100%')
         .height('100%')
         .align(Alignment.TopStart)
+    }
+    .width('100%')
+    .height('100%')
+  }
 
-      this.titleBar()
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      SettingsPageLayout({ pageTitle: '朗读设置', darkMode: this.appDarkMode,
+        scroller: this.pageScroller, pageContent: (): void => this.settingsContent() })
 
       if (this.showVoiceDropdown) {
         this.voiceDropdownMenu()
@@ -639,27 +645,9 @@ struct TtsSettingsPage {
     }
     this.isLoadingVoices = true;
     try {
-      const results = await Promise.all([
-        SystemTtsReader.listAvailableVoices(),
-        AccountCommerceApi.fetchTtsCatalog().catch(() => null)
-      ]);
-      const voices = results[0] as TtsVoiceOption[];
-      const catalog = results[1];
-      this.cloudVoices = catalog ? catalog.voices : [];
-      if (catalog && this.ttsCloudVoiceId && !this.findCurrentCloudVoice()) {
-        const previousVoiceId = this.ttsCloudVoiceId;
-        const fallbackVoice = this.cloudVoices.find((voice: TtsVoiceInfo) => voice.id === 'xiaoyan') ||
-          this.cloudVoices[0];
-        this.ttsCloudVoiceId = fallbackVoice ? fallbackVoice.id : '';
-        console.warn(`[TTS] unsupported cloud voice migrated: ${previousVoiceId} -> ${this.ttsCloudVoiceId}`);
-        this.saveSettings();
-      }
-      if (!catalog && this.ttsCloudVoiceId) {
-        const fallbackCloudVoice = new TtsVoiceInfo();
-        fallbackCloudVoice.id = this.ttsCloudVoiceId;
-        fallbackCloudVoice.name = '云端音色';
-        this.cloudVoices = [fallbackCloudVoice];
-      }
+      const voices = await SystemTtsReader.listAvailableVoices();
+      this.cloudVoices = [];
+      this.ttsCloudVoiceId = '';
       this.voices = this.applyInstalledOverrides(this.mergeWithDefaultVoice(voices));
       const currentCloudVoice = this.findCurrentCloudVoice();
       if (currentCloudVoice) {
@@ -1172,26 +1160,7 @@ struct TtsSettingsPage {
     return String(error);
   }
 
-  @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
 
-      Text('朗读设置')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
-  }
 
   @Builder
   sectionTitle(title: string) {
@@ -1222,8 +1191,7 @@ struct TtsSettingsPage {
             .fontColor(this.accentColor())
             .padding({ left: 10, right: 2, top: 6, bottom: 6 })
             .onClick(() => {
-              this.loadTtsCommerce();
-            })
+                      })
         }
       }
       .width('100%')

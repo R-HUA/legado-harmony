@@ -1,6 +1,8 @@
 import { RechargeProduct } from './AccountCommerceModels';
 
 export class AccountCommerceConfig {
+  // 暂停账号商业服务；既有数据同步独立保留。
+  static readonly COMMERCE_ENABLED: boolean = false;
   /**
    * Must be an HTTPS origin that hosts the companion service in /server.
    * Keep Huawei client secrets and IAP private keys on that service only.

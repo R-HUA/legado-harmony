@@ -2,7 +2,7 @@ import { router } from '@kit.ArkUI';
 import { syncSystemBars } from '../utils/SystemBars';
 import { SearchExploreSettings, SearchExploreSettingsStore } from '../utils/SearchExploreSettingsStore';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { SettingsPageLayout } from '../components/SettingsPageLayout';
 
 @Entry
 @Component
@@ -33,9 +33,19 @@ struct SearchExploreSettingsPage {
     this.syncBars();
   }
 
+  private pageScroller: Scroller = new Scroller();
+
   build() {
+    Stack() {
+      SettingsPageLayout({ pageTitle: '搜索与发现设置', darkMode: this.appDarkMode,
+        scroller: this.pageScroller, pageContent: (): void => this.settingsContent() })
+    }
+  }
+
+  @Builder
+  settingsContent() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
+      Scroll(this.pageScroller) {
         Column() {
           this.sectionTitle('结果展示')
           Column() {
@@ -120,7 +130,6 @@ struct SearchExploreSettingsPage {
       .height('100%')
       .align(Alignment.TopStart)
 
-      this.titleBar()
     }
     .width('100%')
     .height('100%')
@@ -185,26 +194,6 @@ struct SearchExploreSettingsPage {
 
   syncBars(): void {
     syncSystemBars(getContext(this), this.appDarkMode, this.pageColor());
-  }
-
-  @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-      Text('搜索/发现配置')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
   }
 
   @Builder

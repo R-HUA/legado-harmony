@@ -1,3 +1,4 @@
+import { SettingsPageLayout } from '../components/SettingsPageLayout';
 import { promptAction, router } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { AppThemeSettings, AppThemeSettingsStore } from '../utils/AppThemeSettingsStore';
@@ -15,11 +16,9 @@ import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
 import { ThemeIds, ThemePack, ThemeVariant } from '../theme/ThemeModels';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { AccountCommerceConfig } from '../account/AccountCommerceConfig';
-import { AccountApiError, ThemeCatalogItem, ThemeCatalogResponse,
+import { ThemeCatalogItem,
   ThemeEntitlement } from '../account/AccountCommerceModels';
-import { AccountCommerceApi } from '../account/AccountCommerceApi';
 import { AccountSessionStore } from '../account/AccountSessionStore';
-import { HuaweiAccountService } from '../account/HuaweiAccountService';
 import {
   ReaderRegexBubbleStyleResolver,
   ReaderRegexEmphasisContext,
@@ -118,8 +117,6 @@ struct ThemeSettingsPage {
   aboutToAppear(): void {
     this.loadThemeSettings();
     this.refreshCustomSchemes();
-    this.initializeAccount();
-    this.refreshThemeCatalog();
     this.syncBars();
   }
 
@@ -141,7 +138,8 @@ struct ThemeSettingsPage {
     return false;
   }
 
-  build() {
+  @Builder
+  settingsContent() {
     Stack({ alignContent: Alignment.TopStart }) {
       List({ space: 12, scroller: this.themeListScroller }) {
         // List padding is fixed to the viewport in ArkUI. Use real list items
@@ -186,14 +184,9 @@ struct ThemeSettingsPage {
           }
         }, (scheme: CustomThemeScheme) => `${scheme.id}_${scheme.revision}`)
         ListItem() {
-          this.sectionTitle('已购主题')
+          this.sectionTitle('内置主题')
         }
-        if (this.purchasedThemes().length === 0) {
-          ListItem() {
-            this.purchasedThemesEmptyHint()
-          }
-        }
-        ForEach(this.purchasedThemes(), (theme: ThemePack) => {
+        ForEach(this.availableThemes(), (theme: ThemePack) => {
           ListItem() {
             this.themeCard(theme)
           }
@@ -217,14 +210,15 @@ struct ThemeSettingsPage {
       })
       .scrollBar(BarState.Off)
       .backgroundColor(this.pageColor())
+    }
+    .width('100%')
+    .height('100%')
+  }
 
-      // Pinned over the edge-to-edge list so scrolled content remains visible
-      // beneath the status/title area instead of being clipped by it.
-      this.titleBar()
-
-      if (this.showThemeStore) {
-        this.themeStoreOverlay()
-      }
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      SettingsPageLayout({ pageTitle: '主题', darkMode: this.appDarkMode,
+        scroller: this.themeListScroller, pageContent: (): void => this.settingsContent() })
 
       if (this.showCustomThemeActionMenu) {
         this.customThemeActionMenu()
@@ -258,30 +252,6 @@ struct ThemeSettingsPage {
       iconOptions: { accessibilityText: '删除主题' },
       onAction: () => this.deleteCustomThemeFromSwipe(scheme)
     }] };
-  }
-
-  async initializeAccount(): Promise<void> {
-    try {
-      await HuaweiAccountService.initialize(getContext(this));
-      if (AccountSessionStore.isLoggedIn() && AccountCommerceConfig.isServerConfigured()) {
-        await HuaweiAccountService.refresh(getContext(this));
-      }
-    } catch (e) {
-      console.warn('同步主题权益失败:', e);
-    }
-  }
-
-  async refreshThemeCatalog(): Promise<void> {
-    if (!AccountCommerceConfig.isServerConfigured()) return;
-    try {
-      const response: ThemeCatalogResponse = await AccountCommerceApi.fetchThemeCatalog();
-      this.themeCatalog = response.themes || [];
-      this.themeCatalogLoaded = true;
-    } catch (e) {
-      // Keep the bundled 60-point/365-day offer when the device is offline or
-      // is temporarily talking to an older server during a rolling upgrade.
-      console.warn('同步主题目录失败，使用内置价格:', e);
-    }
   }
 
   async loadThemeSettings(): Promise<void> {
@@ -441,68 +411,7 @@ struct ThemeSettingsPage {
   }
 
   async ensureThemeAccess(themeId: string): Promise<boolean> {
-    if (themeId === ThemeIds.CUSTOM || this.hasThemeAccess(themeId)) {
-      return true;
-    }
-    const offer = this.themeOffer(themeId);
-    if (this.themeCatalogLoaded && !offer) {
-      HdsFeedback.showToast('该主题暂未上架');
-      return false;
-    }
-    const pricePoints = offer?.pricePoints || AccountCommerceConfig.THEME_PRICE_POINTS;
-    const validDays = offer?.validDays || AccountCommerceConfig.THEME_VALID_DAYS;
-    if (!this.accountLoggedIn) {
-      const loginDialog = await promptAction.showDialog({
-        title: '登录后获取主题',
-        message: `该主题需要 ${pricePoints} 点，获取后有效 ${validDays} 天。首次登录免费送 300 点。`,
-        buttons: [
-          { text: '取消', color: this.subTextColor() },
-          { text: '去登录', color: this.accentColor() }
-        ]
-      });
-      if (loginDialog.index === 1) {
-        router.pushUrl({ url: 'pages/AccountCenter' });
-      }
-      return false;
-    }
-    const theme = BuiltinThemeRegistry.findById(themeId);
-    const confirm = await promptAction.showDialog({
-      title: `获取「${theme.name}」`,
-      message: `将扣除 ${pricePoints} 点，主题有效期为 ${validDays} 天。有效期内可在所有已登录终端使用。`,
-      buttons: [
-        { text: '取消', color: this.subTextColor() },
-        { text: `确认 · ${pricePoints} 点`, color: this.accentColor() }
-      ]
-    });
-    if (confirm.index !== 1) {
-      return false;
-    }
-    try {
-      await HuaweiAccountService.redeemTheme(getContext(this), themeId, pricePoints, validDays);
-      HdsFeedback.showToast(`已获取「${theme.name}」，有效期 ${validDays} 天`);
-      return true;
-    } catch (e) {
-      const error = e as AccountApiError;
-      if (error.errorCode === 'THEME_OFFER_CHANGED') {
-        await this.refreshThemeCatalog();
-        HdsFeedback.showToast('主题价格或有效期已更新，请重新确认');
-      } else if (error.errorCode === 'INSUFFICIENT_POINTS') {
-        const recharge = await promptAction.showDialog({
-          title: '点数不足',
-          message: `当前有 ${this.accountPoints} 点，获取该主题需要 ${pricePoints} 点。`,
-          buttons: [
-            { text: '取消', color: this.subTextColor() },
-            { text: '去充值', color: this.accentColor() }
-          ]
-        });
-        if (recharge.index === 1) {
-          router.pushUrl({ url: 'pages/AccountCenter' });
-        }
-      } else {
-        HdsFeedback.showToast(error.message || '获取主题失败，请稍后重试');
-      }
-      return false;
-    }
+    return BuiltinThemeRegistry.has(themeId);
   }
 
   themeOffer(themeId: string): ThemeCatalogItem | null {
@@ -608,71 +517,12 @@ struct ThemeSettingsPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-      Text('主题')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-      this.themeStoreEntryButton()
-    }
-    .width('100%')
-    // The status-bar inset belongs to the pinned title itself, avoiding an
-    // additional opaque strip above it while keeping controls out of the
-    // system status area.
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight, right: 12 })
-    .backgroundColor(this.titleBarSurfaceColor())
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
-  }
-
-  @Builder
   sectionTitle(title: string) {
     Text(title)
       .fontSize(13)
       .fontColor(this.subTextColor())
       .width('100%')
       .padding({ left: 2, top: 6, bottom: 0 })
-  }
-
-  @Builder
-  themeStoreEntryButton() {
-    Row({ space: 5 }) {
-      SymbolGlyph($r('sys.symbol.bag'))
-        .fontSize(14)
-        .fontColor([this.accentColor()])
-      Text('主题商店')
-        .fontSize(12)
-        .fontColor(this.accentColor())
-    }
-    .height(30)
-    .padding({ left: 10, right: 10 })
-    .borderRadius(15)
-    .backgroundColor(ThemeRuntime.inputColor(this.appDarkMode))
-    .alignItems(VerticalAlign.Center)
-    .accessibilityText('打开主题商店')
-    .onClick(() => this.openThemeStore())
-  }
-
-  @Builder
-  purchasedThemesEmptyHint() {
-    Row({ space: 3 }) {
-      Text('暂无已购主题，去主题商店逛逛')
-        .fontSize(13)
-        .fontColor(this.subTextColor())
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(12)
-        .fontColor([this.subTextColor()])
-    }
-    .width('100%')
-    .padding({ left: 2, top: 8, bottom: 4 })
-    .alignItems(VerticalAlign.Center)
-    .onClick(() => this.openThemeStore())
   }
 
   /** Full-screen store: one themed showcase page per swipe. */
@@ -704,20 +554,12 @@ struct ThemeSettingsPage {
         buttonSize: 40, containerWidth: 40, containerHeight: 40,
         startInset: 0, materialScale: 0.83, compactLayout: true,
         accessibilityLabel: '返回主题设置', onBack: () => this.closeThemeStore() })
-      Text('主题商店')
+      Text('主题预览')
         .fontSize(20)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
         .margin({ left: 2 })
-      if (this.accountLoggedIn) {
-        Text(`${this.accountPoints} 点`)
-          .fontSize(12)
-          .fontColor(this.accentColor())
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-          .borderRadius(14)
-          .backgroundColor(ThemeRuntime.inputColor(this.appDarkMode))
-      }
     }
     .width('100%')
     .height(56 + this.statusBarHeight)
@@ -919,7 +761,7 @@ struct ThemeSettingsPage {
       .justifyContent(FlexAlign.Center)
       .borderRadius(theme.radius.button)
       .backgroundColor(this.activeVariant(theme).colors.inputColor)
-    } else if (AccountSessionStore.hasValidEntitlement(theme.id)) {
+    } else if (this.hasThemeAccess(theme.id)) {
       Button('应用主题', { type: ButtonType.Normal })
         .width('100%')
         .height(40)
@@ -1889,11 +1731,11 @@ struct ThemeSettingsPage {
     await this.selectTheme(themeId);
   }
 
-  /** Only themes with a live (unexpired) purchase entitlement belong here. */
-  purchasedThemes(): ThemePack[] {
+  /** 列出默认主题之外的全部内置主题。 */
+  availableThemes(): ThemePack[] {
     const themes: ThemePack[] = [];
     for (const theme of BuiltinThemeRegistry.all()) {
-      if (AccountSessionStore.hasValidEntitlement(theme.id)) {
+      if (theme.id !== BuiltinThemeRegistry.DEFAULT_THEME_ID) {
         themes.push(theme);
       }
     }
@@ -1911,13 +1753,12 @@ struct ThemeSettingsPage {
   }
 
   /**
-   * The store only merchandises paid themes; the free default theme lives on
-   * the main list and is never shown here. One theme per swipe page.
+   * 默认主题保留在主列表；其他内置主题提供逐页预览。
    */
   storeThemes(): ThemePack[] {
     const themes: ThemePack[] = [];
     for (const theme of BuiltinThemeRegistry.all()) {
-      if (!BuiltinThemeRegistry.isFree(theme.id)) {
+      if (theme.id !== BuiltinThemeRegistry.DEFAULT_THEME_ID) {
         themes.push(theme);
       }
     }

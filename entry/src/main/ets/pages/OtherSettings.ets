@@ -1,9 +1,9 @@
+import { SettingsSelect } from '../components/SettingsSelect';
 import { router } from '@kit.ArkUI';
 import pasteboard from '@ohos.pasteboard';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
-import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
+import { SettingsPageLayout } from '../components/SettingsPageLayout';
 import { lanReaderServer } from '../core/lan/LanReaderServer';
 import { HdsFeedback } from '../utils/HdsFeedback';
 
@@ -34,9 +34,19 @@ struct OtherSettingsPage {
     this.syncBars();
   }
 
+  private pageScroller: Scroller = new Scroller();
+
   build() {
+    Stack() {
+      SettingsPageLayout({ pageTitle: '其他设置', darkMode: this.appDarkMode,
+        scroller: this.pageScroller, pageContent: (): void => this.settingsContent() })
+    }
+  }
+
+  @Builder
+  settingsContent() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
+      Scroll(this.pageScroller) {
         Column() {
           this.sectionTitle('数据')
           Column() {
@@ -138,7 +148,6 @@ struct OtherSettingsPage {
       .height('100%')
       .align(Alignment.TopStart)
 
-      this.titleBar()
     }
     .width('100%')
     .height('100%')
@@ -305,26 +314,6 @@ struct OtherSettingsPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-      Text('其他设置')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
-  }
-
-  @Builder
   sectionTitle(title: string) {
     Text(title)
       .fontSize(13)
@@ -378,25 +367,15 @@ struct OtherSettingsPage {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Select(this.immersiveLightLevelOptions())
-        .selected(this.immersiveLightLevelSelectedIndex())
-        .value(this.immersiveLightLevelOptions()[this.immersiveLightLevelSelectedIndex()].value)
-        .font({ size: 14 })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .divider(null)
-        .optionBgColor(Color.Transparent)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial())
-        .onSelect((index: number) => this.setImmersiveLightLevel(index))
+      SettingsSelect({
+        options: this.immersiveLightLevelOptions(),
+        selectedIndex: this.immersiveLightLevelSelectedIndex(),
+        selectedLabel: this.immersiveLightLevelOptions()[this.immersiveLightLevelSelectedIndex()].value,
+        darkMode: this.appDarkMode,
+        textSize: 14,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => this.setImmersiveLightLevel(index)
+      })
     }
     .width('calc(100% - 32vp)')
     .constraintSize({ minHeight: 64 })

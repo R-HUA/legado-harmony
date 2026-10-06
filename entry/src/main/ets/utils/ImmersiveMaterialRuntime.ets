@@ -84,8 +84,7 @@ export class ImmersiveMaterialRuntime {
   }
 
   /** Maps the app setting to the closest API 26 material style for component-level materials. */
-  static materialStyle(): uiMaterial.ImmersiveStyle {
-    const configured = ImmersiveMaterialRuntime.configuredLightLevel();
+  static materialStyle(configured: string = ImmersiveMaterialRuntime.configuredLightLevel()): uiMaterial.ImmersiveStyle {
     if (configured === 'high') return uiMaterial.ImmersiveStyle.ULTRA_THIN;
     if (configured === 'weak') return uiMaterial.ImmersiveStyle.THICK;
     return uiMaterial.ImmersiveStyle.REGULAR;
@@ -97,8 +96,8 @@ export class ImmersiveMaterialRuntime {
    * Undefined leaves the component-level light feedback unset, while null
    * disables it explicitly.
    */
-  static lightEffect(forceAdaptive: boolean = false): uiMaterial.LightEffectOptions | null | undefined {
-    const configured = ImmersiveMaterialRuntime.configuredLightLevel();
+  static lightEffect(forceAdaptive: boolean = false,
+    configured: string = ImmersiveMaterialRuntime.configuredLightLevel()): uiMaterial.LightEffectOptions | null | undefined {
     if (configured === 'high') return { color: '#88FFFFFF' };
     if (configured === 'balanced') return { color: '#55FFFFFF' };
     if (configured === 'weak') return null;
@@ -114,14 +113,14 @@ export class ImmersiveMaterialRuntime {
    * shadows on API 26+, which makes identical controls look different across
    * pages. Older devices keep the platform fallback by returning undefined.
    */
-  static selectMenuMaterial(): uiMaterial.ImmersiveMaterial | undefined {
+  static selectMenuMaterial(configured: string = ImmersiveMaterialRuntime.configuredLightLevel()): uiMaterial.ImmersiveMaterial | undefined {
     if (!ImmersiveMaterialRuntime.supportsHds()) return undefined;
     return new uiMaterial.ImmersiveMaterial({
-      style: ImmersiveMaterialRuntime.materialStyle(),
+      style: ImmersiveMaterialRuntime.materialStyle(configured),
       materialColor: '#00000000',
       applyShadow: false,
-      interactive: ImmersiveMaterialRuntime.configuredLightLevel() !== 'weak',
-      lightEffect: ImmersiveMaterialRuntime.lightEffect()
+      interactive: configured !== 'weak',
+      lightEffect: ImmersiveMaterialRuntime.lightEffect(false, configured)
     });
   }
 }

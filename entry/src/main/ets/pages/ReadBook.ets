@@ -16,7 +16,6 @@ import Animator, { AnimatorResult } from '@ohos.animator';
 import { HdsTabs, HdsListItem, HdsSwipeActionOptions } from '@kit.UIDesignKit';
 import { ARView } from '@kit.AREngine';
 import { SymbolGlyphModifier } from '@kit.ArkUI';
-import { AccountCommerceApi } from '../account/AccountCommerceApi';
 import { AccountSessionStore } from '../account/AccountSessionStore';
 import { CloudSyncCoordinator } from '../account/CloudSyncCoordinator';
 import { TtsVoiceInfo } from '../account/AccountCommerceModels';
@@ -7549,27 +7548,9 @@ struct ReadBookPage {
     }
     this.ttsVoicesLoading = true;
     try {
-      const voiceResults = await Promise.all([
-        SystemTtsReader.listAvailableVoices(),
-        AccountCommerceApi.fetchTtsCatalog().catch(() => null)
-      ]);
-      const voices = voiceResults[0] as TtsVoiceOption[];
-      const catalog = voiceResults[1];
-      this.ttsCloudVoices = catalog ? catalog.voices : [];
-      if (catalog && this.ttsCloudVoiceId && !this.findCurrentCloudTtsVoice()) {
-        const previousVoiceId = this.ttsCloudVoiceId;
-        const fallbackVoice = this.ttsCloudVoices.find((voice: TtsVoiceInfo) => voice.id === 'xiaoyan') ||
-          this.ttsCloudVoices[0];
-        this.ttsCloudVoiceId = fallbackVoice ? fallbackVoice.id : '';
-        console.warn(`[TTS] unsupported cloud voice migrated: ${previousVoiceId} -> ${this.ttsCloudVoiceId}`);
-        this.saveTtsSettings();
-      }
-      if (!catalog && this.ttsCloudVoiceId) {
-        const fallbackCloudVoice = new TtsVoiceInfo();
-        fallbackCloudVoice.id = this.ttsCloudVoiceId;
-        fallbackCloudVoice.name = '云端音色';
-        this.ttsCloudVoices = [fallbackCloudVoice];
-      }
+      const voices = await SystemTtsReader.listAvailableVoices();
+      this.ttsCloudVoices = [];
+      this.ttsCloudVoiceId = '';
       this.ttsVoices = this.applyInstalledTtsVoiceOverrides(this.mergeWithDefaultTtsVoice(voices));
       const currentCloudVoice = this.findCurrentCloudTtsVoice();
       if (currentCloudVoice) {
