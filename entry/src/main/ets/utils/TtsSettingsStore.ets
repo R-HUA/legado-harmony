@@ -2,7 +2,7 @@ import { Context } from '@kit.AbilityKit';
 import preferences from '@ohos.data.preferences';
 
 export class TtsSettings {
-  person: number = 0;
+  person: number = 13;
   online: number = 1;
   style: string = '';
   language: string = 'zh-CN';
@@ -50,8 +50,9 @@ export class TtsSettingsStore {
       store, TtsSettingsStore.KEY_CUSTOM_VOICES, storageSettings.customVoices);
     settings.cloudVoiceId = await TtsSettingsStore.getString(
       store, TtsSettingsStore.KEY_CLOUD_VOICE_ID, storageSettings.cloudVoiceId);
-    TtsSettingsStore.cachedSettings = TtsSettingsStore.clone(settings);
-    return settings;
+    const normalized = TtsSettingsStore.clone(settings);
+    TtsSettingsStore.cachedSettings = TtsSettingsStore.clone(normalized);
+    return normalized;
   }
 
   static async save(context: Context, settings: TtsSettings): Promise<void> {
@@ -87,8 +88,8 @@ export class TtsSettingsStore {
 
   static fromStorage(): TtsSettings {
     const settings = new TtsSettings();
-    settings.person = AppStorage.get<number>(TtsSettingsStore.KEY_PERSON) ?? 0;
-    settings.online = AppStorage.get<number>(TtsSettingsStore.KEY_ONLINE) ?? 1;
+    settings.person = AppStorage.get<number>(TtsSettingsStore.KEY_PERSON) ?? 13;
+    settings.online = 1;
     settings.style = AppStorage.get<string>(TtsSettingsStore.KEY_STYLE) || '';
     settings.language = AppStorage.get<string>(TtsSettingsStore.KEY_LANGUAGE) || 'zh-CN';
     settings.speed = AppStorage.get<number>(TtsSettingsStore.KEY_SPEED) ?? 1;
@@ -134,11 +135,15 @@ export class TtsSettingsStore {
   }
 
   private static normalizeNumber(value: number, type: string, fallback: number): number {
-    if (type === 'person') {
-      return Math.max(0, Math.round(value));
-    }
     if (type === 'online') {
-      return Math.round(value) === 0 ? 0 : 1;
+      return 1;
+    }
+    if (!Number.isFinite(value)) {
+      return fallback;
+    }
+    if (type === 'person') {
+      const person = Math.max(0, Math.round(value));
+      return person === 0 ? 13 : person;
     }
     if (type === 'speed') {
       return Math.max(0.5, Math.min(2, Math.round(value * 10) / 10));
@@ -159,8 +164,8 @@ export class TtsSettingsStore {
 
   private static clone(source: TtsSettings): TtsSettings {
     const settings = new TtsSettings();
-    settings.person = TtsSettingsStore.normalizeNumber(source.person, 'person', 0);
-    settings.online = TtsSettingsStore.normalizeNumber(source.online, 'online', 1);
+    settings.person = TtsSettingsStore.normalizeNumber(source.person, 'person', 13);
+    settings.online = 1;
     settings.style = source.style || '';
     settings.language = TtsSettingsStore.normalizeLanguage(source.language || 'zh-CN');
     settings.speed = TtsSettingsStore.normalizeNumber(source.speed, 'speed', 1);

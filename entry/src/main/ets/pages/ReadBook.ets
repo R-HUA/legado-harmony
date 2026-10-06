@@ -13485,7 +13485,7 @@ struct ReadBookPage {
         // chapter boundaries; explicit stop/pause paths still release it.
         keepAudioOutputOnFinish: true
       });
-      if (showToast && token === this.ttsReadToken) {
+      if (showToast && token === this.ttsReadToken && this.ttsReader.isSpeaking()) {
         HdsFeedback.showToast('开始连续朗读');
       }
     } catch (error) {

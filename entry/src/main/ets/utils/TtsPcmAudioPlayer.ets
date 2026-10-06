@@ -522,7 +522,8 @@ export class TtsPcmAudioPlayer {
         const rendererFrame = Math.max(0, Math.round(timestamp.framePos));
         if (this.rendererFrameOrigin < 0) {
           this.rendererFrameOrigin = rendererFrame;
-          this.rendererLogicalFrameOrigin = Math.max(this.lastReachedFrame, clockFrame);
+          // 首次时间戳只建立帧基准，不能把查询延迟当成已经播放的音频。
+          this.rendererLogicalFrameOrigin = this.lastReachedFrame;
           console.info(`[TTS] pcm frame timestamp started: rendererFrame=${rendererFrame},` +
             `logicalFrame=${this.rendererLogicalFrameOrigin},api=${deviceInfo.sdkApiVersion}`);
         }

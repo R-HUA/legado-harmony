@@ -80,14 +80,15 @@ interface SystemPcmSegment {
 }
 
 export class TtsVoiceOption {
-  id: number = 0;
-  name: string = '默认音色';
+  id: number = 13;
+  name: string = '聆小珊';
   online: number = 1;
   status: string = '';
   systemStatus: string = '';
   style: string = '';
   language: string = 'zh-CN';
   downloadLanguage: string = '';
+  downloadPerson: number = -1;
   gender: string = '';
   available: boolean = true;
   downloadable: boolean = false;
@@ -95,8 +96,9 @@ export class TtsVoiceOption {
 
 export class SystemTtsReader {
   private static audioSessionOwnerSerial: number = 0;
-  private static readonly LEGACY_ONLINE_MODE: number = 0;
+  private static requestSerial: number = 0;
   private static readonly OFFLINE_MODE: number = 1;
+  private static readonly SYSTEM_TTS_STYLE: string = 'interaction-broadcast';
   private static readonly CUSTOM_TTS_PREFETCH_WINDOW: number = 3;
   private static readonly CUSTOM_TTS_HIDDEN_GAP_LENGTH: number = 8;
   private static readonly CLOUD_TTS_WIFI_PREFETCH_WINDOW: number = 2;
@@ -156,21 +158,16 @@ export class SystemTtsReader {
   private currentFocusQueued: boolean = false;
   private currentFocusAudioReceived: boolean = false;
   private currentFocusAudioWritten: boolean = false;
-  private currentAudioWritePromise: Promise<void> = Promise.resolve();
-  private currentFocusRetryCount: number = 0;
   // Keep playback in this application's AUDIOBOOK AudioRenderer. Letting the
   // system TTS service play directly moves the audible stream to its process,
   // so HarmonyOS sees this app's audioPlayback task as idle and freezes it.
   private ttsPcmPlayType: number = 0;
   private speakWatchdogId: number = -1;
-  private suppressEngineStopEvent: boolean = false;
   private enginePerson: number = -1;
   private engineOnline: number = -1;
   private engineStyle: string = '';
   private engineLanguage: string = '';
   private optionPerson: number | null = null;
-  private optionOnline: number | null = null;
-  private optionStyle: string | null = null;
   private optionLanguage: string | null = null;
   private optionSpeed: number | null = null;
   private optionCloudVoiceId: string = '';
@@ -182,6 +179,8 @@ export class SystemTtsReader {
   private systemCurrentPcmBytes: number = 0;
   private systemReadySegments: SystemPcmSegment[] = [];
   private systemPlaybackStarted: boolean = false;
+  private systemPlaybackChunkIndex: number = -1;
+  private systemFirstQueuedChunkIndex: number = -1;
   private systemSynthesisFinished: boolean = false;
   private systemDrainScheduled: boolean = false;
   private systemLastWritePromise: Promise<void> = Promise.resolve();
@@ -191,22 +190,8 @@ export class SystemTtsReader {
   private pcmOutputReleaseTimerId: number = -1;
 
   static async listAvailableVoices(): Promise<TtsVoiceOption[]> {
-    try {
-      let voices: TtsVoiceOption[] = [];
-      voices = voices.concat(await SystemTtsReader.listModuleVoices(SystemTtsReader.OFFLINE_MODE));
-      voices = voices.concat(await SystemTtsReader.listModuleVoices(SystemTtsReader.LEGACY_ONLINE_MODE));
-      if (voices.length === 0) {
-        voices = SystemTtsReader.knownVoiceOptions();
-      } else {
-        voices = SystemTtsReader.knownVoiceOptions().concat(voices);
-      }
-      const parsed = SystemTtsReader.dedupeVoices(voices);
-      return SystemTtsReader.applyVoiceFeatureAvailability(
-        parsed.length > 0 ? parsed : SystemTtsReader.defaultVoices());
-    } catch (_) {
-      return SystemTtsReader.applyVoiceFeatureAvailability(
-        SystemTtsReader.dedupeVoices(SystemTtsReader.knownVoiceOptions()));
-    }
+    const voices = await SystemTtsReader.listModuleVoices();
+    return SystemTtsReader.dedupeVoices(SystemTtsReader.knownVoiceOptions().concat(voices));
   }
 
   static supportsVoiceDownload(): boolean {
@@ -217,17 +202,17 @@ export class SystemTtsReader {
     if (!SystemTtsReader.supportsVoiceDownload()) {
       throw new Error('当前系统版本不支持下载系统音色，请升级至 API 19 或更高版本');
     }
-    const variants = SystemTtsReader.createVoiceDownloadVariants(voice);
-    let lastError: Error | undefined = undefined;
-    for (const params of variants) {
-      try {
-        await SystemTtsReader.downloadVoiceWithParams(params, callbacks);
-        return;
-      } catch (error) {
-        lastError = error as Error;
-      }
+    const person = voice.downloadPerson >= 0 ? voice.downloadPerson : voice.id;
+    if (!voice.downloadable || voice.systemStatus !== 'GA' || !voice.downloadLanguage ||
+      !Number.isInteger(person) || person < 0) {
+      throw new Error('当前音色没有可用的系统下载信息，请重新查询音色');
     }
-    throw lastError || new Error('音色下载失败');
+    await SystemTtsReader.downloadVoiceWithParams({
+      requestId: SystemTtsReader.createGlobalRequestId('voiceDownload'),
+      language: voice.downloadLanguage,
+      person: person,
+      style: voice.style
+    }, callbacks);
   }
 
   private static downloadVoiceWithParams(downloadParams: textToSpeech.VoiceDownload,
@@ -287,6 +272,10 @@ export class SystemTtsReader {
         fail(undefined, '音色下载已取消');
       };
       const errorCallback = (error: Object): void => {
+        if (SystemTtsReader.errorCode(error) === 1002300010) {
+          finish();
+          return;
+        }
         fail(error as Object, '音色下载失败');
       };
       try {
@@ -328,55 +317,16 @@ export class SystemTtsReader {
       this.httpReader.debugState() : this.pcmPlayer.debugState();
   }
 
-  private static createVoiceDownloadVariants(voice: TtsVoiceOption): textToSpeech.VoiceDownload[] {
-    const languages: string[] = [];
-    const addLanguage = (language: string): void => {
-      const value = (language || '').trim();
-      if (value && !languages.includes(value)) {
-        languages.push(value);
-      }
-    };
-    addLanguage(voice.downloadLanguage);
-    for (const language of SystemTtsReader.languageVariants(voice.language || 'zh-CN')) {
-      addLanguage(language);
-    }
-    const styles: string[] = [];
-    const addStyle = (style: string): void => {
-      if (!styles.includes(style)) {
-        styles.push(style);
-      }
-    };
-    addStyle(voice.style || '');
-    addStyle('');
-    const result: textToSpeech.VoiceDownload[] = [];
-    for (const language of languages) {
-      for (const style of styles) {
-        result.push({
-          requestId: `voice_download_${Date.now()}_${voice.id}_${result.length}`,
-          language: language,
-          person: voice.id,
-          style: style
-        });
-      }
-    }
-    return result;
-  }
-
-  private static async listModuleVoices(online: number): Promise<TtsVoiceOption[]> {
+  private static async listModuleVoices(): Promise<TtsVoiceOption[]> {
     if (deviceInfo.sdkApiVersion < 19) {
-      return SystemTtsReader.listLegacyEngineVoices(online);
+      return SystemTtsReader.listLegacyEngineVoices();
     }
-    try {
-      const voices = await textToSpeech.listVoices({
-        requestId: `module_voices_${online}_${Date.now()}`,
-        online: online
-      });
-      console.info(`[TTS] module listVoices online=${online}: ${SystemTtsReader.voiceInfosSummary(voices)}`);
-      return SystemTtsReader.parseVoices(voices, online);
-    } catch (error) {
-      console.warn(`[TTS] module listVoices failed online=${online}: ${SystemTtsReader.formatStaticError(error as Object)}`);
-      return [];
-    }
+    const voices = await textToSpeech.listVoices({
+      requestId: SystemTtsReader.createGlobalRequestId('moduleVoices'),
+      online: SystemTtsReader.OFFLINE_MODE
+    });
+    console.info(`[TTS] module listVoices: ${SystemTtsReader.voiceInfosSummary(voices)}`);
+    return SystemTtsReader.parseVoices(voices);
   }
 
   private static errorCode(error: Object | null | undefined): number {
@@ -430,8 +380,6 @@ export class SystemTtsReader {
     this.audioStarted = false;
     this.ttsPcmPlayType = 0;
     this.optionPerson = options?.person ?? null;
-    this.optionOnline = options?.online ?? null;
-    this.optionStyle = options?.style ?? null;
     this.optionLanguage = options?.language ?? null;
     this.optionSpeed = options?.speed ?? null;
     this.optionCloudVoiceId = '';
@@ -497,16 +445,19 @@ export class SystemTtsReader {
     this.resetSystemPcmPipeline();
     let engine: textToSpeech.TextToSpeechEngine;
     try {
-      engine = await this.ensureEngine();
+      engine = await this.ensureEngine(generation);
     } catch (error) {
-      this.active = false;
-      const message = `TTS初始化失败：${this.currentVoiceLabel()} ${this.formatError(error)}`;
-      console.error('[TTS] ensure engine failed:', message);
-      if (this.onError) {
-        this.onError(message);
+      if (this.readGeneration !== generation || !this.active) {
         return;
       }
-      throw new Error(message);
+      const message = `系统朗读初始化失败：${this.currentVoiceLabel()} ${this.formatError(error)}`;
+      console.error('[TTS] ensure engine failed:', message);
+      const hasErrorHandler = this.onError !== undefined;
+      this.failSystemPcmPlayback(message);
+      if (!hasErrorHandler) {
+        throw new Error(message);
+      }
+      return;
     }
     if (!this.active || this.readGeneration !== generation) {
       return;
@@ -531,16 +482,23 @@ export class SystemTtsReader {
         if (this.readGeneration !== generation || !this.active || utteranceId !== this.currentRequestId) {
           return;
         }
-        this.currentAudioSampleRate = response && response.sampleRate ? response.sampleRate : 16000;
-        this.currentAudioSampleBit = response && response.sampleBit ? response.sampleBit : 16;
-        this.currentAudioChannel = response && response.audioChannel ? response.audioChannel : 1;
-        this.currentAudioType = response && response.audioType ? response.audioType : 'pcm';
+        if (this.ttsPcmPlayType === 0 && (!response || response.audioType !== 'pcm' ||
+          response.sampleRate !== 16000 || response.sampleBit !== 16 ||
+          !Number.isInteger(response.audioChannel) || response.audioChannel < 1)) {
+          this.failSystemPcmPlayback('系统音色返回的音频格式不受支持，请更换音色后重试');
+          return;
+        }
+        this.currentAudioSampleRate = response.sampleRate;
+        this.currentAudioSampleBit = response.sampleBit;
+        this.currentAudioChannel = response.audioChannel;
+        this.currentAudioType = response.audioType;
         console.info(`[TTS] speak start: audioType=${this.currentAudioType},` +
           `sampleRate=${this.currentAudioSampleRate},sampleBit=${this.currentAudioSampleBit},` +
           `channels=${this.currentAudioChannel},${this.pcmPlayer.debugState()}`);
         if (this.ttsPcmPlayType !== 0) {
           this.emitCurrentSystemChunkFocus(generation);
           this.notifyAudioStarted();
+          this.armSpeakWatchdog(generation, this.currentFocusChunkIndex);
         }
       },
       onComplete: (utteranceId: string, response: textToSpeech.CompleteResponse) => {
@@ -548,46 +506,38 @@ export class SystemTtsReader {
           return;
         }
         console.info(`[TTS] speak complete: type=${response ? response.type : -1},request=${utteranceId}`);
-        if (this.ttsPcmPlayType === 1 && (!response || response.type !== 1)) {
+        if (!response || (this.ttsPcmPlayType === 1 ? response.type !== 1 : response.type !== 0)) {
           // HarmonyOS sends type=0 when synthesis is complete and type=1 only
           // after direct speech playback has actually completed. Advancing on
           // type=0 truncates the audible chunk and can consume a whole chapter
           // in seconds.
           return;
         }
-        if (!this.currentFocusAudioReceived) {
+        if (this.ttsPcmPlayType === 0 && !this.currentFocusAudioReceived) {
           console.info(`[TTS] speak complete without pcm data: ${this.pcmPlayer.debugState()}`);
           if (this.retryWithoutPcmData(generation)) {
             return;
           }
         }
-        if (!this.currentFocusAudioReceived) {
-          this.emitCurrentSystemChunkFocus(generation);
-          this.clearSpeakWatchdog();
-        }
         this.completeCurrentChunk(generation, utteranceId);
       },
-      onStop: () => {
-        if (this.suppressEngineStopEvent) {
+      onStop: (utteranceId: string, _response: textToSpeech.StopResponse) => {
+        if (this.readGeneration !== generation || !this.active || !this.currentRequestId ||
+          utteranceId !== this.currentRequestId) {
           return;
         }
-        if (this.readGeneration !== generation || !this.active) {
-          return;
-        }
-        this.finish(false);
+        this.failSystemPcmPlayback('系统朗读已中断，请重试当前段落');
       },
       onError: (utteranceId: string, errorCode: number, errorMessage: string) => {
         if (this.readGeneration !== generation || !this.active || utteranceId !== this.currentRequestId) {
           return;
         }
-        this.currentRequestId = '';
-        this.active = false;
-        this.clearSpeakWatchdog();
-        this.pcmPlayer.stop();
-        this.releaseSystemAudioSession();
         const message = `${errorMessage || `系统朗读失败(${errorCode})`}：${this.currentVoiceLabel()}`;
         console.error('[TTS] speak error:', message);
-        if (this.onError) this.onError(message);
+        const hint = errorCode === 1002300002 ? '当前语言不受系统支持，请更换音色后重试' :
+          (errorCode === 1002300003 ? '当前系统音色不可用，请刷新或更换音色后重试' :
+            '系统朗读失败，请重试当前段落');
+        this.failSystemPcmPlayback(hint);
       },
       onData: (utteranceId: string, audioData: ArrayBuffer, response: textToSpeech.SynthesisResponse) => {
         if (this.readGeneration !== generation || !this.active || utteranceId !== this.currentRequestId ||
@@ -597,10 +547,14 @@ export class SystemTtsReader {
         if (this.ttsPcmPlayType !== 0) {
           return;
         }
+        if (!response || response.audioType !== 'pcm' || !Number.isInteger(response.sequence) ||
+          response.sequence < 0 || response.sequence > 100000) {
+          this.failSystemPcmPlayback('系统音色返回的音频数据无效，请重试当前段落');
+          return;
+        }
         this.currentFocusAudioReceived = true;
         this.systemCurrentPcmBuffers.push(audioData.slice(0));
-        this.systemCurrentPcmSequences.push(response && response.sequence ? response.sequence :
-          this.systemCurrentPcmSequences.length + 1);
+        this.systemCurrentPcmSequences.push(response.sequence);
         this.systemCurrentPcmBytes += audioData.byteLength;
         this.armSpeakWatchdog(generation, this.currentFocusChunkIndex);
         console.info(`[TTS] pcm data buffered: sequence=${response ? response.sequence : -1},` +
@@ -614,33 +568,27 @@ export class SystemTtsReader {
       return this.active && this.paused;
     }
     this.paused = true;
-    await this.pcmPlayer.pause();
-    await this.httpReader.pause();
+    const generation = this.readGeneration;
     if (this.ttsPcmPlayType === 1 && this.engine) {
       const resumeIndex = this.currentFocusChunkIndex;
       if (resumeIndex >= 0) {
         this.chunkIndex = Math.max(0, Math.min(resumeIndex, this.chunks.length));
       }
-      this.currentRequestId = '';
-      this.currentSpeakStartedAt = 0;
-      this.currentSpeakMinDuration = 0;
-      this.completionPending = false;
-      this.currentFocusChunk = null;
-      this.currentFocusChunkIndex = -1;
-      this.currentFocusDuration = 0;
-      this.currentFocusQueued = false;
+      this.resetCurrentSystemRequestState();
       this.clearSpeakWatchdog();
       try {
-        this.suppressEngineStopEvent = true;
         this.engine.stop();
-      } catch (_) {
-      } finally {
-        setTimeout(() => {
-          this.suppressEngineStopEvent = false;
-        }, 500);
+      } catch (error) {
+        this.failSystemPcmPlayback(`系统朗读暂停失败：${this.formatError(error as Object)}`);
+        return false;
       }
     }
-    return true;
+    await this.pcmPlayer.pause();
+    if (this.readGeneration !== generation || !this.active || !this.paused) {
+      return false;
+    }
+    await this.httpReader.pause();
+    return this.readGeneration === generation && this.active && this.paused;
   }
 
   async resume(): Promise<boolean> {
@@ -648,10 +596,19 @@ export class SystemTtsReader {
       return this.active && !this.paused;
     }
     this.paused = false;
+    const generation = this.readGeneration;
     await this.pcmPlayer.resume();
+    if (this.readGeneration !== generation || !this.active || this.paused) {
+      return false;
+    }
     await this.httpReader.resume();
+    if (this.readGeneration !== generation || !this.active || this.paused) {
+      return false;
+    }
     if (this.ttsPcmPlayType === 1 && this.engine && !this.currentRequestId) {
       this.speakNext(this.readGeneration);
+    } else if (this.ttsPcmPlayType === 0 && !this.completionPending) {
+      this.continueSystemPcmSynthesis(this.readGeneration);
     }
     return true;
   }
@@ -672,8 +629,6 @@ export class SystemTtsReader {
     this.onAudioStart = undefined;
     this.audioStarted = false;
     this.optionPerson = null;
-    this.optionOnline = null;
-    this.optionStyle = null;
     this.optionLanguage = null;
     this.optionSpeed = null;
     this.optionCloudVoiceId = '';
@@ -691,8 +646,6 @@ export class SystemTtsReader {
     this.currentFocusQueued = false;
     this.currentFocusAudioReceived = false;
     this.currentFocusAudioWritten = false;
-    this.currentAudioWritePromise = Promise.resolve();
-    this.currentFocusRetryCount = 0;
     this.ttsPcmPlayType = 0;
     this.resetSystemPcmPipeline();
     this.clearSpeakWatchdog();
@@ -700,9 +653,24 @@ export class SystemTtsReader {
     this.cloudReader.stop();
     this.pcmPlayer.stop();
     this.releaseSystemAudioSession();
+    this.stopEngineOutput();
+  }
+
+  private stopEngineOutput(): void {
+    const engine = this.engine;
+    if (!engine) {
+      return;
+    }
     try {
-      this.engine?.stop();
-    } catch (_) {
+      engine.stop();
+    } catch (error) {
+      console.warn(`[TTS] engine stop failed: ${this.formatError(error as Object)}`);
+      this.engine = null;
+      try {
+        engine.shutdown();
+      } catch (shutdownError) {
+        console.error(`[TTS] engine shutdown failed: ${this.formatError(shutdownError as Object)}`);
+      }
     }
   }
 
@@ -721,7 +689,7 @@ export class SystemTtsReader {
     return this.active;
   }
 
-  private async ensureEngine(): Promise<textToSpeech.TextToSpeechEngine> {
+  private async ensureEngine(generation: number): Promise<textToSpeech.TextToSpeechEngine> {
     const person = this.getTtsPerson();
     const online = this.getTtsOnline();
     const style = this.getTtsStyle();
@@ -735,32 +703,21 @@ export class SystemTtsReader {
       }
       this.engine = null;
     }
-    let actualOnline = online;
-    let lastError: Object | undefined = undefined;
-    try {
-      this.engine = await SystemTtsReader.createEngineWithMode(person, online, style, language);
-    } catch (error) {
-      lastError = error as Object;
-      actualOnline = SystemTtsReader.alternateOnlineMode(online);
-      try {
-        this.engine = await SystemTtsReader.createEngineWithMode(person, actualOnline, style, language);
-      } catch (secondError) {
-        lastError = secondError as Object;
-        throw new Error(SystemTtsReader.formatStaticError(lastError) || 'createEngine failed');
-      }
+    const engine = await SystemTtsReader.createEngineWithMode(person, language);
+    if (this.readGeneration !== generation || !this.active) {
+      engine.shutdown();
+      throw new Error('系统朗读初始化已取消');
     }
+    this.engine = engine;
     this.enginePerson = person;
-    this.engineOnline = actualOnline;
+    this.engineOnline = online;
     this.engineStyle = style;
     this.engineLanguage = language;
-    if (this.optionOnline === null && actualOnline !== online) {
-      AppStorage.setOrCreate('ttsOnline', actualOnline);
-    }
     return this.engine;
   }
 
   private speakNext(generation: number): void {
-    if (this.readGeneration !== generation || !this.active || !this.engine) return;
+    if (this.readGeneration !== generation || !this.active || this.paused || !this.engine) return;
     if (this.chunkIndex >= this.chunks.length) {
       if (this.ttsPcmPlayType === 0) {
         this.systemSynthesisFinished = true;
@@ -777,8 +734,9 @@ export class SystemTtsReader {
       this.speakNext(generation);
       return;
     }
-    if (this.currentFocusChunkIndex !== index) {
-      this.currentFocusRetryCount = 0;
+    if (speakText.length > 10000) {
+      this.failSystemPcmPlayback('系统朗读文本超过单次长度限制');
+      return;
     }
     const extraParams: Record<string, Object> = {};
     extraParams['queueMode'] = 0 as Object;
@@ -788,9 +746,8 @@ export class SystemTtsReader {
     extraParams['languageContext'] = this.getTtsLanguage() as Object;
     extraParams['audioType'] = 'pcm' as Object;
     extraParams['isBackStage'] = true as Object;
-    // Keep TTS on the media channel so the hardware volume keys adjust the
-    // system media volume instead of a voice-assistant relative volume.
-    extraParams['soundChannel'] = 1 as Object;
+    // 系统直接播放使用通道3，避免媒体/通知通道在息屏后被截断。
+    extraParams['soundChannel'] = 3 as Object;
     extraParams['playType'] = this.ttsPcmPlayType as Object;
     try {
       const requestId = this.createRequestId();
@@ -804,7 +761,6 @@ export class SystemTtsReader {
       this.currentFocusQueued = false;
       this.currentFocusAudioReceived = false;
       this.currentFocusAudioWritten = false;
-      this.currentAudioWritePromise = Promise.resolve();
       this.currentAudioSampleRate = 16000;
       this.currentAudioSampleBit = 16;
       this.currentAudioChannel = 1;
@@ -818,24 +774,9 @@ export class SystemTtsReader {
         extraParams: extraParams
       });
     } catch (error) {
-      this.currentRequestId = '';
-      this.currentSpeakStartedAt = 0;
-      this.currentSpeakMinDuration = 0;
-      this.completionPending = false;
-      this.currentFocusChunk = null;
-      this.currentFocusChunkIndex = -1;
-      this.currentFocusDuration = 0;
-      this.currentFocusQueued = false;
-      this.currentFocusAudioReceived = false;
-      this.currentFocusAudioWritten = false;
-      this.currentFocusRetryCount = 0;
-      this.clearSpeakWatchdog();
-      this.active = false;
-      this.pcmPlayer.stop();
-      this.releaseSystemAudioSession();
       const message = `系统朗读失败：${this.currentVoiceLabel()} ${this.formatError(error)}`;
       console.error('[TTS] speak throw:', message);
-      if (this.onError) this.onError(message);
+      this.failSystemPcmPlayback(message);
     }
   }
 
@@ -858,8 +799,6 @@ export class SystemTtsReader {
     this.currentFocusQueued = false;
     this.currentFocusAudioReceived = false;
     this.currentFocusAudioWritten = false;
-    this.currentAudioWritePromise = Promise.resolve();
-    this.currentFocusRetryCount = 0;
     this.resetSystemPcmPipeline();
     this.clearSpeakWatchdog();
     if (keepPcmOutput) {
@@ -1338,29 +1277,45 @@ export class SystemTtsReader {
   }
 
   private retryWithoutPcmData(generation: number): boolean {
-    if (this.ttsPcmPlayType !== 0 || this.currentFocusChunkIndex < 0) {
+    if (this.ttsPcmPlayType !== 0 || this.currentFocusChunkIndex < 0 ||
+      this.currentFocusAudioReceived || this.completionPending) {
       return false;
     }
     console.warn('[TTS] no pcm data with playType=0, fallback to playType=1');
-    this.resetSystemPcmPipeline();
-    this.pcmPlayer.stop();
-    this.ttsPcmPlayType = 1;
+    const retryIndex = this.currentFocusChunkIndex;
+    // 先撤销旧请求ID再stop，延迟到达的旧回调不能结束新请求。
     this.currentRequestId = '';
-    this.currentSpeakStartedAt = 0;
-    this.currentSpeakMinDuration = 0;
-    this.completionPending = false;
-    this.currentFocusChunk = null;
-    this.currentFocusDuration = 0;
-    this.currentFocusQueued = false;
-    this.currentFocusAudioReceived = false;
-    this.currentFocusAudioWritten = false;
-    this.currentAudioWritePromise = Promise.resolve();
-    this.currentFocusRetryCount = 0;
-    this.chunkIndex = Math.max(0, Math.min(this.currentFocusChunkIndex, this.chunks.length));
-    this.currentFocusChunkIndex = -1;
+    this.completionPending = true;
     this.clearSpeakWatchdog();
-    this.speakNext(generation);
+    this.switchToDirectPlayback(generation, retryIndex);
     return true;
+  }
+
+  private async switchToDirectPlayback(generation: number, retryIndex: number): Promise<void> {
+    try {
+      this.engine?.stop();
+      // 切换前播完已合成的前序段落，避免预取失败丢弃尚未播放的音频。
+      this.systemPlaybackStarted = true;
+      this.pumpSystemPcmPlayback(generation);
+      await this.systemLastWritePromise;
+      if (this.readGeneration !== generation || !this.active) {
+        return;
+      }
+      await this.pcmPlayer.drain();
+      if (this.readGeneration !== generation || !this.active) {
+        return;
+      }
+      this.resetSystemPcmPipeline();
+      this.pcmPlayer.stop();
+      this.ttsPcmPlayType = 1;
+      this.chunkIndex = retryIndex;
+      this.resetCurrentSystemRequestState();
+      this.speakNext(generation);
+    } catch (error) {
+      if (this.readGeneration === generation && this.active) {
+        this.failSystemPcmPlayback(`系统朗读播放切换失败：${this.formatError(error as Object)}`);
+      }
+    }
   }
 
   private notifyAudioStarted(): void {
@@ -1380,20 +1335,20 @@ export class SystemTtsReader {
     }
     this.completionPending = true;
     this.clearSpeakWatchdog();
-    const pcm = this.mergeSystemPcmBuffers(
-      this.systemCurrentPcmBuffers, this.systemCurrentPcmSequences, this.systemCurrentPcmBytes);
-    const normalizedPcm = this.normalizeSystemPcm(
-      pcm, this.currentAudioSampleBit, this.currentAudioChannel, this.currentAudioType);
-    const trimmedPcm = this.trimSystemPcmSilence(
-      normalizedPcm, this.currentAudioSampleRate, this.currentFocusChunk.text);
-    const playbackPcm = this.fadeSystemPcmEdges(trimmedPcm, this.currentAudioSampleRate);
-    if (playbackPcm.byteLength === 0) {
-      this.completionPending = false;
-      this.currentFocusAudioReceived = false;
-      if (this.retryWithoutPcmData(generation)) {
-        return;
+    let playbackPcm: ArrayBuffer;
+    try {
+      const pcm = this.mergeSystemPcmBuffers(
+        this.systemCurrentPcmBuffers, this.systemCurrentPcmSequences, this.systemCurrentPcmBytes);
+      const normalizedPcm = this.normalizeSystemPcm(
+        pcm, this.currentAudioSampleBit, this.currentAudioChannel, this.currentAudioType);
+      const trimmedPcm = this.trimSystemPcmSilence(
+        normalizedPcm, this.currentAudioSampleRate, this.currentFocusChunk.text);
+      playbackPcm = this.fadeSystemPcmEdges(trimmedPcm, this.currentAudioSampleRate);
+      if (playbackPcm.byteLength === 0) {
+        throw new Error('系统音色返回的PCM音频为空');
       }
-      this.failSystemPcmPlayback('系统音色返回的PCM音频为空');
+    } catch (error) {
+      this.failSystemPcmPlayback(`系统音频数据无效：${this.formatError(error as Object)}`);
       return;
     }
     this.systemReadySegments.push({
@@ -1424,10 +1379,14 @@ export class SystemTtsReader {
     }
     while (this.systemReadySegments.length > 0) {
       const segment = this.systemReadySegments.shift() as SystemPcmSegment;
+      if (this.systemFirstQueuedChunkIndex < 0) {
+        this.systemFirstQueuedChunkIndex = segment.index;
+      }
       const writePromise = this.pcmPlayer.writeSegment(segment.pcm, segment.sampleRate, () => {
         if (this.readGeneration !== generation || !this.active || this.ttsPcmPlayType !== 0) {
           return;
         }
+        this.systemPlaybackChunkIndex = segment.index;
         if (this.onChunkStart) {
           this.onChunkStart(segment.chunk, segment.index);
         }
@@ -1460,6 +1419,9 @@ export class SystemTtsReader {
   private async finishSystemPcmPlayback(generation: number): Promise<void> {
     try {
       await this.systemLastWritePromise;
+      if (this.readGeneration !== generation || !this.active) {
+        return;
+      }
       await this.pcmPlayer.drain();
     } catch (error) {
       console.warn('[TTS] drain system pcm playback failed:', error);
@@ -1476,7 +1438,7 @@ export class SystemTtsReader {
 
   private continueSystemPcmSynthesis(generation: number): void {
     if (this.readGeneration !== generation || !this.active || this.ttsPcmPlayType !== 0 ||
-      this.currentRequestId) {
+      this.currentRequestId || this.completionPending || this.paused) {
       return;
     }
     if (this.chunkIndex >= this.chunks.length) {
@@ -1501,7 +1463,6 @@ export class SystemTtsReader {
     this.currentFocusQueued = false;
     this.currentFocusAudioReceived = false;
     this.currentFocusAudioWritten = false;
-    this.currentAudioWritePromise = Promise.resolve();
     this.systemCurrentPcmBuffers = [];
     this.systemCurrentPcmSequences = [];
     this.systemCurrentPcmBytes = 0;
@@ -1513,6 +1474,8 @@ export class SystemTtsReader {
     this.systemCurrentPcmBytes = 0;
     this.systemReadySegments = [];
     this.systemPlaybackStarted = false;
+    this.systemPlaybackChunkIndex = -1;
+    this.systemFirstQueuedChunkIndex = -1;
     this.systemSynthesisFinished = false;
     this.systemDrainScheduled = false;
     this.systemLastWritePromise = Promise.resolve();
@@ -1524,15 +1487,25 @@ export class SystemTtsReader {
     if (buffers.length === 0 || totalBytes <= 0) {
       return new ArrayBuffer(0);
     }
-    if (buffers.length === 1) {
-      return buffers[0].slice(0);
+    if (buffers.length !== sequences.length) {
+      throw new Error('PCM音频序号缺失');
     }
     const order: number[] = [];
     for (let index = 0; index < buffers.length; index++) {
       order.push(index);
     }
-    order.sort((left: number, right: number) =>
-      (sequences[left] || left + 1) - (sequences[right] || right + 1));
+    order.sort((left: number, right: number) => sequences[left] - sequences[right]);
+    let checkedBytes = 0;
+    for (let position = 0; position < order.length; position++) {
+      const index = order[position];
+      if (sequences[index] !== position) {
+        throw new Error('PCM音频序号不连续或重复');
+      }
+      checkedBytes += buffers[index].byteLength;
+    }
+    if (checkedBytes !== totalBytes) {
+      throw new Error('PCM音频长度不一致');
+    }
     const merged = new ArrayBuffer(totalBytes);
     const output = new Uint8Array(merged);
     let offset = 0;
@@ -1550,22 +1523,16 @@ export class SystemTtsReader {
     if (!pcm || pcm.byteLength === 0) {
       return new ArrayBuffer(0);
     }
-    const type = (audioType || 'pcm').toLowerCase();
-    if (type !== 'pcm') {
-      console.warn(`[TTS] unexpected system audio type: ${audioType}`);
+    if (audioType !== 'pcm' || sampleBit !== 16 || !Number.isInteger(channelCount) || channelCount < 1) {
+      throw new Error('不支持的PCM音频格式');
     }
-    const safeBits = Math.round(sampleBit || 16);
-    const safeChannels = Math.max(1, Math.round(channelCount || 1));
-    if (safeBits !== 16) {
-      console.warn(`[TTS] unexpected system pcm sample bits: ${safeBits}`);
-      return pcm.byteLength % 2 === 0 ? pcm : pcm.slice(0, pcm.byteLength - 1);
-    }
-    const safeByteLength = pcm.byteLength - pcm.byteLength % (2 * safeChannels);
-    if (safeByteLength <= 0) {
-      return new ArrayBuffer(0);
+    const safeChannels = channelCount;
+    const safeByteLength = pcm.byteLength;
+    if (safeByteLength % (2 * safeChannels) !== 0) {
+      throw new Error('PCM音频包含不完整采样帧');
     }
     if (safeChannels === 1) {
-      return safeByteLength === pcm.byteLength ? pcm : pcm.slice(0, safeByteLength);
+      return pcm;
     }
     const input = new DataView(pcm, 0, safeByteLength);
     const frameCount = Math.floor(safeByteLength / (2 * safeChannels));
@@ -1654,66 +1621,49 @@ export class SystemTtsReader {
   }
 
   private failSystemPcmPlayback(message: string): void {
-    this.currentRequestId = '';
+    // 预取可能已领先播放位置；错误时保留实际播放段落，不能跳到预取段落。
+    const retryIndex = this.systemPlaybackChunkIndex >= 0 ? this.systemPlaybackChunkIndex :
+      (this.systemFirstQueuedChunkIndex >= 0 ? this.systemFirstQueuedChunkIndex :
+        (this.systemReadySegments.length > 0 ? this.systemReadySegments[0].index :
+          Math.max(0, this.currentFocusChunkIndex)));
+    this.chunkIndex = Math.min(retryIndex, Math.max(0, this.chunks.length - 1));
+    this.readGeneration++;
     this.active = false;
+    this.paused = false;
+    this.cancelPendingPcmOutputRelease();
     this.clearSpeakWatchdog();
+    this.resetCurrentSystemRequestState();
+    this.resetSystemPcmPipeline();
+    this.keepAudioOutputOnFinish = false;
+    this.httpReader.stop();
+    this.cloudReader.stop();
+    this.pcmPlayer.stop();
+    this.releaseSystemAudioSession();
+    this.stopEngineOutput();
     console.error('[TTS] system pcm playback failed:', message);
     if (this.onError) {
-      this.onError(message);
+      // 原始异常及参数留在日志中，阅读页只展示可理解的失败原因。
+      this.onError(message.split('：')[0]);
     }
   }
 
   private completeCurrentChunk(generation: number, requestId: string): void {
-    if (this.readGeneration !== generation || !this.active || this.completionPending) {
+    if (this.readGeneration !== generation || !this.active || this.completionPending ||
+      requestId !== this.currentRequestId) {
       return;
     }
     if (this.ttsPcmPlayType === 0 && this.currentFocusAudioReceived) {
       this.completeSystemPcmChunk(generation, requestId);
       return;
     }
-    this.completionPending = true;
-    const writePromise = this.currentAudioWritePromise;
-    writePromise
-      .then(async () => {
-        if (this.readGeneration !== generation || !this.active || requestId !== this.currentRequestId) {
-          return;
-        }
-        this.clearSpeakWatchdog();
-        if (this.chunkIndex >= this.chunks.length) {
-          try {
-            await this.pcmPlayer.drain();
-          } catch (error) {
-            console.warn('[TTS] drain pcm audio failed:', error);
-            if (this.readGeneration === generation && this.active) {
-              this.failSystemPcmPlayback(`系统音频播放被中断：${this.formatError(error as Object)}`);
-            }
-            return;
-          }
-          this.finishCurrentRead(generation, 0);
-          return;
-        }
-        this.currentRequestId = '';
-        this.currentSpeakStartedAt = 0;
-        this.currentSpeakMinDuration = 0;
-        this.completionPending = false;
-        this.currentFocusChunk = null;
-        this.currentFocusChunkIndex = -1;
-        this.currentFocusDuration = 0;
-        this.currentFocusQueued = false;
-        this.currentFocusAudioReceived = false;
-        this.currentFocusAudioWritten = false;
-        this.currentAudioWritePromise = Promise.resolve();
-        this.speakNext(generation);
-      })
-      .catch((error: Error) => {
-        if (this.readGeneration !== generation || !this.active || requestId !== this.currentRequestId) {
-          return;
-        }
-        console.warn('[TTS] wait current pcm write failed:', error);
-        // The old fallback called speakNext(), silently dropping this chunk. Stop at the failed chunk so resume
-        // starts from the same visible paragraph instead of jumping several lines or entering the next chapter.
-        this.failSystemPcmPlayback(`系统音频写入失败：${this.formatError(error as Object)}`);
-      });
+    if (this.ttsPcmPlayType !== 1) {
+      this.failSystemPcmPlayback('系统朗读没有返回完整音频，请重试当前段落');
+      return;
+    }
+    this.emitCurrentSystemChunkFocus(generation);
+    this.clearSpeakWatchdog();
+    this.resetCurrentSystemRequestState();
+    this.speakNext(generation);
   }
 
   private emitCurrentCustomChunkFocus(generation: number): void {
@@ -1741,8 +1691,11 @@ export class SystemTtsReader {
 
   private armSpeakWatchdog(generation: number, chunkIndex: number): void {
     this.clearSpeakWatchdog();
+    const requestId = this.currentRequestId;
     this.speakWatchdogId = setTimeout(() => {
-      this.recoverStalledSpeak(generation, chunkIndex);
+      if (requestId === this.currentRequestId) {
+        this.recoverStalledSpeak(generation, chunkIndex);
+      }
     }, this.speakWatchdogTimeoutMs());
   }
 
@@ -1765,84 +1718,15 @@ export class SystemTtsReader {
     this.speakWatchdogId = -1;
   }
 
-  private async recoverStalledSpeak(generation: number, chunkIndex: number): Promise<void> {
+  private recoverStalledSpeak(generation: number, chunkIndex: number): void {
     if (this.readGeneration !== generation || !this.active || this.currentFocusAudioWritten ||
       this.completionPending || this.currentFocusChunkIndex !== chunkIndex) {
-      return;
-    }
-    if (this.ttsPcmPlayType === 1 && this.currentFocusQueued && this.currentRequestId) {
-      // onStart proved that direct playback began. If only onComplete is lost,
-      // completing after the estimated duration is safer than stopping the
-      // engine and replaying the same chunk.
-      const requestId = this.currentRequestId;
-      console.warn(`[TTS] direct-play completion recovered after timeout: request=${requestId},` +
-        `chunk=${chunkIndex}`);
-      this.completeCurrentChunk(generation, requestId);
       return;
     }
     if (this.retryWithoutPcmData(generation)) {
       return;
     }
-    if (this.currentFocusRetryCount >= 2) {
-      this.currentRequestId = '';
-      this.active = false;
-      const message = `系统朗读无音频回调：${this.currentVoiceLabel()}`;
-      console.warn('[TTS] speak watchdog exhausted:', message);
-      if (this.onError) {
-        this.onError(message);
-      }
-      return;
-    }
-    this.currentFocusRetryCount++;
-    console.warn(`[TTS] speak watchdog retry ${this.currentFocusRetryCount}: ${this.currentVoiceLabel()}`);
-    try {
-      this.currentRequestId = '';
-      this.currentSpeakStartedAt = 0;
-      this.currentSpeakMinDuration = 0;
-      this.completionPending = false;
-      this.currentFocusQueued = false;
-      this.currentFocusAudioReceived = false;
-      this.currentFocusAudioWritten = false;
-      this.currentAudioWritePromise = Promise.resolve();
-      this.chunkIndex = Math.max(0, Math.min(chunkIndex, this.chunks.length));
-      this.resetSystemPcmPipeline();
-      this.pcmPlayer.stop();
-      if (this.engine) {
-        try {
-          this.suppressEngineStopEvent = true;
-          this.engine.shutdown();
-        } catch (_) {
-        } finally {
-          setTimeout(() => {
-            this.suppressEngineStopEvent = false;
-          }, 500);
-        }
-        this.engine = null;
-      }
-      const engine = await this.ensureEngine();
-      if (this.readGeneration !== generation || !this.active) {
-        return;
-      }
-      this.bindEngineListener(generation, engine);
-      this.speakNext(generation);
-    } catch (error) {
-      this.currentRequestId = '';
-      this.active = false;
-      const message = `系统朗读恢复失败：${this.currentVoiceLabel()} ${this.formatError(error)}`;
-      console.error('[TTS] speak watchdog recover failed:', message);
-      if (this.onError) {
-        this.onError(message);
-      }
-    }
-  }
-
-  private finishCurrentRead(generation: number, waitMs: number): void {
-    setTimeout(() => {
-      if (this.readGeneration !== generation || !this.active) {
-        return;
-      }
-      this.finish(true);
-    }, waitMs);
+    this.failSystemPcmPlayback(`系统朗读等待音频或播放完成超时，请重试当前段落：${this.currentVoiceLabel()}`);
   }
 
   private splitCloudFocusChunks(chunk: TtsChunk): TtsChunk[] {
@@ -2162,9 +2046,7 @@ export class SystemTtsReader {
     const punctuationMatches = value.match(/[，。！？；;,.!?、]/g);
     const punctuationCount = punctuationMatches ? punctuationMatches.length : 0;
     const speed = Math.max(0.5, Math.min(2, this.getTtsSpeed()));
-    // System chunks can contain up to 60 characters. At 0.5x speed a punctuation-heavy
-    // chunk can legitimately exceed the previous 18-second ceiling, which made the
-    // lost-onComplete fallback advance while direct playback was still audible.
+    // 估算只控制等待上限；只有播放完成回调或PCM排空才推进正文。
     return Math.max(450, Math.min(SystemTtsReader.MAX_ESTIMATED_CHUNK_DURATION_MS,
       (readableChars * 210 + punctuationCount * 120) / speed));
   }
@@ -2172,7 +2054,9 @@ export class SystemTtsReader {
   private getTtsPerson(): number {
     const value = AppStorage.get<number>('ttsPerson');
     const optionValue = this.optionPerson;
-    return Math.max(0, optionValue === null ? (value === undefined ? 0 : Math.round(value)) : Math.round(optionValue));
+    const person = optionValue === null ? (value === undefined ? 13 : value) : optionValue;
+    const roundedPerson = Math.round(person);
+    return Number.isFinite(person) && roundedPerson > 0 ? roundedPerson : 13;
   }
 
   private getTtsSpeed(): number {
@@ -2182,21 +2066,17 @@ export class SystemTtsReader {
   }
 
   private getTtsOnline(): number {
-    const value = AppStorage.get<number>('ttsOnline');
-    const optionValue = this.optionOnline;
-    return (optionValue === null ? value : optionValue) === SystemTtsReader.LEGACY_ONLINE_MODE ?
-      SystemTtsReader.LEGACY_ONLINE_MODE : SystemTtsReader.OFFLINE_MODE;
+    return SystemTtsReader.OFFLINE_MODE;
   }
 
   private getTtsStyle(): string {
-    const value = AppStorage.get<string>('ttsStyle');
-    return this.optionStyle === null ? (value || '') : this.optionStyle;
+    return SystemTtsReader.SYSTEM_TTS_STYLE;
   }
 
   private getTtsLanguage(): string {
     const value = AppStorage.get<string>('ttsLanguage');
     const language = this.optionLanguage === null ? (value || '') : this.optionLanguage;
-    return language || 'zh-CN';
+    return SystemTtsReader.normalizeVoiceLanguage(language, this.getTtsPerson());
   }
 
   private currentVoiceLabel(): string {
@@ -2204,9 +2084,8 @@ export class SystemTtsReader {
     if (customVoice) {
       return `自定义音色 ${customVoice.name || customVoice.id}`;
     }
-    const mode = this.getTtsOnline() === SystemTtsReader.LEGACY_ONLINE_MODE ? '在线' : '离线';
     const style = this.getTtsStyle();
-    return `person=${this.getTtsPerson()} ${mode} language=${this.getTtsLanguage()}${style ? ` style=${style}` : ''}`;
+    return `person=${this.getTtsPerson()} 离线 language=${this.getTtsLanguage()}${style ? ` style=${style}` : ''}`;
   }
 
   private getCurrentCustomVoice(): HttpTTS | null {
@@ -2239,21 +2118,17 @@ export class SystemTtsReader {
     }
   }
 
-  private static async listLegacyEngineVoices(online: number): Promise<TtsVoiceOption[]> {
+  private static async listLegacyEngineVoices(): Promise<TtsVoiceOption[]> {
     let engine: textToSpeech.TextToSpeechEngine | null = null;
     try {
-      engine = await SystemTtsReader.createEngineWithMode(0, online, '', 'zh-CN');
+      engine = await SystemTtsReader.createEngineWithMode(13, 'zh-CN');
       const voices = await engine.listVoices({
-        requestId: `legacy_engine_voices_${online}_${Date.now()}`,
-        online: online
+        requestId: SystemTtsReader.createGlobalRequestId('legacyEngineVoices'),
+        online: SystemTtsReader.OFFLINE_MODE
       });
-      console.info(`[TTS] legacy engine listVoices online=${online}: ` +
+      console.info('[TTS] legacy engine listVoices: ' +
         `${SystemTtsReader.voiceInfosSummary(voices)}`);
-      return SystemTtsReader.parseVoices(voices, online);
-    } catch (error) {
-      console.warn(`[TTS] legacy engine listVoices failed online=${online}: ` +
-        `${SystemTtsReader.formatStaticError(error as Object)}`);
-      return [];
+      return SystemTtsReader.parseVoices(voices);
     } finally {
       if (engine) {
         try {
@@ -2262,19 +2137,6 @@ export class SystemTtsReader {
         }
       }
     }
-  }
-
-  private static applyVoiceFeatureAvailability(voices: TtsVoiceOption[]): TtsVoiceOption[] {
-    if (SystemTtsReader.supportsVoiceDownload()) {
-      return voices;
-    }
-    for (const voice of voices) {
-      voice.downloadable = false;
-      if (voice.id === 0) {
-        voice.available = true;
-      }
-    }
-    return voices;
   }
 
   static serializeCustomVoices(voices: HttpTTS[]): string {
@@ -2315,11 +2177,6 @@ export class SystemTtsReader {
     return Number.isNaN(parsed) ? fallback : Math.round(parsed);
   }
 
-  private static alternateOnlineMode(online: number): number {
-    return online === SystemTtsReader.LEGACY_ONLINE_MODE ?
-      SystemTtsReader.OFFLINE_MODE : SystemTtsReader.LEGACY_ONLINE_MODE;
-  }
-
   private formatError(error: Object | undefined): string {
     if (!error) return '';
     const anyError = error as Record<string, Object>;
@@ -2329,93 +2186,39 @@ export class SystemTtsReader {
     return text || JSON.stringify(error);
   }
 
-  private static createEngineExtraParams(style?: string, language: string = 'zh-CN'): Record<string, Object> {
+  private static createEngineExtraParams(): Record<string, Object> {
     const extraParam: Record<string, Object> = {};
-    if (style) {
-      extraParam['style'] = style as Object;
-    }
-    extraParam['locate'] = SystemTtsReader.localeToLocate(language) as Object;
+    extraParam['style'] = SystemTtsReader.SYSTEM_TTS_STYLE as Object;
+    extraParam['locate'] = 'CN' as Object;
     extraParam['name'] = 'LegadoReaderTts' as Object;
     extraParam['isBackStage'] = true as Object;
     return extraParam;
   }
 
-  private static createEngineExtraParamVariants(style: string, language: string): Array<Record<string, Object> | undefined> {
-    const variants: Array<Record<string, Object> | undefined> = [];
-    variants.push(SystemTtsReader.createEngineExtraParams(style, language));
-    if (style) {
-      variants.push(SystemTtsReader.createEngineExtraParams('', language));
-    }
-    const nameOnly: Record<string, Object> = {};
-    nameOnly['name'] = 'LegadoReaderTts' as Object;
-    nameOnly['isBackStage'] = true as Object;
-    variants.push(nameOnly);
-    variants.push(undefined);
-    return variants;
-  }
-
-  private static localeToLocate(language: string): string {
-    const value = (language || 'zh-CN').trim();
-    if (value.length === 0) {
-      return 'CN';
-    }
-    if (value.toLowerCase().startsWith('en')) {
-      return 'US';
-    }
-    return 'CN';
-  }
-
-  private static languageVariants(language: string): string[] {
-    const value = (language || 'zh-CN').trim() || 'zh-CN';
-    const variants: string[] = [value];
-    if (value.includes('-')) {
-      variants.push(value.replace(/-/g, '_'));
-    }
-    if (value.includes('_')) {
-      variants.push(value.replace(/_/g, '-'));
-    }
-    const lower = value.toLowerCase();
-    if (lower.startsWith('en')) {
-      variants.push('en-US');
-      variants.push('en_US');
-      variants.push('en');
-    } else if (lower.startsWith('zh')) {
-      variants.push('zh-CN');
-      variants.push('zh_CN');
-      variants.push('zh');
-    }
-    const result: string[] = [];
-    for (const item of variants) {
-      if (item && !result.includes(item)) {
-        result.push(item);
-      }
-    }
-    return result;
-  }
-
-  private static parseVoices(voices: Array<textToSpeech.VoiceInfo>, online: number): TtsVoiceOption[] {
+  private static parseVoices(voices: Array<textToSpeech.VoiceInfo>): TtsVoiceOption[] {
     const options: TtsVoiceOption[] = [];
     for (const raw of voices) {
       const id = SystemTtsReader.parseVoiceId(raw);
       const style = raw.style || '';
       const language = SystemTtsReader.parseVoiceLanguage(raw);
-      if (id < 0 || options.some((voice: TtsVoiceOption) => voice.id === id &&
-        voice.online === online && voice.style === style && voice.language === language)) {
+      if (id < 0) {
         continue;
       }
       const option = new TtsVoiceOption();
       option.id = id;
       option.name = SystemTtsReader.knownVoiceName(id, language) || SystemTtsReader.parseVoiceName(raw, id);
-      option.online = online;
+      option.online = SystemTtsReader.OFFLINE_MODE;
       option.status = raw.status || '';
       option.systemStatus = raw.status || '';
       option.style = style;
       option.language = language;
       option.downloadLanguage = raw.language || '';
+      option.downloadPerson = raw.person;
       option.gender = raw.gender || SystemTtsReader.knownVoiceGender(id, language);
-      option.downloadable = SystemTtsReader.isDownloadableStatus(raw.status || '') &&
-        !SystemTtsReader.isInstalledStatus(raw.status || '');
-      option.available = !option.downloadable;
+      option.downloadable = SystemTtsReader.supportsVoiceDownload() &&
+        SystemTtsReader.isDownloadableStatus(raw.status || '');
+      option.available = SystemTtsReader.isInstalledStatus(raw.status || '') ||
+        (!raw.status && (deviceInfo.sdkApiVersion < 19 || id === 13));
       options.push(option);
     }
     options.sort((a: TtsVoiceOption, b: TtsVoiceOption) => a.online - b.online ||
@@ -2447,8 +2250,9 @@ export class SystemTtsReader {
   }
 
   private static parseVoiceId(item: textToSpeech.VoiceInfo): number {
-    if (typeof item.person === 'number') {
-      return Math.round(item.person);
+    if (typeof item.person === 'number' && Number.isFinite(item.person) && item.person >= 0) {
+      const person = Math.round(item.person);
+      return person === 0 ? 13 : person;
     }
     return -1;
   }
@@ -2488,7 +2292,7 @@ export class SystemTtsReader {
     if (person === 8) {
       return 'en-US';
     }
-    if (person === 13 || person === 21) {
+    if (person === 0 || person === 13 || person === 21) {
       return 'zh-CN';
     }
     const value = (language || 'zh-CN').trim().replace(/_/g, '-');
@@ -2499,26 +2303,14 @@ export class SystemTtsReader {
     if (lower === 'en' || lower === 'en-us') {
       return 'en-US';
     }
-    return value || 'zh-CN';
-  }
-
-  private static defaultVoices(): TtsVoiceOption[] {
-      const option = new TtsVoiceOption();
-      option.id = 0;
-      option.name = '默认音色';
-      option.online = SystemTtsReader.OFFLINE_MODE;
-      option.status = 'default';
-      option.language = 'zh-CN';
-      option.available = true;
-      return [option];
+    return lower.startsWith('en') ? 'en-US' : 'zh-CN';
   }
 
   private static knownVoiceOptions(): TtsVoiceOption[] {
     const options: TtsVoiceOption[] = [];
-    options.push(SystemTtsReader.createKnownVoiceOption(0, '默认音色', 'zh-CN'));
     options.push(SystemTtsReader.createKnownVoiceOption(13, '聆小珊', 'zh-CN'));
     options.push(SystemTtsReader.createKnownVoiceOption(21, '凌飞哲', 'zh-CN'));
-    options.push(SystemTtsReader.createKnownVoiceOption(8, 'US Laura', 'en-US'));
+    options.push(SystemTtsReader.createKnownVoiceOption(8, '美国英语 Laura', 'en-US'));
     return options;
   }
 
@@ -2530,48 +2322,35 @@ export class SystemTtsReader {
     option.status = 'known';
     option.language = language;
     option.gender = SystemTtsReader.knownVoiceGender(id, language);
-    option.available = false;
-    option.downloadable = id !== 0;
+    option.available = id === 13;
+    option.downloadable = false;
     return option;
   }
 
   private static mergeVoiceMetadata(target: TtsVoiceOption, source: TtsVoiceOption): void {
-    if (!target.style && source.style) {
-      target.style = source.style;
-    }
-    target.language = SystemTtsReader.normalizeVoiceLanguage(target.language || source.language || 'zh-CN', target.id);
-    if (!target.downloadLanguage && source.downloadLanguage) {
-      target.downloadLanguage = source.downloadLanguage;
-    }
-    if (!target.systemStatus && source.systemStatus) {
-      target.systemStatus = source.systemStatus;
-    }
-    if ((!target.status || target.status === 'known') && source.status) {
-      target.status = source.status;
-    }
+    target.style = source.style;
+    target.language = source.language;
+    target.downloadLanguage = source.downloadLanguage;
+    target.downloadPerson = source.downloadPerson;
+    target.systemStatus = source.systemStatus;
+    target.status = source.status;
     if (!target.gender && source.gender) {
       target.gender = source.gender;
     }
-    target.available = target.available || source.available;
-    target.downloadable = target.available ? false : (target.downloadable || source.downloadable ||
-      SystemTtsReader.isDownloadableStatus(source.systemStatus || source.status));
+    target.available = source.available;
+    target.downloadable = source.downloadable;
   }
 
   private static isDownloadableStatus(status: string): boolean {
-    const value = (status || '').toLowerCase();
-    return value === 'ga' || value.includes('download') || value.includes('not_installed');
+    return status === 'GA';
   }
 
   private static isInstalledStatus(status: string): boolean {
-    const value = (status || '').toLowerCase();
-    return value.includes('installed') || value.includes('downloaded') || value === 'local';
+    return status === 'INSTALLED';
   }
 
   private static knownVoiceName(id: number, language: string): string {
     const lower = (language || '').toLowerCase();
-    if (id === 0) {
-      return '默认音色';
-    }
     if (id === 13 && lower.startsWith('zh')) {
       return '聆小珊';
     }
@@ -2579,7 +2358,7 @@ export class SystemTtsReader {
       return '凌飞哲';
     }
     if (id === 8 && lower.startsWith('en')) {
-      return 'US Laura';
+      return '美国英语 Laura';
     }
     return '';
   }
@@ -2595,27 +2374,14 @@ export class SystemTtsReader {
     return '';
   }
 
-  private static async createEngineWithMode(person: number, online: number, style: string,
+  private static async createEngineWithMode(person: number,
     language: string = 'zh-CN'): Promise<textToSpeech.TextToSpeechEngine> {
-    let lastError: Object | undefined = undefined;
-    for (const lang of SystemTtsReader.languageVariants(language)) {
-      for (const extraParams of SystemTtsReader.createEngineExtraParamVariants(style, lang)) {
-        try {
-          const params: textToSpeech.CreateEngineParams = {
-            language: lang || 'zh-CN',
-            person: person,
-            online: online
-          };
-          if (extraParams !== undefined) {
-            params.extraParams = extraParams;
-          }
-          return await textToSpeech.createEngine(params);
-        } catch (error) {
-          lastError = error as Object;
-        }
-      }
-    }
-    throw new Error(SystemTtsReader.formatStaticError(lastError) || 'createEngine failed');
+    return textToSpeech.createEngine({
+      language: SystemTtsReader.normalizeVoiceLanguage(language, person),
+      person: person === 0 ? 13 : person,
+      online: SystemTtsReader.OFFLINE_MODE,
+      extraParams: SystemTtsReader.createEngineExtraParams()
+    });
   }
 
   private static formatStaticError(error: Object | undefined): string {
@@ -3007,7 +2773,10 @@ export class SystemTtsReader {
   }
 
   private createRequestId(): string {
-    const seed = `${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
-    return `tts_${seed}`;
+    return SystemTtsReader.createGlobalRequestId('tts');
+  }
+
+  private static createGlobalRequestId(prefix: string): string {
+    return `${prefix}${Date.now()}r${++SystemTtsReader.requestSerial}`;
   }
 }

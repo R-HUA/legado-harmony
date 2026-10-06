@@ -27,7 +27,7 @@ const TTS_CUSTOM_VOICE_IMPORT_LIMIT_BYTES: number = 2 * 1024 * 1024;
 @Entry
 @Component
 struct TtsSettingsPage {
-  @StorageLink('ttsPerson') ttsPerson: number = 0;
+  @StorageLink('ttsPerson') ttsPerson: number = 13;
   @StorageLink('ttsOnline') ttsOnline: number = 1;
   @StorageLink('ttsStyle') ttsStyle: string = '';
   @StorageLink('ttsLanguage') ttsLanguage: string = 'zh-CN';
@@ -64,6 +64,7 @@ struct TtsSettingsPage {
   private previewReader: SystemTtsReader = new SystemTtsReader();
   @State isPreviewing: boolean = false;
   @State isLoadingVoices: boolean = false;
+  @State voiceLoadError: string = '';
   @State downloadingVoiceKey: string = '';
   @State downloadProgressText: string = '';
   @State customVoices: HttpTTS[] = [];
@@ -72,21 +73,60 @@ struct TtsSettingsPage {
   @State isImportingCustomVoices: boolean = false;
   private speedSaveTimerId: number = -1;
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+  private pageActive: boolean = false;
+  private pageSessionSerial: number = 0;
+  private voiceLoadSerial: number = 0;
+  private downloadSessionSerial: number = 0;
+  private previewSessionSerial: number = 0;
+  private voiceSelectionSerial: number = 0;
+  private isLoadingSettings: boolean = false;
+  private voiceDownloadTask: Promise<void> | null = null;
 
   aboutToAppear(): void {
+    this.activatePage();
     this.syncBars();
     this.loadSettingsAndVoices();
   }
 
   onPageShow(): void {
+    this.activatePage();
     this.syncBars();
     this.loadSettingsAndVoices();
   }
 
+  onPageHide(): void {
+    this.deactivatePage();
+  }
+
   aboutToDisappear(): void {
+    this.deactivatePage();
+  }
+
+  activatePage(): void {
+    if (!this.pageActive) {
+      this.pageActive = true;
+      this.pageSessionSerial++;
+    }
+  }
+
+  deactivatePage(): void {
     this.flushPendingSpeedSettings();
+    this.pageActive = false;
+    this.pageSessionSerial++;
+    this.voiceLoadSerial++;
+    this.downloadSessionSerial++;
+    this.previewSessionSerial++;
+    this.isLoadingSettings = false;
+    this.isLoadingVoices = false;
+    this.downloadingVoiceKey = '';
+    this.downloadProgressText = '';
+    this.showVoiceDropdown = false;
     this.previewReader.shutdown();
     this.isPreviewing = false;
+  }
+
+  isPageSessionCurrent(session: number): boolean {
+    return this.pageActive && this.pageSessionSerial === session;
   }
 
   private pageScroller: Scroller = new Scroller();
@@ -98,6 +138,29 @@ struct TtsSettingsPage {
           Column() {
             this.sectionTitle('朗读音色')
             this.voiceDropdownSelector()
+            Column({ space: 6 }) {
+              Text('系统音色首次使用可能需要联网下载，下载后可离线朗读。')
+                .fontSize(12)
+                .fontColor(this.subTextColor())
+                .width('100%')
+              Row() {
+                Text(this.voiceLoadError || (this.isLoadingVoices ? '正在加载系统音色…' : ''))
+                  .fontSize(12)
+                  .fontColor(this.voiceLoadError ? '#E5484D' : this.subTextColor())
+                  .layoutWeight(1)
+                Text('刷新音色')
+                  .fontSize(12)
+                  .fontColor(this.accentColor())
+                  .padding({ left: 12, top: 6, bottom: 6 })
+                  .enabled(!this.isLoadingVoices && !this.downloadingVoiceKey)
+                  .onClick(() => {
+                    this.loadVoices();
+                  })
+              }
+              .width('100%')
+            }
+            .width('calc(100% - 32vp)')
+            .margin({ left: 16, right: 16, top: 6 })
 
           this.sectionTitle('自定义音色')
           Row() {
@@ -271,6 +334,7 @@ struct TtsSettingsPage {
   }
 
   onCustomVoiceSelectionChanged(): void {
+    this.voiceSelectionSerial++;
     this.selectedVoiceKey = this.currentVoiceKey();
   }
 
@@ -288,14 +352,21 @@ struct TtsSettingsPage {
       return this.cloudVoiceTitle(cloudVoice);
     }
     const customVoice = this.findCurrentCustomVoice();
-    if (customVoice && customVoice.enabled !== false) {
+    if (customVoice) {
       return this.customVoiceTitle(customVoice);
+    }
+    if (this.ttsCustomVoiceId) {
+      return '自定义音色 · 暂不可用';
     }
     const systemVoice = this.findCurrentVoice();
     if (systemVoice) {
       return this.voiceTitle(systemVoice);
     }
-    return this.isLoadingVoices ? '正在加载音色...' : '默认音色';
+    const voice = new TtsVoiceOption();
+    voice.id = this.ttsPerson;
+    voice.language = this.ttsLanguage;
+    voice.name = '';
+    return `${this.voiceName(voice)} · 状态待确认`;
   }
 
   @Builder
@@ -337,12 +408,6 @@ struct TtsSettingsPage {
       Column() {
         Scroll() {
           Column() {
-            if (this.cloudVoices.length > 0) {
-              this.voiceDropdownSectionTitle('云端音色')
-              ForEach(this.cloudVoices, (voice: TtsVoiceInfo) => {
-                this.cloudVoiceDropdownOption(voice)
-              }, (voice: TtsVoiceInfo) => `cloud_${voice.id}`)
-            }
             if (this.enabledCustomVoices().length > 0) {
               this.voiceDropdownSectionTitle('自定义音色')
               ForEach(this.enabledCustomVoices(), (voice: HttpTTS) => {
@@ -460,48 +525,39 @@ struct TtsSettingsPage {
     })
   }
 
-  @Builder
-  cloudVoiceDropdownOption(voice: TtsVoiceInfo) {
-    Row() {
-      Text(this.cloudVoiceTitle(voice))
-        .fontSize(15)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-      if (this.ttsCloudVoiceId === voice.id) {
-        SymbolGlyph($r('sys.symbol.checkmark'))
-          .fontSize(18)
-          .fontColor([this.accentColor()])
-      }
-    }
-    .width('100%')
-    .height(46)
-    .padding({ left: 14, right: 14 })
-    .onClick(() => {
-      this.showVoiceDropdown = false;
-      this.applyCloudVoice(voice);
-    })
-  }
-
-  normalizeDefaultOnlineVoice(): void {
-    if (this.ttsOnline === 0 && this.ttsPerson === 0 && !this.ttsStyle &&
-      this.sameLanguage(this.ttsLanguage || 'zh-CN', 'zh-CN')) {
-      this.ttsOnline = 1;
-      this.saveSettings();
-    }
-  }
-
   async loadSettingsAndVoices(): Promise<void> {
+    if (!this.pageActive || this.isLoadingSettings) {
+      return;
+    }
+    const session = this.pageSessionSerial;
+    const selectionSerial = this.voiceSelectionSerial;
+    this.isLoadingSettings = true;
     try {
       const settings = await TtsSettingsStore.load(getContext(this));
-      this.applySettings(settings);
+      if (!this.isPageSessionCurrent(session)) {
+        return;
+      }
+      if (selectionSerial === this.voiceSelectionSerial) {
+        this.applySettings(settings);
+      }
     } catch (e) {
+      if (!this.isPageSessionCurrent(session)) {
+        return;
+      }
       console.warn('加载朗读设置失败:', e);
+      this.ttsPerson = this.normalizeVoiceId(this.ttsPerson);
+      this.ttsOnline = 1;
+      this.ttsCloudVoiceId = '';
+    } finally {
+      if (this.isPageSessionCurrent(session)) {
+        this.isLoadingSettings = false;
+      }
     }
-    this.normalizeDefaultOnlineVoice();
+    if (!this.isPageSessionCurrent(session)) {
+      return;
+    }
     this.selectedVoiceKey = this.currentVoiceKey();
-    this.loadVoices();
+    await this.loadVoices();
   }
 
   async loadTtsCommerce(): Promise<void> {
@@ -595,22 +651,22 @@ struct TtsSettingsPage {
   }
 
   applySettings(settings: TtsSettings): void {
-    this.ttsPerson = settings.person;
-    this.ttsOnline = settings.online;
+    this.ttsPerson = this.normalizeVoiceId(settings.person);
+    this.ttsOnline = 1;
     this.ttsStyle = settings.style;
     this.ttsLanguage = settings.language;
     this.ttsSpeed = settings.speed;
     this.ttsInstalledVoiceKeys = settings.installedVoiceKeys;
     this.ttsCustomVoiceId = settings.customVoiceId;
     this.ttsCustomVoices = settings.customVoices;
-    this.ttsCloudVoiceId = settings.cloudVoiceId;
+    this.ttsCloudVoiceId = '';
     this.customVoices = SystemTtsReader.parseCustomVoices(settings.customVoices);
   }
 
   currentSettings(): TtsSettings {
     const settings = new TtsSettings();
-    settings.person = this.ttsPerson;
-    settings.online = this.ttsOnline;
+    settings.person = this.normalizeVoiceId(this.ttsPerson);
+    settings.online = 1;
     settings.style = this.ttsStyle;
     settings.language = this.ttsLanguage;
     settings.speed = this.ttsSpeed;
@@ -631,71 +687,67 @@ struct TtsSettingsPage {
 
   static defaultVoice(): TtsVoiceOption {
     const option = new TtsVoiceOption();
-    option.id = 0;
-    option.name = '默认音色';
+    option.id = 13;
+    option.name = '聆小珊';
     option.online = 1;
-    option.status = 'default';
     option.language = 'zh-CN';
+    option.gender = 'female';
     return option;
   }
 
   async loadVoices(): Promise<void> {
-    if (this.isLoadingVoices) {
+    if (!this.pageActive || this.isLoadingVoices) {
       return;
     }
+    const session = this.pageSessionSerial;
+    const serial = ++this.voiceLoadSerial;
     this.isLoadingVoices = true;
+    this.voiceLoadError = '';
     try {
       const voices = await SystemTtsReader.listAvailableVoices();
+      if (!this.isPageSessionCurrent(session) || serial !== this.voiceLoadSerial) {
+        return;
+      }
       this.cloudVoices = [];
       this.ttsCloudVoiceId = '';
-      this.voices = this.applyInstalledOverrides(this.mergeWithDefaultVoice(voices));
-      const currentCloudVoice = this.findCurrentCloudVoice();
-      if (currentCloudVoice) {
-        this.selectedVoiceKey = `cloud_${currentCloudVoice.id}`;
-        return;
-      }
-      const currentCustomVoice = this.findCurrentCustomVoice();
-      if (currentCustomVoice) {
-        this.selectedVoiceKey = this.customVoiceKey(currentCustomVoice);
-        return;
-      }
-      const currentVoice = this.findCurrentVoice();
-      if (!currentVoice || !currentVoice.available) {
-        const defaultVoice = this.firstAvailableVoice();
-        this.applyVoice(defaultVoice, false);
-      } else {
-        this.selectedVoiceKey = this.voiceKey(currentVoice);
-      }
-    } catch (_) {
-      this.voices = [TtsSettingsPage.defaultVoice()];
-      this.ttsPerson = 0;
-      this.ttsOnline = 1;
-      this.ttsStyle = '';
-      this.ttsLanguage = 'zh-CN';
-      this.ttsCustomVoiceId = '';
-      this.saveSettings();
+      this.voices = this.mergeWithDefaultVoice(voices);
       this.selectedVoiceKey = this.currentVoiceKey();
+    } catch (error) {
+      if (!this.isPageSessionCurrent(session) || serial !== this.voiceLoadSerial) {
+        return;
+      }
+      console.warn('加载系统音色失败:', error);
+      this.voiceLoadError = '系统音色加载失败，请点击刷新重试';
     } finally {
-      this.isLoadingVoices = false;
+      if (this.isPageSessionCurrent(session) && serial === this.voiceLoadSerial) {
+        this.isLoadingVoices = false;
+      }
     }
   }
 
   mergeWithDefaultVoice(voices: TtsVoiceOption[]): TtsVoiceOption[] {
-    const options: TtsVoiceOption[] = [TtsSettingsPage.defaultVoice()];
+    const options: TtsVoiceOption[] = [];
     for (const voice of voices) {
+      if (voice.online !== 1) {
+        continue;
+      }
       const existingIndex = options.findIndex((item: TtsVoiceOption) =>
-        this.isSameVoiceOption(item, voice) || this.isSameDisplayVoice(item, voice));
+        this.isSameVoiceOption(item, voice));
       if (existingIndex < 0) {
         options.push(voice);
       } else if (this.shouldPreferVoiceOption(voice, options[existingIndex])) {
         options[existingIndex] = voice;
       }
     }
+    if (!options.some((voice: TtsVoiceOption) => this.normalizeVoiceId(voice.id) === 13 &&
+      this.sameLanguage(voice.language || 'zh-CN', 'zh-CN'))) {
+      options.unshift(TtsSettingsPage.defaultVoice());
+    }
     return options;
   }
 
   isSameVoiceOption(left: TtsVoiceOption, right: TtsVoiceOption): boolean {
-    if (left.id !== right.id || left.online !== right.online ||
+    if (this.normalizeVoiceId(left.id) !== this.normalizeVoiceId(right.id) || left.online !== right.online ||
       !this.sameLanguage(left.language || 'zh-CN', right.language || 'zh-CN')) {
       return false;
     }
@@ -705,15 +757,10 @@ struct TtsSettingsPage {
     return (left.style || '') === (right.style || '');
   }
 
-  isSameDisplayVoice(left: TtsVoiceOption, right: TtsVoiceOption): boolean {
-    if (this.voiceTitle(left) === this.voiceTitle(right)) {
-      return true;
-    }
-    return (left.name || '') === (right.name || '') && left.online === right.online &&
-      this.sameLanguage(left.language || 'zh-CN', right.language || 'zh-CN');
-  }
-
   shouldPreferVoiceOption(candidate: TtsVoiceOption, current: TtsVoiceOption): boolean {
+    if (!!candidate.systemStatus !== !!current.systemStatus) {
+      return !!candidate.systemStatus;
+    }
     if (candidate.available !== current.available) {
       return candidate.available;
     }
@@ -723,19 +770,21 @@ struct TtsSettingsPage {
     if (candidate.downloadable !== current.downloadable) {
       return candidate.downloadable;
     }
-    return !current.style && !!candidate.style;
+    return candidate.id === 13 && current.id === 0;
   }
 
   isKnownVoiceId(id: number): boolean {
     return id === 0 || id === 8 || id === 13 || id === 21;
   }
 
-  firstAvailableVoice(): TtsVoiceOption {
-    return this.voices.find((voice: TtsVoiceOption) => voice.available) || this.voices[0] ||
-      TtsSettingsPage.defaultVoice();
+  normalizeVoiceId(id: number): number {
+    return id === 0 ? 13 : id;
   }
 
   async selectVoice(voice: TtsVoiceOption): Promise<void> {
+    if (!this.pageActive || voice.online !== 1) {
+      return;
+    }
     if (!voice.available) {
       if (voice.downloadable) {
         await this.downloadAndSelectVoice(voice);
@@ -752,8 +801,10 @@ struct TtsSettingsPage {
       this.previewReader.stop();
       this.isPreviewing = false;
     }
-    this.ttsPerson = voice.id;
-    this.ttsOnline = voice.online;
+    this.voiceSelectionSerial++;
+    this.previewSessionSerial++;
+    this.ttsPerson = this.normalizeVoiceId(voice.id);
+    this.ttsOnline = 1;
     this.ttsStyle = voice.style;
     this.ttsLanguage = voice.language;
     this.ttsCustomVoiceId = '';
@@ -771,25 +822,11 @@ struct TtsSettingsPage {
       this.previewReader.stop();
       this.isPreviewing = false;
     }
+    this.voiceSelectionSerial++;
+    this.previewSessionSerial++;
     this.ttsCustomVoiceId = String(voice.id);
     this.ttsCloudVoiceId = '';
     this.selectedVoiceKey = this.customVoiceKey(voice);
-    this.saveSettings();
-    HdsFeedback.showToast(`已启用 ${voice.name}`);
-  }
-
-  applyCloudVoice(voice: TtsVoiceInfo): void {
-    if (!AccountSessionStore.isLoggedIn()) {
-      HdsFeedback.showToast('请先登录华为账号后使用云端音色');
-      return;
-    }
-    if (this.isPreviewing) {
-      this.previewReader.stop();
-      this.isPreviewing = false;
-    }
-    this.ttsCloudVoiceId = voice.id;
-    this.ttsCustomVoiceId = '';
-    this.selectedVoiceKey = `cloud_${voice.id}`;
     this.saveSettings();
     HdsFeedback.showToast(`已启用 ${voice.name}`);
   }
@@ -809,6 +846,14 @@ struct TtsSettingsPage {
   }
 
   async downloadAndSelectVoice(voice: TtsVoiceOption): Promise<void> {
+    if (!this.pageActive) {
+      return;
+    }
+    const downloadable = this.findMatchingVoice(voice, false);
+    if (voice.online !== 1 || !downloadable || !downloadable.downloadable) {
+      HdsFeedback.showToast('该系统音色当前无法下载，请刷新后重试');
+      return;
+    }
     if (!SystemTtsReader.supportsVoiceDownload()) {
       HdsFeedback.showToast('当前系统版本不支持下载系统音色，请升级系统后重试');
       return;
@@ -817,33 +862,78 @@ struct TtsSettingsPage {
       HdsFeedback.showToast('正在下载音色，请稍候');
       return;
     }
-    const key = this.voiceKey(voice);
+    const session = this.pageSessionSerial;
+    const serial = ++this.downloadSessionSerial;
+    const selectionSerial = this.voiceSelectionSerial;
+    const key = this.voiceKey(downloadable);
     this.downloadingVoiceKey = key;
     this.downloadProgressText = '';
+    let downloadFinished = false;
     try {
-      HdsFeedback.showToast(`开始下载 ${voice.name}`);
-      await SystemTtsReader.downloadVoice(voice, {
+      // 返回页面后仍等待上一轮系统下载结束，避免同时注册下载任务。
+      if (this.voiceDownloadTask) {
+        await this.voiceDownloadTask.catch((_error: Error): void => {});
+        if (!this.isPageSessionCurrent(session) || serial !== this.downloadSessionSerial) {
+          return;
+        }
+      }
+      HdsFeedback.showToast(`开始下载 ${this.voiceName(downloadable)}`);
+      const task = SystemTtsReader.downloadVoice(downloadable, {
         onStart: (_message: string) => {
-          this.downloadProgressText = '准备中';
+          if (this.isPageSessionCurrent(session) && serial === this.downloadSessionSerial) {
+            this.downloadProgressText = '准备中';
+          }
         },
         onProgress: (progress: string) => {
-          this.downloadProgressText = this.formatDownloadProgress(progress);
+          if (this.isPageSessionCurrent(session) && serial === this.downloadSessionSerial) {
+            this.downloadProgressText = this.formatDownloadProgress(progress);
+          }
         }
       });
-      this.markVoiceInstalled(voice);
-      await this.loadVoices();
-      let downloaded = this.findMatchingVoice(voice, true);
+      this.voiceDownloadTask = task;
+      await task;
+      downloadFinished = true;
+      if (!this.isPageSessionCurrent(session) || serial !== this.downloadSessionSerial) {
+        return;
+      }
+      const refreshed = await SystemTtsReader.listAvailableVoices();
+      if (!this.isPageSessionCurrent(session) || serial !== this.downloadSessionSerial) {
+        return;
+      }
+      this.voiceLoadSerial++;
+      this.isLoadingVoices = false;
+      this.voiceLoadError = '';
+      this.voices = this.mergeWithDefaultVoice(refreshed);
+      this.selectedVoiceKey = this.currentVoiceKey();
+      // 默认音色的无状态试用不能作为下载已安装的证据。
+      const downloaded = refreshed.find((item: TtsVoiceOption) => item.available && item.systemStatus === 'INSTALLED' &&
+        this.isSameVoiceOption(item, downloadable));
       if (!downloaded) {
-        downloaded = this.markVoiceOptionInstalled(voice);
-        this.voices = this.applyInstalledOverrides(this.mergeWithDefaultVoice(this.voices.concat([downloaded])));
+        HdsFeedback.showToast('下载后音色仍不可用，请刷新音色后重试');
+        return;
+      }
+      if (selectionSerial !== this.voiceSelectionSerial) {
+        return;
       }
       this.applyVoice(downloaded, true);
-      HdsFeedback.showToast(`已启用 ${downloaded.name}`);
+      HdsFeedback.showToast(`已启用 ${this.voiceName(downloaded)}`);
     } catch (error) {
-      HdsFeedback.showToast(`音色下载失败：${this.shortErrorMessage(error as Object)}`);
+      if (!this.isPageSessionCurrent(session) || serial !== this.downloadSessionSerial) {
+        return;
+      }
+      console.warn('系统音色下载或确认失败:', error);
+      if (downloadFinished) {
+        this.voiceLoadError = '暂时无法确认音色是否可用，请点击刷新重试';
+        HdsFeedback.showToast('暂时无法确认音色是否可用，请刷新后重试');
+      } else {
+        const cancelled = this.shortErrorMessage(error as Object).includes('取消');
+        HdsFeedback.showToast(cancelled ? '已取消音色下载' : '音色下载失败，请检查网络后重试');
+      }
     } finally {
-      this.downloadingVoiceKey = '';
-      this.downloadProgressText = '';
+      if (this.isPageSessionCurrent(session) && serial === this.downloadSessionSerial) {
+        this.downloadingVoiceKey = '';
+        this.downloadProgressText = '';
+      }
     }
   }
 
@@ -851,81 +941,30 @@ struct TtsSettingsPage {
     return this.isCurrentVoice(voice);
   }
 
-  applyInstalledOverrides(voices: TtsVoiceOption[]): TtsVoiceOption[] {
-    const options: TtsVoiceOption[] = [];
-    for (const voice of voices) {
-      options.push(this.isLocallyInstalledVoice(voice) ? this.markVoiceOptionInstalled(voice) : voice);
-    }
-    return options;
-  }
-
-  markVoiceInstalled(voice: TtsVoiceOption): void {
-    const key = this.installedVoiceKey(voice);
-    if (!key || this.installedVoiceKeyExists(key)) {
-      return;
-    }
-    this.ttsInstalledVoiceKeys = this.ttsInstalledVoiceKeys ?
-      `${this.ttsInstalledVoiceKeys}\n${key}` : key;
-    this.saveSettings();
-  }
-
-  isLocallyInstalledVoice(voice: TtsVoiceOption): boolean {
-    return this.installedVoiceKeyExists(this.installedVoiceKey(voice));
-  }
-
-  installedVoiceKeyExists(key: string): boolean {
-    if (!key) {
-      return false;
-    }
-    const keys = this.ttsInstalledVoiceKeys.split('\n');
-    return keys.includes(key);
-  }
-
-  installedVoiceKey(voice: TtsVoiceOption): string {
-    const style = this.isKnownVoiceId(voice.id) ? '' : (voice.style || '');
-    return `${voice.id}_${voice.online}_${this.normalizeLanguage(voice.language || 'zh-CN')}_${style}`;
-  }
-
-  markVoiceOptionInstalled(voice: TtsVoiceOption): TtsVoiceOption {
-    const option = this.copyVoiceOption(voice);
-    option.available = true;
-    option.downloadable = false;
-    option.status = 'INSTALLED';
-    option.systemStatus = 'INSTALLED';
-    return option;
-  }
-
-  copyVoiceOption(voice: TtsVoiceOption): TtsVoiceOption {
-    const option = new TtsVoiceOption();
-    option.id = voice.id;
-    option.name = voice.name;
-    option.online = voice.online;
-    option.status = voice.status;
-    option.systemStatus = voice.systemStatus;
-    option.style = voice.style;
-    option.language = voice.language;
-    option.downloadLanguage = voice.downloadLanguage;
-    option.gender = voice.gender;
-    option.available = voice.available;
-    option.downloadable = voice.downloadable;
-    return option;
-  }
-
   voiceTitle(voice: TtsVoiceOption): string {
-    if (voice.status === 'default') {
-      return `${voice.name} · 系统默认`;
-    }
+    const name = this.voiceName(voice);
     if (this.isVoiceDownloading(voice)) {
       const progress = this.downloadProgressText ? ` · ${this.downloadProgressText}` : '';
-      return `${voice.name} · 下载中${progress}`;
+      return `${name} · 下载中${progress}`;
     }
-    const suffix = voice.online === 0 ? '在线' : '离线';
     const gender = this.voiceGenderText(voice);
-    const state = voice.available ? '' : (voice.downloadable ? ' · 需下载' : ' · 不可用');
-    return `${voice.name} · ${suffix}${gender}${state}`;
+    const state = voice.available ? '' : (voice.downloadable ? ' · 需下载' :
+      (voice.systemStatus === 'EOM' ? ' · 不可用' : ' · 状态未确认'));
+    return `${name} · 离线${gender}${state}`;
+  }
+
+  voiceName(voice: TtsVoiceOption): string {
+    const id = this.normalizeVoiceId(voice.id);
+    if (id === 13) return '聆小珊';
+    if (id === 21) return '凌飞哲';
+    if (id === 8 && this.sameLanguage(voice.language || 'zh-CN', 'en-US')) return '美国英语 Laura';
+    return voice.name || '系统音色';
   }
 
   voiceGenderText(voice: TtsVoiceOption): string {
+    const id = this.normalizeVoiceId(voice.id);
+    if (id === 21) return ' · 男声';
+    if (id === 13 || (id === 8 && this.sameLanguage(voice.language || 'zh-CN', 'en-US'))) return ' · 女声';
     const value = (voice.gender || '').toLowerCase();
     if (value === 'male' || value === '男' || value === '男声') {
       return ' · 男声';
@@ -937,20 +976,21 @@ struct TtsSettingsPage {
   }
 
   voiceKey(voice: TtsVoiceOption): string {
-    return `${voice.id}_${voice.online}_${voice.language || 'zh-CN'}_${voice.style || ''}_${voice.name || ''}`;
+    const style = this.isKnownVoiceId(voice.id) ? '' : (voice.style || '');
+    return `${this.normalizeVoiceId(voice.id)}_${voice.online}_${this.normalizeLanguage(voice.language || 'zh-CN')}_${style}`;
   }
 
   currentVoiceKey(): string {
     if (this.ttsCloudVoiceId) {
       return `cloud_${this.ttsCloudVoiceId}`;
     }
-    const customVoice = this.findCurrentCustomVoice();
-    if (customVoice) {
-      return this.customVoiceKey(customVoice);
+    if (this.ttsCustomVoiceId) {
+      const customVoice = this.findCurrentCustomVoice();
+      return customVoice ? this.customVoiceKey(customVoice) : `custom_${this.ttsCustomVoiceId}`;
     }
     const matched = this.findCurrentVoice();
     return matched ? this.voiceKey(matched) :
-      `${this.ttsPerson}_${this.ttsOnline}_${this.ttsLanguage || 'zh-CN'}_${this.ttsStyle || ''}_`;
+      `${this.normalizeVoiceId(this.ttsPerson)}_1_${this.normalizeLanguage(this.ttsLanguage || 'zh-CN')}_${this.isKnownVoiceId(this.ttsPerson) ? '' : (this.ttsStyle || '')}`;
   }
 
   findCurrentVoice(): TtsVoiceOption | undefined {
@@ -961,8 +1001,8 @@ struct TtsSettingsPage {
     if (this.ttsCustomVoiceId || this.ttsCloudVoiceId) {
       return false;
     }
-    return voice.id === this.ttsPerson && voice.online === this.ttsOnline &&
-      (voice.style || '') === (this.ttsStyle || '') &&
+    return this.normalizeVoiceId(voice.id) === this.normalizeVoiceId(this.ttsPerson) && voice.online === 1 &&
+      (this.isKnownVoiceId(voice.id) || (voice.style || '') === (this.ttsStyle || '')) &&
       this.sameLanguage(voice.language || 'zh-CN', this.ttsLanguage || 'zh-CN');
   }
 
@@ -1104,20 +1144,7 @@ struct TtsSettingsPage {
   }
 
   findMatchingVoice(target: TtsVoiceOption, availableOnly: boolean): TtsVoiceOption | undefined {
-    const exact = this.voices.find((voice: TtsVoiceOption) => voice.id === target.id && voice.online === target.online &&
-      (voice.style || '') === (target.style || '') &&
-      this.sameLanguage(voice.language || 'zh-CN', target.language || 'zh-CN') &&
-      (!availableOnly || voice.available));
-    if (exact) {
-      return exact;
-    }
-    const sameModule = this.voices.find((voice: TtsVoiceOption) => voice.id === target.id &&
-      voice.online === target.online && this.sameLanguage(voice.language || 'zh-CN', target.language || 'zh-CN') &&
-      (!availableOnly || voice.available));
-    if (sameModule) {
-      return sameModule;
-    }
-    return this.voices.find((voice: TtsVoiceOption) => voice.id === target.id &&
+    return this.voices.find((voice: TtsVoiceOption) => this.isSameVoiceOption(voice, target) &&
       (!availableOnly || voice.available));
   }
 
@@ -1142,10 +1169,13 @@ struct TtsSettingsPage {
 
   formatDownloadProgress(progress: string): string {
     const value = (progress || '').trim();
-    if (!value) {
-      return '下载中';
+    if (/^\d{1,3}(?:\.\d+)?\s*%$/.test(value)) {
+      const percent = Number(value.replace('%', '').trim());
+      if (percent >= 0 && percent <= 100) {
+        return `${Math.round(percent)}%`;
+      }
     }
-    return value;
+    return '下载中';
   }
 
   shortErrorMessage(error: Object | undefined): string {
@@ -1294,11 +1324,30 @@ struct TtsSettingsPage {
   }
 
   async togglePreview(): Promise<void> {
+    if (!this.pageActive) {
+      return;
+    }
     if (this.isPreviewing) {
+      this.previewSessionSerial++;
       this.previewReader.stop();
       this.isPreviewing = false;
       return;
     }
+    const customVoice = this.findCurrentCustomVoice();
+    if (this.ttsCustomVoiceId && (!customVoice || customVoice.enabled === false)) {
+      HdsFeedback.showToast('当前自定义音色不可用，请先检查音色配置');
+      return;
+    }
+    if (!this.ttsCustomVoiceId) {
+      const voice = this.findCurrentVoice();
+      if (!voice || !voice.available) {
+        HdsFeedback.showToast(voice && voice.downloadable ? '请先下载当前音色再试听' : '当前音色不可用，请刷新后重试');
+        return;
+      }
+    }
+    const session = this.pageSessionSerial;
+    const serial = ++this.previewSessionSerial;
+    const errorMessage = this.ttsCustomVoiceId ? '自定义音色试听失败，请检查音色配置' : '试听失败，请刷新音色后重试';
     try {
       this.isPreviewing = true;
       await this.previewReader.start(this.getPreviewText(), {
@@ -1306,21 +1355,27 @@ struct TtsSettingsPage {
         cloudVoiceName: this.findCurrentCloudVoice()?.name || '',
         cloudVoiceTier: this.findCurrentCloudVoice()?.tier || 'STANDARD',
         person: this.ttsPerson,
-        online: this.ttsOnline,
+        online: 1,
         style: this.ttsStyle,
         language: this.ttsLanguage,
         speed: this.ttsSpeed,
         onFinished: () => {
-          this.isPreviewing = false;
+          if (this.isPageSessionCurrent(session) && serial === this.previewSessionSerial) {
+            this.isPreviewing = false;
+          }
         },
-        onError: (message: string) => {
-          this.isPreviewing = false;
-          HdsFeedback.showToast(message);
+        onError: (_message: string) => {
+          if (this.isPageSessionCurrent(session) && serial === this.previewSessionSerial) {
+            this.isPreviewing = false;
+            HdsFeedback.showToast(errorMessage);
+          }
         }
       });
     } catch (e) {
-      this.isPreviewing = false;
-      HdsFeedback.showToast('试听失败');
+      if (this.isPageSessionCurrent(session) && serial === this.previewSessionSerial) {
+        this.isPreviewing = false;
+        HdsFeedback.showToast(errorMessage);
+      }
     }
   }
 
@@ -1376,7 +1431,11 @@ struct TtsSettingsPage {
     if (this.speedSaveTimerId >= 0) {
       clearTimeout(this.speedSaveTimerId);
     }
+    const session = this.pageSessionSerial;
     this.speedSaveTimerId = setTimeout(() => {
+      if (!this.isPageSessionCurrent(session)) {
+        return;
+      }
       this.speedSaveTimerId = -1;
       this.saveSettings();
     }, 300);
