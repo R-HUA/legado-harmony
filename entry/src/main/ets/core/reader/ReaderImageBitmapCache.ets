@@ -133,8 +133,11 @@ export class ReaderImageBitmapCache {
 
   /** 按 Contain 的显示尺寸解码，不放大原图。 */
   private static async decode(uri: string, widthPx: number, heightPx: number): Promise<image.PixelMap | null> {
-    if (this.decodeCount >= 2) await new Promise<void>((resolve) => this.decodeWaiters.push(resolve));
-    else this.decodeCount++;
+    if (ReaderImageBitmapCache.decodeCount >= 2) {
+      await new Promise<void>((resolve) => ReaderImageBitmapCache.decodeWaiters.push(resolve));
+    } else {
+      ReaderImageBitmapCache.decodeCount++;
+    }
     let file: fs.File | null = null;
     let source: image.ImageSource | null = null;
     try {
@@ -183,9 +186,9 @@ export class ReaderImageBitmapCache {
         } catch (_) {
         }
       }
-      const waiter = this.decodeWaiters.shift();
+      const waiter = ReaderImageBitmapCache.decodeWaiters.shift();
       if (waiter) waiter();
-      else this.decodeCount--;
+      else ReaderImageBitmapCache.decodeCount--;
     }
   }
 }

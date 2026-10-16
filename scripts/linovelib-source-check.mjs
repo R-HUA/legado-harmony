@@ -516,12 +516,16 @@ function runLayoutProbe(browser) {
   try {
     dump = execFileSync(browser.file, [
       '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-      '--disable-extensions', '--virtual-time-budget=3000', '--dump-dom',
+      '--disable-extensions', '--disable-background-networking',
+      `--user-data-dir=${path.join(dir, 'profile')}`, '--host-resolver-rules=MAP * ~NOTFOUND',
+      '--virtual-time-budget=3000', '--dump-dom',
       `file:///${fixture.replace(/\\/g, '/')}`
     ], { encoding: 'utf8', timeout: 60000, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) {
     console.log('提示：浏览器布局回归未能执行：' + (error.message || error));
     return null;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
   const match = dump.match(/<pre id="linovelib-layout-result">([\s\S]*?)<\/pre>/);
   if (!match) {
