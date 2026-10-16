@@ -1,3 +1,4 @@
+import { SettingsSelect } from '../components/SettingsSelect';
 import { router, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { syncSystemBars } from '../utils/SystemBars';
@@ -9,7 +10,6 @@ import { RecentReadCardUpdater } from '../utils/RecentReadCardUpdater';
 import { BookshelfDisplaySettings, BookshelfDisplaySettingsStore } from '../utils/BookshelfDisplaySettingsStore';
 import { SearchExplorePendingBook } from '../utils/SearchExplorePendingBook';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { PrivateShelfStore } from '../utils/PrivateShelfStore';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 import { HdsFeedback } from '../utils/HdsFeedback';
@@ -758,27 +758,17 @@ struct BookshelfSettingsPage {
   @Builder
   selectItem(title: string, desc: string, options: SelectOption[], selected: number, onSelect: (index: number) => void) {
     SettingRow({ title: title, description: desc, showDivider: false }) {
-      Select(options)
-        .selected(selected)
-        .value(this.optionValue(options, selected))
-        .font({ size: AppFontSize.BODY })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(ThemeRuntime.accentColor(this.appDarkMode))
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: options,
+        selectedIndex: selected,
+        selectedLabel: this.optionValue(options, selected),
+        darkMode: this.appDarkMode,
+        textSize: AppFontSize.BODY,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           onSelect(index);
-        })
+        }
+      })
     }
   }
 
@@ -797,31 +787,21 @@ struct BookshelfSettingsPage {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Select(this.albumOptions())
-        .selected(this.albumSelectedIndex(dark))
-        .value(this.optionValue(this.albumOptions(), this.albumSelectedIndex(dark)))
-        .font({ size: AppFontSize.BODY })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(ThemeRuntime.accentColor(this.appDarkMode))
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
+      SettingsSelect({
+        options: this.albumOptions(),
+        selectedIndex: this.albumSelectedIndex(dark),
+        selectedLabel: this.optionValue(this.albumOptions(), this.albumSelectedIndex(dark)),
+        darkMode: this.appDarkMode,
+        textSize: AppFontSize.BODY,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
+          this.setThemeAlbum(dark, this.albumIdByIndex(index));
+        }
+      })
         .onTouch((event: TouchEvent) => {
           if (event.type === TouchType.Down) {
             this.refreshAlbumOptionsForMenu();
           }
-        })
-        .onSelect((index: number) => {
-          this.setThemeAlbum(dark, this.albumIdByIndex(index));
         })
     }
     .width('calc(100% - 32vp)')

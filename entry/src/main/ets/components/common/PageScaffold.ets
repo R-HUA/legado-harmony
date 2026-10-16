@@ -1,6 +1,8 @@
-import { router } from '@kit.ArkUI';
+import { LengthMetrics, router } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationTitleMode, ScrollEffectType } from '@kit.UIDesignKit';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
+import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 import { ImmersiveBackButton } from '../ImmersiveBackButton';
 
 /**
@@ -11,6 +13,7 @@ import { ImmersiveBackButton } from '../ImmersiveBackButton';
  *
  * scrollable 为 true 时内容放进带回弹的滚动容器；页面自己用 List 等滚动时传 false，
  * 此时骨架只负责顶部留白，底部留白由页面处理。
+ * 自行滚动的页面传入 scroller 启用渐变标题栏；未传时沿用普通顶栏。
  * 列表要从顶栏下方滚过去时再加 edgeToEdge: true，内容铺满整页，上下留白都由页面自己放进列表里。
  */
 @Component
@@ -24,6 +27,10 @@ export struct PageScaffold {
   @Prop edgeToEdge: boolean = false;
   /** 滚动内容底部在导航条之上额外留出的高度。 */
   @Prop bottomInset: number = 32;
+  /** 页面自行滚动时传入实际使用的控制器，标题栏与内容保持联动。 */
+  scroller: Scroller | undefined = undefined;
+  private contentScroller: Scroller = new Scroller();
+  @State private actionsWidth: number = 12;
   @StorageProp('appDarkMode') appDarkMode: boolean = false;
   @StorageProp('themeRevision') themeRevision: number = 0;
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
@@ -40,37 +47,102 @@ export struct PageScaffold {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      if (this.scrollable) {
-        Scroll() {
-          Column() {
-            this.content()
+      if (ImmersiveMaterialRuntime.supportsHdsTabs() && (this.scrollable || this.scroller !== undefined)) {
+        HdsNavigation() {
+          this.pageBody()
+        }
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(false)
+        .hideToolBar(true)
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          padding: { end: LengthMetrics.vp(this.actionsWidth) },
+          content: {
+            title: { mainTitle: this.title },
+            backIcon: { label: '返回', action: () => this.onBack() }
+          },
+          style: {
+            scrollEffectOpts: {
+              enableScrollEffect: true,
+              scrollEffectType: ScrollEffectType.GRADIENT_BLUR,
+              blurEffectiveStartOffset: LengthMetrics.vp(0),
+              blurEffectiveEndOffset: LengthMetrics.vp(8)
+            },
+            originalStyle: {
+              contentStyle: {
+                titleStyle: { mainTitleColor: ThemeRuntime.primaryTextColor(this.appDarkMode) },
+                backIconStyle: { iconColor: ThemeRuntime.primaryTextColor(this.appDarkMode) }
+              }
+            },
+            scrollEffectStyle: {
+              backgroundStyle: { backgroundColor: ThemeRuntime.pageColor(this.appDarkMode), maskExtraHeight: 32 },
+              contentStyle: {
+                titleStyle: { mainTitleColor: ThemeRuntime.primaryTextColor(this.appDarkMode) },
+                backIconStyle: { iconColor: ThemeRuntime.primaryTextColor(this.appDarkMode) }
+              }
+            },
+            systemMaterialEffect: {
+              materialType: ImmersiveMaterialRuntime.materialType(),
+              materialLevel: ImmersiveMaterialRuntime.materialLevel()
+            }
           }
-          .width('100%')
-          .padding({
-            top: PageScaffold.BAR_HEIGHT + this.statusBarHeight,
-            bottom: this.bottomInset + this.navBarHeight
-          })
-        }
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        })
+        .bindToScrollable([this.scroller || this.contentScroller])
         .width('100%')
         .height('100%')
-        .align(Alignment.TopStart)
-      } else {
-        Column() {
-          this.content()
-        }
-        .width('100%')
-        .height('100%')
-        .padding({ top: this.edgeToEdge ? 0 : PageScaffold.BAR_HEIGHT + this.statusBarHeight })
-        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-      }
 
-      this.titleBar()
+        // 保留调用方的操作构建器，并为原生标题预留其实际宽度。
+        Row() {
+          this.actions()
+        }
+        .height(PageScaffold.BAR_HEIGHT)
+        .padding({ right: 12 })
+        .margin({ top: this.statusBarHeight })
+        .align(Alignment.TopEnd)
+        .onAreaChange((_oldValue: Area, newValue: Area) => {
+          const width = parseFloat(String(newValue.width));
+          if (Number.isFinite(width) && Math.abs(width - this.actionsWidth) >= 1) {
+            this.actionsWidth = width;
+          }
+        })
+      } else {
+        this.pageBody()
+        this.titleBar()
+      }
     }
     .width('100%')
     .height('100%')
     .backgroundColor(ThemeRuntime.pageColor(this.appDarkMode))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  pageBody() {
+    if (this.scrollable) {
+      Scroll(this.scroller || this.contentScroller) {
+        Column() {
+          this.content()
+        }
+        .width('100%')
+        .padding({
+          top: PageScaffold.BAR_HEIGHT + this.statusBarHeight,
+          bottom: this.bottomInset + this.navBarHeight
+        })
+      }
+      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+      .width('100%')
+      .height('100%')
+      .align(Alignment.TopStart)
+    } else {
+      Column() {
+        this.content()
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ top: this.edgeToEdge ? 0 : PageScaffold.BAR_HEIGHT + this.statusBarHeight })
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    }
   }
 
   @Builder

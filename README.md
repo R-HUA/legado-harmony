@@ -47,6 +47,7 @@
 - 隐私书架：可设密码，隐私书籍不出现在桌面卡片、最近阅读快捷方式、局域网阅读和阅读统计中。
 - 平铺、紧凑、宽松三种布局，可显示封面、简介、标签、阅读进度、最新章节和更新时间。
 - 「我的 → 书籍导入」统一提供本地导入、OPDS 书库和 WebDAV 服务三个入口；本地导入可一次多选 TXT/EPUB，使用应用自身的文件访问能力，不扫描公共目录。
+- 支持粘贴书籍详情页链接，匹配书源后预览并加入书架。
 - 指定章节范围缓存或全文后台缓存，以可取消的后台通知任务执行。
 - 后台静默检查连载更新并在封面显示“新”角标；支持最近阅读、阅读统计、桌面快捷项和服务卡片。
 
@@ -72,6 +73,7 @@
 - 上下滑动、横向滑动、滚动阅读和横屏双页；横向翻页可选无动画、平移、淡入、叠页、仿真和 3D 仿真（从页角拖动时纸角跟随手指），翻页模式下末行对齐版心底边。
 - 页眉页脚按槽位自定义：书名、作者、章节、页码、剩余页数、进度百分比、时间和电量，可加本章或全书进度条，并可调节页眉下移、页脚上移的距离。
 - 字号、行距、段距、边距、对齐方式、自定义字体、背景、深色模式、沉浸式布局和段首缩进。
+- 正文与章节标题可选择繁体转简体或简体转繁体；封面和插图请求沿用书源声明的请求头与会话上下文。
 - 书签、章节评论/段评、替换净化（可直接导入 Android 阅读与 YueDu 导出的规则，Java 正则自动转换；每条规则带超时保护，超时跳过并保留原文）。
 - EPUB 图文混排：随文图片与整页插图分别排版。
 - 漫画连续全宽阅读，支持携带书源请求头、Cookie 或解码规则的远程图片。
@@ -94,8 +96,8 @@
 ### 数据、同步与个性化
 
 - 应用数据本地备份/恢复（可选加密）和账号云同步；本地书籍通过内容指纹跨设备匹配，只同步进度，不上传正文；可查看、改名和移除同步设备。
-- 华为账号登录后自动带入昵称和头像（不覆盖应用内改过的资料），点数与主题权益跨设备同步。
-- 浅色/深色模式、按钮色、强调色、自定义字体、阅读背景、封面图库和应用图标；主题页集中展示当前使用、默认与自定义方案、已购主题和更多主题，可在详情页预览、试用或获取。
+- 华为账号登录、充值和服务器在线音色入口暂时关闭；既有账号同步、系统音色和自定义朗读配置保留。
+- 支持浅色/深色模式、按钮色、强调色、自定义字体、阅读背景、封面图库和应用图标；全部内置主题及部件免费开放。
 - 「我的 → 帮助」可离线查看随应用打包的使用说明书。
 
 ## 快速开始
@@ -273,6 +275,14 @@ node --experimental-strip-types scripts/reader-chunk-pagination-check.mjs
 node --experimental-strip-types scripts/epub-converter-check.mjs
 node --experimental-strip-types scripts/epub-mixed-layout-check.mjs
 node --experimental-strip-types scripts/reader-info-bar-check.mjs
+node scripts/stage-source-compat-check.mjs
+node scripts/search-source-compat-check.mjs
+node scripts/book-url-import-check.mjs
+node scripts/chinese-converter-check.mjs
+node scripts/system-tts-check.mjs
+node scripts/tts-pcm-output-check.mjs
+node scripts/tts-text-split-check.mjs
+node scripts/reader-image-context-check.mjs
 ```
 
 书源解析内核的回归检查在子模块里（HTTP 认证、页码候选、原生书源、请求支撑、脚本运行时、宿主端口等），用法见 [harmony-book-source-engine/README.md](harmony-book-source-engine/README.md)：

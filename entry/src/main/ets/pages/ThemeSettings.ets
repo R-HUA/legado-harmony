@@ -16,11 +16,8 @@ import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
 import { ThemeIds, ThemePack, ThemeRegexEmphasisModes, ThemeVariant } from '../theme/ThemeModels';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { AccountCommerceConfig } from '../account/AccountCommerceConfig';
-import { AccountApiError, ThemeCatalogItem, ThemeCatalogResponse,
-  ThemeEntitlement } from '../account/AccountCommerceModels';
-import { AccountCommerceApi } from '../account/AccountCommerceApi';
+import { ThemeCatalogItem, ThemeEntitlement } from '../account/AccountCommerceModels';
 import { AccountSessionStore } from '../account/AccountSessionStore';
-import { HuaweiAccountService } from '../account/HuaweiAccountService';
 import {
   ReaderRegexBubbleStyleResolver,
   ReaderRegexEmphasisContext,
@@ -116,6 +113,7 @@ class ThemeListEntry {
 @Entry
 @Component
 struct ThemeSettingsPage {
+  private themeListScroller: Scroller = new Scroller();
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('appThemeId') appThemeId: string = AppThemeSettingsStore.DEFAULT_THEME_ID;
   @StorageLink('appThemeBookCoverEnabled') themeBookCoverEnabled: boolean = false;
@@ -194,8 +192,6 @@ struct ThemeSettingsPage {
   aboutToAppear(): void {
     this.loadThemeSettings();
     this.refreshCustomSchemes();
-    this.initializeAccount();
-    this.refreshThemeCatalog();
     this.syncBars();
   }
 
@@ -220,10 +216,8 @@ struct ThemeSettingsPage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       // 列表铺满整页并从顶栏下方滚过去，上下留白由列表里的占位项提供。
-      PageScaffold({ title: '主题', scrollable: false, edgeToEdge: true, content: () => {
+      PageScaffold({ title: '主题', scrollable: false, edgeToEdge: true, scroller: this.themeListScroller, content: () => {
         this.themeList()
-      }, actions: () => {
-        this.pointsBadge()
       } })
 
       if (this.showThemeStore) {
@@ -257,7 +251,7 @@ struct ThemeSettingsPage {
 
   @Builder
   themeList() {
-    List({ space: AppSpacing.LG }) {
+    List({ space: AppSpacing.LG, scroller: this.themeListScroller }) {
       // List padding is fixed to the viewport in ArkUI. Use real list items
       // for the safe-area gaps so they scroll away with the content.
       ListItem() {
@@ -283,27 +277,16 @@ struct ThemeSettingsPage {
       ListItem() {
         this.myThemesRow()
       }
-      if (this.purchasedThemes().length > 0) {
+      if (this.availableThemes().length > 0) {
         ListItem() {
-          this.sectionTitle('已购主题')
+          this.sectionTitle('内置主题')
         }
       }
-      // 两列网格按行拆成列表项，跟着整页一起滚动。
-      ForEach(this.themeRows(this.purchasedThemes()), (row: ThemePack[], rowIndex: number) => {
+      ForEach(this.themeRows(this.availableThemes()), (row: ThemePack[], rowIndex: number) => {
         ListItem() {
-          this.themeGridRow(row, rowIndex, true)
+          this.themeGridRow(row, rowIndex)
         }
-      }, (row: ThemePack[]) => `purchased_row_${row[0].id}_${this.accountEntitlementsRevision}`)
-      if (this.moreThemes().length > 0) {
-        ListItem() {
-          this.sectionTitle('更多主题')
-        }
-      }
-      ForEach(this.themeRows(this.moreThemes()), (row: ThemePack[], rowIndex: number) => {
-        ListItem() {
-          this.themeGridRow(row, rowIndex, false)
-        }
-      }, (row: ThemePack[]) => `more_row_${row[0].id}_${this.accountEntitlementsRevision}`)
+      }, (row: ThemePack[]) => `builtin_row_${row[0].id}`)
       ListItem() {
         Row() {
         }
@@ -323,35 +306,6 @@ struct ThemeSettingsPage {
     })
     .scrollBar(BarState.Off)
     .backgroundColor(this.pageColor())
-  }
-
-  async initializeAccount(): Promise<void> {
-    try {
-      await HuaweiAccountService.initialize(getContext(this));
-      if (AccountSessionStore.isLoggedIn() && AccountCommerceConfig.isServerConfigured()) {
-        await HuaweiAccountService.refresh(getContext(this));
-      }
-    } catch (e) {
-      console.warn('同步主题权益失败:', e);
-    }
-  }
-
-  async refreshThemeCatalog(): Promise<void> {
-    if (!AccountCommerceConfig.isServerConfigured()) {
-      this.themeCatalogFailed = true;
-      return;
-    }
-    this.themeCatalogFailed = false;
-    try {
-      const response: ThemeCatalogResponse = await AccountCommerceApi.fetchThemeCatalog();
-      this.themeCatalog = response.themes || [];
-      this.themeCatalogLoaded = true;
-    } catch (e) {
-      // Prices differ per theme, so nothing is shown or sold until the catalog
-      // arrives; a previously loaded catalog stays in use.
-      this.themeCatalogFailed = !this.themeCatalogLoaded;
-      console.warn('同步主题目录失败:', e);
-    }
   }
 
   async loadThemeSettings(): Promise<void> {
@@ -511,73 +465,7 @@ struct ThemeSettingsPage {
   }
 
   async ensureThemeAccess(themeId: string): Promise<boolean> {
-    if (themeId === ThemeIds.CUSTOM || this.hasThemeAccess(themeId)) {
-      return true;
-    }
-    const offer = this.themeOffer(themeId);
-    if (!offer) {
-      if (this.themeCatalogLoaded) {
-        HdsFeedback.showToast('该主题暂未上架');
-      } else {
-        HdsFeedback.showToast('主题价格尚未加载，请稍后重试');
-        this.refreshThemeCatalog();
-      }
-      return false;
-    }
-    const pricePoints = offer.pricePoints;
-    const validDays = offer.validDays;
-    if (!this.accountLoggedIn) {
-      const loginDialog = await promptAction.showDialog({
-        title: '登录后获取主题',
-        message: `该主题需要 ${pricePoints} 点，获取后有效 ${validDays} 天。首次登录免费送 300 点。`,
-        buttons: [
-          { text: '取消', color: this.subTextColor() },
-          { text: '去登录', color: this.accentColor() }
-        ]
-      });
-      if (loginDialog.index === 1) {
-        router.pushUrl({ url: 'pages/AccountCenter' });
-      }
-      return false;
-    }
-    const theme = BuiltinThemeRegistry.findById(themeId);
-    const confirm = await promptAction.showDialog({
-      title: `获取「${theme.name}」`,
-      message: `将扣除 ${pricePoints} 点，主题有效期为 ${validDays} 天。有效期内可在所有已登录终端使用。`,
-      buttons: [
-        { text: '取消', color: this.subTextColor() },
-        { text: `确认 · ${pricePoints} 点`, color: this.accentColor() }
-      ]
-    });
-    if (confirm.index !== 1) {
-      return false;
-    }
-    try {
-      await HuaweiAccountService.redeemTheme(getContext(this), themeId, pricePoints, validDays);
-      HdsFeedback.showToast(`已获取「${theme.name}」，有效期 ${validDays} 天`);
-      return true;
-    } catch (e) {
-      const error = e as AccountApiError;
-      if (error.errorCode === 'THEME_OFFER_CHANGED') {
-        await this.refreshThemeCatalog();
-        HdsFeedback.showToast('主题价格或有效期已更新，请重新确认');
-      } else if (error.errorCode === 'INSUFFICIENT_POINTS') {
-        const recharge = await promptAction.showDialog({
-          title: '点数不足',
-          message: `当前有 ${this.accountPoints} 点，获取该主题需要 ${pricePoints} 点。`,
-          buttons: [
-            { text: '取消', color: this.subTextColor() },
-            { text: '去充值', color: this.accentColor() }
-          ]
-        });
-        if (recharge.index === 1) {
-          router.pushUrl({ url: 'pages/AccountCenter' });
-        }
-      } else {
-        HdsFeedback.showToast(error.message || '获取主题失败，请稍后重试');
-      }
-      return false;
-    }
+    return BuiltinThemeRegistry.has(themeId);
   }
 
   themeOffer(themeId: string): ThemeCatalogItem | null {
@@ -709,11 +597,11 @@ struct ThemeSettingsPage {
   }
 
   @Builder
-  themeGridRow(row: ThemePack[], rowIndex: number, purchased: boolean) {
+  themeGridRow(row: ThemePack[], rowIndex: number) {
     Row({ space: AppSpacing.LG }) {
-      this.themeGridCell(row[0], rowIndex * 2, purchased)
+      this.themeGridCell(row[0], rowIndex * 2)
       if (row.length > 1) {
-        this.themeGridCell(row[1], rowIndex * 2 + 1, purchased)
+        this.themeGridCell(row[1], rowIndex * 2 + 1)
       } else {
         Row()
           .layoutWeight(1)
@@ -725,7 +613,7 @@ struct ThemeSettingsPage {
 
   /** Grid thumbnail for one builtin theme; tapping opens its detail page. */
   @Builder
-  themeGridCell(theme: ThemePack, index: number, purchased: boolean) {
+  themeGridCell(theme: ThemePack, index: number) {
     Column({ space: AppSpacing.MD }) {
       Stack() {
         ThemeStartupCover({
@@ -765,7 +653,7 @@ struct ThemeSettingsPage {
     })
     .accessibilityText(`查看「${theme.name}」主题详情`)
     .onClick(() => this.openThemePager(
-      this.builtinEntries(purchased ? this.purchasedThemes() : this.moreThemes()), index))
+      this.builtinEntries(this.availableThemes()), index))
   }
 
   /** Full-screen theme detail pager: one themed showcase page per swipe. */
@@ -805,14 +693,6 @@ struct ThemeSettingsPage {
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
         .margin({ left: AppSpacing.XXS })
-      if (this.accountLoggedIn) {
-        Text(`${this.accountPoints} 点`)
-          .fontSize(AppFontSize.CAPTION)
-          .fontColor(this.accentColor())
-          .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XS, bottom: AppSpacing.XS })
-          .borderRadius(ThemeRuntime.buttonRadius())
-          .backgroundColor(ThemeRuntime.inputColor(this.appDarkMode))
-      }
     }
     .width('100%')
     .height(56 + this.statusBarHeight)
@@ -2396,17 +2276,6 @@ struct ThemeSettingsPage {
     await this.selectTheme(themeId);
   }
 
-  /** Only themes with a live (unexpired) purchase entitlement belong here. */
-  purchasedThemes(): ThemePack[] {
-    const themes: ThemePack[] = [];
-    for (const theme of BuiltinThemeRegistry.all()) {
-      if (AccountSessionStore.hasValidEntitlement(theme.id)) {
-        themes.push(theme);
-      }
-    }
-    return themes;
-  }
-
   /** Opens the full-screen detail pager over the given themes, starting at index. */
   openThemePager(entries: ThemeListEntry[], index: number): void {
     if (entries.length === 0) {
@@ -2421,17 +2290,6 @@ struct ThemeSettingsPage {
   closeThemeStore(): void {
     this.showThemeStore = false;
     this.focusedThemeId = '';
-  }
-
-  /** Paid themes the user has no live entitlement for; the free default theme is never listed. */
-  moreThemes(): ThemePack[] {
-    const themes: ThemePack[] = [];
-    for (const theme of BuiltinThemeRegistry.all()) {
-      if (!BuiltinThemeRegistry.isFree(theme.id) && !AccountSessionStore.hasValidEntitlement(theme.id)) {
-        themes.push(theme);
-      }
-    }
-    return themes;
   }
 
   /** Themes chunked two per row for the grids on the main list. */
@@ -2551,11 +2409,7 @@ struct ThemeSettingsPage {
   }
 
   onAcquireButtonTap(themeId: string): void {
-    if (this.themeCatalogLoaded) {
-      this.acquireTheme(themeId);
-    } else {
-      this.refreshThemeCatalog();
-    }
+    this.acquireTheme(themeId);
   }
 
   storeThemeCaption(theme: ThemePack): string {
@@ -2732,4 +2586,14 @@ struct ThemeSettingsPage {
     return TextDecorationStyle.SOLID;
   }
 
+  /** 列出默认主题之外的全部内置主题。 */
+  availableThemes(): ThemePack[] {
+    const themes: ThemePack[] = [];
+    for (const theme of BuiltinThemeRegistry.all()) {
+      if (theme.id !== BuiltinThemeRegistry.DEFAULT_THEME_ID) {
+        themes.push(theme);
+      }
+    }
+    return themes;
+  }
 }

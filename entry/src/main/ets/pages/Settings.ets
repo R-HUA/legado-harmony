@@ -1,3 +1,4 @@
+import { SettingsSelect } from '../components/SettingsSelect';
 import { router } from '@kit.ArkUI';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { syncSystemBars } from '../utils/SystemBars';
@@ -13,11 +14,11 @@ import { ReaderSystemFontHelper } from '../utils/ReaderSystemFontHelper';
 import { AdaptiveColorPicker } from '../components/AdaptiveColorPicker';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { EyeTurnController } from '../core/reader/EyeTurnController';
-import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import fs from '@ohos.file.fs';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 import { TapZoneSettingsDialogContent } from '../components/TapZoneSettingsDialog';
+import { ChineseConverter } from '../utils/ChineseConverter';
 import { HexColor } from '../utils/HexColor';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
@@ -79,6 +80,7 @@ struct SettingsPage {
     ReaderSettingsStore.SCREEN_TIMEOUT_ALWAYS_ON;
   @StorageLink('readerExtendToStatusBar') readerExtendToStatusBar: boolean = false;
   @StorageLink('readerKeepParagraphIndent') keepParagraphIndent: boolean = false;
+  @StorageLink('readerChineseConverterType') chineseConverterType: number = 0;
   @StorageLink('readerHeaderEnabled') readerHeaderEnabled: boolean = false;
   @StorageLink('readerFooterEnabled') readerFooterEnabled: boolean = true;
   @StorageLink('readerInfoBarConfig') readerInfoBarConfig: string = '';
@@ -191,11 +193,15 @@ struct SettingsPage {
         title: '保留段首缩进',
         description: '章节开头与页首保留原文的全角空格缩进',
         isOn: this.keepParagraphIndent,
-        showDivider: false,
+        showDivider: true,
         onChange: (value: boolean) => {
           this.setKeepParagraphIndent(value);
         }
       })
+      this.selectItem('简繁转换', '在繁体中文与简体中文之间转换正文',
+        this.chineseConverterOptions(), this.chineseConverterSelectedIndex(), (index: number) => {
+          this.setChineseConverterByIndex(index);
+        }, 'settings_reader_chinese_converter_select', false)
     }
     .width('calc(100% - 24vp)')
     .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
@@ -606,6 +612,7 @@ struct SettingsPage {
     this.readerScreenTimeoutMinutes = settings.screenTimeoutMinutes;
     this.readerExtendToStatusBar = settings.extendToStatusBar;
     this.keepParagraphIndent = settings.keepParagraphIndent;
+    this.chineseConverterType = settings.chineseConverterType;
     this.readerHeaderEnabled = settings.readerHeaderEnabled;
     this.readerFooterEnabled = settings.readerFooterEnabled;
     this.readerInfoBarConfig = settings.readerInfoBarConfig;
@@ -1847,27 +1854,17 @@ struct SettingsPage {
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
 
-      Select(this.readerFontOptions())
-        .selected(this.readerFontSelectedIndex())
-        .value(this.readerFontValue())
-        .font({ size: AppFontSize.BODY })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: this.readerFontOptions(),
+        selectedIndex: this.readerFontSelectedIndex(),
+        selectedLabel: this.readerFontValue(),
+        darkMode: this.appDarkMode,
+        textSize: AppFontSize.BODY,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           this.selectReaderFontByIndex(index);
-        })
+        }
+      })
     }
     .width('100%')
     .constraintSize({ minHeight: 56 })
@@ -2022,28 +2019,19 @@ struct SettingsPage {
       if (this.currentReaderThemeIndex() === ReaderThemeHelper.CUSTOM_THEME_INDEX) {
         Column({ space: AppSpacing.MD }) {
           Row({ space: AppSpacing.MD }) {
-            Select(this.customThemeOptions())
-              .selected(this.currentCustomThemeSelectedIndex())
-              .value(this.currentCustomThemeScheme().name)
-              .font({ size: AppFontSize.BODY })
-              .fontColor(this.subTextColor())
-              .backgroundColor(Color.Transparent)
-              .arrowPosition(ArrowPosition.START)
-              .padding({ left: 0, right: 0 })
-              .borderRadius(16)
-              .border({ width: 0 })
-              .layoutWeight(1)
-              .divider(null)
-              .optionBgColor(Color.Transparent)
-              .optionFontColor(this.primaryTextColor())
-              .selectedOptionFontColor(this.accentColor())
-              .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-              .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-              .menuBackgroundBlurStyle(BlurStyle.NONE)
-              .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-              .onSelect((index: number) => {
+            SettingsSelect({
+              options: this.customThemeOptions(),
+              selectedIndex: this.currentCustomThemeSelectedIndex(),
+              selectedLabel: this.currentCustomThemeScheme().name,
+              darkMode: this.appDarkMode,
+              textSize: AppFontSize.BODY,
+              textColor: this.subTextColor(),
+              arrowPosition: ArrowPosition.START,
+              onSelected: (index: number) => {
                 this.selectCustomTheme(index);
-              })
+              }
+            })
+              .layoutWeight(1)
             Button('新增')
               .height(36)
               .fontSize(AppFontSize.BODY)
@@ -2083,27 +2071,17 @@ struct SettingsPage {
               .fontSize(AppFontSize.BODY)
               .fontColor(this.primaryTextColor())
             Blank()
-            Select([{ value: '背景色' }, { value: '背景图片' }])
-              .selected(this.currentCustomThemeBackgroundTypeIndex())
-              .value(this.currentCustomThemeBackgroundTypeIndex() === 1 ? '背景图片' : '背景色')
-              .font({ size: AppFontSize.BODY })
-              .fontColor(this.subTextColor())
-              .backgroundColor(Color.Transparent)
-              .arrowPosition(ArrowPosition.END)
-              .padding({ left: 0, right: 0 })
-              .borderRadius(16)
-              .border({ width: 0 })
-              .optionBgColor(Color.Transparent)
-              .divider(null)
-              .optionFontColor(this.primaryTextColor())
-              .selectedOptionFontColor(this.accentColor())
-              .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-              .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-              .menuBackgroundBlurStyle(BlurStyle.NONE)
-              .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-              .onSelect((index: number) => {
+            SettingsSelect({
+              options: [{ value: '背景色' }, { value: '背景图片' }],
+              selectedIndex: this.currentCustomThemeBackgroundTypeIndex(),
+              selectedLabel: this.currentCustomThemeBackgroundTypeIndex() === 1 ? '背景图片' : '背景色',
+              darkMode: this.appDarkMode,
+              textSize: AppFontSize.BODY,
+              textColor: this.subTextColor(),
+              onSelected: (index: number) => {
                 this.setCurrentCustomThemeBackgroundType(index);
-              })
+              }
+            })
           }
           .width('100%')
           if (this.currentCustomThemeBackgroundTypeIndex() === 0) {
@@ -2136,28 +2114,18 @@ struct SettingsPage {
                   .onClick(() => {
                     this.clearCurrentCustomThemeImage();
                   })
-                Select([{ value: '裁剪填充' }, { value: '完整显示' }, { value: '拉伸铺满' }])
-                  .selected(this.customThemeFitSelectedIndex())
-                  .value(['裁剪填充', '完整显示', '拉伸铺满'][this.customThemeFitSelectedIndex()])
-                  .font({ size: AppFontSize.BODY })
-                  .fontColor(this.subTextColor())
-                  .backgroundColor(Color.Transparent)
-                  .arrowPosition(ArrowPosition.END)
-                  .padding({ left: 0, right: 0 })
-                  .borderRadius(16)
-                  .border({ width: 0 })
-                  .layoutWeight(1)
-                  .divider(null)
-                  .optionBgColor(Color.Transparent)
-                  .optionFontColor(this.primaryTextColor())
-                  .selectedOptionFontColor(this.accentColor())
-                  .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-                  .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-                  .menuBackgroundBlurStyle(BlurStyle.NONE)
-                  .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-                  .onSelect((index: number) => {
+                SettingsSelect({
+                  options: [{ value: '裁剪填充' }, { value: '完整显示' }, { value: '拉伸铺满' }],
+                  selectedIndex: this.customThemeFitSelectedIndex(),
+                  selectedLabel: ['裁剪填充', '完整显示', '拉伸铺满'][this.customThemeFitSelectedIndex()],
+                  darkMode: this.appDarkMode,
+                  textSize: AppFontSize.BODY,
+                  textColor: this.subTextColor(),
+                  onSelected: (index: number) => {
                     this.setCurrentCustomThemeImageFit(index);
-                  })
+                  }
+                })
+                  .layoutWeight(1)
               }
             }
             .width('100%')
@@ -2184,28 +2152,19 @@ struct SettingsPage {
   @Builder
   typographyStepper() {
     Row({ space: AppSpacing.MD }) {
-      Select(this.typographySettingOptions())
-        .selected(this.typographySettingIndex)
-        .value(this.typographySettingTitle())
-        .font({ size: AppFontSize.BODY_LARGE })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.START)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: this.typographySettingOptions(),
+        selectedIndex: this.typographySettingIndex,
+        selectedLabel: this.typographySettingTitle(),
+        darkMode: this.appDarkMode,
+        textSize: AppFontSize.BODY_LARGE,
+        textColor: this.subTextColor(),
+        arrowPosition: ArrowPosition.START,
+        onSelected: (index: number) => {
           this.showTypographyValueInput = false;
           this.typographySettingIndex = Math.max(0, Math.min(index, this.typographySettingOptions().length - 1));
-        })
+        }
+      })
       Blank()
         .layoutWeight(1)
       this.settingsSliderStepButton($r('sys.symbol.minus'), `减小${this.typographySettingTitle()}`,
@@ -2338,28 +2297,18 @@ struct SettingsPage {
   selectItem(title: string, desc: string, options: SelectOption[], selected: number,
     onSelect: (index: number) => void, controlId: string, showDivider: boolean = true) {
     SettingRow({ title: title, description: desc, showDivider: showDivider }) {
-      Select(options)
-        .id(controlId)
-        .selected(selected)
-        .value(this.optionValue(options, selected))
-        .font({ size: AppFontSize.BODY })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: options,
+        selectedIndex: selected,
+        selectedLabel: this.optionValue(options, selected),
+        darkMode: this.appDarkMode,
+        textSize: AppFontSize.BODY,
+        textColor: this.subTextColor(),
+        controlId: controlId,
+        onSelected: (index: number) => {
           onSelect(index);
-        })
+        }
+      })
     }
   }
 
@@ -2370,4 +2319,22 @@ struct SettingsPage {
     return options.length > 0 ? options[0].value : '';
   }
 
+
+  chineseConverterOptions(): SelectOption[] {
+    return [{ value: '不转换' }, { value: '繁体转简体' }, { value: '简体转繁体' }];
+  }
+
+  chineseConverterSelectedIndex(): number {
+    return this.chineseConverterType >= 1 && this.chineseConverterType <= 2 ? this.chineseConverterType : 0;
+  }
+
+  setChineseConverterByIndex(index: number): void {
+    const type = index === 1 ? ChineseConverter.TYPE_T2S :
+      (index === 2 ? ChineseConverter.TYPE_S2T : ChineseConverter.TYPE_OFF);
+    if (this.chineseConverterType === type) return;
+    this.chineseConverterType = type;
+    ReaderSettingsStore.saveChineseConverterType(getContext(this), type).catch((e: Error) => {
+      console.warn('保存简繁转换设置失败:', e);
+    });
+  }
 }

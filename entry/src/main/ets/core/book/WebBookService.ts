@@ -1,8 +1,8 @@
-import { SourceEngineHost, Book, BookChapter, BookSource, ContentRule, HttpClient, HttpResponse, AnalyzeUrl, AnalyzeRule, RuleContext, VerificationSupport, EncodedSourceUrl, BookUrlResolver, BookFieldSanitizer, AjaxRuleCompat, JavaRegexCompat, JsRuntime, ScriptEngine, ScriptEngineContext, BookSourceRuntimeRouter, SourceRuntimeStage, BookSourceStageWebRuntime, StageWebRuntimeRequest, ReaderActionMarker, CookieStore, RuleExecutionService, RuleBatchExecutionRequest, RuleFieldRequest, CooperativeScheduler, RuleExecutionTarget, RuleValue, BookSourceDebugContext, LogText, NativeSourceService, NetworkErrorText } from '@legado/sourceengine';
+import { SourceEngineHost, Book, BookChapter, BookSource, ContentRule, HttpClient, HttpResponse, AnalyzeUrl, AnalyzeRule, RuleContext, VerificationSupport, EncodedSourceUrl, BookUrlResolver, BookFieldSanitizer, AjaxRuleCompat, JavaRegexCompat, JsRuntime, ScriptEngine, ScriptEngineContext, SourceRuntimeStage, BookSourceStageWebRuntime, StageWebRuntimeRequest, ReaderActionMarker, CookieStore, RuleExecutionService, RuleBatchExecutionRequest, RuleFieldRequest, CooperativeScheduler, RuleExecutionTarget, RuleValue, BookSourceDebugContext, LogText, NativeSourceService, NetworkErrorText } from '@legado/sourceengine';
 import { util } from '@kit.ArkTS';
 import { BookSourceDataUrlSupport } from './BookSourceDataUrlSupport';
 import { ReaderImageMarker } from './ReaderImageMarker';
-import { ComicImagePipeline } from './ComicImagePipeline';
+import { ComicImagePipeline, ComicImageRequestContext } from './ComicImagePipeline';
 import { BookSourceInteractionPostProcessor } from './BookSourceInteractionPostProcessor';
 import { BookSourceAudioWebRuntime } from './BookSourceAudioWebRuntime';
 import { AudioRuleSupport } from './AudioRuleSupport';
@@ -838,8 +838,17 @@ export class WebBookService {
       return data;
     }
     if (!content || this.isBadExtractedContent(content)) {
-      const fallbackContent = this.tryExtractReadableContentFromHtml(body);
-      if (fallbackContent) content = fallbackContent;
+      if (/^@(?:css|xpath|json):/i.test((contentRule.content || '').trim())) {
+        // A declared extraction boundary must not silently become the whole page, a login
+        // form or a report dialog. Surface the failed rule so it can be diagnosed.
+        content = '';
+        const message = '正文规则未匹配到有效内容，请检查正文规则或网站响应';
+        SourceEngineHost.setError(source, message);
+        if (debugContext) debugContext.addLog('error', message);
+      } else {
+        const fallbackContent = this.tryExtractReadableContentFromHtml(body);
+        if (fallbackContent) content = fallbackContent;
+      }
     }
     if (!content && imageRuleValues.length === 0) return data;
     content = this.applyContentReplaceRule(content, contentRule.replaceRegex, ctx, chapter, debugContext);
@@ -906,7 +915,7 @@ export class WebBookService {
       }
       return false;
     }
-    const verifyUrl = VerificationSupport.pickVerificationUrl(source, requestUrl, rule);
+    const verifyUrl = VerificationSupport.pickVerificationUrl(source, requestUrl, rule, body, statusCode);
     VerificationSupport.requestVerification(verifyUrl, `${source.bookSourceName} 验证`, source);
     console.warn('[WS] source needs browser verification:', source.bookSourceName, LogText.url(verifyUrl));
     return true;
@@ -1332,10 +1341,14 @@ export class WebBookService {
 
   private async normalizeReaderContent(source: BookSource, content: string, baseUrl: string,
     imageRuleValues: string[] = []): Promise<string> {
+    // Artwork of a source that declares browser headers must be fetched with those same headers and
+    // the page URL as Referer; otherwise a protected image host answers the challenge page and every
+    // illustration fails even though the chapter text itself loaded fine.
+    const imageContext = ComicImagePipeline.contextFromSource(source, baseUrl);
     const explicitImages = this.collectReaderImageUrls(imageRuleValues, baseUrl, true);
     if (explicitImages.length > 0) {
       return await this.materializeReaderImageMarkers(source,
-        explicitImages.map((url: string): string => ReaderImageMarker.create(url)).join('\n\n'));
+        explicitImages.map((url: string): string => ReaderImageMarker.create(url)).join('\n\n'), imageContext);
     }
 
     let value = content || '';
@@ -1372,7 +1385,7 @@ export class WebBookService {
       .replace(/&amp;/g, '&')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
-    return await this.materializeReaderImageMarkers(source, ReaderActionMarker.limit(normalized));
+    return await this.materializeReaderImageMarkers(source, ReaderActionMarker.limit(normalized), imageContext);
   }
 
   private convertReaderNativeActions(_source: BookSource, content: string, _baseUrl: string): string {
@@ -1500,7 +1513,8 @@ export class WebBookService {
     return ReaderActionMarker.create(label, url, title);
   }
 
-  private async materializeReaderImageMarkers(source: BookSource, content: string): Promise<string> {
+  private async materializeReaderImageMarkers(source: BookSource, content: string,
+    context: ComicImageRequestContext | null = null): Promise<string> {
     if (!content || !content.includes(ReaderImageMarker.PREFIX)) return content;
     const pattern = new RegExp(`${this.escapeRegex(ReaderImageMarker.PREFIX)}([^\\]]+)` +
       `${this.escapeRegex(ReaderImageMarker.SUFFIX)}`, 'g');
@@ -1518,7 +1532,7 @@ export class WebBookService {
     for (let start = 0; start < values.length; start += 4) {
       const batch = values.slice(start, start + 4);
       const paths = await Promise.all(batch.map((value: string): Promise<string> =>
-        ComicImagePipeline.materialize(this.http, source, value)));
+        ComicImagePipeline.materialize(this.http, source, value, context)));
       for (let index = 0; index < batch.length; index++) {
         resolved[batch[index]] = paths[index] || batch[index];
       }
@@ -1701,11 +1715,9 @@ export class WebBookService {
     variables: Record<string, string> = {}, debugContext: BookSourceDebugContext | null = null): Promise<string> {
     const code = this.stageRuleCode(rawRule);
     if (!code) return '';
-    const decision = BookSourceRuntimeRouter.decide(stage, `${source.jsLib || ''}\n${code}`);
-    if (decision.runtime !== 'arkweb') {
-      SourceEngineHost.setError(source, `${stage} 阶段未路由到完整脚本运行层`);
-      return '';
-    }
+    // A complete stage script is already excluded from the synchronous page parser. Execute it
+    // here even when the lightweight router considers its syntax simple; otherwise neither path
+    // runs simple <js> list/init scripts and the caller receives a misleading empty catalog.
     const runtime = BookSourceStageWebRuntime.get();
     if (!await runtime.waitUntilAvailable()) {
       SourceEngineHost.setError(source, `${stage} 阶段脚本运行环境未就绪`);
@@ -1728,7 +1740,9 @@ export class WebBookService {
       let value = result.value || '';
       const trailingRule = this.stageTrailingRule(rawRule);
       if (value && trailingRule) {
-        const transformed = this.applyStageTrailingRule(value, trailingRule, request.baseUrl);
+        const transformed = stage === SourceRuntimeStage.TOC ? JSON.stringify(
+          new AnalyzeRule(value, request.baseUrl).getElements(trailingRule)) :
+          this.applyStageTrailingRule(value, trailingRule, request.baseUrl);
         console.info('[WS] stage trailing rule:', stage, trailingRule,
           'input:', value.length, 'output:', transformed.length);
         value = transformed;
@@ -1892,10 +1906,24 @@ export class WebBookService {
     const tocRule = source.tocRule;
     const records: Record<string, Object>[] = [];
     const items: string[] = [];
+    const typedItems: RuleValue[] = [];
     for (const value of values) {
-      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
-      records.push(value as Record<string, Object>);
-      items.push(JSON.stringify(value));
+      let record = value;
+      // Legado list scripts also return individually serialized objects.
+      if (typeof record === 'string') {
+        if (/^\s*</.test(record as string)) {
+          records.push({});
+          items.push(record as string);
+          typedItems.push(RuleValue.htmlElement(record as string));
+          if (maxItems > 0 && items.length >= maxItems) break;
+          continue;
+        }
+        try { record = JSON.parse(record) as Object; } catch (_) { continue; }
+      }
+      if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
+      records.push(record as Record<string, Object>);
+      items.push(JSON.stringify(record));
+      typedItems.push(RuleValue.jsonValue(record, JSON.stringify(record)));
       if (maxItems > 0 && items.length >= maxItems) break;
     }
     if (items.length === 0) return chapters;
@@ -1908,9 +1936,7 @@ export class WebBookService {
     fieldRequest.book = book;
     fieldRequest.stage = SourceRuntimeStage.TOC;
     fieldRequest.ownerId = `stage_toc_fields_${Date.now()}_${book.bookUrl}`;
-    fieldRequest.typedContents = records.map((record: Record<string, Object>, index: number): RuleValue => {
-      return RuleValue.jsonValue(record, items[index] || JSON.stringify(record));
-    });
+    fieldRequest.typedContents = typedItems;
     fieldRequest.contents = items;
     fieldRequest.baseUrl = baseUrl;
     fieldRequest.contextValues = ctx.toPersistentRecord();
@@ -1918,6 +1944,7 @@ export class WebBookService {
       new RuleFieldRequest('chapterName', tocRule.chapterName || ''),
       new RuleFieldRequest('chapterUrl', tocRule.chapterUrl || ''),
       new RuleFieldRequest('isVip', tocRule.isVip || ''),
+      new RuleFieldRequest('isVolume', tocRule.isVolume || ''),
       new RuleFieldRequest('updateTime', tocRule.updateTime || '')
     ];
     fieldRequest.timeoutMs = 30000;
@@ -1938,7 +1965,8 @@ export class WebBookService {
       if (index > 0) await parsingSlice.checkpoint();
       const record = records[index];
       const fields = index < parsedFields.length ? parsedFields[index] : {};
-      const isVolume = record['isVolume'] === true || String(record['isVolume'] || '') === 'true';
+      const isVolume = fields['isVolume'] === 'true' || fields['isVolume'] === '1' ||
+        record['isVolume'] === true || String(record['isVolume'] || '') === 'true';
       const title = this.cleanChapterTitle(fields['chapterName'] || String(record['title'] || ''));
       let url = fields['chapterUrl'] || String(record['url'] || '');
       if (!title || isVolume || !url) continue;
@@ -1951,7 +1979,7 @@ export class WebBookService {
       chapter.url = url;
       chapter.bookUrl = book.bookUrl;
       chapter.index = chapters.length;
-      chapter.isVip = fields['isVip'] === 'true' || record['v'] === true;
+      chapter.isVip = fields['isVip'] === 'true' || fields['isVip'] === '1' || record['v'] === true;
       chapter.variable = BookUrlResolver.setVariableJson(chapter.variable, 'baseUrl', baseUrl);
       const updateTime = fields['updateTime'] || String(record['t'] || '');
       if (updateTime) chapter.variable = BookUrlResolver.setVariableJson(chapter.variable, 'updateTime', updateTime);
@@ -1966,9 +1994,7 @@ export class WebBookService {
     const rawRule = source.contentRule.content || '';
     const code = this.stageRuleCode(rawRule);
     if (!code) return '';
-    const decision = BookSourceRuntimeRouter.decide(SourceRuntimeStage.CONTENT,
-      `${source.jsLib || ''}\n${code}`);
-    if (decision.runtime !== 'arkweb') return '';
+    // Complete content scripts share the same asynchronous stage path as list/init scripts.
     const runtime = BookSourceStageWebRuntime.get();
     if (!await runtime.waitUntilAvailable()) return '';
     let content = '';
@@ -1994,7 +2020,9 @@ export class WebBookService {
       const response = await new AnalyzeUrl(source, this.http).fetch(chapter.url, undefined, debugContext);
       if (!response.success || !response.body) return '';
       content = response.body;
-      baseUrl = BookUrlResolver.effectiveBase(response, chapter.url, book.bookUrl || source.bookSourceUrl);
+      // Preserve POST options for scripts which rebuild the chapter request after login.
+      baseUrl = /,\s*\{/.test(chapter.url) ? chapter.url :
+        BookUrlResolver.effectiveBase(response, chapter.url, book.bookUrl || source.bookSourceUrl);
       if (source.bookSourceType === 1 || (Number(book.type) & 32) !== 0) {
         const mediaUrl = this.extractAudioSourceRegexUrl(source.contentRule.sourceRegex || '',
           response.url || baseUrl, content, baseUrl);

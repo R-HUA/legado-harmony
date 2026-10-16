@@ -161,6 +161,10 @@ export class AccountCommerceApi {
   }
 
   private static async request(path: string, method: string, body: string, sessionToken: string): Promise<string> {
+    if (!AccountCommerceConfig.COMMERCE_ENABLED &&
+      !path.startsWith('/v1/sync/') && path !== '/v1/auth/renew') {
+      throw new AccountApiError('该服务暂不可用', 0, 'SERVICE_DISABLED');
+    }
     if (!AccountCommerceConfig.isServerConfigured()) {
       throw new AccountApiError('账号服务端尚未配置', 0, 'SERVER_NOT_CONFIGURED');
     }

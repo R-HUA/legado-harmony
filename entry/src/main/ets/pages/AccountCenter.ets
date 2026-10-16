@@ -66,7 +66,7 @@ struct AccountCenterPage {
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
 
   aboutToAppear(): void {
-    this.initialize();
+    if (AccountCommerceConfig.COMMERCE_ENABLED) this.initialize();
     this.syncBars();
   }
 

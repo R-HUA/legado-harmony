@@ -81,6 +81,19 @@ their original notices. Modified files include prominent source-level notices
 where applicable. Modifications in this distribution include QuickJS runtime
 adaptation, handle safety, bounded execution, and HarmonyOS integration.
 
+==========================================================================
+4. OpenCC Chinese conversion dictionaries
+==========================================================================
+
+Project: https://github.com/BYVoid/OpenCC
+Files:   TSCharacters.txt / TSPhrases.txt / STCharacters.txt / STPhrases.txt
+         (OpenCC ver.1.1.9, bundled under rawfile/chinese/)
+License: Apache License 2.0
+Copyright BYVoid and OpenCC contributors
+
+The dictionary data files are distributed verbatim without modification.
+Apache License 2.0 full text: see section 3 above.
+
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/

@@ -55,6 +55,7 @@ export struct ReaderTocPanel {
   @Prop selectedColor: string = '#11007DFF';
   @Prop panelWidth: number = 360;
   @Prop panelHeight: number = 480;
+  @Prop cover: ResourceStr = '';
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
 
   book: Book | null = null;
@@ -686,8 +687,8 @@ export struct ReaderTocPanel {
     };
   }
 
-  private bookCover(): string {
-    return this.book ? this.book.getDisplayCover() : '';
+  private bookCover(): ResourceStr {
+    return this.cover || (this.book ? this.book.getDisplayCover() : '');
   }
 
   private bookInitial(): string {

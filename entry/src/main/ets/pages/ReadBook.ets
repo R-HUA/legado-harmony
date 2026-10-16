@@ -14,7 +14,6 @@ import display from '@ohos.display';
 import Animator, { AnimatorResult } from '@ohos.animator';
 import { HdsTabs } from '@kit.UIDesignKit';
 import { ARView } from '@kit.AREngine';
-import { AccountCommerceApi } from '../account/AccountCommerceApi';
 import { AccountSessionStore } from '../account/AccountSessionStore';
 import { CloudSyncCoordinator } from '../account/CloudSyncCoordinator';
 import { TtsVoiceInfo } from '../account/AccountCommerceModels';
@@ -51,6 +50,7 @@ import { SystemDialogSession } from '../utils/SystemDialogSession';
 import { BookChangeSourceDialog } from '../components/BookChangeSourceDialog';
 import { TapZoneSettingsDialogContent } from '../components/TapZoneSettingsDialog';
 import { BookCoverCache } from '../utils/BookCoverCache';
+import { CoverImageService } from '../core/book/CoverImageService';
 import { CoverGallerySettings } from '../utils/CoverGallerySettings';
 import { AppThemeModeStore } from '../utils/AppThemeModeStore';
 import {
@@ -66,6 +66,7 @@ import { ThemeRegexEmphasisModes } from '../theme/ThemeModels';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
 import { ReaderContentPreprocessor } from '../core/concurrency/ReaderContentPreprocessor';
+import { ChineseConverter } from '../utils/ChineseConverter';
 import {
   ReaderV2Document,
   ReaderV2DocumentParser,
@@ -299,6 +300,8 @@ struct ReadBookPage {
   @StorageLink('globalTtsCanPrevious') globalTtsCanPrevious: boolean = false;
   @StorageLink('globalTtsCanNext') globalTtsCanNext: boolean = false;
   @StorageLink('globalTtsBookUrl') globalTtsBookUrl: string = '';
+  // 在线封面下载完成后计数变化，读过它的封面区块（目录/朗读面板）才会重建并切到本地文件。
+  @StorageLink('coverImageVersion') coverImageVersion: number = 0;
   @StorageLink('globalTtsChapterIndex') globalTtsChapterIndex: number = -1;
   @StorageLink('globalTtsOffsetStart') globalTtsOffsetStart: number = -1;
   @StorageLink('globalTtsOffsetEnd') globalTtsOffsetEnd: number = -1;
@@ -322,6 +325,7 @@ struct ReadBookPage {
   private readerContinuousLastListEnd: number = 0;
   private readerNeighborLoaderInstance: ReaderNeighborChapterLoader | null = null;
   private readerComicImageActionsInstance: ReaderComicImageActions | null = null;
+  private readerPagedImageSettled: Set<string> = new Set();
   private readerComicScrollRestoreSerial: number = 0;
   private readerComicScrollRestoring: boolean = false;
   private readerComicReanchorSerial: number = 0;
@@ -564,6 +568,7 @@ struct ReadBookPage {
   @StorageLink('readerParagraphSpacing') @Watch('onReadLayoutChanged') readerParagraphSpacing: number = 0;
   // 保留段首缩进：开启后分页/分块起点不再裁掉原文的全角空格缩进。
   @StorageLink('readerKeepParagraphIndent') @Watch('onReadLayoutChanged') keepParagraphIndent: boolean = false;
+  @StorageLink('readerChineseConverterType') @Watch('onChineseConverterTypeChanged') chineseConverterType: number = 0;
   @StorageLink('readerMarginLeft') @Watch('onReadLayoutChanged') readerMarginLeft: number = 18;
   @StorageLink('readerMarginRight') @Watch('onReadLayoutChanged') readerMarginRight: number = 18;
   @StorageLink('readerMarginTop') @Watch('onReadLayoutChanged') readerMarginTop: number = 18;
@@ -963,6 +968,7 @@ struct ReadBookPage {
   }
 
   aboutToDisappear() {
+    this.readerPagedImageSettled.clear();
     AppStorage.setOrCreate<boolean>('shelfReaderDirectTransition', false);
     this.resetReaderScreenOrientation();
     this.readerPageVisible = false;
@@ -3684,6 +3690,7 @@ struct ReadBookPage {
         selectedColor: this.tocSelectedBackgroundColor(),
         panelWidth: this.readerFloatingBarWidth(),
         panelHeight: this.readerTocPanelHeight(),
+        cover: this.readerCoverUri(this.getTocCover()),
         book: this.book,
         controller: this.tocPanelController,
         chapterTitle: (chapterIndex: number): string => this.getChapterTitle(chapterIndex),
@@ -4427,7 +4434,7 @@ struct ReadBookPage {
       panelColor: this.readerGlassPanelColor(),
       bookName: this.book?.name || '',
       bookInitial: this.getTocBookInitial(),
-      cover: this.getTocCover(),
+      cover: this.readerCoverUri(this.getTocCover()),
       bookSubtitle: this.book?.author || '',
       count: ReaderTtsFloatingSession.catalogCount(),
       currentDisplayIndex: this.globalTtsCatalogDisplayIndex(ReaderTtsFloatingSession.catalogIndex()),
@@ -4608,6 +4615,16 @@ struct ReadBookPage {
     return this.book ? this.book.getDisplayCover() : '';
   }
 
+  /**
+   * 封面渲染值：本地缓存优先；未缓存时返回原始地址并排队下载，解析完成后由 coverImageVersion
+   * 触发重建（见 CoverImageService）。主题封面是本地资源，原样返回。
+   */
+  readerCoverUri(cover: ResourceStr): ResourceStr {
+    if (typeof cover !== 'string') return cover;
+    return CoverImageService.displayUri(cover, this.book?.origin || '', this.bookUrl,
+      this.coverImageVersion);
+  }
+
   getTocBookInitial(): string {
     const name = (this.book?.name || '书').trim();
     return name.length > 0 ? name.substring(0, 1) : '书';
@@ -4617,12 +4634,14 @@ struct ReadBookPage {
     if (this.chapters.length === 0) return '暂无目录';
     const chapter = this.chapters[this.clampChapterIndex(chapterIndex)];
     const title = chapter ? this.cleanChapterTitle(chapter.title) : '';
-    return ReaderReplaceRuleStore.applyTitle(title, this.readerReplaceRules, this.book);
+    // 简繁转换先于替换净化，与正文处理顺序保持一致（参考 legado-with-MD3 ContentProcessor）。
+    const convertedTitle = ChineseConverter.convertText(title, this.chineseConverterType);
+    return ReaderReplaceRuleStore.applyTitle(convertedTitle, this.readerReplaceRules, this.book);
   }
 
   readerPreparedContentKey(content: string, chapterIndex: number): string {
     return `${chapterIndex}_${content.length}_${this.hashText(content)}_${this.readerReplaceRules.length}_` +
-      `${this.readerReplaceRulesUpdateTime}`;
+      `${this.readerReplaceRulesUpdateTime}_${this.chineseConverterType}`;
   }
 
   getPreparedReaderContent(content: string, chapterIndex: number): string {
@@ -4642,9 +4661,15 @@ struct ReadBookPage {
     const cached = this.readerPreparedContentCache.get(key);
     if (cached !== undefined) return cached;
     const startedAt = Date.now();
+    // 简繁转换先于替换净化执行（词典就绪后为有界的单趟映射），转换结果仍交给
+    // TaskPool 预处理器做规则净化与 ReaderAction 标记保护。
+    if (this.chineseConverterType !== ChineseConverter.TYPE_OFF) {
+      await ChineseConverter.ensureLoaded(getContext(this), this.chineseConverterType);
+    }
+    const converted = ChineseConverter.convertText(content, this.chineseConverterType);
     const replaced = ReaderActionMarker.limit(
-      await ReaderContentPreprocessor.apply(content, this.readerReplaceRules, this.book));
-    // Comic chapters size their images from the decoded bitmap; probing every file up front only delays opening.
+      await ReaderContentPreprocessor.apply(converted, this.readerReplaceRules, this.book));
+    // 漫画从解码结果获取尺寸，文字章节保留上游插图尺寸标记。
     const processed = this.isReaderComicModeActive() ? replaced : await ReaderImageSizeResolver.annotate(replaced);
     const elapsedMs = Math.max(0, Date.now() - startedAt);
     if (elapsedMs >= CooperativeScheduler.DANGEROUS_OPERATION_MS) {
@@ -4684,6 +4709,39 @@ struct ReadBookPage {
     this.pageTurnPreviewKey = '';
     this.pageTurnPreviewLoadingKey = '';
     if (!repaginate || !this.book || this.chapters.length === 0) {
+      return;
+    }
+    this.pendingRestorePageIndex = Math.max(this.pendingRestorePageIndex, this.currentPageIndex);
+    const raw = this.readerEngine().getCachedContent(this.currentChapterIndex);
+    if (!raw) {
+      return;
+    }
+    const processed = await this.prepareReaderContentRules(raw, this.currentChapterIndex);
+    this.content = processed;
+    this.paginateContent(processed, this.currentChapterIndex);
+    this.refreshReaderTextRender();
+  }
+
+  onChineseConverterTypeChanged(): void {
+    if (this.readerEntryInitializing || !this.readerPageVisible) {
+      return;
+    }
+    this.reloadChineseConvertedContent().catch((error: Error) => {
+      console.warn('应用简繁转换设置失败:', error);
+    });
+  }
+
+  async reloadChineseConvertedContent(): Promise<void> {
+    const converterType = this.chineseConverterType;
+    if (converterType !== ChineseConverter.TYPE_OFF) {
+      await ChineseConverter.ensureLoaded(getContext(this), converterType);
+    }
+    this.readerPreparedContentCache.clear();
+    this.readerPaginationCache.clear();
+    this.adjacentPaginationPreloadSerial++;
+    this.pageTurnPreviewKey = '';
+    this.pageTurnPreviewLoadingKey = '';
+    if (!this.book || this.chapters.length === 0) {
       return;
     }
     this.pendingRestorePageIndex = Math.max(this.pendingRestorePageIndex, this.currentPageIndex);
@@ -5712,6 +5770,7 @@ struct ReadBookPage {
     this.displayPageRenderKey++;
     this.pageRenderVersion++;
     this.refreshCurrentReaderV2RetainedPages();
+    this.prewarmReaderV2ImageBitmaps(this.currentChapterIndex, this.currentPageIndex, this.pagedContentText);
   }
 
   parseAreaDimension(value: Length): number {
@@ -6281,6 +6340,7 @@ struct ReadBookPage {
     this.readerLineHeight = settings.lineHeight;
     this.readerParagraphSpacing = settings.paragraphSpacing;
     this.keepParagraphIndent = settings.keepParagraphIndent;
+    this.chineseConverterType = settings.chineseConverterType;
     this.readerMarginLeft = settings.marginLeft;
     this.readerMarginRight = settings.marginRight;
     this.readerMarginTop = settings.marginTop;
@@ -6668,27 +6728,9 @@ struct ReadBookPage {
     }
     this.ttsVoicesLoading = true;
     try {
-      const voiceResults = await Promise.all([
-        SystemTtsReader.listAvailableVoices(),
-        AccountCommerceApi.fetchTtsCatalog().catch(() => null)
-      ]);
-      const voices = voiceResults[0] as TtsVoiceOption[];
-      const catalog = voiceResults[1];
-      this.ttsCloudVoices = catalog ? catalog.voices : [];
-      if (catalog && this.ttsCloudVoiceId && !this.findCurrentCloudTtsVoice()) {
-        const previousVoiceId = this.ttsCloudVoiceId;
-        const fallbackVoice = this.ttsCloudVoices.find((voice: TtsVoiceInfo) => voice.id === 'xiaoyan') ||
-          this.ttsCloudVoices[0];
-        this.ttsCloudVoiceId = fallbackVoice ? fallbackVoice.id : '';
-        console.warn(`[TTS] unsupported cloud voice migrated: ${previousVoiceId} -> ${this.ttsCloudVoiceId}`);
-        this.saveTtsSettings();
-      }
-      if (!catalog && this.ttsCloudVoiceId) {
-        const fallbackCloudVoice = new TtsVoiceInfo();
-        fallbackCloudVoice.id = this.ttsCloudVoiceId;
-        fallbackCloudVoice.name = '云端音色';
-        this.ttsCloudVoices = [fallbackCloudVoice];
-      }
+      const voices = await SystemTtsReader.listAvailableVoices();
+      this.ttsCloudVoices = [];
+      this.ttsCloudVoiceId = '';
       this.ttsVoices = TtsVoiceCatalog.applyInstalledOverrides(TtsVoiceCatalog.mergeWithDefault(voices),
         this.ttsInstalledVoiceKeys);
       const currentCloudVoice = this.findCurrentCloudTtsVoice();
@@ -9056,8 +9098,31 @@ struct ReadBookPage {
           this.setKeepParagraphIndent(checked);
         })
 
+      this.readerSelectSettingItem('简繁转换', '在繁体中文与简体中文之间转换正文',
+        this.chineseConverterOptions(), this.chineseConverterSelectedIndex(), (index: number) => {
+          this.setChineseConverterByIndex(index);
+        }, 'reader_chinese_converter_select')
+
     }
     .width('100%')
+  }
+
+  chineseConverterOptions(): SelectOption[] {
+    return [{ value: '不转换' }, { value: '繁体转简体' }, { value: '简体转繁体' }];
+  }
+
+  chineseConverterSelectedIndex(): number {
+    return this.chineseConverterType >= 1 && this.chineseConverterType <= 2 ? this.chineseConverterType : 0;
+  }
+
+  setChineseConverterByIndex(index: number): void {
+    const type = index === 1 ? ChineseConverter.TYPE_T2S :
+      (index === 2 ? ChineseConverter.TYPE_S2T : ChineseConverter.TYPE_OFF);
+    if (this.chineseConverterType === type) return;
+    this.chineseConverterType = type;
+    ReaderSettingsStore.saveChineseConverterType(getContext(this), type).catch((e: Error) => {
+      console.warn('保存简繁转换设置失败:', e);
+    });
   }
 
   readerTextAlignOptions(): SelectOption[] {
@@ -10201,7 +10266,7 @@ struct ReadBookPage {
         // chapter boundaries; explicit stop/pause paths still release it.
         keepAudioOutputOnFinish: true
       });
-      if (showToast && token === this.ttsReadToken) {
+      if (showToast && token === this.ttsReadToken && this.ttsReader.isSpeaking()) {
         HdsFeedback.showToast('开始连续朗读');
       }
     } catch (error) {
@@ -10580,6 +10645,7 @@ struct ReadBookPage {
           return info;
         },
         coverRaw: (): string => this.getBookshelfDisplayCoverRaw(),
+        coverOrigin: (): string => this.book?.origin || '',
         onPlay: (): void => {
           if (this.isTtsPaused || this.ttsReader.isPaused()) {
             this.toggleTtsReading();
@@ -10835,7 +10901,7 @@ struct ReadBookPage {
       return themeCovers.length > 0 ? themeCovers[0] : '';
     }
     const covers = this.getTtsPanelCoverList();
-    return covers.length > 0 ? covers[0] : '';
+    return covers.length > 0 ? this.readerCoverUri(covers[0]) : '';
   }
 
   getBookshelfDisplayCoverRaw(): string {
@@ -13918,7 +13984,8 @@ struct ReadBookPage {
       // Image blocks are laid out by the V2 paginator but painted by ArkUI Image, which owns decoding,
       // caching and downsampling. Their rects use the same page-local pixel coordinates as the glyphs.
       ForEach(this.readerV2ImageFragments(chapterIndex, pageIndex, source), (fragment: ReaderV2PageFragment) => {
-        this.readerV2ImageFragmentView(fragment)
+        this.readerV2ImageFragmentView(fragment,
+          `${role}\n${chapterIndex}_${this.hashText(source)}\n${fragment.blockId}_${fragment.imageSource}`)
       }, (fragment: ReaderV2PageFragment) => `reader_v2_image_${fragment.blockId}_` +
         `${Math.round(fragment.imageRect.left)}_${Math.round(fragment.imageRect.top)}_` +
         `${Math.round(fragment.imageRect.right)}_${Math.round(fragment.imageRect.bottom)}`)
@@ -14137,28 +14204,32 @@ struct ReadBookPage {
   }
 
   @Builder
-  readerV2ImageFragmentView(fragment: ReaderV2PageFragment) {
+  readerV2ImageFragmentView(fragment: ReaderV2PageFragment, surfaceKey: string = '') {
     // Only opacity is animated: the implicit animation covers attributes declared before it, so page relayouts
     // (size/position) still apply instantly.
-    // 已解码的本地插图直接用 PixelMap 绘制：翻页和跨章会新建 Image 节点，用文件地址时新节点要重新异步解码，
+    // 已解码的插图直接用 PixelMap 绘制：翻页和跨章会新建 Image 节点，用文件地址时新节点要重新异步解码，
     // 解码完成前插图位置是空的。
-    Image(this.readerV2ImageContent(fragment, this.readerV2ImageBitmapVersion))
-      .syncLoad(this.readerV2ImageBitmapReady(fragment, this.readerV2ImageBitmapVersion))
-      .opacity(this.isReaderV2ImageShown(fragment, this.readerV2ImageBitmapVersion) ? 1 : 0)
-      .animation({ duration: 220, curve: Curve.EaseOut })
-      .width(px2vp(fragment.imageRect.width()))
-      .height(px2vp(fragment.imageRect.height()))
-      .position({ x: px2vp(fragment.imageRect.left), y: px2vp(fragment.imageRect.top) })
-      .objectFit(ImageFit.Contain)
-      .draggable(false)
-      .hitTestBehavior(HitTestMode.None)
-      .onComplete(() => {
-        this.markReaderV2ImageLoaded(fragment.imageSource);
-      })
-      .onError((error: ImageError) => {
-        console.error(`[Reader] 图片加载失败 path=${fragment.imageSource} message=${error?.message || ''}`);
-        this.markReaderV2ImageBroken(fragment.imageSource);
-      })
+    if (this.readerV2ImageReadyToRender(fragment, this.readerV2ImageBitmapVersion)) {
+      Image(this.readerV2ImageContent(fragment, this.readerV2ImageBitmapVersion))
+        .syncLoad(this.readerV2ImageBitmapReady(fragment, this.readerV2ImageBitmapVersion))
+        .opacity(this.isReaderV2ImageShown(fragment, this.readerV2ImageBitmapVersion) ? 1 : 0)
+        .animation({ duration: 220, curve: Curve.EaseOut })
+        .width(px2vp(fragment.imageRect.width()))
+        .height(px2vp(fragment.imageRect.height()))
+        .position({ x: px2vp(fragment.imageRect.left), y: px2vp(fragment.imageRect.top) })
+        .objectFit(ImageFit.Contain)
+        .draggable(false)
+        .hitTestBehavior(HitTestMode.None)
+        .onComplete((event) => {
+          this.markReaderV2ImageLoaded(fragment.imageSource);
+          if (event?.loadingStatus === 1) this.markReaderV2ImageSurfaceSettled(surfaceKey);
+        })
+        .onError((error: ImageError) => {
+          console.error(`[Reader] 图片加载失败 path=${fragment.imageSource} message=${error?.message || ''}`);
+          this.markReaderV2ImageBroken(fragment.imageSource);
+          this.markReaderV2ImageSurfaceSettled(surfaceKey);
+        })
+    }
     if (this.readerV2BrokenImageSources.includes(fragment.imageSource)) {
       Text('图片加载失败')
         .fontSize(AppFontSize.BODY)
@@ -14194,6 +14265,14 @@ struct ReadBookPage {
       fragment.imageRect.height());
   }
 
+  readerV2ImageReadyToRender(fragment: ReaderV2PageFragment, bitmapVersion: number): boolean {
+    if (this.readerV2ImageBitmapReady(fragment, bitmapVersion) ||
+      this.readerV2ImageBitmaps.usesUriFallback(fragment.imageSource, fragment.imageRect.width(),
+        fragment.imageRect.height())) return true;
+    this.prepareReaderV2ImageBitmap(fragment);
+    return false;
+  }
+
   isReaderV2ImageShown(fragment: ReaderV2PageFragment, bitmapVersion: number): boolean {
     return this.readerV2LoadedImageSources.includes(fragment.imageSource) ||
       this.readerV2ImageBitmapReady(fragment, bitmapVersion);
@@ -14217,6 +14296,59 @@ struct ReadBookPage {
       for (const fragment of pageSet.pages[index].fragments) {
         if (fragment.imageSource) this.prepareReaderV2ImageBitmap(fragment);
       }
+    }
+  }
+
+  readerV2SpreadImageFragments(chapterIndex: number, pageIndex: number, source: string): ReaderV2PageFragment[] {
+    const fragments = this.readerV2PageFragments(chapterIndex, pageIndex, source)
+      .filter((fragment: ReaderV2PageFragment): boolean => !!fragment.imageSource);
+    if (this.isLandscapeDoublePageActive()) {
+      fragments.push(...this.readerV2PageFragments(chapterIndex, pageIndex + 1, source)
+        .filter((fragment: ReaderV2PageFragment): boolean => !!fragment.imageSource));
+    }
+    return fragments;
+  }
+
+  async waitForReaderPageImages(chapterIndex: number, pageIndex: number, source: string,
+    timeoutMs: number): Promise<ReaderV2PageFragment[]> {
+    const fragments = this.readerV2SpreadImageFragments(chapterIndex, pageIndex, source);
+    if (fragments.length === 0) return fragments;
+    let timer = -1;
+    try {
+      await Promise.race([
+        Promise.all(fragments.map((fragment: ReaderV2PageFragment): Promise<image.PixelMap | null> => {
+          this.prepareReaderV2ImageBitmap(fragment);
+          return this.readerV2ImageBitmaps.prepareAsync(fragment.imageSource, fragment.imageRect.width(),
+            fragment.imageRect.height());
+        })),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); })
+      ]);
+    } finally {
+      if (timer >= 0) clearTimeout(timer);
+    }
+    this.readerV2ImageBitmapVersion++;
+    return fragments;
+  }
+
+  markReaderV2ImageSurfaceSettled(surfaceKey: string): void {
+    if (!surfaceKey) return;
+    this.readerPagedImageSettled.add(surfaceKey);
+    while (this.readerPagedImageSettled.size > 192) {
+      const oldest = this.readerPagedImageSettled.values().next().value as string;
+      this.readerPagedImageSettled.delete(oldest);
+    }
+  }
+
+  async waitForReaderImageSurface(role: string, chapterIndex: number, source: string,
+    fragments: ReaderV2PageFragment[], timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const identity = `${chapterIndex}_${this.hashText(source)}`;
+    while (fragments.length > 0 && Date.now() < deadline && this.readerPageVisible) {
+      const ready = fragments.every((fragment: ReaderV2PageFragment): boolean =>
+        Array.from(this.readerPagedImageSettled).some((key: string): boolean =>
+          key.startsWith(role) && key.endsWith(`\n${identity}\n${fragment.blockId}_${fragment.imageSource}`)));
+      if (ready) return;
+      await sleepMs(16);
     }
   }
 
@@ -16363,9 +16495,13 @@ struct ReadBookPage {
     this.resetSlidePageState();
     const localPageIndex = this.getLocalPageTurnTargetPageIndex(direction);
     if (localPageIndex >= 0) {
-      this.currentPageIndex = localPageIndex;
       const targetText = this.getPageText(localPageIndex);
+      const chapterIndex = this.currentChapterIndex;
+      const images = await this.waitForReaderPageImages(chapterIndex, localPageIndex, this.pagedContentText, 1000);
+      if (chapterIndex !== this.currentChapterIndex || !this.readerPageVisible) return;
+      this.currentPageIndex = localPageIndex;
       this.commitVisibleCurrentPageText(targetText);
+      if (images.length > 0) await sleepMs(48);
       this.finishPageTurnAnimation(false);
       if (direction > 0 && this.contentPages.length - this.currentPageIndex <= 3) {
         this.preloadReaderContentLater();
@@ -16412,6 +16548,7 @@ struct ReadBookPage {
     // that retained node painting the previous page until another frame happens to rebuild the surrounding tree,
     // which is especially visible at a cross-chapter handoff. Publish the exact settled page immediately.
     this.refreshCurrentReaderV2RetainedPages();
+    this.prewarmReaderV2ImageBitmaps(this.currentChapterIndex, this.currentPageIndex, this.pagedContentText);
   }
 
   commitCurrentPageTextLater(chapterIndex: number, pageIndex: number, expectedText: string): void {
@@ -16490,11 +16627,14 @@ struct ReadBookPage {
     // The incoming surface is already at the viewport origin. Commit and lay out the new current surface behind it,
     // then remove the incoming surface on the next frame. Removing it first caused an intermittent background flash.
     const keepIncomingVisible = this.pageSlideDirection !== 0 && !!this.pageTurnIncomingText;
+    const source = this.pagedContentText;
+    const images = await this.waitForReaderPageImages(chapterIndex, pageIndex, source, 1000);
+    if (chapterIndex !== this.currentChapterIndex || pageIndex !== this.currentPageIndex) return;
     this.commitVisibleCurrentPageText(targetText);
     if (keepIncomingVisible) {
-      // Cross-chapter pages may contain many bubble ImageSpans. Keep the already-complete preview on top
-      // for a few frames while the new current render group is rasterized behind it.
-      await sleepMs(this.pageTurnCrossChapterHandoff ? 48 : 16);
+      await this.waitForReaderImageSurface('current_', chapterIndex, source, images, 500);
+      // 解码完成不代表 RenderService 已提交当前页，保留预览直到新页面完成一次绘制。
+      await sleepMs(images.length > 0 || this.pageTurnCrossChapterHandoff ? 48 : 16);
       if (chapterIndex !== this.currentChapterIndex || pageIndex !== this.currentPageIndex) return;
     }
     this.finishPageTurnAnimation(false);
@@ -16988,6 +17128,12 @@ struct ReadBookPage {
       if (serial !== this.readerPageCurlCaptureSerial || key !== this.readerPageCurlCaptureKey) return;
       await sleepMs(20);
     }
+    const imageChapterIndex = this.pageTurnIncomingChapterIndex;
+    const imageSource = this.pageTurnIncomingDocumentSource;
+    const images = await this.waitForReaderPageImages(imageChapterIndex, this.pageTurnIncomingPageIndex,
+      imageSource, 1000);
+    await this.waitForReaderImageSurface(this.isLandscapeDoublePageActive() ?
+      'simulation_incoming_overlay_' : 'overlay_simulation_back_', imageChapterIndex, imageSource, images, 500);
     // Let the incoming cross-chapter preview and its ImageSpans finish one layout pass before rasterizing.
     await sleepMs(this.pageTurnCrossChapterHandoff ? 32 : 0);
     // The retained V2 current component keeps a stable id across pages. Unlike the old temporary capture node,

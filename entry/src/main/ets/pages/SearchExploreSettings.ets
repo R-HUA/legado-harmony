@@ -35,7 +35,7 @@ struct SearchExploreSettingsPage {
 
   build() {
     Stack() {
-      PageScaffold({ title: '搜索/发现配置', content: () => {
+      PageScaffold({ title: '搜索与发现设置', content: () => {
         this.pageContent()
       } })
     }

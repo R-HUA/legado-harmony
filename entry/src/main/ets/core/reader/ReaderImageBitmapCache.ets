@@ -1,21 +1,26 @@
 import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
 import image from '@ohos.multimedia.image';
+import { util } from '@kit.ArkTS';
+import { HttpClient } from '@legado/sourceengine';
 
 /**
  * 正文插图的解码缓存。翻页时滑入页、当前页和跨章后的新页面都是新建的 Image 节点，用文件地址时每个节点都要在后台
  * 重新解码，解码完成前插图位置是空的，看起来就是插图闪一下。这里把本地图片按显示尺寸解码成 PixelMap 留在内存里，
- * Image 直接拿 PixelMap 绘制，新节点第一帧就有画面。只处理本地文件，网络图和 data: 仍交给 Image 自己加载。
+ * Image 直接拿 PixelMap 绘制，新节点第一帧就有画面。网络和 data: 插图也共用解码结果，动图保留 Image 地址加载。
  */
 export class ReaderImageBitmapCache {
   private static readonly MAX_ENTRIES: number = 48;
   private static readonly MAX_BYTES: number = 64 * 1024 * 1024;
   /** 同一张图解码失败后不再重试，Image 会按文件地址加载并显示失败提示。 */
   private static readonly FAILED_LIMIT: number = 128;
+  private static decodeCount: number = 0;
+  private static decodeWaiters: (() => void)[] = [];
 
   private readonly bitmaps: Map<string, image.PixelMap> = new Map<string, image.PixelMap>();
   private readonly bytesByKey: Map<string, number> = new Map<string, number>();
-  private readonly pending: Set<string> = new Set<string>();
+  private readonly pending: Map<string, Promise<image.PixelMap | null>> =
+    new Map<string, Promise<image.PixelMap | null>>();
   private readonly failed: Set<string> = new Set<string>();
   private totalBytes: number = 0;
 
@@ -33,25 +38,40 @@ export class ReaderImageBitmapCache {
   }
 
   /**
-   * 安排后台解码。已缓存、正在解码、失败过或不是本地文件时直接返回 false；
-   * 否则解码完成后调用 onReady（失败不回调）。
+   * 安排后台解码。已缓存、正在解码或失败过时直接返回 false；
+   * 否则解码完成后调用 onReady，失败时让界面切回 Image 地址加载。
    */
   prepare(source: string, widthPx: number, heightPx: number, onReady: () => void): boolean {
     const key = ReaderImageBitmapCache.cacheKey(source, widthPx, heightPx);
     if (!key || this.bitmaps.has(key) || this.pending.has(key) || this.failed.has(key)) return false;
-    const path = ReaderImageBitmapCache.localPath(source);
-    if (!path) return false;
-    this.pending.add(key);
-    ReaderImageBitmapCache.decode(path, widthPx, heightPx).then((bitmap: image.PixelMap | null) => {
+    this.prepareAsync(source, widthPx, heightPx).then(() => onReady());
+    return true;
+  }
+
+  /** 翻页交接与预加载等待同一个解码任务，避免新建当前页后再次下载、解码。 */
+  prepareAsync(source: string, widthPx: number, heightPx: number): Promise<image.PixelMap | null> {
+    const key = ReaderImageBitmapCache.cacheKey(source, widthPx, heightPx);
+    if (!key) return Promise.resolve(null);
+    const cached = this.get(source, widthPx, heightPx);
+    if (cached) return Promise.resolve(cached);
+    const pending = this.pending.get(key);
+    if (pending) return pending;
+    if (this.failed.has(key)) return Promise.resolve(null);
+    const task = ReaderImageBitmapCache.decode(source, widthPx, heightPx).then((bitmap: image.PixelMap | null) => {
       this.pending.delete(key);
       if (!bitmap) {
         this.rememberFailure(key);
-        return;
+        return null;
       }
       this.store(key, bitmap);
-      onReady();
+      return bitmap;
     });
-    return true;
+    this.pending.set(key, task);
+    return task;
+  }
+
+  usesUriFallback(source: string, widthPx: number, heightPx: number): boolean {
+    return this.failed.has(ReaderImageBitmapCache.cacheKey(source, widthPx, heightPx));
   }
 
   clear(): void {
@@ -112,12 +132,29 @@ export class ReaderImageBitmapCache {
   }
 
   /** 按 Contain 的显示尺寸解码，不放大原图。 */
-  private static async decode(path: string, widthPx: number, heightPx: number): Promise<image.PixelMap | null> {
+  private static async decode(uri: string, widthPx: number, heightPx: number): Promise<image.PixelMap | null> {
+    if (this.decodeCount >= 2) await new Promise<void>((resolve) => this.decodeWaiters.push(resolve));
+    else this.decodeCount++;
     let file: fs.File | null = null;
     let source: image.ImageSource | null = null;
     try {
-      file = fs.openSync(path, fs.OpenMode.READ_ONLY);
-      source = image.createImageSource(file.fd);
+      if (/^https?:/i.test(uri)) {
+        const response = await new HttpClient().executeBinary({ url: uri, method: 'GET', headers: {},
+          connectTimeout: 8000, readTimeout: 10000, noTimeoutRetry: true }, 20 * 1024 * 1024);
+        if (!response.success || response.data.length === 0) return null;
+        source = image.createImageSource(response.data.buffer.slice(response.data.byteOffset,
+          response.data.byteOffset + response.data.byteLength));
+      } else if (/^data:image\/[^;]+;base64,/i.test(uri)) {
+        const bytes = new util.Base64Helper().decodeSync(uri.substring(uri.indexOf(',') + 1));
+        source = image.createImageSource(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+      } else {
+        const path = ReaderImageBitmapCache.localPath(uri);
+        if (!path) return null;
+        file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+        source = image.createImageSource(file.fd);
+      }
+      // 动图继续交给 ArkUI Image，避免把 GIF/WebP 静默转换成首帧。
+      if (await source.getFrameCount() > 1) return null;
       const info = await source.getImageInfo();
       const sourceWidth = info.size.width;
       const sourceHeight = info.size.height;
@@ -131,7 +168,7 @@ export class ReaderImageBitmapCache {
       };
       return await source.createPixelMap(options);
     } catch (error) {
-      console.warn(`[ReaderImageBitmap] 解码插图失败 path=${path}:`, error);
+      console.warn('[ReaderImageBitmap] 解码插图失败:', error);
       return null;
     } finally {
       if (source) {
@@ -146,6 +183,9 @@ export class ReaderImageBitmapCache {
         } catch (_) {
         }
       }
+      const waiter = this.decodeWaiters.shift();
+      if (waiter) waiter();
+      else this.decodeCount--;
     }
   }
 }

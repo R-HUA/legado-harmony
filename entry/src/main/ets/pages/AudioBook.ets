@@ -10,6 +10,7 @@ import { BookSourceDataUrlSupport } from '../core/book/BookSourceDataUrlSupport'
 import { AudioRuleSupport } from '../core/book/AudioRuleSupport';
 import { AudioStartTiming, RemoteAudioPlayback, RemoteAudioPlaybackListener } from '../utils/RemoteAudioPlayback';
 import { ReaderTtsFloatingSession } from '../utils/ReaderTtsFloatingSession';
+import { CoverImageService } from '../core/book/CoverImageService';
 import { CoverUrlNormalizer } from '../utils/CoverUrlNormalizer';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
@@ -64,6 +65,8 @@ class AudioBookAvSessionHolder {
 @Component
 struct AudioBookPage {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
+  // 在线封面下载完成后计数变化，读过它的封面区块才会重建并切到本地文件（见 CoverImageService）。
+  @StorageLink('coverImageVersion') coverImageVersion: number = 0;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
@@ -273,7 +276,7 @@ struct AudioBookPage {
     Column({ space: AppSpacing.MD }) {
       Stack({ alignContent: Alignment.Center }) {
         if (this.displayCover()) {
-          Image(this.displayCover())
+          Image(this.displayCoverUri())
             .width('100%')
             .height('100%')
             .objectFit(ImageFit.Contain)
@@ -522,7 +525,7 @@ struct AudioBookPage {
   coverSection() {
     Column() {
       if (this.displayCover()) {
-        Image(this.displayCover())
+        Image(this.displayCoverUri())
           .width(190)
           .height(250)
           .borderRadius(14)
@@ -1502,6 +1505,11 @@ struct AudioBookPage {
     return this.book ? CoverUrlNormalizer.normalize(this.book.getDisplayCover()) : '';
   }
 
+  displayCoverUri(): string {
+    return CoverImageService.displayUri(this.displayCover(), this.book?.origin || '', this.bookUrl,
+      this.coverImageVersion);
+  }
+
   onThemeBookCoverChanged(): void {
     this.updateFloatingSession();
   }
@@ -1513,7 +1521,7 @@ struct AudioBookPage {
   }
 
   panelCover(): ResourceStr {
-    if (!this.shouldUseThemeBookCover()) return this.displayCover();
+    if (!this.shouldUseThemeBookCover()) return this.displayCoverUri();
     const covers = ThemeAssetRegistry.themeBookCovers(ThemeRuntime.bookTokens(this.appDarkMode).coverAssetId);
     return covers[this.themeBookCoverSeed() % covers.length];
   }

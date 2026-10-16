@@ -3,6 +3,7 @@ import { common, Context } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { http } from '@kit.NetworkKit';
+import { AccountCommerceConfig } from './AccountCommerceConfig';
 import { AccountCommerceApi } from './AccountCommerceApi';
 import {
   AccountApiError,
@@ -24,6 +25,9 @@ export class HuaweiAccountService {
   }
 
   static async login(context: common.UIAbilityContext): Promise<AccountSnapshot> {
+    if (!AccountCommerceConfig.COMMERCE_ENABLED) {
+      throw new AccountApiError('账号登录暂不可用', 0, 'SERVICE_DISABLED');
+    }
     // LoginWithHuaweiIDRequest only returns identifiers. The nickname and avatar are only
     // available through the authorization request with the profile scope.
     const request = new authentication.HuaweiIDProvider().createAuthorizationWithHuaweiIDRequest();
@@ -159,6 +163,11 @@ export class HuaweiAccountService {
   }
 
   private static async doRenewSession(context: Context): Promise<void> {
+    // 仅为已启用的旧同步保留会话续期，其他账号服务暂停。
+    if (!AccountCommerceConfig.COMMERCE_ENABLED &&
+      AppStorage.get<boolean>(CloudSyncSettingsStore.STORAGE_ENABLED) !== true) {
+      return;
+    }
     await AccountSessionStore.load(context);
     if (!AccountSessionStore.isLoggedIn()) {
       return;

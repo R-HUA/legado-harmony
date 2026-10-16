@@ -29,12 +29,16 @@ hs_err_pid*
 build/
 tmp/
 .agents/
+.zcodeignore
 
 # HarmonyOS
 /node_modules
 /oh_modules
 # ohpm 为模块依赖生成的链接目录
 /entry/oh_modules/
+# 引擎迁移前保留在本机的 QuickJS 构建缓存
+/quickjs/.cxx/
+/quickjs/oh_modules/
 /.hvigor
 /.appanalyzer
 server/node_modules/
@@ -54,6 +58,11 @@ output/
 
 # Local configuration
 local.properties
+
+# Personal book sources imported into the app from this working copy. docs/book-sources/README.md
+# states that this repository does not ship sources for real third-party content sites, so keep
+# locally authored ones here instead of committing them.
+docs/book-sources/local/
 
 # OS generated files
 .DS_Store

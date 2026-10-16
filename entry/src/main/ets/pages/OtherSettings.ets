@@ -1,8 +1,8 @@
+import { SettingsSelect } from '../components/SettingsSelect';
 import { router } from '@kit.ArkUI';
 import pasteboard from '@ohos.pasteboard';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { lanReaderServer } from '../core/lan/LanReaderServer';
 import { LanReaderPasswordStore } from '../core/lan/LanReaderPasswordStore';
 import { HdsFeedback } from '../utils/HdsFeedback';
@@ -323,24 +323,14 @@ struct OtherSettingsPage {
 
   @Builder
   immersiveLightLevelSelect() {
-    Select(this.immersiveLightLevelOptions())
-      .selected(this.immersiveLightLevelSelectedIndex())
-      .value(this.immersiveLightLevelOptions()[this.immersiveLightLevelSelectedIndex()].value)
-      .font({ size: AppFontSize.BODY })
-      .fontColor(this.subTextColor())
-      .backgroundColor(Color.Transparent)
-      .arrowPosition(ArrowPosition.END)
-      .padding({ left: 0, right: 0 })
-      .borderRadius(16)
-      .border({ width: 0 })
-      .divider(null)
-      .optionBgColor(Color.Transparent)
-      .optionFontColor(this.primaryTextColor())
-      .selectedOptionFontColor(this.accentColor())
-      .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-      .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-      .menuBackgroundBlurStyle(BlurStyle.NONE)
-      .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-      .onSelect((index: number) => this.setImmersiveLightLevel(index))
+    SettingsSelect({
+      options: this.immersiveLightLevelOptions(),
+      selectedIndex: this.immersiveLightLevelSelectedIndex(),
+      selectedLabel: this.immersiveLightLevelOptions()[this.immersiveLightLevelSelectedIndex()].value,
+      darkMode: this.appDarkMode,
+      textSize: AppFontSize.BODY,
+      textColor: this.subTextColor(),
+      onSelected: (index: number) => this.setImmersiveLightLevel(index)
+    })
   }
 }

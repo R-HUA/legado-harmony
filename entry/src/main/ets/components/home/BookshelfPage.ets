@@ -14,6 +14,7 @@ import { ImmersiveBackButton } from '../../components/ImmersiveBackButton';
 import { HdsFeedback } from '../../utils/HdsFeedback';
 import { BookDisplayHelper } from '../../utils/BookDisplayHelper';
 import { BookCoverCache } from '../../utils/BookCoverCache';
+import { CoverImageService } from '../../core/book/CoverImageService';
 import { CoverGallerySettings } from '../../utils/CoverGallerySettings';
 import { BookshelfDisplaySettingsStore } from '../../utils/BookshelfDisplaySettingsStore';
 import { BookshelfStateStore } from '../../utils/BookshelfStateStore';
@@ -73,6 +74,7 @@ export struct BookshelfPage {
   @StorageLink('appThemeBookCoverEnabled') themeBookCoverEnabled: boolean = false;
   @StorageLink('appThemeId') appThemeId: string = AppThemeSettingsStore.DEFAULT_THEME_ID;
   @StorageLink('appCustomBaseThemeId') appCustomBaseThemeId: string = AppThemeSettingsStore.DEFAULT_THEME_ID;
+  @StorageLink('coverImageVersion') coverImageVersion: number = 0;
   @State books: Book[] = [];
   @State allBooks: Book[] = [];
   private shelfListBooksSource: ShelfBookDataSource = new ShelfBookDataSource();
@@ -933,7 +935,7 @@ export struct BookshelfPage {
       if (this.shelfCoverMap.get(key) && this.shelfCoverRawUrls.get(key) === raw) continue;
       try {
         const local = await BookCoverCache.resolveCachedCoverAsync(context, raw) ||
-          await BookCoverCache.resolveCover(context, raw);
+          await BookCoverCache.resolveCover(context, raw, book.origin, book.bookUrl);
         if (revision !== this.shelfCoverCacheRevision) return new Map();
         if (local && local !== raw) {
           this.shelfCoverRawUrls.set(key, raw);
@@ -1476,7 +1478,8 @@ export struct BookshelfPage {
                         .justifyContent(FlexAlign.Center)
                         .backgroundColor(this.accentColor())
 
-                        Image(candidate.coverUrl)
+                        Image(CoverImageService.displayUri(candidate.coverUrl, candidate.origin,
+                          candidate.bookUrl, this.coverImageVersion))
                           .width('100%')
                           .height('100%')
                           .objectFit(ImageFit.Cover)
@@ -5263,7 +5266,8 @@ export struct BookshelfPage {
       return;
     }
     try {
-      const coverPath = await BookCoverCache.prepareCoverFile(getContext(this), raw);
+      const coverPath = await BookCoverCache.prepareCoverFile(getContext(this), raw, book.origin,
+        book.bookUrl);
       if (!coverPath) {
         return;
       }

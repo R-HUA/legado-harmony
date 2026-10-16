@@ -1,3 +1,4 @@
+import { SettingsSelect } from '../components/SettingsSelect';
 import { router } from '@kit.ArkUI';
 import { syncSystemBars } from '../utils/SystemBars';
 import { AppThemeSettings, AppThemeSettingsStore } from '../utils/AppThemeSettingsStore';
@@ -11,7 +12,6 @@ import { AccountSessionStore } from '../account/AccountSessionStore';
 import { ThemeStartupCover } from '../components/ThemeStartupCover';
 import { ReaderThemeBackground } from '../components/ReaderThemeBackground';
 import { StartupCoverImageStore } from '../utils/StartupCoverImageStore';
-import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
@@ -126,7 +126,7 @@ struct ThemeColorSettingsPage {
 
   @Builder
   pageContent() {
-    this.sectionTitle('从免费或已购买主题中组合部件，修改只更新方案预览，需返回主题页手动启用')
+    this.sectionTitle('从全部内置主题中组合部件，修改只更新方案预览，需返回主题页手动启用')
     this.modeOptions()
     this.sectionTitle(`${this.selectedMode === 'dark' ? '深色' : '浅色'}模式 · 主题部件`)
     this.sourceOptions()
@@ -580,29 +580,19 @@ struct ThemeColorSettingsPage {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Select(this.themeOptions())
-        .selected(this.sourceSelectedIndex(category))
-        .value(BuiltinThemeRegistry.findById(this.sourceThemeId(category)).name)
-        .font({ size: AppFontSize.BODY })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(ThemeRuntime.accentColor(this.appDarkMode))
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: this.themeOptions(),
+        selectedIndex: this.sourceSelectedIndex(category),
+        selectedLabel: BuiltinThemeRegistry.findById(this.sourceThemeId(category)).name,
+        darkMode: this.appDarkMode,
+        textSize: AppFontSize.BODY,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           if (index >= 0 && index < this.availableThemes.length) {
             this.setComponentSource(category, this.availableThemes[index].id);
           }
-        })
+        }
+      })
     }
     .width('calc(100% - 28vp)')
     .constraintSize({ minHeight: 68 })

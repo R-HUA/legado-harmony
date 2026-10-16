@@ -244,13 +244,6 @@ struct DataSyncPage {
           .fontColor(this.subTextColor())
           .lineHeight(20)
           .width('100%')
-        Button('登录并开启同步')
-          .width('100%')
-          .height(42)
-          .backgroundColor(this.accentColor())
-          .onClick(() => {
-            router.pushUrl({ url: 'pages/AccountCenter' });
-          })
       } else {
         Text(this.lastSyncDescription())
           .fontSize(AppFontSize.CAPTION)
@@ -301,8 +294,7 @@ struct DataSyncPage {
 
   async setCloudSyncEnabled(value: boolean): Promise<void> {
     if (value && !this.accountLoggedIn) {
-      HdsFeedback.showToast('请先登录华为账号');
-      router.pushUrl({ url: 'pages/AccountCenter' });
+      HdsFeedback.showToast('账号登录暂不可用');
       return;
     }
     this.cloudSyncEnabled = value;
@@ -408,7 +400,7 @@ struct DataSyncPage {
 
   async syncNow(conflictPolicy: string = 'cloud'): Promise<void> {
     if (!this.accountLoggedIn) {
-      router.pushUrl({ url: 'pages/AccountCenter' });
+      HdsFeedback.showToast('账号登录暂不可用');
       return;
     }
     if (!this.cloudSyncEnabled) {

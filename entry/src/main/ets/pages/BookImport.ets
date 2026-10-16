@@ -59,6 +59,10 @@ struct BookImportPage {
   pageContent() {
     this.sectionTitle('导入方式')
     Column() {
+      this.menuRow($r('sys.symbol.book'), '书籍链接',
+        '自动匹配已启用的书源，解析后加入书架', true, () => {
+          router.pushUrl({ url: 'pages/LocalBookSettings' });
+        })
       this.menuRow($r('sys.symbol.bookshelf'), 'OPDS 书库',
         '连接 Calibre / Komga / Kavita 等书库，浏览并下载图书', true, () => {
           router.pushUrl({ url: 'pages/OpdsServers' });
@@ -71,7 +75,7 @@ struct BookImportPage {
         '选择并导入 TXT / EPUB 文件', false, () => {
           this.addBooks();
         })
-      Text('仅支持 TXT / EPUB 格式')
+      Text('本地导入仅支持 TXT / EPUB 格式')
         .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor())
         .width('100%')

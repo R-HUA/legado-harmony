@@ -1,4 +1,5 @@
 import { Book, SearchBook, BookTypeSupport } from '@legado/sourceengine';
+import { CoverImageService } from '../../core/book/CoverImageService';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { BookDisplayHelper } from '../../utils/BookDisplayHelper';
 import { CoverGallerySettings } from '../../utils/CoverGallerySettings';
@@ -42,6 +43,8 @@ export struct SearchBookResultList {
   @StorageLink('bookshelfLightCoverAlbumId') bookshelfLightCoverAlbumId: string = '';
   @StorageLink('bookshelfDarkCoverAlbumId') bookshelfDarkCoverAlbumId: string = '';
   @StorageLink('bookshelfCoverMode') bookshelfCoverMode: string = 'sequence';
+  // 封面下载完成后计数变化，读过它的封面区块才会重建并切到本地文件（见 CoverImageService）。
+  @StorageLink('coverImageVersion') coverImageVersion: number = 0;
   @Prop @Watch('onBooksChanged') books: SearchBook[] = [];
   @Prop @Watch('onShelfBookKeysChanged') shelfBookKeys: string[] = [];
   @Prop busyBookKeys: string[] = [];
@@ -395,7 +398,8 @@ export struct SearchBookResultList {
       .backgroundColor(this.accentColor())
 
       if (this.displayCover(book)) {
-        Image(this.displayCover(book))
+        Image(CoverImageService.displayUri(this.displayCover(book), book.origin, book.bookUrl,
+          this.coverImageVersion))
           .width(54)
           .height(72)
           .objectFit(ImageFit.Cover)

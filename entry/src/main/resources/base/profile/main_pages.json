@@ -28,7 +28,6 @@
     "pages/AppIconSettings",
     "pages/ThemeColorSettings",
     "pages/ThemeSettings",
-    "pages/AccountCenter",
     "pages/DataSync",
     "pages/ReadingStats",
     "pages/SyncDevices",

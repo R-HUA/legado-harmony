@@ -1,3 +1,4 @@
+import { SettingsSelect } from '../components/SettingsSelect';
 import { router } from '@kit.ArkUI';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ReaderSettingsStore } from '../utils/ReaderSettingsStore';
@@ -5,7 +6,6 @@ import { ReaderFontHelper, ReaderFontItem } from '../utils/ReaderFontHelper';
 import { ReaderSystemFontHelper } from '../utils/ReaderSystemFontHelper';
 import fs from '@ohos.file.fs';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
@@ -472,27 +472,17 @@ struct FontSettingsPage {
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
 
-      Select(this.readerFontOptions())
-        .selected(this.readerFontSelectedIndex())
-        .value(this.readerFontValue())
-        .font({ size: AppFontSize.BODY })
-        .fontColor(this.subTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .divider(null)
-        .optionBgColor(Color.Transparent)
-        .optionFontColor(this.primaryTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
-        .onSelect((index: number) => {
+      SettingsSelect({
+        options: this.readerFontOptions(),
+        selectedIndex: this.readerFontSelectedIndex(),
+        selectedLabel: this.readerFontValue(),
+        darkMode: this.appDarkMode,
+        textSize: AppFontSize.BODY,
+        textColor: this.subTextColor(),
+        onSelected: (index: number) => {
           this.selectReaderFontByIndex(index);
-        })
+        }
+      })
     }
     .width('calc(100% - 32vp)')
     .constraintSize({ minHeight: 56 })

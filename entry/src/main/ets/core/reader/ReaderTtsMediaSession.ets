@@ -30,6 +30,7 @@ export interface ReaderTtsMediaHost {
   mediaInfo: () => ReaderTtsMediaInfo;
   /** 媒体卡片封面的原始地址（书架当前展示的那张）。 */
   coverRaw: () => string;
+  coverOrigin: () => string;
   onPlay: () => void;
   onPause: () => void;
   onStop: () => void;
@@ -382,12 +383,14 @@ export class ReaderTtsMediaSession {
     let pixelMap: image.PixelMap | null = null;
     try {
       const context = this.host.abilityContext();
-      const coverPath = await BookCoverCache.prepareCoverFile(context, raw);
+      const coverOrigin = this.host.coverOrigin();
+      const bookUrl = this.host.mediaInfo().bookUrl;
+      const coverPath = await BookCoverCache.prepareCoverFile(context, raw, coverOrigin, bookUrl);
       if (coverPath) {
         pixelMap = await this.createMediaPixelMap(coverPath);
-        resolved = pixelMap ? coverPath : await BookCoverCache.resolveCover(context, raw);
+        resolved = pixelMap ? coverPath : await BookCoverCache.resolveCover(context, raw, coverOrigin, bookUrl);
       } else {
-        resolved = await BookCoverCache.resolveCover(context, raw);
+        resolved = await BookCoverCache.resolveCover(context, raw, coverOrigin, bookUrl);
       }
     } catch (error) {
       console.warn('解析朗读媒体封面失败:', error);

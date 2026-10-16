@@ -132,6 +132,9 @@ export class TtsPcmAudioPlayer {
       completionPromise
     ]).then(() => {
     });
+    // 写入调用方可能先处理失败再停止，聚合拒绝也需及时观察；保留原 Promise 供 drain 传播错误。
+    this.writeChain.catch((_error: Error) => {
+    });
     return completionPromise;
   }
 
@@ -516,7 +519,8 @@ export class TtsPcmAudioPlayer {
         const rendererFrame = Math.max(0, Math.round(timestamp.framePos));
         if (this.rendererFrameOrigin < 0) {
           this.rendererFrameOrigin = rendererFrame;
-          this.rendererLogicalFrameOrigin = Math.max(this.lastReachedFrame, clockFrame);
+          // 首次时间戳只建立帧基准，不能把查询延迟当成已经播放的音频。
+          this.rendererLogicalFrameOrigin = this.lastReachedFrame;
           console.info(`[TTS] pcm frame timestamp started: rendererFrame=${rendererFrame},` +
             `logicalFrame=${this.rendererLogicalFrameOrigin},api=${deviceInfo.sdkApiVersion}`);
         }
