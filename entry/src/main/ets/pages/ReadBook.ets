@@ -1,10 +1,9 @@
-import { router, window, promptAction, MeasureOptions } from '@kit.ArkUI';
+import { NativeSourceService, HttpClient, Book, BookChapter, Bookmark, BookSource, HttpTTS, BookTypeSupport, VerificationSupport, ReaderActionData, ReaderActionMarker, ReaderActionMatch, BookSourceStageWebRuntime, StageWebRuntimeRequest, WebBookFetchRuntime, SourceRuntimeStage, CooperativeScheduler, sleepMs } from '@legado/sourceengine';
+import { router, window, promptAction } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
-import { common, ConfigurationConstant, WantAgent, wantAgent } from '@kit.AbilityKit';
+import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { inputConsumer, KeyCode, Action, KeyEvent } from '@kit.InputKit';
-import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { avSession } from '@kit.AVSessionKit';
-import { notificationManager } from '@kit.NotificationKit';
 import image from '@ohos.multimedia.image';
 import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
@@ -13,21 +12,16 @@ import { LengthMetrics } from '@ohos.arkui.node';
 import deviceInfo from '@ohos.deviceInfo';
 import display from '@ohos.display';
 import Animator, { AnimatorResult } from '@ohos.animator';
-import { HdsTabs, HdsListItem, HdsSwipeActionOptions } from '@kit.UIDesignKit';
+import { HdsTabs } from '@kit.UIDesignKit';
 import { ARView } from '@kit.AREngine';
-import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { AccountSessionStore } from '../account/AccountSessionStore';
 import { CloudSyncCoordinator } from '../account/CloudSyncCoordinator';
 import { TtsVoiceInfo } from '../account/AccountCommerceModels';
-import { Book, BookChapter, Bookmark, BookSource, SearchBook, HttpTTS } from '../model/data/Book';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { ReadBookEngine } from '../core/book/ReadBookEngine';
-import { BookTypeSupport } from '../core/book/BookTypeSupport';
+import { readStatsTracker } from '../core/stats/ReadStatsTracker';
 import { LocalBookService } from '../core/book/LocalBookService';
 import { WebDavBookService } from '../webdav/WebDavBookService';
-import { WebBookService } from '../core/book/WebBookService';
-import { VerificationSupport } from '../core/http/VerificationSupport';
-import { ReaderActionData, ReaderActionMarker, ReaderActionMatch } from '../core/book/ReaderActionMarker';
 import { BookSourceRuntimeSnapshotStore, BookSourceSettingValue } from '../core/book/BookSourceRuntimeSnapshot';
 import { ReaderInteractionProviderRegistry } from '../core/book/ReaderInteractionProvider';
 import { HdsFeedback } from '../utils/HdsFeedback';
@@ -40,33 +34,21 @@ import { ReaderSettings, ReaderSettingsStore } from '../utils/ReaderSettingsStor
 import { ReaderReplaceRule, ReaderReplaceRuleStore } from '../utils/ReaderReplaceRuleStore';
 import { ReaderThemeHelper, ReaderThemeItem } from '../utils/ReaderThemeHelper';
 import { ReaderCustomThemeData, ReaderCustomThemeHelper, ReaderCustomThemeScheme } from '../utils/ReaderCustomThemeHelper';
-import { ReaderBackgroundImageStore } from '../utils/ReaderBackgroundImageStore';
-import { AdaptiveColorPicker } from '../components/AdaptiveColorPicker';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { ReaderThemeBackground } from '../components/ReaderThemeBackground';
 import { ReaderPageCurlPainter } from '../components/ReaderPageCurlPainter';
-import { ReaderPagedImage } from '../components/ReaderPagedImage';
-import { ReaderPagedImageCache, ReaderPagedImageLease } from '../core/reader/ReaderPagedImageCache';
 import { ReaderEmulationFlipPainter, ReaderEmulationFlipRegion } from '../components/ReaderEmulationFlipPainter';
 import { ReaderTtsPlayerPanel } from '../components/ReaderTtsPlayerPanel';
 import { TtsCatalogSheet, CatalogTitleDataSource } from '../components/TtsCatalogSheet';
 import { BookSourceStageRuntimeHost } from '../components/BookSourceStageRuntimeHost';
 import { WebBookFetchRuntimeHost } from '../components/WebBookFetchRuntimeHost';
-import { BookSourceStageWebRuntime, StageWebRuntimeRequest } from '../core/book/BookSourceStageWebRuntime';
-import { WebBookFetchRuntime } from '../core/book/WebBookFetchRuntime';
-import { SourceRuntimeStage } from '../core/book/BookSourceRuntimeRouter';
 import { TtsSettings, TtsSettingsStore } from '../utils/TtsSettingsStore';
 import { ReaderFontHelper, ReaderFontItem } from '../utils/ReaderFontHelper';
 import { ReaderFontBootstrap } from '../utils/ReaderFontBootstrap';
 import { ReaderSystemFontHelper } from '../utils/ReaderSystemFontHelper';
-import { BookFieldSanitizer } from '../utils/BookFieldSanitizer';
-import { CoverUrlNormalizer } from '../utils/CoverUrlNormalizer';
-import { SearchExploreSettingsStore } from '../utils/SearchExploreSettingsStore';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 import { BookChangeSourceDialog } from '../components/BookChangeSourceDialog';
 import { TapZoneSettingsDialogContent } from '../components/TapZoneSettingsDialog';
-import { SearchBookShelfHelper } from '../utils/SearchBookShelfHelper';
-import { BookDisplayHelper } from '../utils/BookDisplayHelper';
 import { BookCoverCache } from '../utils/BookCoverCache';
 import { CoverImageService } from '../core/book/CoverImageService';
 import { CoverGallerySettings } from '../utils/CoverGallerySettings';
@@ -80,61 +62,92 @@ import {
   ReaderResolvedRegexEmphasis
 } from '../model/reader/ReaderRegexFontRule';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
+import { ThemeRegexEmphasisModes } from '../theme/ThemeModels';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
-import { VirtualListScrollbar } from '../utils/VirtualListScrollbar';
 import { ReaderContentPreprocessor } from '../core/concurrency/ReaderContentPreprocessor';
 import { ChineseConverter } from '../utils/ChineseConverter';
-import { CooperativeScheduler } from '../core/concurrency/CooperativeScheduler';
 import {
   ReaderV2Document,
   ReaderV2DocumentParser,
+  ReaderV2HeadingHint,
   ReaderV2SpeechText
 } from '../core/reader/ReaderV2Document';
 import { ReaderV2LayoutInput, ReaderV2LayoutSnapshot } from '../core/reader/ReaderV2LayoutSnapshot';
-import { ReaderV2PageFragment, ReaderV2PageLayout, ReaderV2PageSet, ReaderV2RegexBubbleSegment,
-  ReaderV2SelectionRun } from '../core/reader/ReaderV2PageLayout';
+import {
+  ReaderV2PageFragment,
+  ReaderV2PageLayout,
+  ReaderV2PageSet,
+  ReaderV2RegexBubbleSegment
+} from '../core/reader/ReaderV2PageLayout';
 import { ReaderV2PaginationSession, ReaderV2Paginator } from '../core/reader/ReaderV2Paginator';
 import { ReaderV2Color, ReaderV2SpanStyleRange } from '../core/reader/ReaderV2Style';
+import { ReaderCommentBubbleStyle, ReaderCommentBubbleStyles } from '../core/reader/ReaderCommentBubble';
 import { ReaderV2PageNodeController } from '../core/reader/ReaderV2RenderNode';
 import { ReaderV2GestureRouter, ReaderV2TapResult } from '../core/reader/ReaderV2Interaction';
 import { ReaderOpenTrace } from '../utils/ReaderOpenTrace';
-import { EyeTurnCalibration, EyeTurnController, EyeTurnSample } from '../core/reader/EyeTurnController';
-import { ArEyeSignal, ArEyeTurnHost } from '../core/reader/ArEyeTypes';
-import { FullTextCacheCancelCoordinator, FullTextCacheCancelSignal } from '../utils/FullTextCacheCancelCoordinator';
-import { ReaderComicPageDataSource } from '../core/reader/ReaderDataSources';
-import { ReaderCustomFontItem, ReaderCustomFontData, ReaderTxtCharsetOption } from '../core/reader/ReaderSettingsModels';
-import { PageTurnPreview, ReaderParagraphMetrics, ReaderInlineActionBoundsTask, ReaderMergedActionBoundsTask, ReaderTextParagraph, ReadTextSlice, ReaderPaginationResult, ReaderViewportSize, ReaderTextParagraphGroup, ReaderParagraphMeasureFallback, ReaderV2HighlightRect } from '../core/reader/ReaderPageModels';
-import { ReaderEyeCalibrationPoint } from '../core/reader/ReaderEyeModels';
+import { ReaderEyeTurnCoordinator, ReaderEyeTurnViewState } from '../core/reader/ReaderEyeTurnCoordinator';
+import { ReaderEyeCalibrationPanel, ReaderEyeTurnCalibrationSettingItem } from '../components/reader/ReaderEyeTurnViews';
+import { ReaderFullTextCacheController } from '../core/reader/ReaderFullTextCacheController';
+import { ReaderTtsMediaInfo, ReaderTtsMediaSession } from '../core/reader/ReaderTtsMediaSession';
+import { TtsVoiceCatalog } from '../utils/TtsVoiceCatalog';
+import { ReaderTtsQuickSettingsPanel, ReaderTtsVoicePickerPanel } from '../components/reader/ReaderTtsSettingsPanels';
+import { ReaderCustomThemeEditor } from '../components/reader/ReaderCustomThemeEditor';
+import { ReaderTtsCapsule } from '../components/reader/ReaderTtsControls';
+import { ReaderHeaderFooterSettings, ReaderTypographyField, ReaderTypographyStepper } from '../components/reader/ReaderLayoutSettings';
+import { ReaderCacheDialogContent } from '../components/reader/ReaderCacheDialogContent';
+import { ReaderTxtCharsetDialogContent, ReaderTxtCharsets } from '../components/reader/ReaderTxtCharsetDialogContent';
+import { ReaderLayoutElementSettingsPanel } from '../components/reader/ReaderLayoutElementSettingsPanel';
+import { ReaderTocPanel, ReaderTocPanelController } from '../components/reader/ReaderTocPanel';
+import { ReaderContinuousDataSource, ReaderScrollItem, ReaderScrollSegment } from '../core/reader/ReaderDataSources';
+import { ReaderComicImageItem, ReaderComicView } from '../components/reader/ReaderComicView';
+import { ReaderComicPagedController, ReaderComicPagedView } from '../components/reader/ReaderComicPagedView';
+import { ReaderComicImageActions } from '../core/reader/ReaderComicImageActions';
+import { ReaderComicStyle } from '../core/reader/ReaderComicStyle';
+import { ReaderNeighborChapterLoader } from '../core/reader/ReaderNeighborChapterLoader';
+import {
+  READER_COMIC_TEXT_MODE,
+  ReaderComicDisplaySettingsPanel,
+  ReaderComicModeSettingsPanel,
+  ReaderComicPanelColors
+} from '../components/reader/ReaderComicSettingsPanels';
+import { ReaderSettingActionRow, ReaderSettingSelectRow, ReaderSettingSwitchRow } from '../components/reader/ReaderSettingRows';
+import {
+  ReaderComicBackground,
+  ReaderComicFit,
+  ReaderComicMode,
+  ReaderComicSettings,
+  ReaderComicSettingsStore
+} from '../core/reader/ReaderComicSettings';
+import { ReaderCustomFontItem, ReaderCustomFontData } from '../core/reader/ReaderSettingsModels';
+import {
+  PageTurnPreview,
+  ReaderParagraphMetrics,
+  ReaderInlineActionBoundsTask,
+  ReaderMergedActionBoundsTask,
+  ReaderTextParagraph,
+  ReadTextSlice,
+  ReaderPaginationResult,
+  ReaderViewportSize,
+  ReaderV2HighlightRect
+} from '../core/reader/ReaderPageModels';
+import { ReaderTextNormalizer } from '../core/reader/ReaderTextNormalizer';
+import { ReaderImageSizeResolver } from '../core/reader/ReaderImageSizeResolver';
+import { ReaderImageBitmapCache } from '../core/reader/ReaderImageBitmapCache';
+import { ReaderChunkPagination, ReaderChunkResult } from '../core/reader/ReaderChunkPagination';
+import { ReaderPageOffsets } from '../core/reader/ReaderPageOffsets';
+import { ReaderPageTurnQueue } from '../core/reader/ReaderPageTurnQueue';
+import {
+  ReaderInfoBarConfig, ReaderInfoBarContext, ReaderInfoBarText, ReaderInfoProgressBar
+} from '../core/reader/ReaderInfoBarModel';
+import { ReaderInfoBarClock } from '../core/reader/ReaderInfoBarClock';
+import { ReaderInfoBarRow } from '../components/reader/ReaderInfoBar';
+import { EpubChapterPlanner } from '../core/book/EpubChapterPlanner';
+import { EpubHeading } from '../core/book/EpubHtmlConverter';
+import { AdaptiveSwitch } from '../components/AdaptiveSwitch';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
 
-// Three-point fixation calibration: centre, then the bottom turn zone, then the top turn
-// zone. Sampling each zone with the gaze held still (instead of a moving dot the iris
-// estimator cannot follow) gives a far larger and steadier top/bottom separation.
-const READER_EYE_CALIBRATION_SETTLE_MS: number = 600;
-const READER_EYE_CALIBRATION_HOLD_MS: number = 1500;
-const READER_EYE_CALIBRATION_PHASE_MS: number =
-  READER_EYE_CALIBRATION_SETTLE_MS + READER_EYE_CALIBRATION_HOLD_MS;
-const READER_EYE_CALIBRATION_PHASE_COUNT: number = 3;
-const READER_EYE_CALIBRATION_TOTAL_MS: number =
-  READER_EYE_CALIBRATION_PHASE_MS * READER_EYE_CALIBRATION_PHASE_COUNT;
-const READER_EYE_CALIBRATION_TICK_MS: number = 60;
-const READER_EYE_CALIBRATION_MIN_PHASE_SAMPLES: number = 5;
-const READER_EYE_CALIBRATION_MIN_DELTA: number = 0.005;
-// AR Engine gaze values are already normalized, so a fixed centre/top/bottom mapping is all the zone mapper needs.
-const AR_EYE_CALIBRATION_RAW: string = '-1,0,1';
-// Used when no calibration has been stored: the iris channel with a plausible physical
-// span and a neutral centre. The runtime baseline then centres it per reader, so the
-// feature works without forcing a manual calibration first.
-const DEFAULT_EYE_CALIBRATION_RAW: string = 'v3,0,0,0,0.5,-0.04,0.04,0,1';
-// AR Engine face tracking never leaves PAUSED when its ARView is hosted through a
-// BuilderNode: faces are detected but getBlendShapes() always reports
-// "AnimojiBlendShape is nullptr". Until the view can live in a real window, the
-// runtime uses the camera pipeline and the AR code below stays dormant.
-const READER_EYE_TURN_AR_ENABLED: boolean = false;
-
-const TOC_WINDOW_PAGE_SIZE = 72;
-const TOC_SCROLLBAR_DRAG_UPDATE_INTERVAL_MS = 90;
-const FULL_TEXT_CACHE_NOTIFICATION_INTERVAL_MS = 5000;
 const READER_CURRENT_PAGINATION_AHEAD_PAGE_COUNT = 4;
 const READER_ADJACENT_PAGINATION_PREVIEW_PAGE_COUNT = 2;
 const READER_PAGINATION_BATCH_DELAY_MS = 64;
@@ -148,22 +161,18 @@ const READER_REPLACE_MENU_ITEM_ID: string = 'reader_replace_rule';
 // A 0.42 raster remains sharp while moving on high-density screens and reduces texture fill by another 29%
 // compared with the previous half-resolution capture. This matters most on dialogue-heavy pages.
 const READER_PAGE_CURL_SNAPSHOT_SCALE = 0.42;
+// 3D 仿真每帧只画两三次整页贴图，不像网格卷曲那样反复采样，可以用更高的快照分辨率换取清晰的文字。
+const READER_PAGE_3D_SNAPSHOT_SCALE = 0.75;
+const READER_CURL_REGION_UNSET = -1;
 const READER_PROGRESS_OFFSET_KEY = 'readProgressCharOffsetV2';
+const READER_V2_NO_FRAGMENTS: ReaderV2PageFragment[] = [];
+const READER_V2_IMAGE_LOADING_SIZE = 32;
+// 当前页前后各提前解码几页的插图。
+const READER_V2_IMAGE_PREWARM_PAGES = 2;
+const READER_V2_CONTINUOUS_ROLE = 'continuous';
+const READER_CONTINUOUS_LIST_ID = 'reader_continuous_list';
+const READER_CONTINUOUS_TTS_FOLLOW_GRACE_MS = 2500;
 const READER_PROGRESS_OFFSET_CHAPTER_KEY = 'readProgressCharOffsetChapterV2';
-const READER_PAGINATION_HEIGHT_SCALE_CACHE: Map<string, number> = new Map<string, number>();
-const READER_PAGINATION_HEIGHT_SCALE_CACHE_LIMIT: number = 64;
-
-function cacheReaderPaginationHeightScale(key: string, value: number): void {
-  if (!key) return;
-  if (READER_PAGINATION_HEIGHT_SCALE_CACHE.has(key)) READER_PAGINATION_HEIGHT_SCALE_CACHE.delete(key);
-  while (READER_PAGINATION_HEIGHT_SCALE_CACHE.size >= READER_PAGINATION_HEIGHT_SCALE_CACHE_LIMIT) {
-    const keys: string[] = Array.from(READER_PAGINATION_HEIGHT_SCALE_CACHE.keys());
-    const oldest: string = keys[0] || '';
-    if (!oldest) break;
-    READER_PAGINATION_HEIGHT_SCALE_CACHE.delete(oldest);
-  }
-  READER_PAGINATION_HEIGHT_SCALE_CACHE.set(key, value);
-}
 
 @Entry
 @Component
@@ -171,28 +180,8 @@ struct ReadBookPage {
   @State bookUrl: string = '';
   @State book: Book | null = null;
   @State chapters: BookChapter[] = [];
-  @State tocVisibleChapters: BookChapter[] = [];
-  @State tocWindowStart: number = 0;
-  @State tocQuickJumpArmed: boolean = false;
-  @State tocQuickJumpInputVisible: boolean = false;
-  @State tocQuickJumpDraft: string = '';
-  @State tocSearchVisible: boolean = false;
-  @State tocSearchQuery: string = '';
-  @State tocSearchChapterIndexes: number[] = [];
-  @State tocSearchLoading: boolean = false;
-  @State tocSearchResultActive: boolean = false;
   @State tocReverseOrder: boolean = false;
-  @State tocOrderRevision: number = 0;
-  @State tocDatabaseChapterCount: number = 0;
-  @State tocListViewportHeight: number = 0;
-  @State tocFirstVisibleGlobalIndex: number = 0;
-  @State tocVisibleItemCount: number = 1;
-  @State tocScrollbarDragging: boolean = false;
-  @State tocScrollbarDragOffset: number = 0;
-  private tocSearchRequestSerial: number = 0;
-  private tocScrollbarPointerAnchor: number = 0;
-  private tocScrollbarPendingIndex: number = -1;
-  private tocScrollbarUpdateTimer: number = -1;
+  private tocPanelController: ReaderTocPanelController = new ReaderTocPanelController();
   @State currentChapterIndex: number = 0;
   @State menuChapterPreviewIndex: number = 0;
   @State menuChapterSliderActive: boolean = false;
@@ -202,7 +191,6 @@ struct ReadBookPage {
   @State readerReplaceRules: ReaderReplaceRule[] = [];
   @State isLoading: boolean = true;
   @State showMenu: boolean = false;
-  @State hdsMaterialRenderBranch: boolean = false;
   @State readerDayNightLongPressHandled: boolean = false;
   // 展开屏上记住用户本次唤起菜单的手指侧：-1 左侧，1 右侧。
   @State readerMenuAnchorSide: number = 1;
@@ -213,8 +201,8 @@ struct ReadBookPage {
   private chapterCacheDialogSession: SystemDialogSession = new SystemDialogSession();
   private tapZoneDialogSession: SystemDialogSession = new SystemDialogSession();
   @State @Watch('onSystemDialogFlagChanged') showTxtCharsetDialog: boolean = false;
-  @State txtCharsetDraft: string = '';
-  @State txtCharsetApplying: boolean = false;
+  // Mirrors the charset dialog's "re-parsing" flag so the page does not dismiss it midway.
+  private txtCharsetApplying: boolean = false;
   @State showReaderCommentPanel: boolean = false;
   @State readerCommentPanelTitle: string = '段评';
   @State readerCommentPanelUrl: string = '';
@@ -231,10 +219,7 @@ struct ReadBookPage {
   private readerCommentPanelDragStartWindowY: number = 0;
   private readerCommentPanelDragging: boolean = false;
   @State showToc: boolean = false;
-  @State tocPanelTab: number = 0;
   @State bookmarks: Bookmark[] = [];
-  @State bookmarkMultiSelectMode: boolean = false;
-  @State selectedBookmarkIds: number[] = [];
   @State showBookmarkActionMenu: boolean = false;
   @State pendingBookmarkAction: Bookmark | null = null;
   @State bookmarkActionMenuX: number = 16;
@@ -242,9 +227,6 @@ struct ReadBookPage {
   @State showSettings: boolean = false;
   @State @Watch('onSystemDialogFlagChanged') showTapZoneSettings: boolean = false;
   @State settingsPanelTab: number = 0;
-  @State readerTypographySelection: number = 0;
-  @State showReaderTypographyValueInput: boolean = false;
-  @State readerTypographyValueDraft: string = '';
   @State loadStatus: string = '正在加载...';
   @State verificationUrl: string = '';
   @State verificationTitle: string = '网页验证';
@@ -267,9 +249,17 @@ struct ReadBookPage {
   @State readerInitialOpening: boolean = true;
   @State readerWebFetchRuntimeNeeded: boolean = false;
   @State readerComicMode: boolean = false;
-  @State readerComicImageRatios: number[] = [];
-  // 加载失败（onError）的图片页下标；用于占位提示与失败原因诊断。
-  @State readerComicBrokenPages: number[] = [];
+  @State readerComicSettings: ReaderComicSettings = new ReaderComicSettings();
+  /** 本书单独选的漫画阅读方式（书籍变量 readerComicReadingMode）；空串跟随全局默认。 */
+  @State readerComicBookMode: string = '';
+  /** 翻页模式预先切好的相邻章节分页，翻过本话首尾时直接显示；章节号为 -1 表示没有。 */
+  @State readerComicPagedPrevPages: string[] = [];
+  @State readerComicPagedNextPages: string[] = [];
+  private readerComicPagedPrevChapter: number = -1;
+  private readerComicPagedNextChapter: number = -1;
+  @State comicPageSliderActive: boolean = false;
+  @State comicPageSliderPreview: number = 0;
+  @State comicPageTooltipVisible: boolean = false;
   @State readerComicPaginationParsing: boolean = false;
   @State readerComicPaginationParsedPages: number = 0;
   @State readerComicPaginationTotalPages: number = 0;
@@ -285,17 +275,19 @@ struct ReadBookPage {
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State isTtsSpeaking: boolean = false;
   @State isTtsPaused: boolean = false;
-  @State ttsPagedScrollOverride: boolean = false;
-  @State ttsMediaControlsExpanded: boolean = false;
   @State showTtsQuickPlayer: boolean = false;
   @StorageLink('globalTtsCapsulePositionX') ttsMiniPlayerPositionX: number = 16;
   @StorageLink('globalTtsCapsulePositionY') ttsMiniPlayerPositionY: number = -1;
-  @State ttsMediaImage: string = '';
   @State ttsDisplayText: string = '';
   @State ttsHighlightStart: number = -1;
   @State ttsHighlightEnd: number = -1;
   @State ttsHighlightRenderVersion: number = 0;
   @State readerV2TtsPaintVersion: number = 0;
+  @State readerV2BrokenImageSources: string[] = [];
+  // 已加载完成的图片：未完成时在图片位置显示加载动画，完成后图片淡入。
+  @State readerV2LoadedImageSources: string[] = [];
+  // 本地插图解码进缓存后加一，让已挂着文件地址的 Image 换成 PixelMap。
+  @State readerV2ImageBitmapVersion: number = 0;
   @State readerV2SelectionPaintVersion: number = 0;
   @State ttsSleepTimerMinutes: number = 0;
   @State ttsSleepTimerRemainingSeconds: number = 0;
@@ -321,19 +313,19 @@ struct ReadBookPage {
   private ttsMiniPlayerDragOriginX: number = 0;
   private ttsMiniPlayerDragOriginY: number = 0;
   private pendingRestorePageIndex: number = -1;
-  private tocScroller: Scroller = new Scroller();
-  private tocLoadingPreviousPage: boolean = false;
-  private tocLoadingNextPage: boolean = false;
-  private tocPositioning: boolean = false;
-  private tocPositionRequestSerial: number = 0;
-  private bookmarkScroller: ListScroller = new ListScroller();
+  private readerRestoreWatchdogRunning: boolean = false;
   private globalTtsCatalogScroller: ListScroller = new ListScroller();
   private globalTtsCatalogSource: CatalogTitleDataSource = new CatalogTitleDataSource();
   private readerComicScroller: ListScroller = new ListScroller();
-  private readerComicPageDataSource: ReaderComicPageDataSource = new ReaderComicPageDataSource();
-  private readerComicImageRatioCache: Map<string, number> = new Map();
+  private readerComicPageDataSource: ReaderContinuousDataSource = new ReaderContinuousDataSource();
+  /** 滚动越过章节边界、正在把列表里已有的这一章提升为当前章；-1 表示没有。 */
+  private readerContinuousCommitChapter: number = -1;
+  /** 最近一次列表可见区（列表序号，含相邻章节与分隔项）。 */
+  private readerContinuousLastListStart: number = 0;
+  private readerContinuousLastListEnd: number = 0;
+  private readerNeighborLoaderInstance: ReaderNeighborChapterLoader | null = null;
+  private readerComicImageActionsInstance: ReaderComicImageActions | null = null;
   private readerPagedImageSettled: Set<string> = new Set();
-  private readerComicImageRatioLoading: Set<string> = new Set();
   private readerComicScrollRestoreSerial: number = 0;
   private readerComicScrollRestoring: boolean = false;
   private readerComicReanchorSerial: number = 0;
@@ -348,6 +340,9 @@ struct ReadBookPage {
   private readerContinuousScrollOffsetMemoAt: number = 0;
   private readerContinuousScrollOffsetMemo: number = 0;
   private readerComicSuppressClickUntil: number = 0;
+  /** 条漫当前缩放倍数，按屏翻动时换算成列表内的滚动距离。 */
+  private readerComicZoomScale: number = 1;
+  private readerComicPagedController: ReaderComicPagedController = new ReaderComicPagedController();
   private ttsReader: SystemTtsReader = new SystemTtsReader();
   private ttsAutoContinue: boolean = false;
   private ttsReadToken: number = 0;
@@ -383,28 +378,28 @@ struct ReadBookPage {
   private ttsManualPageTurnResumeTimerId: number = -1;
   private ttsManualPageTurnResumeSerial: number = 0;
   private ttsManualPageTurnStartedAt: number = 0;
-  private ttsBackgroundRunning: boolean = false;
-  private ttsBackgroundRequesting: boolean = false;
-  private ttsBackgroundDesired: boolean = false;
-  private ttsBackgroundHeartbeatId: number = -1;
-  private ttsBackgroundLastLogAt: number = 0;
-  private ttsAvSession: avSession.AVSession | null = null;
-  private ttsAvSessionRequesting: boolean = false;
+  private ttsMedia: ReaderTtsMediaSession | null = null;
   private ttsSpeedSaveTimerId: number = -1;
   private ttsSpeedAvSessionTimerId: number = -1;
   private ttsSpeedRestartTimerId: number = -1;
   private ttsSpeedRestartSerial: number = 0;
   private ttsSleepTimerId: number = -1;
   private ttsSleepTimerEndAt: number = 0;
-  private ttsMediaImageRefreshSerial: number = 0;
-  private ttsMediaImageRaw: string = '';
-  private ttsMediaPixelMap: image.PixelMap | null = null;
   private contentPageStarts: number[] = [];
   private contentPageEnds: number[] = [];
   private pagedContentText: string = '';
   private readerPaginationCache: Map<string, ReaderPaginationResult> = new Map();
   private readerV2PageSetCache: Map<string, ReaderV2PageSet> = new Map<string, ReaderV2PageSet>();
   private readerV2DocumentCache: Map<string, ReaderV2Document> = new Map<string, ReaderV2Document>();
+  private readerContinuousV2Layouts: Map<string, ReaderV2PageLayout> = new Map<string, ReaderV2PageLayout>();
+  // layout.identity -> [chunk start in the chapter source, parsed chunk document]
+  private readerContinuousV2Sources: Map<string, number> = new Map<string, number>();
+  private readerContinuousV2Documents: Map<string, ReaderV2Document> = new Map<string, ReaderV2Document>();
+  private readerContinuousV2Controllers: Map<string, ReaderV2PageNodeController> =
+    new Map<string, ReaderV2PageNodeController>();
+  private readerV2SelectionExtraGaps: Map<string, number> = new Map<string, number>();
+  private readerV2SelectionShownHostVersion: number = -1;
+  private readerV2ImageBitmaps: ReaderImageBitmapCache = new ReaderImageBitmapCache();
   private readerV2Controllers: Map<string, ReaderV2PageNodeController> =
     new Map<string, ReaderV2PageNodeController>();
   private readerV2SelectionStyledTextCache: Map<string, MutableStyledString> =
@@ -420,18 +415,9 @@ struct ReadBookPage {
   // 滚动模式下每个分块的正文解析在选择层、渲染层、测量层被反复调用；按块文本缓存切分结果，
   // 避免快速滑动时每个新 LazyForEach 项重复做整块正则归一化与逐段切分。
   private readerTextParagraphsCache: Map<string, ReaderTextParagraph[]> = new Map();
-  private readerPaginationHeightScaleIdentity: string = '';
-  private readerPaginationHeightScale: number = 1;
-  private readerPaginationHeightCalibrationResolvedIdentity: string = '';
   private readerPaginationBottomFitTimerId: number = -1;
-  private readerPaginationBottomFitIdentity: string = '';
-  private readerPaginationBottomFitAttempts: number = 0;
   private cachedRegexRulesKey: string = '';
   private cachedRegexRules: ReaderRegexFontRule[] = [];
-  private cachedDocumentRegexSource: string = '';
-  private cachedDocumentRegexRulesKey: string = '';
-  private cachedDocumentRegexSlices: ReadTextSlice[] = [];
-  private regexFrameStyleCache: Map<string, string> = new Map();
   private adjacentPaginationPreloadSerial: number = 0;
   private previousPaginationPreloadSerial: number = 0;
   private adjacentPaginationPreloadActiveSerial: number = -1;
@@ -444,7 +430,8 @@ struct ReadBookPage {
   private pageTurnPreviewLoadingKey: string = '';
   private readerPageCurlPainter: ReaderPageCurlPainter = new ReaderPageCurlPainter();
   private readerEmulationFlipPainter: ReaderEmulationFlipPainter = new ReaderEmulationFlipPainter();
-  private readerCurlStartRegion: number = ReaderEmulationFlipRegion.MIDDLE;
+  // 拖动翻页时记录手指落点所在的区域；READER_CURL_REGION_UNSET 表示本次翻页不是由拖动发起的。
+  private readerCurlStartRegion: number = READER_CURL_REGION_UNSET;
   private readerPageCurlContext: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private readerPageCurlFront: image.PixelMap | null = null;
@@ -480,11 +467,8 @@ struct ReadBookPage {
   private bookLoadSerial: number = 0;
   private contentLoadSerial: number = 0;
   private isPageTurning: boolean = false;
-  private queuedPageTurnDirection: number = 0;
-  private queuedPageTurnStyle: string = '';
-  private queuedPageTurnCount: number = 0;
-  private queuedPageTurnVelocity: number = 0;
-  private queuedPageTurnGeneration: number = 0;
+  private pageTurnQueue: ReaderPageTurnQueue = new ReaderPageTurnQueue();
+  private readerFontRefreshSerial: number = 0;
   private pendingScrollPreviousChapterTurn: boolean = false;
   private pageTurnCrossChapterHandoff: boolean = false;
 
@@ -596,7 +580,6 @@ struct ReadBookPage {
   @StorageLink('readerDarkCustomThemeBackgroundColor') @Watch('onReaderThemeChanged') readerDarkCustomThemeBackgroundColor: string = ReaderThemeHelper.DARK_CUSTOM_BACKGROUND_COLOR;
   @StorageLink('readerDarkCustomThemeTextColor') @Watch('onReaderThemeChanged') readerDarkCustomThemeTextColor: string = ReaderThemeHelper.DARK_CUSTOM_TEXT_COLOR;
   @StorageLink('readerCustomThemesRaw') @Watch('onReaderThemeChanged') readerCustomThemesRaw: string = '';
-  @State customThemeNameDraft: string = '';
   @StorageLink('readerPageTurnMode') readerPageTurnMode: number = 1;
   @StorageLink('readerPageTurnAnimationType') @Watch('onReaderPageTurnAnimationChanged') readerPageTurnAnimationType: number = ReaderSettingsStore.PAGE_TURN_ANIMATION_SLIDE;
   @StorageLink('readerLandscapeDoublePage') @Watch('onReaderLandscapeDoublePageChanged') readerLandscapeDoublePage: boolean = false;
@@ -620,11 +603,21 @@ struct ReadBookPage {
   @StorageLink('readerUseChapterQuickJump') readerUseChapterQuickJump: boolean = true;
   @StorageLink('readerQuickBookmarkEnabled') readerQuickBookmarkEnabled: boolean = true;
   @StorageLink('readerHeaderEnabled') @Watch('onReaderChromeChanged') readerHeaderEnabled: boolean = false;
-  @StorageLink('readerHeaderContentMode') @Watch('onReaderChromeChanged') readerHeaderContentMode: string = 'chapter';
   @StorageLink('readerFooterEnabled') @Watch('onReaderChromeChanged') readerFooterEnabled: boolean = true;
-  @StorageLink('readerFooterLeftMode') @Watch('onReaderChromeChanged') readerFooterLeftMode: string = 'chapter';
-  @StorageLink('readerFooterProgressMode') @Watch('onReaderChromeChanged') readerFooterProgressMode: string = 'page';
-  @StorageLink('readerFooterShowProgressBar') @Watch('onReaderChromeChanged') readerFooterShowProgressBar: boolean = false;
+  // 页眉页脚的槽位与外观，ReaderInfoBarConfig 的 JSON；解析结果缓存在 readerInfoBarConfigCache。
+  @StorageLink('readerInfoBarConfig') @Watch('onReaderChromeChanged') readerInfoBarConfigRaw: string = '';
+  @State readerInfoTimeText: string = '';
+  @State readerInfoBatteryPercent: number = -1;
+  private readerInfoBarConfigCache: ReaderInfoBarConfig = new ReaderInfoBarConfig();
+  private readerInfoBarConfigCacheRaw: string = '';
+  private readerInfoBarLayoutIdentity: string = '';
+  private readerInfoBarClock: ReaderInfoBarClock | null = null;
+  // 分页区域下缘到窗口下缘的实测距离（vp）。窗口为全屏布局时分页区域本身就铺到窗口底部，该值为 0；
+  // 只有系统仍为导航条保留了布局安全区时才大于 0。-1 表示尚未测量。
+  private readerPageAreaBottomGap: number = -1;
+  // 重新排版（改排版设置、折叠屏展开合上、窗口尺寸变化）后，新的分页会话可能还没排到当前页，
+  // 可见页面此时挂载的是纯文本兜底。等当前页排出来后需要重新挂载一次页面宿主。
+  private readerRelayoutRepaintPending: boolean = false;
   @StorageLink('readerReplaceRulesUpdateTime') @Watch('onReaderReplaceRulesChanged') readerReplaceRulesUpdateTime: number = 0;
   @StorageLink('readerFontFamily') @Watch('onReaderFontChanged') readerFontFamily: string = '';
   @StorageLink('readerFontFilePath') @Watch('onReaderFontChanged') readerFontFilePath: string = '';
@@ -673,7 +666,7 @@ struct ReadBookPage {
   @StorageLink('ttsCloudVoiceId') ttsCloudVoiceId: string = '';
   @StorageLink('launchShortcutNonce') @Watch('onLaunchShortcutChanged') launchShortcutNonce: number = 0;
   @StorageLink('fullTextCacheCancelNonce') @Watch('onFullTextCacheCancelNonceChanged') fullTextCacheCancelNonce: number = 0;
-  @State ttsVoices: TtsVoiceOption[] = [ReadBookPage.defaultTtsVoice()];
+  @State ttsVoices: TtsVoiceOption[] = [TtsVoiceCatalog.defaultVoice()];
   @State ttsCustomVoiceOptions: HttpTTS[] = [];
   @State ttsCloudVoices: TtsVoiceInfo[] = [];
   @State ttsSelectedVoiceKey: string = '';
@@ -685,19 +678,7 @@ struct ReadBookPage {
   @State fullTextCacheStatus: string = '';
   @State @Watch('onSystemDialogFlagChanged') showReaderCacheDialog: boolean = false;
   @State @Watch('onSystemDialogFlagChanged') showReaderChapterCacheDialog: boolean = false;
-  @State readerCacheChapters: BookChapter[] = [];
-  @State readerCacheStatus: string = '';
-  @State readerCacheRangeDraft: string = '';
-  @State readerCacheRangeCaching: boolean = false;
-  private readerCacheLoadSerial: number = 0;
-  private fullTextCacheTaskId: number = 0;
-  private fullTextCacheCancelRequested: boolean = false;
-  private fullTextCacheCancelSeenNonce: number = 0;
-  private fullTextCacheNotificationLastAt: number = 0;
-  private fullTextCacheBackgroundRunning: boolean = false;
-  private fullTextCacheCancelAgent: WantAgent | null = null;
-  private fullTextCacheTaskKey: string = '';
-  private fullTextCacheStoppingNotificationTask: Promise<void> | null = null;
+  private fullTextCache: ReaderFullTextCacheController | null = null;
   private volumeUpCallback?: (event: KeyEvent) => void;
   private volumeDownCallback?: (event: KeyEvent) => void;
   private lastLoggedReaderFontFamily: string = '';
@@ -716,15 +697,7 @@ struct ReadBookPage {
   private readerPageContentTopPaddingSnapshot: number = -1;
   private readerLayoutCommitInProgress: boolean = false;
   private readerTypographyDraftPending: boolean = false;
-  @State readerTypographyValueRevision: number = 0;
-  @State readerTypographyFontSize: number = 20;
-  @State readerTypographyLetterSpacing: number = 0;
-  @State readerTypographyLineHeight: number = 12;
-  @State readerTypographyParagraphSpacing: number = 0;
-  @State readerTypographyMarginLeft: number = 18;
-  @State readerTypographyMarginRight: number = 18;
-  @State readerTypographyMarginTop: number = 18;
-  @State readerTypographyMarginBottom: number = 18;
+  private readerTypographyDraft: number[] = [];
   private readingProgressSaveQueue: Promise<void> = Promise.resolve();
   private readerProgressAnchorChapterIndex: number = -1;
   private readerProgressAnchorPageIndex: number = 0;
@@ -736,6 +709,9 @@ struct ReadBookPage {
   // Until that restore is confirmed, lifecycle saves must keep using the immutable database snapshot below.
   private readerProgressRestoreConfirmed: boolean = false;
   private readerExitProgressSaved: boolean = false;
+  private readerPageDetachedFromRoute: boolean = false;
+  private detachedReaderEngine: ReadBookEngine | null = null;
+  private detachedReaderEngineReady: Promise<void> | null = null;
   private openedFromShortcut: boolean = false;
   private shortcutReplacedPreviousPage: boolean = false;
   private shortcutRoutingActive: boolean = false;
@@ -753,34 +729,13 @@ struct ReadBookPage {
   private readerCommentPageAreaTop: number = -1;
   private readerCommentPageAreaHeight: number = 0;
   private readerCommentPanelController: webview.WebviewController = new webview.WebviewController();
-  private readerEyeTurnController: EyeTurnController = new EyeTurnController();
-  private arEyeTurnHost: ArEyeTurnHost | null = null;
-  private arEyeTurnHostLoading: boolean = false;
-  @State private arEyeTurnHostMounted: boolean = false;
-  private arEngineFaceActive: boolean = false;
+  @State eyeTurnState: ReaderEyeTurnViewState = new ReaderEyeTurnViewState();
+  private eyeTurnCoordinator?: ReaderEyeTurnCoordinator;
   private readerEyeTurnSurfaceController: XComponentController = new XComponentController();
-  private readerEyeTurnSurfaceId: string = '';
-  private readerEyeTurnConfiguredLandscape: boolean = false;
-  @State private readerEyeTurnStatus: string = '未启用';
-  @State private showReaderEyeCalibration: boolean = false;
-  @State private readerEyeCalibrationStep: number = 1;
-  @State private readerEyeCalibrationCapturing: boolean = false;
-  @State private readerEyeCalibrationProgress: number = 0;
-  @State private readerEyeCalibrationTargetY: number = 0;
-  @State private readerEyeCalibrationOverlayWidth: number = 0;
-  @State private readerEyeCalibrationOverlayHeight: number = 0;
-  private readerEyeCalibrationPoints: ReaderEyeCalibrationPoint[] = [];
-  private readerEyeCalibrationTimerId: number = -1;
-  private readerEyeCalibrationSequenceStartedAt: number = 0;
-  private readerEyeCalibrationPhaseStartedAt: number = 0;
-  @State private readerEyeCalibrationSessionActive: boolean = false;
-  private readerEyeCalibrationStartupAt: number = 0;
-  private readerEyeCalibrationLandscape: boolean = false;
-  private readerEyePermissionRequestSerial: number = 0;
 
   async aboutToAppear() {
     ReaderProgressCheckpoint.attach(this.ttsFloatingSessionOwnerId,
-      (): Promise<void> => this.flushReadingProgressCheckpoint());
+      (): Promise<void> => this.flushReadingProgressCheckpoint(), (): string => this.bookUrl);
     this.readerPageVisible = true;
     this.readerObservedBackgroundRevision = AppStorage.get<number>('appLifecycleBackgroundRevision') || 0;
     this.applyReaderStatusBarSafeHeight(this.storedStatusBarHeight);
@@ -800,7 +755,7 @@ struct ReadBookPage {
       this.isLoading = true;
       this.loadStatus = '正在加载...';
       this.resetReaderStateForBookLoad();
-      ReadBookEngine.get().prewarmOpen(this.bookUrl).catch((error: Error) => {
+      this.readerEngine().prewarmOpen(this.bookUrl).catch((error: Error) => {
         console.warn('[ReaderOpen] reader prewarm failed:', error);
       });
     }
@@ -834,6 +789,8 @@ struct ReadBookPage {
 
   onPageShow(): void {
     this.readerPageVisible = true;
+    this.syncReaderInfoBarClock();
+    readStatsTracker.setReadingActive(this.bookUrl);
     const backgroundRevision = AppStorage.get<number>('appLifecycleBackgroundRevision') || 0;
     const returningFromBackground = backgroundRevision > this.readerObservedBackgroundRevision;
     this.readerObservedBackgroundRevision = backgroundRevision;
@@ -854,6 +811,8 @@ struct ReadBookPage {
     this.applyReaderScreenOrientation();
     this.applyReaderScreenTimeout();
     this.shortcutRoutingActive = true;
+    // onNewWant 先于 onPageShow 写入快捷项，那时 @Watch 因页面隐藏而忽略，这里补一次。
+    this.openPendingShortcut();
     const returningFromReplaceRules = this.returningFromReaderReplaceRules;
     this.returningFromReaderReplaceRules = false;
     if (!this.readerEntryInitializing && !returningFromBackground) {
@@ -880,7 +839,7 @@ struct ReadBookPage {
     }
     this.syncTtsFocusAfterResumeLater(0);
     this.syncTtsFocusAfterResumeLater(180);
-    this.startReaderEyeTurnIfReady();
+    this.eyeTurn().startIfReady();
   }
 
   onGlobalTtsActiveChanged(): void {
@@ -903,8 +862,8 @@ struct ReadBookPage {
   }
 
   onBackPress(): boolean {
-    if (this.showReaderEyeCalibration) {
-      this.cancelReaderEyeCalibration();
+    if (this.eyeTurnState.showCalibration) {
+      this.eyeTurn().cancelCalibration();
       return true;
     }
     if (this.showReaderCommentPanel) {
@@ -967,6 +926,7 @@ struct ReadBookPage {
     }
     ReaderSettingsStore.applyToStorage(settings);
     this.applyLoadedReaderSettings(settings);
+    this.loadReaderComicSettings();
     this.cachedRegexRulesKey = '';
     this.cachedRegexRules = [];
     this.refreshReaderTextRender();
@@ -984,7 +944,7 @@ struct ReadBookPage {
 
   async reloadSourceInteractionsAfterPageShow(): Promise<void> {
     if (!this.book || this.book.origin === 'local' || this.chapters.length === 0) return;
-    const engine = ReadBookEngine.get();
+    const engine = this.readerEngine();
     const changed = await engine.refreshSourceInteractionState();
     if (!changed) return;
     this.book = engine.book || this.book;
@@ -1012,10 +972,9 @@ struct ReadBookPage {
     AppStorage.setOrCreate<boolean>('shelfReaderDirectTransition', false);
     this.resetReaderScreenOrientation();
     this.readerPageVisible = false;
-    this.stopArEyeTurnHost();
-    this.readerEyeTurnController.stop().catch((error: Error): void => {
-      console.warn('[EyeTurn] reader disappear release failed:', error.message);
-    });
+    this.syncReaderInfoBarClock();
+    readStatsTracker.setReadingActive('');
+    this.eyeTurn().release('reader disappear release');
     this.setReaderTextSelectionActive(false);
     this.cancelReaderPaginationWork(true);
     this.resetReaderPageCurl();
@@ -1049,9 +1008,15 @@ struct ReadBookPage {
     this.flushPendingTtsSpeedSettings();
     this.cancelMirroredTtsManualPageTurn();
     const finalProgressSave = this.flushReadingProgressCheckpoint();
+    this.readerPageDetachedFromRoute = true;
     if (!ReaderTtsFloatingSession.isOwner(this.ttsFloatingSessionOwnerId)) {
       this.stopTtsReading();
       this.ttsReader.shutdown();
+    } else {
+      // This page keeps reading aloud after it leaves the route stack. Without a retained write permission every
+      // later sentence/chapter save was dropped and reopening the book returned to the exit position.
+      ReaderProgressCheckpoint.retainBackground(this.ttsFloatingSessionOwnerId, (): string => this.bookUrl);
+      this.detachReaderEngineForBackgroundTts();
     }
     if (!this.readerExitProgressSaved) {
       finalProgressSave.then(() => {
@@ -1070,6 +1035,27 @@ struct ReadBookPage {
     this.exitReaderImmersive();
   }
 
+  readerEngine(): ReadBookEngine {
+    return this.detachedReaderEngine || ReadBookEngine.get();
+  }
+
+  detachReaderEngineForBackgroundTts(): void {
+    if (this.detachedReaderEngine || !this.book) return;
+    // The shared engine follows whichever reader page is visible. Reading aloud behind the bookshelf must keep
+    // loading its own chapters after another book is opened, so it continues on a private engine.
+    const fork = ReadBookEngine.forkSession(this.book.bookUrl);
+    if (fork) {
+      this.detachedReaderEngine = fork;
+      return;
+    }
+    // A replacement reader page already took the shared engine; open this book again on a private one.
+    const worker = ReadBookEngine.createBackgroundWorker();
+    this.detachedReaderEngine = worker;
+    this.detachedReaderEngineReady = worker.openBook(this.book).catch((error: Error) => {
+      console.warn('[TTS] 后台朗读独立引擎打开书籍失败:', error);
+    });
+  }
+
   onLaunchShortcutChanged(): void {
     if (!this.shortcutRoutingActive) {
       return;
@@ -1080,10 +1066,9 @@ struct ReadBookPage {
   onPageHide(): void {
     this.shortcutRoutingActive = false;
     this.readerPageVisible = false;
-    this.stopArEyeTurnHost();
-    this.readerEyeTurnController.stop().catch((error: Error): void => {
-      console.warn('[EyeTurn] reader background release failed:', error.message);
-    });
+    this.syncReaderInfoBarClock();
+    readStatsTracker.setReadingActive('');
+    this.eyeTurn().release('reader background release');
     this.setReaderTextSelectionActive(false);
     // Capture the authoritative visible page before pausing background workers. Clearing the retained V2
     // document here made canSaveReadingProgress() reject the checkpoint, then forced a full repagination on
@@ -1111,14 +1096,15 @@ struct ReadBookPage {
 
   enterReaderImmersive() {
     window.getLastWindow(getContext(this)).then((mainWindow: window.Window) => {
-      const bg = this.getBackgroundColor();
-      const useLightIcons = this.isReaderThemeDark();
-      const systemTextColor = useLightIcons ? '#D8D8D8' : '#2F261D';
       const comicMode = this.isReaderComicModeActive();
+      const bg = comicMode ? this.readerComicWindowColor() : this.getBackgroundColor();
+      const useLightIcons = comicMode ? this.isReaderComicSurfaceDark() : this.isReaderThemeDark();
+      const systemTextColor = useLightIcons ? '#D8D8D8' : '#2F261D';
       mainWindow.setWindowBackgroundColor(bg);
       mainWindow.setWindowLayoutFullScreen(true);
-      mainWindow.setWindowSystemBarEnable(comicMode || !this.readerExtendToStatusBar ?
-        ['navigation', 'status'] : ['navigation']);
+      // 漫画铺满全屏，时间与电量改由角落信息条显示。
+      mainWindow.setWindowSystemBarEnable(comicMode || this.readerExtendToStatusBar ?
+        ['navigation'] : ['navigation', 'status']);
       mainWindow.setWindowSystemBarProperties({
         statusBarColor: '#00000000',
         isStatusBarLightIcon: useLightIcons,
@@ -1180,7 +1166,7 @@ struct ReadBookPage {
       await db.initWithContext(getContext(this));
       ReaderOpenTrace.mark(this.bookUrl, 'database-ready');
 
-      const engine = ReadBookEngine.get();
+      const engine = this.readerEngine();
       const preparedBook = engine.getPreparedBook(this.bookUrl);
       // The retained engine is valuable for chapters/content, but its Book object can lag behind the serialized
       // exit checkpoint while the shelf close animation is refreshing. Always take progress metadata (including
@@ -1202,6 +1188,15 @@ struct ReadBookPage {
         null;
       await this.prepareReaderWebFetchRuntime(sourceForType);
       BookTypeSupport.applyBookType(this.book, sourceForType);
+      if (BookTypeSupport.isVideo(this.book)) {
+        // 视频类书籍没有阅读形态：从书架等入口进来时直接转到播放页。
+        ReaderOpenTrace.finish(this.bookUrl, 'redirect-video-player');
+        await router.replaceUrl({
+          url: 'pages/VideoPlayer',
+          params: { bookUrl: this.book.bookUrl, chapterIndex: '' }
+        });
+        return;
+      }
       if (BookTypeSupport.isAudio(this.book)) {
         await db.updateBook(this.book, false);
         ReaderOpenTrace.finish(this.bookUrl, 'redirect-audio-reader');
@@ -1261,6 +1256,9 @@ struct ReadBookPage {
       } else {
         this.pendingRestorePageIndex = savedPosition;
       }
+      // 打开恢复可能卡在 DB 分页缓存读取或死掉的排版链上：挂一个有界看门狗，
+      // 任何路径都不会把用户永久留在“正在恢复阅读进度”遮罩。
+      this.armReaderRestoreWatchdog();
       const restoringStoredProgress = activeTtsChapterIndex < 0 && Book.hasStartedReading(this.book);
       this.readerProgressRestoreConfirmed = !restoringStoredProgress;
       if (restoringStoredProgress) {
@@ -1322,7 +1320,7 @@ struct ReadBookPage {
 
   async retryFetchChapters() {
     try {
-      const engine = ReadBookEngine.get();
+      const engine = this.readerEngine();
       await engine.refreshToc();
       this.book = engine.book || this.book;
       this.chapters = engine.chapters;
@@ -1370,18 +1368,6 @@ struct ReadBookPage {
     this.readerWebFetchRuntimeNeeded = false;
     this.content = '';
     this.chapters = [];
-    this.tocVisibleChapters = [];
-    this.tocWindowStart = 0;
-    this.tocSearchVisible = false;
-    this.tocSearchQuery = '';
-    this.tocSearchChapterIndexes = [];
-    this.tocSearchLoading = false;
-    this.tocSearchResultActive = false;
-    this.tocOrderRevision = 0;
-    this.tocDatabaseChapterCount = 0;
-    this.tocFirstVisibleGlobalIndex = 0;
-    this.tocVisibleItemCount = 1;
-    this.tocSearchRequestSerial++;
     this.currentChapterIndex = 0;
     this.contentPages = [];
     this.contentPageStarts = [];
@@ -1423,7 +1409,6 @@ struct ReadBookPage {
     this.readerInitialPageReady = false;
     this.readerInitialOpening = true;
     this.readerComicMode = false;
-    this.readerComicImageRatios = [];
     this.clearReaderComicPaginationProgress();
     this.readerComicChapterSwitching = false;
     this.readerComicBoundaryDirection = 0;
@@ -1435,8 +1420,16 @@ struct ReadBookPage {
     this.readerComicScrollRestoreSerial++;
     this.readerComicScrollRestoring = false;
     this.clearReaderComicProgressSaveTimer();
-    this.readerComicPageDataSource.replace([]);
-    this.readerComicBrokenPages = [];
+    this.readerComicPageDataSource.reset();
+    this.readerContinuousCommitChapter = -1;
+    this.readerContinuousLastListStart = 0;
+    this.readerContinuousLastListEnd = 0;
+    this.neighborLoader().reset();
+    this.comicImageActions().reset();
+    this.readerComicPagedPrevPages = [];
+    this.readerComicPagedNextPages = [];
+    this.readerComicPagedPrevChapter = -1;
+    this.readerComicPagedNextChapter = -1;
     this.pendingRestorePageIndex = -1;
     this.readerProgressAnchorChapterIndex = -1;
     this.readerProgressAnchorPageIndex = 0;
@@ -1465,10 +1458,7 @@ struct ReadBookPage {
     this.pageTurnIncomingDocumentSource = '';
     this.pageTurnIncomingRenderVersion = 0;
     this.isPageTurning = false;
-    this.queuedPageTurnDirection = 0;
-    this.queuedPageTurnStyle = '';
-    this.queuedPageTurnCount = 0;
-    this.queuedPageTurnVelocity = 0;
+    this.pageTurnQueue.reset();
     this.pageTurnCrossChapterHandoff = false;
     this.clearPageTurnPreviewState();
     this.clearTtsHighlight();
@@ -1482,8 +1472,9 @@ struct ReadBookPage {
       this.isLoading = false;
       return false;
     }
-    
-    const engine = ReadBookEngine.get();
+
+    if (this.detachedReaderEngineReady) await this.detachedReaderEngineReady;
+    const engine = this.readerEngine();
     if (engine.book?.bookUrl !== (this.book?.bookUrl || this.bookUrl)) return false;
     const chapterIndex = this.clampChapterIndex(targetChapterIndex);
     const loadSerial = ++this.contentLoadSerial;
@@ -1502,6 +1493,12 @@ struct ReadBookPage {
       if (loadSerial !== this.contentLoadSerial) {
         return false;
       }
+      // 正文被预处理掏空（空白字符串）时不能继续分页：空白正文会产出 0 页并留下一张永白的阅读页。
+      const usableContent = !!body && !!loadedContent && loadedContent.trim().length > 0;
+      if (body && !usableContent) {
+        console.error(`[Reader] 章节正文为空 chapter=${chapterIndex} rawLength=${body.length} ` +
+          `preparedLength=${loadedContent.length}`);
+      }
       // Commit the chapter identity only after the asynchronous fetch and preprocessing both
       // succeeded. A rejected/stale load must not leave the reader pointing at a new chapter
       // while it still owns the previous chapter's content.
@@ -1509,8 +1506,7 @@ struct ReadBookPage {
       this.currentChapterIndex = chapterIndex;
       if (chapterChanged) this.readerContinuousReachedEnd = false;
       this.closeReaderCommentPanel();
-      this.readerComicImageRatios = [];
-      if (body) {
+      if (usableContent) {
         this.content = loadedContent;
         this.chapters = [...engine.chapters];
       } else {
@@ -1522,11 +1518,11 @@ struct ReadBookPage {
         this.content = loadedContent;
       }
       this.detectReaderComicMode(loadedContent);
-      let restoredPagination = body ?
+      // 直接从预处理后的正文开始分页：同步首屏 + 恢复突发排版（见 scheduleReaderPaginationCompletion）
+      // 能在毫秒级完成落页。旧的持久分页缓存读取要 await 关系型数据库查询（部分 HarmonyOS 构建上
+      // 带有数秒级同步前缀且无法超时），放在首屏前反而让每次跳章都“迟迟等待排版”，已不再使用。
+      const restoredPagination = body ?
         this.applyPreparedReaderPagination(loadedContent, chapterIndex, preferImmediatePagination) : false;
-      if (body && !restoredPagination && !preferImmediatePagination) {
-        restoredPagination = await this.restorePersistedReaderPagination(loadedContent, chapterIndex);
-      }
       if (loadSerial !== this.contentLoadSerial) {
         return false;
       }
@@ -1552,12 +1548,13 @@ struct ReadBookPage {
     }
   }
 
-  async refreshCurrentChapter(): Promise<void> {
+  /** restorePageIndex：刷新后停留的页（默认回到本章开头）；quiet：不弹“本章已刷新”。 */
+  async refreshCurrentChapter(restorePageIndex: number = 0, quiet: boolean = false): Promise<void> {
     if (this.chapters.length === 0) {
       return;
     }
 
-    const engine = ReadBookEngine.get();
+    const engine = this.readerEngine();
     const chapterIndex = this.currentChapterIndex;
     // Treat an explicit reload as a new content generation. Previously reloadContent() replaced `content` while
     // the old incremental pagination session, retained V2 document and TTS source mapping remained alive. When the
@@ -1590,11 +1587,10 @@ struct ReadBookPage {
         this.contentPageStarts = [];
         this.contentPageEnds = [];
         this.pagedContentText = '';
-        this.readerComicImageRatios = [];
         this.content = processedBody;
         this.detectReaderComicMode(processedBody);
         this.chapters = [...engine.chapters];
-        this.pendingRestorePageIndex = 0;
+        this.pendingRestorePageIndex = Math.max(0, restorePageIndex);
         this.currentPageIndex = 0;
         this.paginateContent(processedBody, chapterIndex);
         this.forceCurrentReaderPageRender();
@@ -1602,7 +1598,7 @@ struct ReadBookPage {
         this.preloadReaderContentLater(720);
         await this.saveReadingProgress();
         if (refreshSerial !== this.contentLoadSerial || chapterIndex !== this.currentChapterIndex) return;
-        HdsFeedback.showToast('本章已刷新');
+        if (!quiet) HdsFeedback.showToast('本章已刷新');
       } else {
         if (refreshSerial !== this.contentLoadSerial || chapterIndex !== this.currentChapterIndex) return;
         this.updatePendingVerification();
@@ -1627,24 +1623,32 @@ struct ReadBookPage {
   }
 
   onFullTextCacheCancelNonceChanged(): void {
-    const nonce = this.fullTextCacheCancelNonce || 0;
-    if (this.fullTextCaching && nonce > 0 && nonce !== this.fullTextCacheCancelSeenNonce) {
-      const signal = FullTextCacheCancelCoordinator.parse(
-        AppStorage.get<string>('fullTextCacheCancelSignal') || '');
-      if (signal && !FullTextCacheCancelCoordinator.matches(signal, this.fullTextCacheTaskKey,
-        this.book?.bookUrl || this.bookUrl)) {
-        this.fullTextCacheCancelSeenNonce = nonce;
-        return;
-      }
-      this.beginStoppingFullTextCache(signal ? signal.nonce : nonce, true);
-    }
+    this.fullTextCacheController().onCancelNonceChanged(this.fullTextCacheCancelNonce || 0);
   }
 
-  readerCachePanelStatus(): string {
-    if (this.fullTextCaching) {
-      return this.fullTextCacheStatus || this.fullTextCacheProgressText();
+  // Background task behind "缓存全文". The page only mirrors its progress into @State for the dialog.
+  fullTextCacheController(): ReaderFullTextCacheController {
+    if (!this.fullTextCache) {
+      this.fullTextCache = new ReaderFullTextCacheController({
+        abilityContext: (): common.UIAbilityContext => getContext(this) as common.UIAbilityContext,
+        bookUrl: (): string => this.book?.bookUrl || this.bookUrl,
+        bookName: (): string => this.book?.name || '',
+        ttsBackgroundRunning: (): boolean => this.ttsMediaSession().backgroundRunning,
+        ttsBackgroundBusy: (): boolean =>
+          this.ttsMediaSession().backgroundRunning || this.ttsMediaSession().backgroundRequesting,
+        onStateChanged: (): void => {
+          const controller = this.fullTextCacheController();
+          this.fullTextCaching = controller.caching;
+          this.fullTextCacheDone = controller.done;
+          this.fullTextCacheTotal = controller.total;
+          this.fullTextCacheStatus = controller.status;
+        },
+        onChaptersChanged: (chapters: BookChapter[]): void => {
+          this.chapters = chapters;
+        }
+      });
     }
-    return this.readerCacheStatus;
+    return this.fullTextCache;
   }
 
   openReaderCacheDialog(): void {
@@ -1656,187 +1660,37 @@ struct ReadBookPage {
     this.showMenu = false;
     this.showReaderChapterCacheDialog = false;
     this.showReaderCacheDialog = true;
-    this.readerCacheRangeDraft = '';
-    this.readerCacheStatus = '';
-    this.refreshReaderCacheChapters();
     this.readerCacheDialogSession.open(this.getUIContext(), (): void => {
-      this.readerCacheDialogContent();
+      this.readerCacheDialogContent(false);
     }, {
       autoCancel: false,
-      maskColor: this.isReaderThemeDark() ? '#99000000' : '#33000000',
+      maskColor: ThemeRuntime.scrimColor(this.appDarkMode),
       warnTag: '显示全文缓存弹窗失败:'
     });
   }
 
   openReaderChapterCacheDialog(): void {
-    if (!this.book || LocalBookService.isLocalBook(this.book) || this.fullTextCaching ||
-      this.readerCacheRangeCaching) {
+    if (!this.book || LocalBookService.isLocalBook(this.book) || this.fullTextCaching) {
       return;
     }
     this.showReaderCacheDialog = false;
     this.showReaderChapterCacheDialog = true;
-    this.readerCacheRangeDraft = '';
-    this.readerCacheStatus = '正在加载目录...';
-    this.refreshReaderCacheChapters();
     this.chapterCacheDialogSession.open(this.getUIContext(), (): void => {
-      this.readerChapterCacheDialogContent();
+      this.readerCacheDialogContent(true);
     }, {
-      autoCancel: false,
-      maskColor: this.isReaderThemeDark() ? '#99000000' : '#33000000',
-      warnTag: '显示章节缓存弹窗失败:'
+      autoCancel: true,
+      maskColor: ThemeRuntime.scrimColor(this.appDarkMode),
+      warnTag: '显示章节缓存弹窗失败:',
+      onDismiss: (): void => {
+        this.showReaderChapterCacheDialog = false;
+      }
     });
   }
 
+  // Caching runs in the background, so the dialog can always be closed.
   closeReaderCacheDialog(): void {
-    if (this.fullTextCaching || this.readerCacheRangeCaching) return;
-    this.readerCacheLoadSerial++;
     this.showReaderCacheDialog = false;
     this.showReaderChapterCacheDialog = false;
-    this.readerCacheChapters = [];
-    this.readerCacheStatus = '';
-    this.readerCacheRangeDraft = '';
-  }
-
-  async refreshReaderCacheChapters(): Promise<void> {
-    const bookUrl = this.book?.bookUrl || this.bookUrl;
-    if (!bookUrl) return;
-    const serial = ++this.readerCacheLoadSerial;
-    try {
-      const engine = ReadBookEngine.get();
-      if (engine.book?.bookUrl !== bookUrl) return;
-      await engine.syncChapterCacheDates();
-      if (serial !== this.readerCacheLoadSerial || this.book?.bookUrl !== bookUrl) return;
-      this.chapters = [...engine.chapters];
-      this.readerCacheChapters = [...engine.chapters];
-      const cachedCount = this.countCachedChapters(engine.chapters);
-      this.readerCacheStatus = engine.chapters.length > 0 ?
-        `${cachedCount}章已缓存 ${engine.chapters.length - cachedCount}章待缓存` : '暂未获取到目录';
-    } catch (error) {
-      console.warn('读取阅读页缓存目录失败:', error);
-      if (serial === this.readerCacheLoadSerial) this.readerCacheStatus = '目录加载失败，请稍后重试';
-    }
-  }
-
-  readerCachedChapterTextColor(): string {
-    return this.isReaderThemeDark() ? '#DDEFE5' : '#244B35';
-  }
-
-  parseReaderChapterRange(raw: string, total: number): number[] {
-    const value = (raw || '').trim();
-    if (!value || total <= 0) return [];
-    const normalized = value.replace(/[，、；;]/g, ',').replace(/[～至]/g, '-');
-    const result = new Set<number>();
-    for (const part of normalized.split(/[\s,]+/)) {
-      if (!part) continue;
-      const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
-      if (range) {
-        const start = Number.parseInt(range[1], 10);
-        const end = Number.parseInt(range[2], 10);
-        if (start < 1 || end < 1 || start > total || end > total) return [];
-        const low = Math.min(start, end);
-        const high = Math.max(start, end);
-        for (let chapterNumber = low; chapterNumber <= high; chapterNumber++) {
-          result.add(chapterNumber - 1);
-        }
-        continue;
-      }
-      if (!/^\d+$/.test(part)) return [];
-      const chapterNumber = Number.parseInt(part, 10);
-      if (chapterNumber < 1 || chapterNumber > total) return [];
-      result.add(chapterNumber - 1);
-    }
-    return Array.from(result).sort((left: number, right: number) => left - right);
-  }
-
-  async cacheReaderSingleChapter(index: number): Promise<void> {
-    await this.cacheReaderChapterIndexes([index]);
-  }
-
-  async cacheReaderChapterRange(): Promise<void> {
-    const total = this.readerCacheChapters.length > 0 ? this.readerCacheChapters.length : this.chapters.length;
-    const indexes = this.parseReaderChapterRange(this.readerCacheRangeDraft, total);
-    if (indexes.length === 0) {
-      HdsFeedback.showToast(`请输入有效章节范围（1-${total}）`);
-      return;
-    }
-    await this.cacheReaderChapterIndexes(indexes);
-  }
-
-  async cacheReaderChapterIndexes(indexes: number[]): Promise<void> {
-    if (!this.book || LocalBookService.isLocalBook(this.book) || this.fullTextCaching ||
-      this.readerCacheRangeCaching || indexes.length === 0) {
-      return;
-    }
-    const targetBook = this.book;
-    this.readerCacheRangeCaching = true;
-    let successCount = 0;
-    let failedCount = 0;
-    try {
-      const engine = ReadBookEngine.createBackgroundWorker();
-      await engine.openBook(targetBook);
-      await engine.syncChapterCacheDates();
-      for (const index of indexes) {
-        const chapter = engine.chapters[index];
-        if (!chapter || chapter.cacheDate > 0) continue;
-        this.readerCacheStatus = `正在缓存第 ${index + 1} 章...`;
-        let cached = false;
-        for (let attempt = 0; attempt < 2 && !cached; attempt++) {
-          try {
-            cached = await engine.cacheChapter(index);
-          } catch (error) {
-            if (attempt === 1) console.warn(`缓存第 ${index + 1} 章失败:`, error);
-          }
-          if (!cached && attempt === 0) await this.sleep(300);
-        }
-        if (cached) successCount++;
-        else failedCount++;
-        await this.sleep(0);
-      }
-      await engine.syncChapterCacheDates();
-      this.chapters = [...engine.chapters];
-      this.readerCacheChapters = [...engine.chapters];
-      this.readerCacheStatus = failedCount > 0 ?
-        `缓存完成：${successCount}章成功，${failedCount}章失败` :
-        (successCount > 0 ? `已缓存 ${successCount} 章` : '所选章节均已缓存');
-      HdsFeedback.showToast(failedCount > 0 ? `缓存完成，${failedCount} 章失败` : `已缓存 ${successCount} 章`);
-      AppStorage.setOrCreate('shelfUpdateTime', Date.now());
-    } catch (error) {
-      console.error('阅读页缓存指定章节失败:', error);
-      this.readerCacheStatus = '章节缓存失败';
-      HdsFeedback.showToast('章节缓存失败');
-    } finally {
-      this.readerCacheRangeCaching = false;
-    }
-  }
-
-  async clearReaderCachedChapters(): Promise<void> {
-    if (!this.book || this.fullTextCaching || this.readerCacheRangeCaching) return;
-    const bookUrl = this.book.bookUrl;
-    if (!bookUrl) return;
-    try {
-      const db = AppDatabase.getInstance();
-      await db.initWithContext(getContext(this));
-      await db.deleteBookCachedContent(bookUrl);
-      const engine = ReadBookEngine.get();
-      if (engine.book?.bookUrl === bookUrl) {
-        engine.clearCurrentBookMemoryCache();
-        await engine.syncChapterCacheDates();
-        this.chapters = [...engine.chapters];
-        this.readerCacheChapters = [...engine.chapters];
-      } else {
-        this.readerCacheChapters = this.readerCacheChapters.map((chapter: BookChapter) => {
-          chapter.cacheDate = 0;
-          return chapter;
-        });
-      }
-      this.readerCacheStatus = '已清除缓存章节';
-      HdsFeedback.showToast('已清除缓存章节');
-      AppStorage.setOrCreate('shelfUpdateTime', Date.now());
-    } catch (error) {
-      console.error('阅读页清除缓存章节失败:', error);
-      this.readerCacheStatus = '清除缓存失败';
-      HdsFeedback.showToast('清除缓存失败');
-    }
   }
 
   startFullTextCache(): void {
@@ -1851,148 +1705,7 @@ struct ReadBookPage {
 
     this.hideReaderPanels();
     HdsFeedback.showToast('已转入后台缓存，可在通知栏取消');
-    this.runFullTextCache(++this.fullTextCacheTaskId).catch(async (error: Error): Promise<void> => {
-      if (this.fullTextCacheCancelRequested) {
-        if (this.fullTextCacheStoppingNotificationTask) await this.fullTextCacheStoppingNotificationTask;
-        this.fullTextCaching = false;
-        this.fullTextCacheStatus = '全文缓存已取消';
-        await this.publishFullTextCacheNotification('缓存已停止', this.fullTextCacheProgressText(), false);
-        await this.stopFullTextCacheBackgroundRunning();
-        this.releaseFullTextCacheCancelRegistration();
-        this.fullTextCacheCancelRequested = false;
-        return;
-      }
-      this.releaseFullTextCacheCancelRegistration();
-      console.error('全文缓存任务失败:', error);
-      this.fullTextCaching = false;
-      this.fullTextCacheStatus = '全文缓存失败';
-      HdsFeedback.showToast('全文缓存失败');
-      this.publishFullTextCacheNotification('全文缓存失败', this.fullTextCacheProgressText(), false).catch((e: Error) => {
-        console.warn('更新全文缓存失败通知失败:', e);
-      });
-      this.stopFullTextCacheBackgroundRunning().catch((e: Error) => {
-        console.warn('停止全文缓存后台任务失败:', e);
-      });
-    });
-  }
-
-  async runFullTextCache(taskId: number): Promise<void> {
-    const engine = ReadBookEngine.get();
-    if (!engine.book || engine.chapters.length === 0) {
-      return;
-    }
-
-    this.fullTextCaching = true;
-    this.fullTextCacheCancelRequested = false;
-    this.fullTextCacheCancelSeenNonce = AppStorage.get<number>('fullTextCacheCancelNonce') || 0;
-    this.fullTextCacheNotificationLastAt = 0;
-    this.fullTextCacheCancelAgent = null;
-    this.fullTextCacheStoppingNotificationTask = null;
-    this.fullTextCacheTaskKey = `reader_${taskId}_${Date.now()}`;
-    FullTextCacheCancelCoordinator.register(this.fullTextCacheTaskKey, engine.book.bookUrl,
-      (signal: FullTextCacheCancelSignal): void => {
-        if (FullTextCacheCancelCoordinator.matches(signal, this.fullTextCacheTaskKey, engine.book?.bookUrl || '')) {
-          this.beginStoppingFullTextCache(signal.nonce, true);
-        }
-      });
-    await engine.syncChapterCacheDates();
-    this.chapters = [...engine.chapters];
-    this.fullTextCacheTotal = engine.chapters.length;
-    this.fullTextCacheDone = this.countCachedChapters(engine.chapters);
-    this.fullTextCacheStatus = '全文缓存后台进行中';
-
-    await this.startFullTextCacheBackgroundRunning();
-    await this.requestFullTextCacheNotificationEnabled();
-    await this.publishFullTextCacheProgress(true);
-
-    for (let index = 0; index < engine.chapters.length; index++) {
-      if (taskId !== this.fullTextCacheTaskId || this.shouldCancelFullTextCache()) {
-        break;
-      }
-      const chapter = engine.chapters[index];
-      if (!chapter || chapter.cacheDate > 0) {
-        continue;
-      }
-
-      const ok = await this.cacheFullTextChapter(engine, index, taskId);
-      if (taskId !== this.fullTextCacheTaskId) {
-        break;
-      }
-      if (ok) {
-        this.fullTextCacheDone = this.countCachedChapters(engine.chapters);
-        this.chapters = [...engine.chapters];
-      }
-      if (this.shouldCancelFullTextCache()) break;
-      await this.publishFullTextCacheProgress(false);
-      await this.sleep(0);
-    }
-
-    if (taskId !== this.fullTextCacheTaskId) {
-      this.releaseFullTextCacheCancelRegistration();
-      return;
-    }
-
-    const canceled = this.shouldCancelFullTextCache();
-    await engine.syncChapterCacheDates();
-    this.chapters = [...engine.chapters];
-    this.fullTextCacheDone = this.countCachedChapters(engine.chapters);
-    this.fullTextCaching = false;
-    const failedCount = Math.max(0, this.fullTextCacheTotal - this.fullTextCacheDone);
-    this.fullTextCacheStatus = canceled ? '全文缓存已取消' :
-      (failedCount > 0 ? `缓存结束，${failedCount} 章未缓存` : '全文缓存完成');
-    if (canceled && this.fullTextCacheStoppingNotificationTask) {
-      await this.fullTextCacheStoppingNotificationTask;
-    }
-    await this.publishFullTextCacheNotification(
-      canceled ? '缓存已停止' : this.fullTextCacheStatus,
-      this.fullTextCacheProgressText(),
-      false
-    );
-    if (canceled) {
-      HdsFeedback.showToast('缓存已停止');
-    } else {
-      HdsFeedback.showToast('全文缓存完成');
-    }
-    await this.stopFullTextCacheBackgroundRunning();
-    this.releaseFullTextCacheCancelRegistration();
-    this.fullTextCacheCancelRequested = false;
-  }
-
-  beginStoppingFullTextCache(nonce: number, showHint: boolean): void {
-    if (!this.fullTextCaching || this.fullTextCacheCancelRequested) return;
-    this.fullTextCacheCancelRequested = true;
-    this.fullTextCacheCancelSeenNonce = nonce;
-    this.fullTextCacheStatus = '正在停止缓存…';
-    ReadBookEngine.get().cancelPendingRequests();
-    this.fullTextCacheStoppingNotificationTask = this.publishFullTextCacheNotification(
-      '正在停止缓存…', this.fullTextCacheProgressText(), true)
-      .catch((error: Error) => console.warn('更新正在停止缓存通知失败:', error));
-    if (showHint) HdsFeedback.showToast('正在停止缓存…');
-  }
-
-  releaseFullTextCacheCancelRegistration(): void {
-    FullTextCacheCancelCoordinator.unregister(this.fullTextCacheTaskKey);
-    this.fullTextCacheTaskKey = '';
-    this.fullTextCacheStoppingNotificationTask = null;
-  }
-
-  shouldCancelFullTextCache(): boolean {
-    if (this.fullTextCacheCancelRequested) {
-      return true;
-    }
-    const nonce = AppStorage.get<number>('fullTextCacheCancelNonce') || 0;
-    if (nonce > 0 && nonce !== this.fullTextCacheCancelSeenNonce) {
-      const signal = FullTextCacheCancelCoordinator.parse(
-        AppStorage.get<string>('fullTextCacheCancelSignal') || '');
-      if (signal && !FullTextCacheCancelCoordinator.matches(signal, this.fullTextCacheTaskKey,
-        this.book?.bookUrl || this.bookUrl)) {
-        this.fullTextCacheCancelSeenNonce = nonce;
-        return false;
-      }
-      this.beginStoppingFullTextCache(signal ? signal.nonce : nonce, false);
-      return this.fullTextCacheCancelRequested;
-    }
-    return false;
+    this.fullTextCacheController().start();
   }
 
   clearReaderScreenTimeoutTimer(): void {
@@ -2051,177 +1764,6 @@ struct ReadBookPage {
     });
   }
 
-  async cacheFullTextChapter(engine: ReadBookEngine, chapterIndex: number, taskId: number): Promise<boolean> {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (taskId !== this.fullTextCacheTaskId || this.shouldCancelFullTextCache()) {
-        return false;
-      }
-      try {
-        if (await engine.cacheChapter(chapterIndex,
-          (): boolean => taskId !== this.fullTextCacheTaskId || this.shouldCancelFullTextCache())) {
-          return true;
-        }
-      } catch (error) {
-        if (!this.shouldCancelFullTextCache()) {
-          console.warn(`缓存第 ${chapterIndex + 1} 章失败（第 ${attempt + 1} 次）:`, error);
-        }
-      }
-      if (attempt === 0) {
-        await this.sleep(300);
-      }
-    }
-    return false;
-  }
-
-  countCachedChapters(chapters: BookChapter[]): number {
-    let count = 0;
-    for (const chapter of chapters) {
-      if (chapter.cacheDate > 0) {
-        count++;
-      }
-    }
-    return count;
-  }
-
-  fullTextCacheProgressText(): string {
-    const total = Math.max(this.fullTextCacheTotal, 0);
-    if (total === 0) {
-      return '正在准备缓存章节';
-    }
-    const done = Math.max(0, Math.min(this.fullTextCacheDone, total));
-    const percent = Math.floor((done / total) * 100);
-    return `已缓存 ${done}/${total} 章（${percent}%）`;
-  }
-
-  async publishFullTextCacheProgress(force: boolean): Promise<void> {
-    const now = Date.now();
-    if (!force && now - this.fullTextCacheNotificationLastAt < FULL_TEXT_CACHE_NOTIFICATION_INTERVAL_MS) {
-      return;
-    }
-    this.fullTextCacheNotificationLastAt = now;
-    await this.publishFullTextCacheNotification(this.fullTextCacheStatus || '全文缓存后台进行中',
-      this.fullTextCacheProgressText(), true);
-  }
-
-  async publishFullTextCacheNotification(text: string, additionalText: string, ongoing: boolean): Promise<void> {
-    try {
-      const request: notificationManager.NotificationRequest = {
-        id: 2601,
-        label: 'full_text_cache',
-        notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
-        isOngoing: ongoing,
-        tapDismissed: false,
-        isAlertOnce: true,
-        autoDeletedTime: ongoing ? undefined : Date.now() + 5000,
-        content: {
-          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-          normal: {
-            title: this.book?.name ? `缓存全文：${this.book.name}` : '缓存全文',
-            text: text,
-            additionalText: additionalText
-          }
-        }
-      };
-      if (ongoing) {
-        request.actionButtons = [{
-          title: '×',
-          wantAgent: await this.getFullTextCacheCancelWantAgent()
-        }];
-      }
-      await notificationManager.publish(request);
-    } catch (error) {
-      console.warn('发布全文缓存通知失败:', error);
-    }
-  }
-
-  async requestFullTextCacheNotificationEnabled(): Promise<void> {
-    try {
-      if (await notificationManager.isNotificationEnabled()) {
-        return;
-      }
-      await notificationManager.requestEnableNotification(getContext(this) as common.UIAbilityContext);
-    } catch (error) {
-      console.warn('请求通知权限失败:', error);
-    }
-  }
-
-  async getFullTextCacheCancelWantAgent(): Promise<WantAgent> {
-    if (this.fullTextCacheCancelAgent) {
-      return this.fullTextCacheCancelAgent;
-    }
-    const context = getContext(this) as common.UIAbilityContext;
-    this.fullTextCacheCancelAgent = await wantAgent.getWantAgent({
-      wants: [{
-        bundleName: context.abilityInfo.bundleName,
-        abilityName: 'EntryAbility',
-        parameters: {
-          cacheAction: 'cancelFullTextCache',
-          cacheTaskId: this.fullTextCacheTaskId,
-          cacheTaskKey: this.fullTextCacheTaskKey,
-          bookUrl: this.book?.bookUrl || this.bookUrl
-        }
-      }],
-      actionType: wantAgent.OperationType.START_ABILITY,
-      requestCode: 2602,
-      actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-    });
-    return this.fullTextCacheCancelAgent;
-  }
-
-  async startFullTextCacheBackgroundRunning(): Promise<void> {
-    if (this.fullTextCacheBackgroundRunning) {
-      return;
-    }
-    if (this.ttsBackgroundRunning) {
-      this.fullTextCacheBackgroundRunning = true;
-      return;
-    }
-    try {
-      const agent = await this.createFullTextCacheOpenWantAgent();
-      await backgroundTaskManager.startBackgroundRunning(getContext(this), ['dataTransfer'], agent);
-      this.fullTextCacheBackgroundRunning = true;
-    } catch (error) {
-      console.warn('启动全文缓存后台任务失败:', error);
-    }
-  }
-
-  async stopFullTextCacheBackgroundRunning(): Promise<void> {
-    if (!this.fullTextCacheBackgroundRunning) {
-      return;
-    }
-    this.fullTextCacheBackgroundRunning = false;
-    if (this.ttsBackgroundRunning || this.ttsBackgroundRequesting) {
-      return;
-    }
-    try {
-      await backgroundTaskManager.stopBackgroundRunning(getContext(this));
-    } catch (error) {
-      console.warn('停止全文缓存后台任务失败:', error);
-    }
-  }
-
-  async createFullTextCacheOpenWantAgent(): Promise<WantAgent> {
-    const context = getContext(this) as common.UIAbilityContext;
-    return await wantAgent.getWantAgent({
-      wants: [{
-        bundleName: context.abilityInfo.bundleName,
-        abilityName: 'EntryAbility',
-        parameters: {
-          bookUrl: this.bookUrl || ''
-        }
-      }],
-      actionType: wantAgent.OperationType.START_ABILITY,
-      requestCode: 2603,
-      actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-    });
-  }
-
-  sleep(ms: number): Promise<void> {
-    return new Promise<void>((resolve: () => void) => {
-      setTimeout(() => resolve(), ms);
-    });
-  }
-
   finishReaderInitialOpening(): void {
     this.readerInitialOpening = false;
     AppStorage.setOrCreate<boolean>('shelfReaderDirectTransition', false);
@@ -2270,14 +1812,14 @@ struct ReadBookPage {
         .height(40)
         .color(this.accentColor())
       Text(this.getReaderLoadingText())
-        .fontSize(14)
-        .fontColor(this.isReaderThemeDark() ? '#AEB4BE' : '#777777')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.isReaderLoadingSurfaceDark() ? '#AEB4BE' : '#777777')
         .margin({ top: 10 })
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
-    .backgroundColor(this.getBackgroundColor())
+    .backgroundColor(this.readerLoadingSurfaceColor())
   }
 
   @Builder
@@ -2288,12 +1830,12 @@ struct ReadBookPage {
         .height(44)
         .color(this.accentColor())
       Text('正在解析漫画')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontWeight(FontWeight.Medium)
-        .fontColor(this.getTextColor())
+        .fontColor(this.isReaderLoadingSurfaceDark() ? '#E6E6E6' : '#333333')
       Text(`已解析 ${this.readerComicPaginationParsedPages} / ${this.readerComicPaginationTotalPages} 页`)
-        .fontSize(13)
-        .fontColor(this.isReaderThemeDark() ? '#AEB4BE' : '#777777')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.isReaderLoadingSurfaceDark() ? '#AEB4BE' : '#777777')
       Progress({
         value: this.readerComicPaginationParsedPages,
         total: Math.max(1, this.readerComicPaginationTotalPages),
@@ -2302,96 +1844,59 @@ struct ReadBookPage {
         .width(196)
         .height(4)
         .color(this.accentColor())
-        .backgroundColor(this.isReaderThemeDark() ? '#3A3D43' : '#DDD8D0')
+        .backgroundColor(this.isReaderLoadingSurfaceDark() ? '#3A3D43' : '#DDD8D0')
       Text('解析完成后自动开始阅读')
-        .fontSize(12)
-        .fontColor(this.isReaderThemeDark() ? '#858B94' : '#999999')
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.isReaderLoadingSurfaceDark() ? '#858B94' : '#999999')
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
-    .backgroundColor(this.getBackgroundColor())
+    .backgroundColor(this.readerLoadingSurfaceColor())
   }
 
   @Builder
   readerComicScrollSurface() {
     Stack() {
       List({ space: 0, scroller: this.readerComicScroller }) {
-        LazyForEach(this.readerComicPageDataSource, (page: string, index: number) => {
+        LazyForEach(this.readerComicPageDataSource, (item: ReaderScrollItem, index: number) => {
           ListItem() {
-            if (this.isReaderImageOnlyPage(page)) {
-              Stack({ alignContent: Alignment.Center }) {
-                Image(this.getReaderEpubImageUri(page))
-                  .width('100%')
-                  .height(this.getReaderComicImageRenderHeight(index))
-                  .margin({ top: -this.getReaderComicImageSeamOverlap(index) })
-                  .objectFit(this.getReaderComicImageFit(index))
-                  .draggable(false)
-                  .onAppear(() => {
-                    this.ensureReaderComicImageRatio(index, page).catch((error: Error) => {
-                      console.warn('预读取漫画图片尺寸失败:', error);
-                    });
-                  })
-                  .onComplete((event) => {
-                    if (event) {
-                      this.updateReaderComicImageRatio(index, event.width, event.height);
-                    }
-                  })
-                  .onError((error: ImageError) => {
-                    this.markReaderComicImageBroken(index, page, error);
-                  })
-                if (this.readerComicBrokenPages.includes(index)) {
-                  Column({ space: 6 }) {
-                    Text('⚠ 图片加载失败')
-                      .fontSize(13)
-                      .fontColor(this.getSubTextColor())
-                    Text(/^(?:https?:|data:)/i.test(LocalBookService.epubImagePathFromMarker(page)) ?
-                      '网络图片加载失败，点击重试' : '文件可能已被移动、删除或尚未重新导入')
-                      .fontSize(11)
-                      .fontColor(this.getSubTextColor())
-                      .opacity(0.8)
-                  }
-                  .width('100%')
-                  .onClick(() => {
-                    this.retryReaderComicImage(index);
-                  })
-                }
-              }
-              .width('100%')
-            } else if (this.isReaderNovelContinuousScrollModeActive()) {
-              Column() {
-                this.styledReaderText(
-                  page,
-                  0,
-                  this.currentChapterIndex,
-                  0,
-                  this.pageRenderVersion,
-                  `reader_vertical_scroll_${this.currentChapterIndex}_${index}`,
-                  index,
-                  0
-                )
-              }
-              .width('100%')
+            if (!item.isPage()) {
+              this.readerContinuousChapterSeparator(item)
+            } else if (this.isReaderImageOnlyPage(item.text)) {
+              ReaderComicImageItem({
+                marker: item.text.trim(),
+                viewWidth: this.pageViewWidth,
+                viewHeight: this.pageViewHeight,
+                seamOverlap: item.pageIndex > 0 &&
+                  this.isReaderImageOnlyPage(this.readerComicPageDataSource.getData(index - 1).text),
+                hintColor: this.getSubTextColor()
+              })
+            } else if (this.usesReaderContinuousV2()) {
+              this.readerContinuousV2Item(item.chapterIndex, item.pageIndex, item.text, this.pageRenderVersion)
             } else {
               Column() {
-                this.styledReaderText(page, this.getReaderContentBottomPadding(), this.currentChapterIndex,
-                  0, this.pageRenderVersion, `reader_comic_fallback_${this.currentChapterIndex}_${index}`, index)
+                this.readerPlainTextLeaf(item.text)
               }
               .width('100%')
               .constraintSize({ minHeight: this.pageViewHeight })
             }
           }
           .width('100%')
-        }, (page: string, index: number) => `${this.currentChapterIndex}_${index}_${this.hashText(page)}`)
+        }, (item: ReaderScrollItem) => item.key)
       }
+      .id(READER_CONTINUOUS_LIST_ID)
+      // 上一章装到列表前面、远处的章节从前面移除时，正在读的内容保持不动。
+      .maintainVisibleContentPosition(true)
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       .width('100%')
       .height('100%')
       // In continuous reading the configured vertical margins describe the viewport, not only the first and
       // last pagination fragment. Keep every scrolled line inside those edges and avoid adding a second reserve.
+      // 上下内边距都包含页眉/页脚的占位：List 只在内容区内绘制，正文滚到页眉页脚处即被裁掉，不会从文字下方透出。
       .padding({
         top: this.isReaderNovelContinuousScrollModeActive() ? this.getEffectiveReaderMarginTop() : 0,
-        bottom: this.isReaderNovelContinuousScrollModeActive() ? this.getEffectiveReaderMarginBottom() : 0
+        bottom: this.isReaderNovelContinuousScrollModeActive() ? this.getReaderContinuousScrollBottomPadding() : 0
       })
       .enableScrollInteraction(!this.readerTextSelectionActive)
       .scrollBar(BarState.Off)
@@ -2416,7 +1921,7 @@ struct ReadBookPage {
       })
 
       Column() {
-        if (this.readerHeaderEnabled && !!this.getReaderHeaderInfoText() && !this.isReaderComicModeActive()) {
+        if (this.isReaderHeaderVisible()) {
           this.readerHeaderInfoBar()
         }
         Blank()
@@ -2475,8 +1980,11 @@ struct ReadBookPage {
       if (this.readerComicBoundaryDirection < 0) {
         this.readerComicBoundaryHintContent()
       }
+      // HitTestMode.None 只让容器自身不参与触摸测试，子节点照常参与；铺满的占位必须单独排除，
+      // 否则提示出现期间会截走下面列表的点击和拖动。
       Blank()
         .layoutWeight(1)
+        .hitTestBehavior(HitTestMode.None)
       if (this.readerComicBoundaryDirection > 0) {
         this.readerComicBoundaryHintContent()
       }
@@ -2498,7 +2006,7 @@ struct ReadBookPage {
 
   @Builder
   readerComicBoundaryHintContent() {
-    Row({ space: 8 }) {
+    Row({ space: AppSpacing.MD }) {
       if (this.readerComicChapterSwitching) {
         LoadingProgress()
           .width(18)
@@ -2511,13 +2019,13 @@ struct ReadBookPage {
           .fontColor([this.readerComicBoundaryReady ? this.accentColor() : this.getTextColor()])
       }
       Text(this.readerComicBoundaryHintText())
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontWeight(this.readerComicBoundaryReady || this.readerComicChapterSwitching ? FontWeight.Medium :
           FontWeight.Regular)
         .fontColor(this.readerComicBoundaryReady || this.readerComicChapterSwitching ?
           this.accentColor() : this.getTextColor())
     }
-    .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+    .padding({ left: 14, right: 14, top: AppSpacing.MD, bottom: AppSpacing.MD })
     .borderRadius(18)
     .backgroundColor(this.isReaderThemeDark() ? '#E61B1D20' : '#E6FFFFFF')
     .shadow({ radius: 10, color: this.isReaderThemeDark() ? '#66000000' : '#26000000', offsetY: 3 })
@@ -2527,45 +2035,525 @@ struct ReadBookPage {
   }
 
   @Builder
-  readerComicInteractionLayer() {
-    Blank()
-    .width('100%')
-    .height('100%')
-    .backgroundColor(Color.Transparent)
-    .onClick(() => {
-      if (this.consumeSuppressedReaderTapClick()) {
-        return;
-      }
-      if (Date.now() >= this.readerComicSuppressClickUntil &&
-        !this.showMenu && !this.showToc && !this.showSettings) {
-        this.showMenu = true;
-      }
-    })
-    .gesture(
-      PanGesture({ direction: PanDirection.Vertical, distance: this.readerTapSlop })
-        .onActionStart(() => {
-          if (this.isReaderInteractiveActionActive()) {
-            return;
-          }
+  readerComicSurface() {
+    Stack() {
+      ReaderComicView({
+        scroller: this.readerComicScroller,
+        dataSource: this.readerComicPageDataSource,
+        chapterTitle: (chapterIndex: number): string => this.getChapterTitle(chapterIndex),
+        preloadCount: this.readerComicSettings.preloadCount,
+        onImageLongPress: (source: string, reload: () => void, snapshotId: string): void => {
+          this.handleReaderComicImageLongPress(source, reload, snapshotId);
+        },
+        onImageDenied: (chapterIndex: number): void => this.handleReaderComicImageDenied(chapterIndex),
+        viewWidth: this.pageViewWidth,
+        viewHeight: this.pageViewHeight,
+        surfaceColor: this.readerComicSurfaceColor(),
+        textColor: this.readerComicSurfaceTextColor(),
+        hintColor: this.readerComicSurfaceHintColor(),
+        pageGap: this.readerComicSettings.pageGap,
+        fitScreen: this.readerComicSettings.fit === ReaderComicFit.SCREEN,
+        doubleTapZoom: this.readerComicSettings.doubleTapZoom,
+        interactive: this.isReaderComicInteractionEnabled(),
+        panDistance: this.readerTapSlop,
+        transitionY: this.readerComicChapterTransitionY,
+        transitionOpacity: this.readerComicChapterTransitionOpacity,
+        infoVisible: this.shouldShowReaderComicInfoBadge(),
+        infoChapter: this.getChapterTitle(),
+        infoPage: this.readerComicPageText(),
+        infoTime: this.readerInfoTimeText,
+        infoBattery: this.readerInfoBatteryPercent,
+        infoBottomInset: this.readerComicInfoBadgeBottomInset(),
+        onVisibleRangeChange: (start: number, end: number): void => this.onReaderComicScrollIndexChanged(start, end),
+        onReachEnd: (): void => this.onReaderContinuousReachEnd(),
+        onListAppear: (): void => {
+          // 深度/末页恢复可能在列表首次布局前发布，那时 scrollToIndex 不生效；挂载后按恢复目标再补一次。
+          if (this.readerComicScrollRestoring) this.scheduleReaderComicScrollRestore();
+        },
+        onTap: (x: number, y: number, width: number, height: number): void =>
+          this.handleReaderComicTap(x, y, width, height),
+        onPanStart: (): void => {
+          if (this.isReaderInteractiveActionActive()) return;
           this.beginReaderComicPan();
-        })
-        .onActionUpdate((event: GestureEvent) => {
-          if (this.isReaderInteractiveActionActive()) {
-            return;
-          }
+        },
+        onPanUpdate: (event: GestureEvent): void => {
+          if (this.isReaderInteractiveActionActive()) return;
           this.updateReaderComicPan(event);
-        })
-        .onActionEnd((event: GestureEvent) => {
+        },
+        onPanEnd: (event: GestureEvent): void => {
           if (this.isReaderInteractiveActionActive()) {
             this.cancelReaderComicPan();
             return;
           }
           this.finishReaderComicPan(event);
-        })
-        .onActionCancel(() => {
-          this.cancelReaderComicPan();
-        })
-    )
+        },
+        onPanCancel: (): void => this.cancelReaderComicPan(),
+        onZoomChanged: (scale: number): void => {
+          this.readerComicZoomScale = scale;
+        }
+      })
+
+      if (this.readerComicBoundaryDirection !== 0 || this.readerComicChapterSwitching) {
+        this.readerComicBoundaryHint()
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .clip(true)
+    .opacity(this.readerInitialPageReady ? 1 : 0)
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      this.updatePagedReaderArea(newValue);
+      this.rememberReaderTapLayerArea(newValue);
+    })
+  }
+
+  @Builder
+  readerComicPagedSurface() {
+    Stack() {
+      ReaderComicPagedView({
+        controller: this.readerComicPagedController,
+        pages: this.contentPages,
+        pageIndex: this.currentPageIndex,
+        chapterIndex: this.currentChapterIndex,
+        viewWidth: this.pageViewWidth,
+        viewHeight: this.pageViewHeight,
+        dualPage: this.isReaderComicDualPageActive(),
+        rightToLeft: this.isReaderComicRightToLeft(),
+        doubleTapZoom: this.readerComicSettings.doubleTapZoom,
+        surfaceColor: this.readerComicSurfaceColor(),
+        textColor: this.readerComicSurfaceTextColor(),
+        hintColor: this.readerComicSurfaceHintColor(),
+        interactive: this.isReaderComicInteractionEnabled(),
+        panDistance: this.readerTapSlop,
+        transitionOpacity: this.readerComicChapterTransitionOpacity,
+        prevChapterTitle: this.currentChapterIndex > 0 ? this.getChapterTitle(this.currentChapterIndex - 1) : '',
+        nextChapterTitle: this.currentChapterIndex < this.chapters.length - 1 ?
+          this.getChapterTitle(this.currentChapterIndex + 1) : '',
+        prevChapterPages: this.readerComicPagedPrevChapter === this.currentChapterIndex - 1 ?
+          this.readerComicPagedPrevPages : [],
+        nextChapterPages: this.readerComicPagedNextChapter === this.currentChapterIndex + 1 ?
+          this.readerComicPagedNextPages : [],
+        onCrossChapter: (direction: number): void => {
+          this.commitReaderComicPagedChapter(direction).catch((error: Error) => {
+            console.warn('翻页模式跨章失败:', error);
+            this.readerComicPagedController.cancelCross();
+          });
+        },
+        infoVisible: this.shouldShowReaderComicInfoBadge(),
+        infoChapter: this.getChapterTitle(),
+        infoPage: this.readerComicPageText(),
+        infoTime: this.readerInfoTimeText,
+        infoBattery: this.readerInfoBatteryPercent,
+        infoBottomInset: this.readerComicInfoBadgeBottomInset(),
+        preloadCount: this.readerComicSettings.preloadCount,
+        onImageLongPress: (source: string, reload: () => void, snapshotId: string): void => {
+          this.handleReaderComicImageLongPress(source, reload, snapshotId);
+        },
+        onImageDenied: (chapterIndex: number): void => this.handleReaderComicImageDenied(chapterIndex),
+        onPageChanged: (pageIndex: number): void => this.onReaderComicPagedPageChanged(pageIndex),
+        onBoundary: (direction: number): void => this.crossReaderComicChapterBoundary(direction),
+        onTap: (x: number, y: number, width: number, height: number): void =>
+          this.handleReaderComicTap(x, y, width, height)
+      })
+
+      if (this.readerComicChapterSwitching) {
+        this.readerComicBoundaryHint()
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .clip(true)
+    .opacity(this.readerInitialPageReady ? 1 : 0)
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      this.updatePagedReaderArea(newValue);
+      this.rememberReaderTapLayerArea(newValue);
+    })
+  }
+
+  readerComicEffectiveMode(): string {
+    return this.readerComicBookMode || this.readerComicSettings.defaultMode;
+  }
+
+  isReaderComicPagedMode(): boolean {
+    return this.isReaderComicModeActive() && ReaderComicMode.isPaged(this.readerComicEffectiveMode());
+  }
+
+  isReaderComicRightToLeft(): boolean {
+    return this.readerComicEffectiveMode() === ReaderComicMode.RTL;
+  }
+
+  isReaderComicDualPageActive(): boolean {
+    return this.isReaderComicPagedMode() && this.readerComicSettings.dualPage &&
+      this.pageViewWidth > this.pageViewHeight;
+  }
+
+  onReaderComicPagedPageChanged(pageIndex: number): void {
+    if (!this.readerPageVisible || this.contentPages.length === 0) return;
+    const target = Math.max(0, Math.min(pageIndex, this.contentPages.length - 1));
+    const lastShown = target + (this.isReaderComicDualPageActive() ? 1 : 0);
+    this.readerContinuousReachedEnd = lastShown >= this.contentPages.length - 1;
+    if (target === this.currentPageIndex) return;
+    this.currentPageIndex = target;
+    this.currentPageText = this.contentPages[target] || '';
+    if (this.contentPages.length - target <= 4) {
+      this.preloadReaderContentLater();
+      this.preloadNextChapterPaginationLater(0);
+    }
+    if (target <= 3) this.preloadPreviousChapterPaginationLater(0);
+    this.scheduleReaderComicProgressSave();
+    this.ensureReaderComicPagedNeighbors();
+  }
+
+  /** 本书改用另一种漫画阅读方式；当前页码不变。 */
+  setReaderComicBookMode(mode: string): void {
+    if (!this.book) return;
+    const next = ReaderComicMode.normalize(mode);
+    if (next === this.readerComicEffectiveMode() && this.readerComicBookMode) return;
+    this.readerComicBookMode = next;
+    this.readerComicZoomScale = 1;
+    this.book.putVariable('readerComicReadingMode', next);
+    AppDatabase.getInstance().updateBook(this.book, false).catch((error: Error) => {
+      console.warn('保存漫画阅读方式失败:', error);
+    });
+    // 条漫列表重新挂载后按当前页恢复滚动位置；翻页视图直接以 currentPageIndex 定位。
+    this.scheduleReaderComicScrollRestore();
+  }
+
+  handleReaderComicImageLongPress(source: string, reload: () => void, snapshotId: string): void {
+    this.comicImageActions().showMenu(source, reload, snapshotId).catch((error: Error) => {
+      console.warn('漫画图片菜单失败:', error);
+    });
+  }
+
+  handleReaderComicImageDenied(chapterIndex: number): void {
+    this.comicImageActions().onImageDenied(chapterIndex);
+  }
+
+  isReaderComicInteractionEnabled(): boolean {
+    return !this.showMenu && !this.showToc && !this.showSettings && !this.shouldBlockReaderInteraction() &&
+      !this.readerComicChapterSwitching;
+  }
+
+  shouldShowReaderComicInfoBadge(): boolean {
+    return this.readerComicSettings.infoBar && this.readerInitialPageReady && this.contentPages.length > 0 &&
+      !this.showMenu && !this.showToc && !this.showSettings;
+  }
+
+  readerComicInfoBadgeBottomInset(): number {
+    // 只让开手势横线（贴在导航区最底部、约 5vp 高），不必让出整个导航区。
+    return Math.max(4, Math.max(0, this.navBarHeight) - 18);
+  }
+
+  /** 增量排版期间 contentPages 还没有全部页，总页数取图片标记计数。 */
+  readerComicTotalPageCount(): number {
+    return Math.max(this.contentPages.length, this.readerComicPaginationTotalPages);
+  }
+
+  readerComicPageText(): string {
+    const total = this.readerComicTotalPageCount();
+    if (total <= 0) return '';
+    const first = Math.min(total, Math.max(0, this.currentPageIndex) + 1);
+    if (this.isReaderComicDualPageActive() && first < total) return `${first}-${first + 1}/${total}`;
+    return `${first}/${total}`;
+  }
+
+  handleReaderComicTap(x: number, y: number, width: number, height: number): void {
+    if (this.consumeSuppressedReaderTapClick()) return;
+    if (Date.now() < this.readerComicSuppressClickUntil || this.showMenu || this.showToc || this.showSettings) {
+      return;
+    }
+    if (!this.readerComicSettings.tapTurn) {
+      this.updateReaderMenuAnchorByPoint(x);
+      this.showMenu = true;
+      return;
+    }
+    // 日漫翻页时“下一页”在左边，点击区域左右镜像。
+    const mirroredX = this.isReaderComicPagedMode() && this.isReaderComicRightToLeft() ? width - x : x;
+    const zone = this.getTapZoneIndex(mirroredX, y, width, height);
+    const actions = this.readerTapZoneActionsList();
+    // 点击区域里一个“菜单”都没有时保留中间区域呼出菜单，否则漫画页再也打不开菜单。
+    const action = zone === 4 && !actions.includes(1) ? 1 : actions[zone];
+    if (action === 1) {
+      this.updateReaderMenuAnchorByPoint(x);
+      this.showMenu = true;
+    } else if (action === 2) {
+      this.scrollReaderComicByScreen(1);
+    } else if (action === 3) {
+      this.scrollReaderComicByScreen(-1);
+    }
+  }
+
+  /** 条漫按屏翻动：滚动约 0.8 屏保留上下文；已到章首/章末时切到相邻章节。 */
+  scrollReaderComicByScreen(direction: number): void {
+    if (!this.isReaderComicModeActive() || this.contentPages.length === 0 || this.readerComicChapterSwitching) {
+      return;
+    }
+    if (this.isReaderComicPagedMode()) {
+      this.readerComicPagedController.turn(direction);
+      return;
+    }
+    let offset = 0;
+    let atEnd = false;
+    try {
+      offset = Number(this.readerComicScroller.currentOffset().yOffset) || 0;
+      atEnd = this.readerComicScroller.isAtEnd();
+    } catch (error) {
+      console.warn('读取漫画滚动位置失败:', error);
+      return;
+    }
+    if ((direction > 0 && atEnd) || (direction < 0 && offset <= 1)) {
+      this.crossReaderComicChapterBoundary(direction);
+      return;
+    }
+    // 放大后屏幕只显示列表的 1/倍数，翻一屏对应的列表距离同比缩短。
+    const step = Math.max(120, this.pageViewHeight * 0.8) / Math.max(1, this.readerComicZoomScale) *
+      (direction > 0 ? 1 : -1);
+    try {
+      this.readerComicScroller.scrollTo({
+        xOffset: 0,
+        yOffset: Math.max(0, offset + step),
+        animation: { duration: 260, curve: Curve.EaseOut }
+      });
+    } catch (_) {
+      this.readerComicScroller.scrollBy(0, step);
+    }
+  }
+
+  /** 已在本章首尾再往外翻：切到相邻一话。 */
+  crossReaderComicChapterBoundary(direction: number): void {
+    if (this.readerComicChapterSwitching) return;
+    if (direction > 0) {
+      // contentPages 是增量快照；排版尚未完成时尾部不是章末，先补齐后续页再继续翻。
+      if (!this.isCurrentReaderPaginationComplete()) {
+        this.ensureCurrentReaderPaginationAhead(this.contentPages.length + 1);
+        return;
+      }
+      if (this.currentChapterIndex >= this.chapters.length - 1) {
+        HdsFeedback.showToast('已经是最后一话');
+        return;
+      }
+    } else if (this.currentChapterIndex <= 0) {
+      HdsFeedback.showToast('已经是第一话');
+      return;
+    }
+    this.switchComicBoundaryChapter(direction);
+  }
+
+  comicMenuPageIndex(): number {
+    return this.comicPageSliderActive ? this.comicPageSliderPreview : this.currentPageIndex;
+  }
+
+  canStepReaderComicChapter(direction: number): boolean {
+    if (this.isLoading || this.readerComicChapterSwitching) return false;
+    return direction < 0 ? this.currentChapterIndex > 0 : this.currentChapterIndex < this.chapters.length - 1;
+  }
+
+  handleComicPageSliderChange(value: number, mode: SliderChangeMode): void {
+    const lastIndex = Math.max(0, this.readerComicTotalPageCount() - 1);
+    this.comicPageSliderPreview = Math.max(0, Math.min(Math.round(value), lastIndex));
+    this.comicPageSliderActive = true;
+    this.comicPageTooltipVisible = mode === SliderChangeMode.Begin || mode === SliderChangeMode.Moving;
+    if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+      this.comicPageTooltipVisible = false;
+      this.comicPageSliderActive = false;
+      this.jumpToReaderComicPage(this.comicPageSliderPreview);
+    }
+  }
+
+  jumpToReaderComicPage(index: number): void {
+    if (this.contentPages.length === 0) return;
+    if (index >= this.contentPages.length) this.ensureCurrentReaderPaginationAhead(index + 1);
+    const target = Math.max(0, Math.min(index, this.contentPages.length - 1));
+    if (!this.isReaderComicPagedMode()) {
+      try {
+        this.readerComicScroller.scrollToIndex(this.readerContinuousListIndex(target), false, ScrollAlign.START);
+      } catch (error) {
+        console.warn('跳转漫画页失败:', error);
+        return;
+      }
+    }
+    this.currentPageIndex = target;
+    this.currentPageText = this.contentPages[target] || '';
+    this.readerContinuousReachedEnd = target === this.contentPages.length - 1;
+    this.scheduleReaderComicProgressSave();
+  }
+
+  @Builder
+  readerComicTitleCapsule() {
+    Column({ space: 1 }) {
+      Text(this.getChapterTitle())
+        .fontSize(AppFontSize.BODY)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.getTextColor())
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      if (this.book?.name) {
+        Text(this.book.name)
+          .fontSize(AppFontSize.MICRO + 1)
+          .fontColor(this.getSubTextColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+    }
+    .layoutWeight(1)
+    .height(40)
+    .margin({ left: AppSpacing.MD, right: AppSpacing.MD })
+    .padding({ left: 14, right: 14 })
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Start)
+    .borderRadius(20)
+    .backgroundColor(this.readerGlassPanelColor())
+    .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
+    .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: this.readerGlassBorderColor() })
+  }
+
+  readerComicSurfaceColor(): string {
+    return ReaderComicStyle.surfaceColor(this.readerComicSettings.background);
+  }
+
+  readerComicWindowColor(): string {
+    return ReaderComicStyle.windowColor(this.readerComicSettings.background, this.getBackgroundColor());
+  }
+
+  isReaderComicSurfaceDark(): boolean {
+    return ReaderComicStyle.isDark(this.readerComicSettings.background, this.isReaderThemeDark());
+  }
+
+  readerComicSurfaceTextColor(): string {
+    return ReaderComicStyle.textColor(this.readerComicSettings.background, this.getTextColor(), this.isReaderThemeDark());
+  }
+
+  readerComicSurfaceHintColor(): string {
+    return ReaderComicStyle.hintColor(this.readerComicSettings.background, this.getSubTextColor(),
+      this.isReaderThemeDark());
+  }
+
+  readerLoadingSurfaceColor(): string {
+    return this.isReaderComicModeActive() ? this.readerComicWindowColor() : this.getBackgroundColor();
+  }
+
+  isReaderLoadingSurfaceDark(): boolean {
+    return this.isReaderComicModeActive() ? this.isReaderComicSurfaceDark() : this.isReaderThemeDark();
+  }
+
+  loadReaderComicSettings(): void {
+    ReaderComicSettingsStore.load(getContext(this)).then((settings: ReaderComicSettings): void => {
+      this.readerComicSettings = settings;
+      this.syncReaderInfoBarClock();
+      if (this.isReaderComicModeActive() && this.readerPageVisible) this.enterReaderImmersive();
+    }).catch((error: Error) => {
+      console.warn('读取漫画设置失败:', error);
+    });
+  }
+
+  updateReaderComicSettings(mutate: (settings: ReaderComicSettings) => void): void {
+    const next = this.readerComicSettings.copy();
+    mutate(next);
+    const backgroundChanged = next.background !== this.readerComicSettings.background;
+    this.readerComicSettings = next;
+    ReaderComicSettingsStore.save(getContext(this), next).catch((error: Error) => {
+      console.warn('保存漫画设置失败:', error);
+    });
+    if (backgroundChanged) this.enterReaderImmersive();
+    this.syncReaderInfoBarClock();
+  }
+
+  @Builder
+  readerComicModeSettingsPanel() {
+    ReaderComicModeSettingsPanel({
+      mode: this.readerComicEffectiveMode(),
+      defaultMode: this.readerComicSettings.defaultMode,
+      tapTurn: this.readerComicSettings.tapTurn,
+      dualPage: this.readerComicSettings.dualPage,
+      volumeTurnPage: this.readerVolumeTurnPage,
+      tapZoneSummary: this.tapZoneSummaryText(),
+      orientationOptions: this.screenOrientationOptions(),
+      orientationSelected: this.screenOrientationSelectedIndex(),
+      colors: this.readerComicPanelColors(),
+      onSelectMode: (mode: string): void => {
+        if (mode === READER_COMIC_TEXT_MODE) {
+          if (this.isReaderComicModeActive()) this.toggleReaderComicReadingMode();
+        } else {
+          this.setReaderComicBookMode(mode);
+        }
+      },
+      onSetDefaultMode: (): void => {
+        const mode = this.readerComicEffectiveMode();
+        this.updateReaderComicSettings((settings: ReaderComicSettings): void => {
+          settings.defaultMode = mode;
+        });
+        HdsFeedback.showToast(`默认阅读方式已设为${ReaderComicMode.label(mode)}`);
+      },
+      onTapTurnChange: (checked: boolean): void => {
+        this.updateReaderComicSettings((settings: ReaderComicSettings): void => {
+          settings.tapTurn = checked;
+        });
+      },
+      onConfigureTapZones: (): void => this.presentTapZoneSettings(),
+      onVolumeTurnChange: (checked: boolean): void => this.setReaderVolumeTurnPage(checked),
+      onOrientationChange: (index: number): void => this.setReaderScreenOrientationByIndex(index),
+      onDualPageChange: (checked: boolean): void => {
+        this.updateReaderComicSettings((settings: ReaderComicSettings): void => {
+          settings.dualPage = checked;
+        });
+      }
+    })
+  }
+
+  @Builder
+  readerComicDisplaySettingsPanel() {
+    ReaderComicDisplaySettingsPanel({
+      surface: this.readerComicSettings.background,
+      pageGap: this.readerComicSettings.pageGap,
+      fit: this.readerComicSettings.fit,
+      preloadCount: this.readerComicSettings.preloadCount,
+      infoBar: this.readerComicSettings.infoBar,
+      doubleTapZoom: this.readerComicSettings.doubleTapZoom,
+      themeBackground: this.getBackgroundColor(),
+      colors: this.readerComicPanelColors(),
+      onBackgroundChange: (value: string): void => {
+        this.updateReaderComicSettings((settings: ReaderComicSettings): void => {
+          settings.background = ReaderComicBackground.normalize(value);
+        });
+      },
+      onPageGapChange: (value: number): void => {
+        this.updateReaderComicSettings((settings: ReaderComicSettings): void => {
+          settings.pageGap = value;
+        });
+      },
+      onFitChange: (value: string): void => {
+        this.updateReaderComicSettings((settings: ReaderComicSettings): void => {
+          settings.fit = ReaderComicFit.normalize(value);
+        });
+      },
+      onPreloadCountChange: (value: number): void => {
+        this.updateReaderComicSettings((settings: ReaderComicSettings): void => {
+          settings.preloadCount = value;
+        });
+      },
+      onInfoBarChange: (checked: boolean): void => {
+        this.updateReaderComicSettings((settings: ReaderComicSettings): void => {
+          settings.infoBar = checked;
+        });
+      },
+      onDoubleTapZoomChange: (checked: boolean): void => {
+        this.updateReaderComicSettings((settings: ReaderComicSettings): void => {
+          settings.doubleTapZoom = checked;
+        });
+      }
+    })
+  }
+
+  readerComicPanelColors(): ReaderComicPanelColors {
+    const colors = new ReaderComicPanelColors();
+    colors.textColor = this.getTextColor();
+    colors.subTextColor = this.getSubTextColor();
+    colors.accentColor = this.accentColor();
+    colors.dark = this.isReaderThemeDark();
+    colors.menuColor = ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor());
+    colors.buttonColor = this.buttonColor();
+    colors.buttonTextColor = ThemeRuntime.onAccentColor();
+    return colors;
   }
 
   pageTransition() {
@@ -2592,41 +2580,36 @@ struct ReadBookPage {
           // as the producer crop even when setXComponentSurfaceRect keeps a 640x480 buffer; shrinking it after
           // calibration then yielded faceNum=0 for every reading-page frame. The opaque theme hides this stable
           // Surface in normal reading mode.
-          .width(this.readerEyeCalibrationPreviewWidthVp())
-          .height(this.readerEyeCalibrationPreviewHeightVp())
+          .width(this.eyeTurnState.previewWidthVp(this.pageViewWidth, this.pageViewHeight))
+          .height(this.eyeTurnState.previewHeightVp(this.pageViewWidth, this.pageViewHeight))
           .position({
-            x: this.showReaderEyeCalibration ? this.readerEyeCalibrationPreviewLeftVp() : 0,
-            y: this.showReaderEyeCalibration ? this.readerEyeCalibrationPreviewTopVp() : 0
+            x: this.eyeTurnState.showCalibration ?
+            this.eyeTurnState.previewLeftVp(this.pageViewWidth, this.pageViewHeight) : 0,
+            y: this.eyeTurnState.showCalibration ? ReaderEyeTurnViewState.PREVIEW_TOP_VP : 0
           })
           // Keep the surface fully rendered even while reading: with a near-zero opacity some
           // builds stop drawing this node, the camera preview stops delivering frames, and the
           // face detector then reports "no face" for the whole reading session. It stays hidden
           // because the opaque reader background is drawn above it (zIndex -1).
           .opacity(1)
-          .borderRadius(this.showReaderEyeCalibration ? 20 : 0)
+          .borderRadius(this.eyeTurnState.showCalibration ? 20 : 0)
           .clip(true)
-          .zIndex(this.showReaderEyeCalibration ? 3 : -1)
+          .zIndex(this.eyeTurnState.showCalibration ? 3 : -1)
           .hitTestBehavior(HitTestMode.None)
           .onLoad((): void => {
             this.readerEyeTurnSurfaceController.setXComponentSurfaceRect({
               surfaceWidth: 640,
               surfaceHeight: 480
             });
-            this.readerEyeTurnSurfaceId = this.readerEyeTurnSurfaceController.getXComponentSurfaceId();
-            console.info(`[EyeTurn] camera surface loaded id=${this.readerEyeTurnSurfaceId ? 'set' : 'EMPTY'}`);
-            this.startReaderEyeTurnIfReady();
+            this.eyeTurn().onSurfaceLoaded(this.readerEyeTurnSurfaceController.getXComponentSurfaceId());
           })
           .onDestroy((): void => {
-            this.readerEyeTurnSurfaceId = '';
-            this.stopArEyeTurnHost();
-    this.readerEyeTurnController.stop().catch((error: Error): void => {
-              console.warn('[EyeTurn] release surface failed:', error.message);
-            });
+            this.eyeTurn().onSurfaceDestroyed();
           })
-        if (this.arEyeTurnHostMounted && this.arEyeTurnHost) {
+        if (this.eyeTurnState.arHostMounted && this.eyeTurn().arHost) {
           // Keep the ARView rendered (a fully transparent node never reaches
           // TRACKING) but clamp it to a single pixel behind the page content.
-          NodeContainer(this.arEyeTurnHost.controller)
+          NodeContainer(this.eyeTurn().arHost!.controller)
             .width(1).height(1)
             .position({ x: 0, y: 0 })
             .zIndex(-1)
@@ -2648,6 +2631,10 @@ struct ReadBookPage {
       Column() {
         if (!this.shouldRenderPrimaryReaderContent()) {
           this.readerLoadingPanel()
+        } else if (this.isReaderComicPagedMode()) {
+          this.readerComicPagedSurface()
+        } else if (this.isReaderComicModeActive()) {
+          this.readerComicSurface()
         } else if (this.isReaderContinuousScrollSurfaceActive()) {
           this.readerComicScrollSurface()
         } else {
@@ -2705,7 +2692,7 @@ struct ReadBookPage {
               this.readerSimulationCurlCanvas()
             }
             Column() {
-              if (this.readerHeaderEnabled && !!this.getReaderHeaderInfoText()) {
+              if (this.isReaderHeaderVisible()) {
                 this.readerHeaderInfoBar()
               }
               Blank()
@@ -2748,12 +2735,6 @@ struct ReadBookPage {
         this.readerLoadingPanel()
       }
 
-      if (this.isReaderContinuousScrollSurfaceActive() && !this.isReaderNovelContinuousScrollModeActive() &&
-        !this.showMenu && !this.showToc && !this.showSettings &&
-        !this.shouldBlockReaderInteraction() && !this.readerComicChapterSwitching) {
-        this.readerComicInteractionLayer()
-      }
-
       if (this.bookmarkPullActive) {
         this.readerBookmarkPullHint()
       }
@@ -2778,43 +2759,26 @@ struct ReadBookPage {
         this.readerActionMenu()
       }
 
-
-
       if (this.showLayoutElementSettings) {
         this.readerLayoutElementSettingsDialog()
       }
 
       if (this.showMenu && !this.showToc && !this.showSettings && this.chapters.length > 0) {
         if (this.supportsReaderImmersiveMaterial()) {
-          if (this.hdsMaterialRenderBranch) {
-            this.readerHdsFloatingBottomMenu()
-          } else {
-            this.readerHdsFloatingBottomMenu()
-          }
+          this.readerHdsFloatingBottomMenu()
         } else {
           this.readerFloatingBottomMenu()
         }
-        if (this.readerUseTtsQuickAction && !this.isReaderComicModeActive() && !this.ttsMediaControlsExpanded &&
+        if (this.readerUseTtsQuickAction && !this.isReaderComicModeActive() &&
           !this.isTtsSpeaking && !this.ttsReader.isSpeaking() && !this.globalTtsActive) {
           this.readerTtsQuickActionButton()
-        }
-        if (this.readerUseTtsQuickAction && this.shouldShowTtsMediaControls()) {
-          if (this.hdsMaterialRenderBranch) {
-            this.ttsExpandedMediaControlsBar()
-          } else {
-            this.ttsExpandedMediaControlsBar()
-          }
         }
       }
 
       if (this.showToc) {
         this.readerFloatingTocPanel()
         if (this.supportsReaderImmersiveMaterial()) {
-          if (this.hdsMaterialRenderBranch) {
-            this.readerHdsFloatingActionBar(true)
-          } else {
-            this.readerHdsFloatingActionBar(true)
-          }
+          this.readerHdsFloatingActionBar(true)
         }
       }
 
@@ -2824,11 +2788,7 @@ struct ReadBookPage {
           this.ttsVoiceDropdownPanel()
         }
         if (this.supportsReaderImmersiveMaterial()) {
-          if (this.hdsMaterialRenderBranch) {
-            this.readerHdsFloatingActionBar(false, true)
-          } else {
-            this.readerHdsFloatingActionBar(false, true)
-          }
+          this.readerHdsFloatingActionBar(false, true)
         }
       }
 
@@ -2885,12 +2845,12 @@ struct ReadBookPage {
         this.readerCommentPanel()
       }
 
-      if (this.readerEyeTurnEnabled && this.readerInitialPageReady && !this.showReaderEyeCalibration &&
+      if (this.readerEyeTurnEnabled && this.readerInitialPageReady && !this.eyeTurnState.showCalibration &&
         !this.showMenu && !this.showToc && !this.showReaderCommentPanel) {
         this.readerEyeTurnPrompt()
       }
 
-      if (this.showReaderEyeCalibration) {
+      if (this.eyeTurnState.showCalibration) {
         this.readerEyeCalibrationPanel()
       }
     }
@@ -2929,7 +2889,9 @@ struct ReadBookPage {
             .onlineImageAccess(true)
             .imageAccess(true)
             .darkMode(this.appDarkMode ? WebDarkMode.On : WebDarkMode.Off)
-            .forceDarkAccess(this.appDarkMode)
+            // 强制深色在部分 ArkWeb 版本上不生效，生效时又会和下面的注入样式叠加反色；
+            // 没有深色样式的评论页统一由 syncReaderCommentPanelWebTheme 注入反色样式。
+            .forceDarkAccess(false)
             .onControllerAttached(() => {
               this.readerCommentPanelHtmlLoaded = false;
               setTimeout(() => this.loadReaderCommentPanelHtmlIfNeeded(), 0);
@@ -2949,7 +2911,7 @@ struct ReadBookPage {
                   .height(38)
                   .color(this.accentColor())
                 Text('评论加载中…')
-                  .fontSize(13)
+                  .fontSize(AppFontSize.BODY)
                   .fontColor(this.getTextColor())
               }
               .width('100%')
@@ -2970,7 +2932,7 @@ struct ReadBookPage {
           .clip(true)
         }
         .width('100%')
-        .backgroundColor('#00000000')
+        .backgroundColor(Color.Transparent)
         .height(this.readerCommentPanelHeightValue)
 
         this.readerCommentPanelDragOverlay()
@@ -3013,7 +2975,7 @@ struct ReadBookPage {
     Row()
     .width('100%')
     .height(this.readerCommentPanelDragHandleHeight())
-    .backgroundColor('#00000000')
+    .backgroundColor(Color.Transparent)
     .zIndex(50)
     .accessibilityText('上滑展开评论面板')
     .hitTestBehavior(HitTestMode.Block)
@@ -3035,10 +2997,14 @@ struct ReadBookPage {
         onBack: () => this.exitReaderPage()
       })
 
-      Blank()
-        .layoutWeight(1)
+      if (this.isReaderComicModeActive()) {
+        this.readerComicTitleCapsule()
+      } else {
+        Blank()
+          .layoutWeight(1)
+      }
 
-      Row({ space: 6 }) {
+      Row({ space: AppSpacing.SM }) {
         if (this.book && !LocalBookService.isLocalBook(this.book) && this.chapters.length > 0) {
           this.readerRoundMenuButton($r('sys.symbol.arrow_clockwise'), '刷新本章', () => {
             this.hideReaderPanels();
@@ -3085,8 +3051,10 @@ struct ReadBookPage {
 
   @Builder
   readerHdsFloatingBottomMenu() {
-    Column({ space: 4 }) {
-      if (this.readerUseChapterQuickJump) {
+    Column({ space: AppSpacing.XS }) {
+      if (this.isReaderComicModeActive()) {
+        this.readerHdsChapterTabBar(true)
+      } else if (this.readerUseChapterQuickJump) {
         this.readerHdsChapterTabBar()
       }
       this.readerHdsActionBar(false)
@@ -3104,16 +3072,17 @@ struct ReadBookPage {
   }
 
   @Builder
-  readerHdsChapterTabBar() {
+  readerHdsChapterTabBar(comicPages: boolean = false) {
     Stack({ alignContent: Alignment.Center }) {
       HdsTabs({ barPosition: BarPosition.End, index: 0 }) {
         TabContent() {
           Column()
         }
         .height(56)
-        .tabBar(this.readerHdsChapterBarContent())
+        .tabBar(this.readerHdsProgressBarContent(comicPages))
       }
-      .key(`reader_hds_chapter_bar_${this.themeRevision}_${this.isReaderThemeDark() ? 'dark' : 'light'}`)
+      .key(`reader_hds_chapter_bar_${comicPages ? 'comic' : 'chapter'}_${this.themeRevision}_` +
+        `${this.isReaderThemeDark() ? 'dark' : 'light'}`)
       .barBackgroundColor(this.readerGlassPanelColor())
       .barMode(BarMode.Fixed)
       .barHeight(48)
@@ -3131,7 +3100,7 @@ struct ReadBookPage {
         barSideMargin: 0,
         barBottomMargin: 4,
         gradientMask: {
-          maskColor: '#00000000',
+          maskColor: Color.Transparent,
           maskHeight: 56
         },
         adaptToHandedness: false,
@@ -3142,15 +3111,16 @@ struct ReadBookPage {
       .width('100%')
       .height(56)
 
-      if (this.menuChapterTooltipVisible) {
-        Column({ space: 2 }) {
-          Text(this.getChapterTitle(this.getMenuChapterDisplayIndex()))
-            .fontSize(12)
+      if (comicPages ? this.comicPageTooltipVisible : this.menuChapterTooltipVisible) {
+        Column({ space: AppSpacing.XXS }) {
+          Text(this.getChapterTitle(comicPages ? this.currentChapterIndex : this.getMenuChapterDisplayIndex()))
+            .fontSize(AppFontSize.CAPTION)
             .fontColor('#FFFFFFFF')
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(`${this.getMenuChapterDisplayIndex() + 1}/${this.chapters.length}`)
-            .fontSize(11)
+          Text(comicPages ? `第 ${this.comicMenuPageIndex() + 1} / ${this.readerComicTotalPageCount()} 页` :
+            `${this.getMenuChapterDisplayIndex() + 1}/${this.chapters.length}`)
+            .fontSize(AppFontSize.CAPTION)
             .fontColor('#CCFFFFFF')
         }
         .width(this.readerChapterTooltipWidth())
@@ -3166,6 +3136,68 @@ struct ReadBookPage {
     }
     .width('100%')
     .height(56)
+  }
+
+  @Builder
+  readerHdsProgressBarContent(comicPages: boolean) {
+    if (comicPages) {
+      this.readerHdsComicPageBarContent()
+    } else {
+      this.readerHdsChapterBarContent()
+    }
+  }
+
+  @Builder
+  readerHdsComicPageBarContent() {
+    Row() {
+      this.readerComicChapterStepButton(-1)
+      this.readerComicPageSlider(48, 30)
+      this.readerComicChapterStepButton(1)
+    }
+    .width('100%')
+    .height(48)
+    .padding({ left: AppSpacing.XS, right: AppSpacing.XS })
+    .alignItems(VerticalAlign.Center)
+    .translate({ y: -2 })
+  }
+
+  @Builder
+  readerComicChapterStepButton(direction: number) {
+    Stack({ alignContent: Alignment.Center }) {
+      SymbolGlyph(direction < 0 ? $r('sys.symbol.chevron_left') : $r('sys.symbol.chevron_right'))
+        .fontSize(25)
+        .fontColor([this.canStepReaderComicChapter(direction) ? this.getTextColor() : this.getSubTextColor()])
+    }
+    .width(46)
+    .height(48)
+    .enabled(this.canStepReaderComicChapter(direction))
+    .accessibilityText(direction < 0 ? '上一话' : '下一话')
+    .onClick(async () => {
+      await this.jumpToAdjacentChapterFromMenu(direction);
+    })
+  }
+
+  @Builder
+  readerComicPageSlider(height: number, thickness: number) {
+    Slider({
+      value: this.comicMenuPageIndex(),
+      min: 0,
+      max: Math.max(1, this.readerComicTotalPageCount() - 1),
+      step: 1,
+      style: SliderStyle.InSet
+    })
+      .layoutWeight(1)
+      .height(height)
+      .trackThickness(thickness)
+      .blockSize({ width: thickness, height: thickness })
+      .selectedColor(this.accentColor())
+      .trackColor(this.readerChapterTrackColor())
+      .blockColor(this.readerSolidPanelColor())
+      .showSteps(false)
+      .enabled(this.readerComicTotalPageCount() > 1)
+      .onChange((value: number, mode: SliderChangeMode) => {
+        this.handleComicPageSliderChange(value, mode);
+      })
   }
 
   @Builder
@@ -3218,7 +3250,7 @@ struct ReadBookPage {
     }
     .width('100%')
     .height(48)
-    .padding({ left: 4, right: 4 })
+    .padding({ left: AppSpacing.XS, right: AppSpacing.XS })
     .alignItems(VerticalAlign.Center)
     .translate({ y: -2 })
   }
@@ -3252,16 +3284,15 @@ struct ReadBookPage {
         Column()
       }
       .height(56)
-      .tabBar(this.readerHdsMenuItem($r('sys.symbol.gearshape'),
-        fromSettings && this.settingsPanelTab === 0, false, !this.isReaderComicModeActive()))
+      .tabBar(this.readerHdsMenuItem(this.readerMenuActionIcon(1),
+        fromSettings && this.settingsPanelTab === this.readerMenuActionSettingsTab(1)))
 
       TabContent() {
         Column()
       }
       .height(56)
-      .tabBar(this.readerHdsMenuItem($r('sys.symbol.textformat'),
-        fromSettings && this.settingsPanelTab === 2, false,
-        !this.isReaderComicModeActive()))
+      .tabBar(this.readerHdsMenuItem(this.readerMenuActionIcon(2),
+        fromSettings && this.settingsPanelTab === this.readerMenuActionSettingsTab(2)))
 
       TabContent() {
         Column()
@@ -3269,7 +3300,8 @@ struct ReadBookPage {
       .height(56)
       .tabBar(this.readerHdsDayNightMenuItem())
     }
-    .key(`reader_hds_action_bar_${this.themeRevision}_${this.isReaderThemeDark() ? 'dark' : 'light'}`)
+    .key(`reader_hds_action_bar_${this.isReaderComicModeActive() ? 'comic' : 'text'}_${this.themeRevision}_` +
+      `${this.isReaderThemeDark() ? 'dark' : 'light'}`)
     .barBackgroundColor(this.readerGlassPanelColor())
     .barMode(BarMode.Fixed)
     .barHeight(48)
@@ -3287,7 +3319,7 @@ struct ReadBookPage {
       barSideMargin: 0,
       barBottomMargin: 4,
       gradientMask: {
-        maskColor: '#00000000',
+        maskColor: Color.Transparent,
         maskHeight: 56
       },
       adaptToHandedness: false,
@@ -3344,12 +3376,8 @@ struct ReadBookPage {
   }
 
   handleReaderHdsAction(index: number, fromToc: boolean, fromSettings: boolean = false): void {
-    if (this.isReaderComicModeActive() && (index === 1 || index === 2)) {
-      return;
-    }
     if (index === 0) {
       if (fromToc) {
-        this.cancelBookmarkMultiSelect();
         this.showToc = false;
         this.showMenu = true;
       } else if (fromSettings) {
@@ -3367,21 +3395,36 @@ struct ReadBookPage {
     if (fromToc) {
       this.showToc = false;
     }
-    if (index === 1) {
-      if (fromSettings && this.settingsPanelTab === 0) {
+    if (index === 1 || index === 2) {
+      const tab = this.readerMenuActionSettingsTab(index);
+      if (fromSettings && this.settingsPanelTab === tab) {
         this.closeSettingsPanelKeepMenu();
       } else {
-        this.openSettingsPanel();
+        this.openReaderSettingsTab(tab);
       }
-      return;
     }
-    if (index === 2) {
-      if (fromSettings && this.settingsPanelTab === 2) {
-        this.closeSettingsPanelKeepMenu();
-      } else {
-        this.openTypographySettingsPanel();
-      }
-      return;
+  }
+
+  /** 底部操作栏第 1、2 项：普通阅读为阅读设置与排版，漫画为阅读方式与画面设置。 */
+  readerMenuActionIcon(slot: number): Resource {
+    if (this.isReaderComicModeActive()) {
+      return slot === 1 ? $r('sys.symbol.book_pages') : $r('sys.symbol.picture');
+    }
+    return slot === 1 ? $r('sys.symbol.gearshape') : $r('sys.symbol.textformat');
+  }
+
+  readerMenuActionSettingsTab(slot: number): number {
+    if (this.isReaderComicModeActive()) return slot === 1 ? 3 : 4;
+    return slot === 1 ? 0 : 2;
+  }
+
+  openReaderSettingsTab(tab: number): void {
+    if (tab === 3 || tab === 4) {
+      this.openReaderComicSettingsPanel(tab);
+    } else if (tab === 2) {
+      this.openTypographySettingsPanel();
+    } else {
+      this.openSettingsPanel();
     }
   }
 
@@ -3442,7 +3485,9 @@ struct ReadBookPage {
   @Builder
   readerFloatingBottomMenu() {
     Column({ space: 10 }) {
-      if (this.readerUseChapterQuickJump) {
+      if (this.isReaderComicModeActive()) {
+        this.readerFloatingComicPageRow()
+      } else if (this.readerUseChapterQuickJump) {
         Row() {
         SymbolGlyph($r('sys.symbol.chevron_left'))
           .fontSize(24)
@@ -3457,15 +3502,15 @@ struct ReadBookPage {
         Column({ space: 1 }) {
           Row() {
             Text(this.getChapterTitle(this.getMenuChapterDisplayIndex()))
-              .fontSize(12)
+              .fontSize(AppFontSize.CAPTION)
               .fontColor(this.getSubTextColor())
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
               .layoutWeight(1)
             Text(`${this.getMenuChapterDisplayIndex() + 1}/${this.chapters.length}`)
-              .fontSize(11)
+              .fontSize(AppFontSize.CAPTION)
               .fontColor(this.getSubTextColor())
-              .margin({ left: 8 })
+              .margin({ left: AppSpacing.MD })
           }
           .width('100%')
 
@@ -3501,7 +3546,7 @@ struct ReadBookPage {
         }
         .width('100%')
         .height(56)
-        .padding({ left: 4, right: 4 })
+        .padding({ left: AppSpacing.XS, right: AppSpacing.XS })
         .borderRadius(ThemeRuntime.glassCornerRadius(28, 'panel'))
         .backgroundColor(this.readerGlassPanelColor())
         .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
@@ -3513,17 +3558,17 @@ struct ReadBookPage {
         this.readerFloatingIconMenuItem($r('sys.symbol.list_bullet'), false, () => {
           this.openTocPanel();
         })
-        this.readerFloatingIconMenuItem($r('sys.symbol.gearshape'), false, () => {
-          this.openSettingsPanel();
-        }, false, !this.isReaderComicModeActive())
-        this.readerFloatingIconMenuItem($r('sys.symbol.textformat'), false, () => {
-          this.openTypographySettingsPanel();
-        }, false, !this.isReaderComicModeActive())
+        this.readerFloatingIconMenuItem(this.readerMenuActionIcon(1), false, () => {
+          this.openReaderSettingsTab(this.readerMenuActionSettingsTab(1));
+        })
+        this.readerFloatingIconMenuItem(this.readerMenuActionIcon(2), false, () => {
+          this.openReaderSettingsTab(this.readerMenuActionSettingsTab(2));
+        })
         this.readerFloatingDayNightMenuItem()
       }
       .width('100%')
       .height(56)
-      .padding({ left: 8, right: 8 })
+      .padding({ left: AppSpacing.MD, right: AppSpacing.MD })
       .borderRadius(ThemeRuntime.glassCornerRadius(28, 'panel'))
       .backgroundColor(this.readerGlassPanelColor())
       .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
@@ -3534,6 +3579,43 @@ struct ReadBookPage {
     .padding({ bottom: 14 })
     .position({ x: this.readerFloatingBarLeft(), y: '100%' })
     .translate({ y: '-100%' })
+  }
+
+  @Builder
+  readerFloatingComicPageRow() {
+    Row() {
+      this.readerComicChapterStepButton(-1)
+      Column({ space: 1 }) {
+        Row() {
+          Text(this.getChapterTitle())
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.getSubTextColor())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+          Text(`${this.comicMenuPageIndex() + 1}/${this.readerComicTotalPageCount()}`)
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.getSubTextColor())
+            .margin({ left: AppSpacing.MD })
+        }
+        .width('100%')
+
+        Row() {
+          this.readerComicPageSlider(24, 24)
+        }
+        .width('100%')
+      }
+      .layoutWeight(1)
+      this.readerComicChapterStepButton(1)
+    }
+    .width('100%')
+    .height(56)
+    .padding({ left: AppSpacing.XS, right: AppSpacing.XS })
+    .borderRadius(ThemeRuntime.glassCornerRadius(28, 'panel'))
+    .backgroundColor(this.readerGlassPanelColor())
+    .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
+    .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: this.readerGlassBorderColor() })
+    .shadow({ radius: ThemeRuntime.glassShadowRadius('panel'), color: this.readerGlassShadowColor(), offsetX: ThemeRuntime.glassShadowOffsetX('panel'), offsetY: ThemeRuntime.glassShadowOffsetY('panel') })
   }
 
   @Builder
@@ -3591,131 +3673,53 @@ struct ReadBookPage {
           this.showToc = false;
         })
 
-      Column() {
-        Row({ space: 14 }) {
-          if (this.getTocCover()) {
-            Image(this.readerCoverUri(this.getTocCover()))
-              .width(52)
-              .height(68)
-              .borderRadius(8)
-              .objectFit(ImageFit.Cover)
-          } else {
-            Text(this.getTocBookInitial())
-              .fontSize(22)
-              .fontWeight(FontWeight.Bold)
-              .fontColor('#FFFFFF')
-              .textAlign(TextAlign.Center)
-              .width(52)
-              .height(68)
-              .borderRadius(8)
-              .backgroundColor(this.accentColor())
-          }
-
-          Column({ space: 5 }) {
-            Text(this.book?.name || '目录')
-              .fontSize(20)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.getTextColor())
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(this.book?.author || '未知作者')
-              .fontSize(12)
-              .fontColor(this.getSubTextColor())
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
-
-          ImmersiveBackButton({
-            icon: $r('sys.symbol.xmark'),
-            iconOffsetX: 0,
-            iconColor: this.readerControlIconColor(),
-            darkMode: this.isReaderThemeDark(),
-            buttonSize: 40,
-            containerWidth: 40,
-            containerHeight: 40,
-            startInset: 0,
-            materialScale: 0.83,
-            compactLayout: true,
-            accessibilityLabel: '关闭目录',
-            onBack: () => {
-              this.showToc = false;
-            }
-          })
-          .alignSelf(ItemAlign.Start)
-          .margin({ top: 4 })
-        }
-        .width('100%')
-        .padding({ left: 20, right: 16, top: 12, bottom: 10 })
-        .alignItems(VerticalAlign.Center)
-
-        Row() {
-          Text('目录')
-            .fontSize(15)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.tocPanelTab === 0 ? this.getTextColor() : this.getSubTextColor())
-            .textAlign(TextAlign.Center)
-            .layoutWeight(1)
-            .height(40)
-            .borderRadius(20)
-            .backgroundColor(this.tocPanelTab === 0 ? this.readerSolidPanelColor() : Color.Transparent)
-            .shadow({ radius: this.tocPanelTab === 0 ? 6 : 0,
-              color: this.tocPanelTab === 0 ? this.readerGlassShadowColor() : Color.Transparent,
-              offsetX: 0, offsetY: 2 })
-            .onClick(() => {
-              this.tocPanelTab = 0;
-              this.cancelBookmarkMultiSelect();
-              this.scrollTocToCurrentChapter(false);
-            })
-          Text('书签')
-            .fontSize(15)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.tocPanelTab === 1 ? this.getTextColor() : this.getSubTextColor())
-            .textAlign(TextAlign.Center)
-            .layoutWeight(1)
-            .height(40)
-            .borderRadius(20)
-            .backgroundColor(this.tocPanelTab === 1 ? this.readerSolidPanelColor() : Color.Transparent)
-            .shadow({ radius: this.tocPanelTab === 1 ? 6 : 0,
-              color: this.tocPanelTab === 1 ? this.readerGlassShadowColor() : Color.Transparent,
-              offsetX: 0, offsetY: 2 })
-            .onClick(() => {
-              this.tocPanelTab = 1;
-              this.loadBookmarks();
-            })
-        }
-        .width('calc(100% - 40vp)')
-        .height(44)
-        .padding(2)
-        .borderRadius(22)
-        .backgroundColor(this.isReaderThemeDark() ? '#20FFFFFF' : '#12000000')
-        .margin({ left: 20, right: 20 })
-
-        if (this.tocPanelTab === 0) {
-          this.tocPanelSummary()
-          this.tocChapterList()
-        } else {
-          this.bookmarkPanelSummary()
-          this.bookmarkList()
-        }
-      }
-      .width(this.readerFloatingBarWidth())
-      .height(this.readerTocPanelHeight())
-      .borderRadius(ThemeRuntime.glassCornerRadius(28, 'panel'))
-      .clip(true)
-      .backgroundColor(this.readerGlassPanelColor())
-      .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-      .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: this.readerGlassBorderColor() })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('panel'), color: this.readerGlassShadowColor(), offsetX: ThemeRuntime.glassShadowOffsetX('panel'), offsetY: ThemeRuntime.glassShadowOffsetY('panel') })
-      .position({ x: this.readerFloatingBarLeft(), y: '100%' })
-      .translate({ y: -(this.readerTocPanelHeight() + this.readerFloatingPanelBottomInset()) })
-      .transition(this.readerPanelTransition())
+      ReaderTocPanel({
+        chapters: $chapters,
+        bookmarks: $bookmarks,
+        reverseOrder: $tocReverseOrder,
+        currentChapterIndex: this.currentChapterIndex,
+        dark: this.isReaderThemeDark(),
+        textColor: this.getTextColor(),
+        subTextColor: this.getSubTextColor(),
+        accentColor: this.accentColor(),
+        swipeButtonColor: this.buttonColor(),
+        panelColor: this.readerGlassPanelColor(),
+        solidPanelColor: this.readerSolidPanelColor(),
+        panelBorderColor: this.readerGlassBorderColor(),
+        panelShadowColor: this.readerGlassShadowColor(),
+        selectedColor: this.tocSelectedBackgroundColor(),
+        panelWidth: this.readerFloatingBarWidth(),
+        panelHeight: this.readerTocPanelHeight(),
+        cover: this.readerCoverUri(this.getTocCover()),
+        book: this.book,
+        controller: this.tocPanelController,
+        chapterTitle: (chapterIndex: number): string => this.getChapterTitle(chapterIndex),
+        onClose: (): void => {
+          this.showToc = false;
+        },
+        onJumpToChapter: (chapterIndex: number): void => {
+          this.showToc = false;
+          this.showMenu = false;
+          this.jumpToReaderPositionKeepingTts(chapterIndex, 0);
+        },
+        onJumpToBookmark: (bookmark: Bookmark): void => {
+          this.jumpToBookmark(bookmark);
+        },
+        onRefreshToc: (): Promise<void> => this.retryFetchChapters(),
+        onLoadBookmarks: (): void => {
+          this.loadBookmarks();
+        },
+        onShowBookmarkActions: (bookmark: Bookmark, globalX: number, globalY: number): void =>
+          this.showBookmarkActions(bookmark, globalX, globalY)
+      })
+        .position({ x: this.readerFloatingBarLeft(), y: '100%' })
+        .translate({ y: -(this.readerTocPanelHeight() + this.readerFloatingPanelBottomInset()) })
+        .transition(this.readerPanelTransition())
 
       if (!this.supportsReaderImmersiveMaterial()) {
         Row() {
           this.readerFloatingIconMenuItem($r('sys.symbol.list_bullet'), true, () => {
-            this.tocPanelTab = 0;
+            this.tocPanelController.showTocTab();
           })
           this.readerFloatingIconMenuItem($r('sys.symbol.gearshape'), false, () => {
             this.showToc = false;
@@ -3729,7 +3733,7 @@ struct ReadBookPage {
         }
         .width(this.readerFloatingBarWidth())
         .height(56)
-        .padding({ left: 8, right: 8 })
+        .padding({ left: AppSpacing.MD, right: AppSpacing.MD })
         .borderRadius(ThemeRuntime.glassCornerRadius(28, 'panel'))
         .backgroundColor(this.readerGlassPanelColor())
         .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
@@ -3744,416 +3748,17 @@ struct ReadBookPage {
   }
 
   @Builder
-  tocPanelSummary() {
-    Column({ space: 8 }) {
-      Row() {
-        if (this.tocQuickJumpInputVisible && !this.isTocSearchActive()) {
-          TextInput({ text: this.tocQuickJumpDraft, placeholder: `1-${this.chapters.length}` })
-            .type(InputType.Normal)
-            .enterKeyType(EnterKeyType.Go)
-            .key('tocQuickJumpChapterInput')
-            .defaultFocus(true)
-            .fontSize(13)
-            .fontColor(this.getTextColor())
-            .textAlign(TextAlign.Center)
-            .width(92)
-            .height(34)
-            .padding({ left: 8, right: 8 })
-            .borderRadius(17)
-            .backgroundColor(this.isReaderThemeDark() ? '#2BFFFFFF' : '#14000000')
-            .accessibilityText('输入目标章节序号，按回车定位')
-            .onChange((value: string) => {
-              this.tocQuickJumpDraft = value.replace(/[^0-9]/g, '').substring(0, 6);
-            })
-            .onSubmit(() => {
-              this.submitTocQuickJump();
-            })
-        } else if (this.isTocSearchActive()) {
-          Text(`找到 ${this.tocSearchChapterIndexes.length} 章`)
-            .fontSize(14)
-            .fontColor(this.getSubTextColor())
-            .margin({ left: 6 })
-        } else {
-          Text(`共 ${this.chapters.length} 章`)
-            .fontSize(14)
-            .fontColor(this.getSubTextColor())
-            .margin({ left: 6 })
-            .padding({ left: 8, right: 8 })
-            .height(34)
-            .textAlign(TextAlign.Center)
-            .accessibilityText(this.tocQuickJumpArmed ? '再次点击输入目标章节' : '点击回到当前章节')
-            .onClick(() => {
-              this.handleTocCurrentPositionClick();
-            })
-        }
-        Stack({ alignContent: Alignment.Center }) {
-          Column({ space: 0 }) {
-            SymbolGlyph($r('sys.symbol.chevron_up'))
-              .fontSize(11)
-              .fontColor([this.tocReverseOrder ? this.accentColor() : this.getTextColor()])
-            SymbolGlyph($r('sys.symbol.chevron_down'))
-              .fontSize(11)
-              .fontColor([this.tocReverseOrder ? this.accentColor() : this.getTextColor()])
-          }
-          .alignItems(HorizontalAlign.Center)
-        }
-          .width(34)
-          .height(34)
-          .borderRadius(17)
-          .backgroundColor(this.tocReverseOrder ?
-            (this.isReaderThemeDark() ? '#24384A' : '#E8F1FF') :
-            (this.isReaderThemeDark() ? '#1FFFFFFF' : '#0D000000'))
-          .accessibilityText(this.tocReverseOrder ? '切换为正序目录' : '切换为倒序目录')
-          .onClick(() => this.toggleTocOrder())
-          .margin({ left: 4 })
-        Blank()
-          .layoutWeight(1)
-        if (this.isTocSearchActive()) {
-          Text(`匹配 ${this.tocSearchChapterIndexes.length}`)
-            .fontSize(12)
-            .fontColor(this.getTextColor())
-            .height(34)
-            .padding({ left: 12, right: 12 })
-            .textAlign(TextAlign.Center)
-            .borderRadius(16)
-            .backgroundColor(this.isReaderThemeDark() ? '#1FFFFFFF' : '#0D000000')
-        }
-        ImmersiveBackButton({
-          icon: $r('sys.symbol.arrow_clockwise'),
-          iconOffsetX: 0,
-          iconColor: this.readerControlIconColor(),
-          darkMode: this.isReaderThemeDark(),
-          buttonSize: 34,
-          containerWidth: 34,
-          containerHeight: 34,
-          startInset: 0,
-          materialScale: 0.7,
-          compactLayout: true,
-          accessibilityLabel: '刷新目录',
-          onBack: () => {
-            this.refreshTocFromPanel();
-          }
-        })
-          .margin({ left: 8 })
-        ImmersiveBackButton({
-          icon: $r('sys.symbol.magnifyingglass'),
-          iconOffsetX: 0,
-          iconColor: this.tocSearchVisible ? this.accentColor() : this.getTextColor(),
-          darkMode: this.isReaderThemeDark(),
-          buttonSize: 34,
-          containerWidth: 34,
-          containerHeight: 34,
-          startInset: 0,
-          materialScale: 0.7,
-          compactLayout: true,
-          accessibilityLabel: '搜索目录',
-          onBack: () => {
-            this.toggleTocSearch();
-          }
-        })
-          .margin({ left: 8 })
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-
-      if (this.tocSearchVisible) {
-        Row({ space: 8 }) {
-          SymbolGlyph($r('sys.symbol.magnifyingglass'))
-            .fontSize(18)
-            .fontColor([this.getSubTextColor()])
-          TextInput({ text: this.tocSearchQuery,
-            placeholder: this.tocSearchLoading ? '正在载入完整目录…' : '搜索章节名称' })
-            .key('tocChapterSearchInput')
-            .defaultFocus(true)
-            .fontSize(14)
-            .fontColor(this.getTextColor())
-            .layoutWeight(1)
-            .height(38)
-            .padding({ left: 0, right: 0 })
-            .backgroundColor(Color.Transparent)
-            .enterKeyType(EnterKeyType.Search)
-            .onChange((value: string) => {
-              this.tocSearchQuery = value;
-            })
-            .onSubmit(() => {
-              this.submitTocSearch();
-            })
-          if (this.tocSearchQuery) {
-            Text('×')
-              .fontSize(22)
-              .fontColor(this.getSubTextColor())
-              .width(32)
-              .height(38)
-              .textAlign(TextAlign.Center)
-              .accessibilityText('清空目录搜索')
-              .onClick(() => {
-                this.clearTocSearchResult();
-                setTimeout(() => focusControl.requestFocus('tocChapterSearchInput'), 30);
-              })
-          }
-        }
-        .width('100%')
-        .height(40)
-        .padding({ left: 12, right: 8 })
-        .borderRadius(20)
-        .backgroundColor(this.isReaderThemeDark() ? '#2BFFFFFF' : '#14000000')
-      }
-    }
-    .width('100%')
-    .padding({ left: 20, right: 16, top: 18, bottom: 10 })
-    .alignItems(HorizontalAlign.Start)
-  }
-
-  @Builder
-  tocChapterList() {
-    Stack({ alignContent: Alignment.TopEnd }) {
-      List({ space: 0, scroller: this.tocScroller }) {
-        if (this.isTocSearchActive() && this.tocVisibleChapters.length === 0) {
-          ListItem() {
-            Column({ space: 8 }) {
-              SymbolGlyph($r('sys.symbol.magnifyingglass'))
-                .fontSize(28)
-                .fontColor([this.getSubTextColor()])
-              Text('未找到匹配章节')
-                .fontSize(14)
-                .fontColor(this.getSubTextColor())
-            }
-            .width('100%')
-            .padding({ top: 44, bottom: 44 })
-          }
-        }
-        ForEach(this.tocVisibleChapters, (chapter: BookChapter, localIndex: number) => {
-          ListItem() {
-            Row({ space: 10 }) {
-              Text(this.tocGlobalIndex(localIndex) === this.currentChapterIndex ? '•' : '·')
-                .fontSize(this.tocGlobalIndex(localIndex) === this.currentChapterIndex ? 22 : 18)
-                .fontColor(this.tocGlobalIndex(localIndex) === this.currentChapterIndex ?
-                  this.accentColor() : this.getSubTextColor())
-                .width(18)
-                .textAlign(TextAlign.Center)
-
-              Text(this.getChapterTitle(this.tocGlobalIndex(localIndex)))
-                .fontSize(15)
-                .fontWeight(this.tocGlobalIndex(localIndex) === this.currentChapterIndex ?
-                  FontWeight.Medium : FontWeight.Regular)
-                .fontColor(this.getTocTitleColor(chapter, this.tocGlobalIndex(localIndex)))
-                .maxLines(2)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-                .layoutWeight(1)
-
-              if (this.book?.origin !== 'local' && chapter.cacheDate > 0) {
-                Text('已缓存')
-                  .fontSize(10)
-                  .fontColor(this.isReaderThemeDark() ? '#7CC7A0' : '#1F8F55')
-                  .padding({ left: 7, right: 7, top: 3, bottom: 3 })
-                  .backgroundColor(this.isReaderThemeDark() ? '#24382F' : '#E6F4EC')
-                  .borderRadius(10)
-              }
-            }
-            .width('100%')
-            .padding({ left: 14, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.tocGlobalIndex(localIndex) === this.currentChapterIndex ?
-              this.tocSelectedBackgroundColor() : Color.Transparent)
-            .border({ width: { bottom: 0.5 }, color: this.isReaderThemeDark() ? '#1FFFFFFF' : '#0D000000' })
-            .onClick(async () => {
-              const targetChapterIndex = this.tocGlobalIndex(localIndex);
-              this.showToc = false;
-              this.showMenu = false;
-              await this.jumpToReaderPositionKeepingTts(targetChapterIndex, 0);
-            })
-          }
-        }, (chapter: BookChapter, localIndex: number) =>
-          `${this.tocOrderRevision}_${this.tocGlobalIndex(localIndex)}_${chapter.url || chapter.title}`)
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      .scrollBar(BarState.Off)
-      .onScrollIndex((start: number, end: number) => {
-        this.updateTocScrollbarPosition(start, end);
-      })
-      .onReachStart(() => this.loadPreviousTocPage())
-      .onReachEnd(() => this.loadNextTocPage())
-
-      this.tocVirtualScrollbar()
-    }
-    .layoutWeight(1)
-    .width('100%')
-    .onAreaChange((_oldValue: Area, newValue: Area) => {
-      this.tocListViewportHeight = Number(newValue.height);
-    })
-  }
-
-  @Builder
-  tocVirtualScrollbar() {
-    if (this.tocShouldShowVirtualScrollbar()) {
-      Stack({ alignContent: Alignment.TopEnd }) {
-        Column()
-          .width(3)
-          .height(this.tocListViewportHeight)
-          .borderRadius(2)
-          .backgroundColor(this.isReaderThemeDark() ? '#18FFFFFF' : '#14000000')
-          .margin({ right: 3 })
-          .hitTestBehavior(HitTestMode.None)
-        Column()
-          .width(this.tocScrollbarDragging ? 6 : 4)
-          .height(this.tocScrollbarThumbLength())
-          .borderRadius(3)
-          .backgroundColor(this.isReaderThemeDark() ? '#BFD5D8DE' : '#A87A6F63')
-          .margin({ right: 2 })
-          .translate({ y: this.tocDisplayedScrollbarThumbOffset() })
-          .hitTestBehavior(HitTestMode.None)
-      }
-      .width(24)
-      .height(this.tocListViewportHeight)
-      .zIndex(10)
-      .gesture(
-        GestureGroup(GestureMode.Exclusive,
-          PanGesture({ direction: PanDirection.Vertical, distance: 1 })
-            .onActionStart((event: GestureEvent) => this.beginTocScrollbarDrag(event))
-            .onActionUpdate((event: GestureEvent) => this.updateTocScrollbarDrag(event))
-            .onActionEnd((event: GestureEvent) => this.endTocScrollbarDrag(event))
-            .onActionCancel(() => this.cancelTocScrollbarDrag()),
-          TapGesture().onAction((event: GestureEvent) => this.jumpTocScrollbarToPointer(event))
-        )
-      )
-    }
-  }
-
-  @Builder
-  bookmarkPanelSummary() {
-    if (this.bookmarkMultiSelectMode) {
-      Row({ space: 16 }) {
-        Text(`已选 ${this.selectedBookmarkIds.length} 项`)
-          .fontSize(14)
-          .fontColor(this.getTextColor())
-          .layoutWeight(1)
-        Text(this.selectedBookmarkIds.length === this.bookmarks.length ? '取消全选' : '全选')
-          .fontSize(13)
-          .fontColor(this.accentColor())
-          .onClick(() => {
-            this.toggleSelectAllBookmarks();
-          })
-        Text('删除')
-          .fontSize(13)
-          .fontColor(this.selectedBookmarkIds.length > 0 ? '#D94841' : this.getSubTextColor())
-          .enabled(this.selectedBookmarkIds.length > 0)
-          .onClick(() => {
-            this.deleteSelectedBookmarks();
-          })
-        Text('取消')
-          .fontSize(13)
-          .fontColor(this.getSubTextColor())
-          .onClick(() => {
-            this.cancelBookmarkMultiSelect();
-          })
-      }
-      .width('100%')
-      .height(52)
-      .padding({ left: 20, right: 20 })
-      .alignItems(VerticalAlign.Center)
-    } else {
-      Row() {
-        Text(`${this.bookmarks.length} 条书签`)
-          .fontSize(14)
-          .fontColor(this.getSubTextColor())
-          .layoutWeight(1)
-      }
-      .width('100%')
-      .padding({ left: 20, right: 20, top: 18, bottom: 10 })
-    }
-  }
-
-  @Builder
-  bookmarkList() {
-    if (this.bookmarks.length === 0) {
-      Column({ space: 12 }) {
-        SymbolGlyph($r('sys.symbol.bookmark'))
-          .fontSize(34)
-          .fontColor([this.getSubTextColor()])
-        Text('暂无书签')
-          .fontSize(15)
-          .fontColor(this.getSubTextColor())
-        Text('可使用底栏最右侧按钮添加当前阅读位置')
-          .fontSize(12)
-          .fontColor(this.getSubTextColor())
-      }
-      .layoutWeight(1)
-      .width('100%')
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-    } else {
-      List({ space: 0, scroller: this.bookmarkScroller }) {
-        ForEach(this.bookmarks, (bookmark: Bookmark) => {
-          if (deviceInfo.sdkApiVersion >= 26) {
-            // API 26+ uses one left-swipe action panel. Keep multi-select and
-            // delete together instead of exposing multi-select on right swipe.
-            HdsListItem({
-              customItemBuilder: () => {
-                this.bookmarkSwipeCard(bookmark)
-              },
-              swipeActionOptions: this.bookmarkSwipeActions(bookmark)
-            })
-          } else {
-            // Older systems use the native ListItem fallback with the same
-            // two-button left-swipe action panel.
-            ListItem() {
-              this.bookmarkSwipeCard(bookmark)
-            }
-            .width('100%')
-            .clip(true)
-            .swipeAction({
-              end: {
-                builder: () => {
-                  this.bookmarkFallbackSwipeActions(bookmark)
-                },
-                actionAreaDistance: 128,
-                onAction: () => this.deleteBookmark(bookmark)
-              },
-              edgeEffect: SwipeEdgeEffect.Spring
-            })
-          }
-        }, (bookmark: Bookmark) => `${bookmark.id}`)
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .layoutWeight(1)
-      .width('100%')
-      .clip(true)
-      .scrollBar(BarState.Auto)
-      .scrollBarColor(this.isReaderThemeDark() ? '#668A8F98' : '#667A6F63')
-    }
-  }
-
-  @Builder
-  bookmarkDeleteAction(bookmark: Bookmark) {
-    Column({ space: 4 }) {
-      SymbolGlyph($r('sys.symbol.trash'))
-        .fontSize(22)
-        .fontColor(['#FFFFFF'])
-      Text('删除')
-        .fontSize(11)
-        .fontColor('#FFFFFF')
-    }
-    .width(64)
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor('#D94841')
-    .onClick(() => {
-      this.deleteBookmark(bookmark);
-    })
-  }
-
-  @Builder
   readerActionMenu() {
     Column() {
-      this.readerActionMenuItem(
-        $r('sys.symbol.bookmark'),
-        this.isCurrentPageBookmarked() ? '删除书签' : '添加书签',
-        () => this.toggleCurrentPageBookmark(),
-        true,
-        this.readerSourceNeedsLogin() || this.readerCanRetry() || !this.isReaderComicModeActive()
-      )
+      if (this.readerSourceNeedsLogin() || this.readerCanRetry() || !this.isReaderComicModeActive()) {
+        this.readerActionMenuItem(
+          $r('sys.symbol.bookmark'),
+          this.isCurrentPageBookmarked() ? '删除书签' : '添加书签',
+          () => this.toggleCurrentPageBookmark(),
+          true,
+          true
+        )
+      }
       if (this.book && !LocalBookService.isLocalBook(this.book)) {
         this.readerActionMenuItem(
           $r('sys.symbol.download'),
@@ -4222,7 +3827,7 @@ struct ReadBookPage {
       )
     }
     .width(220)
-    .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+    .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.SM, bottom: AppSpacing.SM })
     .backgroundColor(this.readerGlassPanelColor())
     .borderRadius(ThemeRuntime.glassCornerRadius(22, 'panel'))
     .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
@@ -4238,14 +3843,14 @@ struct ReadBookPage {
   readerActionMenuItem(icon: Resource, label: string, action: () => void,
     enabled: boolean = true, showDivider: boolean = true) {
     Column() {
-      Row({ space: 12 }) {
+      Row({ space: AppSpacing.LG }) {
         SymbolGlyph(icon)
           .fontSize(21)
           .fontColor([this.getTextColor()])
           .width(24)
 
         Text(label)
-          .fontSize(16)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontColor(this.getTextColor())
           .maxLines(1)
           .layoutWeight(1)
@@ -4258,7 +3863,7 @@ struct ReadBookPage {
         Divider()
           .strokeWidth(0.5)
           .color(this.readerGlassBorderColor())
-          .margin({ left: 46, right: 8 })
+          .margin({ left: 46, right: AppSpacing.MD })
       }
     }
     .width('100%')
@@ -4270,66 +3875,6 @@ struct ReadBookPage {
       action();
     })
   }
-
-  @Builder
-  bookmarkSwipeCard(bookmark: Bookmark) {
-    Column({ space: 5 }) {
-      Row() {
-        SymbolGlyph($r('sys.symbol.bookmark'))
-          .fontSize(18)
-          .fontColor([this.accentColor()])
-          .width(26)
-        Text(bookmark.chapterName || `第 ${bookmark.chapterIndex + 1} 章`)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.getTextColor())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-        Text(`第 ${bookmark.pageIndex + 1} 页`)
-          .fontSize(11)
-          .fontColor(this.getSubTextColor())
-      }
-      Text(bookmark.content || '已保存阅读位置')
-        .fontSize(12)
-        .fontColor(this.getSubTextColor())
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-      Text(this.formatBookmarkTime(bookmark.createTime))
-        .fontSize(10)
-        .fontColor(this.getSubTextColor())
-        .width('100%')
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
-    .backgroundColor(this.isBookmarkSelected(bookmark.id) ? this.tocSelectedBackgroundColor() : Color.Transparent)
-    .border({ width: { bottom: 0.5 }, color: this.isReaderThemeDark() ? '#1FFFFFFF' : '#0D000000' })
-    .onClick(() => {
-      if (this.bookmarkMultiSelectMode) this.toggleBookmarkSelection(bookmark.id)
-      else this.jumpToBookmark(bookmark)
-    })
-    .gesture(LongPressGesture({ repeat: false }).onAction((event: GestureEvent) => {
-      if (!this.bookmarkMultiSelectMode) this.showBookmarkActions(bookmark, event)
-    }))
-  }
-
-  private bookmarkSwipeActions(bookmark: Bookmark): HdsSwipeActionOptions {
-    return { icons: [
-      { icon: new SymbolGlyphModifier($r('sys.symbol.checkmark_circle')), backgroundColor: this.buttonColor(), iconOptions: { accessibilityText: '多选' }, onAction: () => this.enterBookmarkMultiSelect(bookmark.id) },
-      { icon: new SymbolGlyphModifier($r('sys.symbol.trash')), backgroundColor: ThemeRuntime.dangerColor(this.appDarkMode), iconOptions: { accessibilityText: '删除书签' }, onAction: () => this.deleteBookmark(bookmark) }
-    ] };
-  }
-
-  @Builder
-  bookmarkFallbackSwipeActions(bookmark: Bookmark) {
-    Row() {
-      this.bookmarkMultiSelectAction(bookmark)
-      this.bookmarkDeleteAction(bookmark)
-    }
-    .height('100%')
-  }
-
 
   onSystemDialogFlagChanged(): void {
     if (!this.showTxtCharsetDialog) this.txtCharsetDialogSession.close(this.getUIContext());
@@ -4344,7 +3889,7 @@ struct ReadBookPage {
       this.tapZoneSettingsContent();
     }, {
       autoCancel: false,
-      maskColor: this.isReaderThemeDark() ? '#99000000' : '#33000000',
+      maskColor: ThemeRuntime.scrimColor(this.isReaderThemeDark()),
       warnTag: '显示点击区域设置弹窗失败:'
     });
   }
@@ -4371,167 +3916,19 @@ struct ReadBookPage {
   }
 
   @Builder
-  readerCacheDialogContent() {
-    Column() {
-      Text(`缓存《${this.book?.name || '当前书籍'}》`)
-        .fontSize(18)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.getTextColor())
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-        .textAlign(TextAlign.Center)
-        .margin({ bottom: 8 })
-
-      if (this.readerCachePanelStatus()) {
-        Text(this.readerCachePanelStatus())
-          .fontSize(13)
-          .fontColor(this.getSubTextColor())
-          .width('100%')
-          .textAlign(TextAlign.Center)
-          .margin({ bottom: 8 })
+  readerCacheDialogContent(chapterMode: boolean) {
+    ReaderCacheDialogContent({
+      chapterMode: chapterMode,
+      book: this.book,
+      controller: this.fullTextCacheController(),
+      onStartFullTextCache: (): void => this.startFullTextCache(),
+      onOpenChapterMode: (): void => this.openReaderChapterCacheDialog(),
+      onClose: (): void => this.closeReaderCacheDialog(),
+      onChaptersChanged: (chapters: BookChapter[]): void => {
+        this.chapters = chapters;
       }
-
-      this.readerCacheActionItem(this.fullTextCaching ? '正在缓存...' : '缓存全文', () => {
-        this.startFullTextCache();
-      }, this.fullTextCaching || this.readerCacheRangeCaching)
-      this.readerCacheActionItem('缓存指定章节', () => {
-        this.openReaderChapterCacheDialog();
-      }, this.fullTextCaching || this.readerCacheRangeCaching)
-      this.readerCacheActionItem('清除已缓存章节', () => {
-        this.clearReaderCachedChapters();
-      }, this.fullTextCaching || this.readerCacheRangeCaching, '#E53935')
-
-      Button('取消')
-        .width('100%')
-        .height(44)
-        .margin({ top: 10 })
-        .backgroundColor(this.isReaderThemeDark() ? '#24272D' : '#F5F5F5')
-        .fontColor(this.getTextColor())
-        .enabled(!this.fullTextCaching && !this.readerCacheRangeCaching)
-        .onClick(() => this.closeReaderCacheDialog())
-    }    .width('calc(100% - 32vp)')
-    .constraintSize({ maxWidth: 520 })
-    .padding({ left: 18, right: 18, top: 18, bottom: 18 })
+    })
   }
-
-
-  @Builder
-  readerCacheActionItem(label: string, action: () => void, disabled: boolean = false,
-    color: string = '') {
-    Button(label)
-      .width('100%')
-      .height(44)
-      .margin({ top: 6 })
-      .backgroundColor(this.isReaderThemeDark() ? '#24272D' : '#F5F5F5')
-      .fontColor(color || this.getTextColor())
-      .enabled(!disabled)
-      .opacity(disabled ? 0.5 : 1)
-      .onClick(action)
-  }
-
-  @Builder
-  readerChapterCacheDialogContent() {
-    Column() {
-      Row() {
-        Text('选择章节缓存')
-          .fontSize(18)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.getTextColor())
-          .layoutWeight(1)
-        Button('关闭')
-          .height(34)
-          .fontSize(13)
-          .borderRadius(17)
-          .enabled(!this.fullTextCaching && !this.readerCacheRangeCaching)
-          .onClick(() => this.closeReaderCacheDialog())
-      }
-      .width('100%')
-      .height(46)
-
-      if (this.readerCachePanelStatus()) {
-        Text(this.readerCachePanelStatus())
-          .fontSize(13)
-          .fontColor(this.getSubTextColor())
-          .width('100%')
-          .margin({ bottom: 8 })
-      }
-
-      Row({ space: 8 }) {
-        TextInput({ placeholder: '章节范围，如 1-10', text: this.readerCacheRangeDraft })
-          .type(InputType.Normal)
-          .fontSize(14)
-          .fontColor(this.getTextColor())
-          .placeholderColor(this.getSubTextColor())
-          .layoutWeight(1)
-          .height(42)
-          .padding({ left: 10, right: 10 })
-          .backgroundColor(this.isReaderThemeDark() ? '#1FFFFFFF' : '#0D000000')
-          .borderRadius(10)
-          .enabled(!this.fullTextCaching && !this.readerCacheRangeCaching)
-          .onChange((value: string) => {
-            this.readerCacheRangeDraft = value;
-          })
-        Button(this.readerCacheRangeCaching ? '缓存中…' : '缓存范围')
-          .width(96)
-          .height(42)
-          .fontSize(13)
-          .fontColor('#FFFFFF')
-          .backgroundColor(this.accentColor())
-          .enabled(!this.fullTextCaching && !this.readerCacheRangeCaching)
-          .onClick(() => this.cacheReaderChapterRange())
-      }
-      .width('100%')
-      Text('支持 1-10、1,3,5-8 等格式')
-        .fontSize(11)
-        .fontColor(this.getSubTextColor())
-        .width('100%')
-        .margin({ top: 4, bottom: 6 })
-
-      if (this.readerCacheChapters.length === 0) {
-        Text('暂未获取到目录')
-          .fontSize(13)
-          .fontColor(this.getSubTextColor())
-          .width('100%')
-          .textAlign(TextAlign.Center)
-          .layoutWeight(1)
-      } else {
-        List({ space: 2 }) {
-          ForEach(this.readerCacheChapters, (chapter: BookChapter, index: number) => {
-            ListItem() {
-              Row({ space: 8 }) {
-                Text(chapter.title)
-                  .fontSize(15)
-                  .fontColor(chapter.cacheDate > 0 ? this.readerCachedChapterTextColor() : this.getTextColor())
-                  .maxLines(2)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .layoutWeight(1)
-                if (chapter.cacheDate > 0) {
-                  Text('已缓存')
-                    .fontSize(11)
-                    .fontColor(this.isReaderThemeDark() ? '#7CC7A0' : '#1F8F55')
-                    .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                    .backgroundColor(this.isReaderThemeDark() ? '#24382F' : '#E6F4EC')
-                    .borderRadius(4)
-                }
-              }
-              .width('100%')
-              .padding({ left: 2, right: 2, top: 12, bottom: 12 })
-              .onClick(() => this.cacheReaderSingleChapter(index))
-            }
-          }, (chapter: BookChapter, index: number) => `${index}_${chapter.url || chapter.title}`)
-        }
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        .width('100%')
-        .layoutWeight(1)
-        .scrollBar(BarState.Auto)
-      }
-    }    .width('calc(100% - 32vp)')
-    .constraintSize({ maxWidth: 560 })
-    .height(Math.min(560, Math.max(420, this.pageViewHeight - 72)))
-    .padding({ left: 18, right: 18, top: 18, bottom: 18 })
-  }
-
 
   openLayoutElementSettings(): void {
     this.showReaderActionMenu = false;
@@ -4544,60 +3941,32 @@ struct ReadBookPage {
       currentBook.type === LocalBookService.TYPE_TXT;
   }
 
-  txtCharsetOptions(): ReaderTxtCharsetOption[] {
-    return [
-      new ReaderTxtCharsetOption('', '自动识别', '根据文件内容自动判断编码'),
-      new ReaderTxtCharsetOption('gb18030', 'GBK / GB18030', '简体中文'),
-      new ReaderTxtCharsetOption('utf-8', 'UTF-8', 'Unicode，支持带 BOM 文件'),
-      new ReaderTxtCharsetOption('utf-16le', 'UTF-16 LE', 'Unicode 小端序'),
-      new ReaderTxtCharsetOption('utf-16be', 'UTF-16 BE', 'Unicode 大端序'),
-      new ReaderTxtCharsetOption('big5', 'Big5', '繁体中文'),
-      new ReaderTxtCharsetOption('koi8-r', 'KOI8-R', '俄语'),
-      new ReaderTxtCharsetOption('euc-kr', 'EUC-KR', '韩语'),
-      new ReaderTxtCharsetOption('euc-jp', 'EUC-JP', '日语'),
-      new ReaderTxtCharsetOption('shift_jis', 'Shift-JIS', '日语'),
-      new ReaderTxtCharsetOption('windows-1250', 'Windows-1250', '中欧语言'),
-      new ReaderTxtCharsetOption('ibm866', 'IBM866', '西里尔字符')
-    ];
-  }
-
-  txtCharsetLabel(charset: string): string {
-    const normalized = (charset || '').toLowerCase().replace(/_/g, '-');
-    for (const option of this.txtCharsetOptions()) {
-      if (option.value.replace(/_/g, '-') === normalized) return option.label;
-    }
-    return charset ? charset.toUpperCase() : '自动识别';
-  }
-
   txtCharsetMenuLabel(): string {
     if (!this.book) return '自动';
     const charsetOverride = LocalBookService.getTxtCharsetOverride(this.book);
-    return charsetOverride ? this.txtCharsetLabel(charsetOverride) : '自动';
+    return charsetOverride ? ReaderTxtCharsets.label(charsetOverride) : '自动';
   }
 
   openTxtCharsetDialog(): void {
     if (!this.canSelectTxtCharset()) return;
     this.showReaderActionMenu = false;
-    this.txtCharsetDraft = LocalBookService.getTxtCharsetOverride(this.book);
     this.showTxtCharsetDialog = true;
     this.txtCharsetDialogSession.open(this.getUIContext(), (): void => {
       this.readerTxtCharsetDialogContent();
     }, {
       autoCancel: false,
-      maskColor: this.isReaderThemeDark() ? '#99000000' : '#33000000',
+      maskColor: ThemeRuntime.scrimColor(this.appDarkMode),
       warnTag: '显示字符编码弹窗失败:'
     });
   }
 
-  async applyTxtCharsetSelection(): Promise<void> {
-    if (!this.book || !this.canSelectTxtCharset() || this.txtCharsetApplying) return;
+  async applyTxtCharsetSelection(selectedCharset: string): Promise<void> {
+    if (!this.book || !this.canSelectTxtCharset()) return;
     const targetBook: Book = this.book;
-    const selectedCharset = this.txtCharsetDraft;
     if (selectedCharset === LocalBookService.getTxtCharsetOverride(targetBook)) {
       this.showTxtCharsetDialog = false;
       return;
     }
-    this.txtCharsetApplying = true;
     try {
       await this.saveReadingProgress();
       this.stopTtsReading();
@@ -4606,117 +3975,28 @@ struct ReadBookPage {
       this.showMenu = false;
       await this.loadBook();
       AppStorage.setOrCreate('shelfUpdateTime', Date.now());
-      const applied = selectedCharset ? this.txtCharsetLabel(selectedCharset) :
-        `自动识别（${this.txtCharsetLabel(this.book?.charset || '')}）`;
+      const applied = selectedCharset ? ReaderTxtCharsets.label(selectedCharset) :
+        `自动识别（${ReaderTxtCharsets.label(this.book?.charset || '')}）`;
       HdsFeedback.showToast(`已使用 ${applied} 重新解析`);
     } catch (e) {
       console.error('切换 TXT 字符编码失败:', e);
       HdsFeedback.showToast('切换字符编码失败，请尝试其他编码');
-    } finally {
-      this.txtCharsetApplying = false;
     }
   }
 
   @Builder
   readerTxtCharsetDialogContent() {
-    Column({ space: 10 }) {
-      Row() {
-        Column({ space: 3 }) {
-          Text('选择字符编码')
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.getTextColor())
-          Text(`当前解析：${this.txtCharsetLabel(this.book?.charset || '')}`)
-            .fontSize(12)
-            .fontColor(this.getSubTextColor())
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
-        ImmersiveBackButton({
-          icon: $r('sys.symbol.xmark'),
-          iconOffsetX: 0,
-          iconColor: this.readerControlIconColor(),
-          darkMode: this.isReaderThemeDark(),
-          buttonSize: 38,
-          containerWidth: 38,
-          containerHeight: 38,
-          startInset: 0,
-          compactLayout: true,
-          accessibilityLabel: '关闭字符编码选择',
-          onBack: () => {
-            if (!this.txtCharsetApplying) this.showTxtCharsetDialog = false;
-          }
-        })
+    ReaderTxtCharsetDialogContent({
+      selectedCharset: LocalBookService.getTxtCharsetOverride(this.book),
+      parsedCharset: this.book?.charset || '',
+      listHeight: Math.min(440, Math.max(160, this.pageViewHeight - 190)),
+      onApply: (charset: string): Promise<void> => this.applyTxtCharsetSelection(charset),
+      onClose: (): void => {
+        this.showTxtCharsetDialog = false;
+      },
+      onApplyingChanged: (applying: boolean): void => {
+        this.txtCharsetApplying = applying;
       }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-
-      Scroll() {
-        Column({ space: 4 }) {
-          ForEach(this.txtCharsetOptions(), (option: ReaderTxtCharsetOption) => {
-            this.readerTxtCharsetOption(option)
-          }, (option: ReaderTxtCharsetOption) => option.value || 'auto')
-        }
-        .width('100%')
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height(Math.min(440, Math.max(160, this.pageViewHeight - 190)))
-      .scrollBar(BarState.Auto)
-
-      Row({ space: 12 }) {
-        Button('取消')
-          .layoutWeight(1)
-          .height(42)
-          .fontColor(this.getTextColor())
-          .backgroundColor(this.isReaderThemeDark() ? '#24FFFFFF' : '#10000000')
-          .enabled(!this.txtCharsetApplying)
-          .onClick(() => {
-            this.showTxtCharsetDialog = false;
-          })
-        Button(this.txtCharsetApplying ? '正在重新解析…' : '应用')
-          .layoutWeight(1)
-          .height(42)
-          .fontColor('#FFFFFF')
-          .backgroundColor(this.accentColor())
-          .enabled(!this.txtCharsetApplying)
-          .onClick(() => this.applyTxtCharsetSelection())
-      }
-      .width('100%')
-    }    .width('100%')
-    .constraintSize({ maxWidth: 440 })
-    .padding({ left: 18, right: 18, top: 16, bottom: 16 })
-  }
-
-
-  @Builder
-  readerTxtCharsetOption(option: ReaderTxtCharsetOption) {
-    Row({ space: 12 }) {
-      Column({ space: 3 }) {
-        Text(option.label)
-          .fontSize(16)
-          .fontColor(this.getTextColor())
-        Text(option.description)
-          .fontSize(12)
-          .fontColor(this.getSubTextColor())
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-      if (this.txtCharsetDraft === option.value) {
-        SymbolGlyph($r('sys.symbol.checkmark_circle'))
-          .fontSize(22)
-          .fontColor([this.accentColor()])
-      }
-    }
-    .width('100%')
-    .constraintSize({ minHeight: 56 })
-    .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-    .borderRadius(14)
-    .backgroundColor(this.txtCharsetDraft === option.value ?
-      ThemeRuntime.accentSurfaceColor(this.isReaderThemeDark()) : Color.Transparent)
-    .enabled(!this.txtCharsetApplying)
-    .onClick(() => {
-      this.txtCharsetDraft = option.value;
     })
   }
 
@@ -4732,7 +4012,7 @@ struct ReadBookPage {
       this.chapters[this.clampChapterIndex(this.currentChapterIndex)] : null;
     const rawTitle = chapter ? this.cleanChapterTitle(chapter.title || '') : '';
     const cached = this.chapters.length > 0 ?
-      ReadBookEngine.get().getCachedContent(this.currentChapterIndex) : '';
+      this.readerEngine().getCachedContent(this.currentChapterIndex) : '';
     const rawContent = cached || this.content || '';
     AppStorage.setOrCreate('readerReplacePreviewTitle', rawTitle);
     AppStorage.setOrCreate('readerReplacePreviewContent', rawContent.substring(0, 20000));
@@ -4759,121 +4039,26 @@ struct ReadBookPage {
 
   @Builder
   readerLayoutElementSettingsDialog() {
-    Stack({ alignContent: Alignment.Center }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor(this.isReaderThemeDark() ? '#52000000' : '#26000000')
-        .backdropBlur(ThemeRuntime.glassBlur('overlay', 18))
-        .onClick(() => {
-          this.showLayoutElementSettings = false;
-        })
-
-      Column({ space: 4 }) {
-        Row() {
-          Text('布局元素设置')
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.getTextColor())
-            .layoutWeight(1)
-          ImmersiveBackButton({
-            icon: $r('sys.symbol.xmark'),
-            iconOffsetX: 0,
-            iconColor: this.readerControlIconColor(),
-            darkMode: this.isReaderThemeDark(),
-            buttonSize: 38,
-            containerWidth: 38,
-            containerHeight: 38,
-            startInset: 0,
-            compactLayout: true,
-            accessibilityLabel: '关闭布局元素设置',
-            onBack: () => this.showLayoutElementSettings = false
-          })
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-
-        Text('控制点击阅读页后出现的快捷组件')
-          .fontSize(13)
-          .fontColor(this.getSubTextColor())
-          .width('100%')
-          .margin({ bottom: 8 })
-
-        this.readerLayoutElementToggle(
-          '使用快速朗读组件',
-          '显示朗读快捷按钮与展开控制条',
-          this.readerUseTtsQuickAction,
-          (enabled: boolean) => {
-            this.readerUseTtsQuickAction = enabled;
-            if (!enabled) this.ttsMediaControlsExpanded = false;
-            this.saveReaderLayoutElementSettings();
-          }
-        )
-        this.readerLayoutElementToggle(
-          '使用章节快速跳转组件',
-          '显示章节滑杆与上一章、下一章按钮',
-          this.readerUseChapterQuickJump,
-          (enabled: boolean) => {
-            this.readerUseChapterQuickJump = enabled;
-            if (!enabled) this.resetMenuChapterPreview();
-            this.saveReaderLayoutElementSettings();
-          }
-        )
+    ReaderLayoutElementSettingsPanel({
+      dark: this.isReaderThemeDark(),
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      accentColor: this.accentColor(),
+      panelColor: this.readerGlassPanelColor(),
+      panelBorderColor: this.readerGlassBorderColor(),
+      panelShadowColor: this.readerGlassShadowColor(),
+      panelWidth: Math.max(1, Math.min(420, this.pageViewWidth - 36)),
+      onClose: (): void => {
+        this.showLayoutElementSettings = false;
+      },
+      onChapterQuickJumpChanged: (enabled: boolean): void => {
+        if (!enabled) this.resetMenuChapterPreview();
       }
-      .width(Math.max(1, Math.min(420, this.pageViewWidth - 36)))
-      .padding({ left: 20, right: 20, top: 18, bottom: 18 })
-      .borderRadius(ThemeRuntime.glassCornerRadius(24, 'overlay'))
-      .backgroundColor(this.readerGlassPanelColor())
-      .backdropBlur(ThemeRuntime.glassBlur('overlay', 24))
-      .border({ width: ThemeRuntime.glassBorderWidth('overlay'), color: this.readerGlassBorderColor() })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('overlay'), color: this.readerGlassShadowColor(),
-        offsetX: ThemeRuntime.glassShadowOffsetX('overlay'), offsetY: ThemeRuntime.glassShadowOffsetY('overlay') })
-      .onClick(() => {
-      })
-    }
-    .width('100%')
-    .height('100%')
-  }
-
-  @Builder
-  readerLayoutElementToggle(title: string, description: string, enabled: boolean,
-    onChange: (enabled: boolean) => void) {
-    Row({ space: 12 }) {
-      Column({ space: 4 }) {
-        Text(title)
-          .fontSize(16)
-          .fontColor(this.getTextColor())
-        Text(description)
-          .fontSize(12)
-          .fontColor(this.getSubTextColor())
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-      Toggle({ type: ToggleType.Switch, isOn: enabled })
-        .selectedColor(this.accentColor())
-        .onChange(onChange)
-    }
-    .width('100%')
-    .constraintSize({ minHeight: 64 })
-    .padding({ left: 12, right: 8 })
-    .borderRadius(14)
-    .backgroundColor(this.isReaderThemeDark() ? '#1FFFFFFF' : '#0D000000')
-    .alignItems(VerticalAlign.Center)
-  }
-
-  saveReaderLayoutElementSettings(): void {
-    ReaderSettingsStore.saveLayoutElementSettings(
-      getContext(this),
-      this.readerUseTtsQuickAction,
-      this.readerUseChapterQuickJump
-    ).catch((e: Error) => {
-      console.error('保存阅读布局元素设置失败:', e);
-      HdsFeedback.showToast('布局元素设置保存失败');
-    });
+    })
   }
 
   currentReaderSource(): BookSource | null {
-    return ReadBookEngine.get().source;
+    return this.readerEngine().source;
   }
 
   readerSourceNeedsLogin(): boolean {
@@ -4980,14 +4165,12 @@ struct ReadBookPage {
     this.showMenu = false;
     this.showToc = false;
     this.showSettings = false;
-    this.ttsMediaControlsExpanded = false;
     animateTo({ duration: 280, curve: Curve.Friction }, () => {
       this.showTtsQuickPlayer = true;
     });
     this.loadTtsSettingsAndVoices();
     if (!this.isTtsSpeaking && !this.ttsReader.isSpeaking()) {
       await this.startTtsReadingFromCurrentPosition(true);
-      this.ttsMediaControlsExpanded = false;
     }
   }
 
@@ -5103,7 +4286,7 @@ struct ReadBookPage {
 
   ttsMiniPlayerTop(): number {
     const viewportHeight = this.pageViewHeight > 0 ? this.pageViewHeight : 720;
-    const capsuleHeight = 46;
+    const capsuleHeight = ReaderTtsCapsule.HEIGHT;
     const menuGap = 8;
     // The capsule is only shown while the reader menu is open. Keep its default anchor above the
     // whole bottom menu (including the optional chapter quick-jump track), instead of merely
@@ -5116,7 +4299,7 @@ struct ReadBookPage {
 
   clampTtsMiniPlayerPositionX(position: number): number {
     const viewportWidth = this.pageViewWidth > 0 ? this.pageViewWidth : 360;
-    const capsuleWidth = 184;
+    const capsuleWidth = ReaderTtsCapsule.WIDTH;
     const edgeInset = 8;
     const minLeft = edgeInset;
     const maxLeft = Math.max(minLeft, viewportWidth - capsuleWidth - edgeInset);
@@ -5142,145 +4325,84 @@ struct ReadBookPage {
 
   @Builder
   ttsMiniPlayer() {
-    Row({ space: 7 }) {
-      Row({ space: 7 }) {
-        Stack({ alignContent: Alignment.Center }) {
-          Circle().width(30).height(30).fill(this.accentColor())
-          SymbolGlyph($r('sys.symbol.speaker_wave_3'))
-            .fontSize(15)
-            .fontColor(['#FFFFFF'])
-        }
-        Column({ space: 1 }) {
-          Text(this.isTtsPaused ? '已暂停' : '朗读中')
-            .fontSize(12)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.getTextColor())
-          Text(`${this.currentChapterIndex + 1}/${Math.max(1, this.chapters.length)}章`)
-            .fontSize(9)
-            .fontColor(this.getSubTextColor())
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
+    ReaderTtsCapsule({
+      title: this.isTtsPaused ? '已暂停' : '朗读中',
+      subtitle: `${this.currentChapterIndex + 1}/${Math.max(1, this.chapters.length)}章`,
+      paused: this.isTtsPaused,
+      playbackKey: `tts_capsule_playback_${this.isTtsSpeaking}_${this.isTtsPaused}`,
+      panelColor: this.readerGlassPanelColor(),
+      panelBorderColor: this.readerGlassBorderColor(),
+      panelShadowColor: this.readerGlassShadowColor(),
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      accentColor: this.accentColor(),
+      onCapsuleDragStart: (): void => this.beginTtsMiniPlayerDrag(),
+      onCapsuleDragMove: (offsetX: number, offsetY: number): void => this.moveTtsMiniPlayer(offsetX, offsetY),
+      onOpen: (): void => {
+        this.openTtsQuickPlayer();
+      },
+      onToggle: (): void => {
+        this.toggleTtsReading();
+      },
+      onClose: (): void => {
+        this.stopTtsReading();
       }
-      .layoutWeight(1)
-      .onClick(() => this.openTtsQuickPlayer())
-      SymbolGlyph(this.isTtsPaused ? $r('sys.symbol.play') : $r('sys.symbol.pause'))
-        .id(`tts_capsule_playback_${this.isTtsSpeaking}_${this.isTtsPaused}`)
-        .fontSize(17)
-        .fontColor([this.getTextColor()])
-        .width(28)
-        .height(34)
-        .onClick(() => this.toggleTtsReading())
-      SymbolGlyph($r('sys.symbol.xmark'))
-        .fontSize(14)
-        .fontColor([this.getSubTextColor()])
-        .width(24)
-        .height(34)
-        .onClick(() => this.stopTtsReading())
-    }
-    .width(184)
-    .height(46)
-    .padding({ left: 8, right: 5 })
-    .borderRadius(23)
-    .clip(true)
-    .backgroundColor(this.readerGlassPanelColor())
-    .backdropBlur(ThemeRuntime.glassBlur('button', 18))
-    .border({ width: ThemeRuntime.glassBorderWidth('button'), color: this.readerGlassBorderColor() })
-    .shadow({ radius: ThemeRuntime.glassShadowRadius('button'), color: this.readerGlassShadowColor(),
-      offsetX: ThemeRuntime.glassShadowOffsetX('button'), offsetY: ThemeRuntime.glassShadowOffsetY('button') })
-    .position({ x: 0, y: 0 })
-    .translate({
-      x: this.ttsMiniPlayerLeft(),
-      y: this.ttsMiniPlayerTop()
     })
-    .parallelGesture(
-      PanGesture({ direction: PanDirection.All, distance: 4 })
-        .onActionStart(() => {
-          this.ttsMiniPlayerDragOriginX = this.ttsMiniPlayerLeft();
-          this.ttsMiniPlayerDragOriginY = this.ttsMiniPlayerTop();
-        })
-        .onActionUpdate((event: GestureEvent) => {
-          this.ttsMiniPlayerPositionX = this.clampTtsMiniPlayerPositionX(
-            this.ttsMiniPlayerDragOriginX + event.offsetX);
-          this.ttsMiniPlayerPositionY = this.clampTtsMiniPlayerPositionY(
-            this.ttsMiniPlayerDragOriginY + event.offsetY);
-        })
-    )
-    .transition(this.ttsMiniPlayerTransition())
+      .position({ x: 0, y: 0 })
+      .translate({
+        x: this.ttsMiniPlayerLeft(),
+        y: this.ttsMiniPlayerTop()
+      })
+      .transition(this.ttsMiniPlayerTransition())
   }
 
   @Builder
   globalTtsMiniPlayer() {
-    Row({ space: 7 }) {
-      Row({ space: 7 }) {
-        Stack({ alignContent: Alignment.Center }) {
-          Circle().width(30).height(30).fill(this.accentColor())
-          SymbolGlyph($r('sys.symbol.speaker_wave_3'))
-            .fontSize(15)
-            .fontColor(['#FFFFFF'])
-        }
-        Column({ space: 1 }) {
-          Text(this.globalTtsPaused ? '已暂停' : (this.globalTtsMode === 'audio' ? '听书中' : '朗读中'))
-            .fontSize(12)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.getTextColor())
-          Text(this.globalTtsChapterProgress || (this.globalTtsMode === 'audio' ? '后台听书' : '后台朗读'))
-            .fontSize(9)
-            .fontColor(this.getSubTextColor())
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
+    ReaderTtsCapsule({
+      title: this.globalTtsPaused ? '已暂停' : (this.globalTtsMode === 'audio' ? '听书中' : '朗读中'),
+      subtitle: this.globalTtsChapterProgress || (this.globalTtsMode === 'audio' ? '后台听书' : '后台朗读'),
+      paused: this.globalTtsPaused,
+      playbackKey: `global_tts_capsule_playback_${this.globalTtsPaused}`,
+      panelColor: this.readerGlassPanelColor(),
+      panelBorderColor: this.readerGlassBorderColor(),
+      panelShadowColor: this.readerGlassShadowColor(),
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      accentColor: this.accentColor(),
+      onCapsuleDragStart: (): void => this.beginTtsMiniPlayerDrag(),
+      onCapsuleDragMove: (offsetX: number, offsetY: number): void => this.moveTtsMiniPlayer(offsetX, offsetY),
+      onOpen: (): void => this.openGlobalTtsQuickPlayer(),
+      onToggle: (): void => {
+        ReaderTtsFloatingSession.toggle();
+      },
+      onClose: (): void => {
+        this.closeGlobalTtsQuickPlayer();
+        ReaderTtsFloatingSession.stop();
       }
-      .layoutWeight(1)
-      .onClick(() => this.openGlobalTtsQuickPlayer())
-      SymbolGlyph(this.globalTtsPaused ? $r('sys.symbol.play') : $r('sys.symbol.pause'))
-        .id(`global_tts_capsule_playback_${this.globalTtsPaused}`)
-        .fontSize(17)
-        .fontColor([this.getTextColor()])
-        .width(28)
-        .height(34)
-        .onClick(() => ReaderTtsFloatingSession.toggle())
-      SymbolGlyph($r('sys.symbol.xmark'))
-        .fontSize(14)
-        .fontColor([this.getSubTextColor()])
-        .width(24)
-        .height(34)
-        .onClick(() => {
-          this.closeGlobalTtsQuickPlayer();
-          ReaderTtsFloatingSession.stop();
-        })
-    }
-    .width(184)
-    .height(46)
-    .padding({ left: 8, right: 5 })
-    .borderRadius(23)
-    .clip(true)
-    .backgroundColor(this.readerGlassPanelColor())
-    .backdropBlur(ThemeRuntime.glassBlur('button', 18))
-    .border({ width: ThemeRuntime.glassBorderWidth('button'), color: this.readerGlassBorderColor() })
-    .shadow({ radius: ThemeRuntime.glassShadowRadius('button'), color: this.readerGlassShadowColor(),
-      offsetX: ThemeRuntime.glassShadowOffsetX('button'), offsetY: ThemeRuntime.glassShadowOffsetY('button') })
-    .position({ x: 0, y: 0 })
-    .translate({
-      x: this.ttsMiniPlayerLeft(),
-      y: this.ttsMiniPlayerTop()
     })
-    .parallelGesture(
-      PanGesture({ direction: PanDirection.All, distance: 4 })
-        .onActionStart(() => {
-          this.ttsMiniPlayerDragOriginX = this.ttsMiniPlayerLeft();
-          this.ttsMiniPlayerDragOriginY = this.ttsMiniPlayerTop();
-        })
-        .onActionUpdate((event: GestureEvent) => {
-          this.ttsMiniPlayerPositionX = this.clampTtsMiniPlayerPositionX(
-            this.ttsMiniPlayerDragOriginX + event.offsetX);
-          this.ttsMiniPlayerPositionY = this.clampTtsMiniPlayerPositionY(
-            this.ttsMiniPlayerDragOriginY + event.offsetY);
-        })
-    )
-    .transition(this.ttsMiniPlayerTransition())
+      .position({ x: 0, y: 0 })
+      .translate({
+        x: this.ttsMiniPlayerLeft(),
+        y: this.ttsMiniPlayerTop()
+      })
+      .transition(this.ttsMiniPlayerTransition())
+  }
+
+  beginTtsMiniPlayerDrag(): void {
+    this.ttsMiniPlayerDragOriginX = this.ttsMiniPlayerLeft();
+    this.ttsMiniPlayerDragOriginY = this.ttsMiniPlayerTop();
+  }
+
+  moveTtsMiniPlayer(offsetX: number, offsetY: number): void {
+    this.ttsMiniPlayerPositionX = this.clampTtsMiniPlayerPositionX(this.ttsMiniPlayerDragOriginX + offsetX);
+    this.ttsMiniPlayerPositionY = this.clampTtsMiniPlayerPositionY(this.ttsMiniPlayerDragOriginY + offsetY);
+  }
+
+  // The panel wears the reader's colours, so the app theme's artwork only fits
+  // while the reader itself is on the "应用主题" scheme.
+  ttsPanelBackgroundThemeId(): string {
+    return this.currentReaderThemeIndex() === ReaderThemeHelper.APP_THEME_INDEX ?
+      ThemeRuntime.ttsPanelThemeId(this.appDarkMode) : '';
   }
 
   @Builder
@@ -5288,9 +4410,11 @@ struct ReadBookPage {
     ReaderTtsPlayerPanel({
       darkMode: this.isReaderThemeDark(),
       accentColor: this.accentColor(),
+      playButtonColor: this.buttonColor(),
       primaryTextColor: this.getTextColor(),
       subTextColor: this.getSubTextColor(),
       panelColor: this.readerGlassPanelColor(),
+      backgroundThemeId: this.ttsPanelBackgroundThemeId(),
       topInset: this.statusBarSafeHeight,
       bottomInset: this.navBarHeight,
       viewportHeight: this.pageViewHeight > 0 ? this.pageViewHeight : 720,
@@ -5394,11 +4518,6 @@ struct ReadBookPage {
     return [before, current, after].filter((value: string): boolean => !!value).join('\n');
   }
 
-  ttsQuickProgressLabel(): string {
-    return `第 ${this.currentChapterIndex + 1}/${Math.max(1, this.chapters.length)} 章 · ` +
-      `第 ${this.currentPageIndex + 1}/${Math.max(1, this.contentPages.length)} 页`;
-  }
-
   ttsQuickProgress(): number {
     const chapterCount = Math.max(1, this.chapters.length);
     const pageCount = Math.max(1, this.contentPages.length);
@@ -5406,32 +4525,9 @@ struct ReadBookPage {
       ((this.currentChapterIndex + (this.currentPageIndex + 1) / pageCount) / chapterCount) * 100));
   }
 
-  @Builder
-  bookmarkMultiSelectAction(bookmark: Bookmark) {
-    Column({ space: 4 }) {
-      SymbolGlyph($r('sys.symbol.checkmark_circle'))
-        .fontSize(22)
-        .fontColor(['#FFFFFF'])
-      Text('多选')
-        .fontSize(11)
-        .fontColor('#FFFFFF')
-    }
-    .width(64)
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor(this.accentColor())
-    .onClick(() => {
-      this.enterBookmarkMultiSelect(bookmark.id);
-    })
-  }
-
-  showBookmarkActions(bookmark: Bookmark, event: GestureEvent): void {
-    if (event.fingerList.length > 0) {
-      const finger = event.fingerList[0];
-      this.bookmarkActionMenuX = finger.globalX;
-      this.bookmarkActionMenuY = finger.globalY;
-    }
+  showBookmarkActions(bookmark: Bookmark, globalX: number, globalY: number): void {
+    this.bookmarkActionMenuX = globalX;
+    this.bookmarkActionMenuY = globalY;
     this.pendingBookmarkAction = bookmark;
     this.showBookmarkActionMenu = true;
   }
@@ -5472,19 +4568,19 @@ struct ReadBookPage {
           if (this.pendingBookmarkAction) {
             const bookmarkId = this.pendingBookmarkAction.id;
             this.closeBookmarkActionMenu();
-            this.enterBookmarkMultiSelect(bookmarkId);
+            this.tocPanelController.enterBookmarkMultiSelect(bookmarkId);
           }
         })
-        this.bookmarkContextActionItem($r('sys.symbol.trash'), '删除', '#E53935', () => {
+        this.bookmarkContextActionItem($r('sys.symbol.trash'), '删除', ThemeRuntime.dangerColor(this.appDarkMode), () => {
           if (this.pendingBookmarkAction) {
             const bookmark = this.pendingBookmarkAction;
             this.closeBookmarkActionMenu();
-            this.deleteBookmark(bookmark);
+            this.tocPanelController.deleteBookmark(bookmark);
           }
         })
       }
       .width(148)
-      .padding({ top: 6, bottom: 6 })
+      .padding({ top: AppSpacing.SM, bottom: AppSpacing.SM })
       .backgroundColor(this.readerGlassPanelColor())
       .borderRadius(ThemeRuntime.glassCornerRadius(14, 'panel'))
       .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
@@ -5498,13 +4594,13 @@ struct ReadBookPage {
 
   @Builder
   bookmarkContextActionItem(icon: Resource, label: string, color: string, action: () => void) {
-    Row({ space: 12 }) {
+    Row({ space: AppSpacing.LG }) {
       SymbolGlyph(icon)
         .fontSize(21)
         .fontColor([color])
         .width(26)
       Text(label)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(color)
         .layoutWeight(1)
     }
@@ -5543,10 +4639,6 @@ struct ReadBookPage {
     return ReaderReplaceRuleStore.applyTitle(convertedTitle, this.readerReplaceRules, this.book);
   }
 
-  applyReaderContentRules(content: string): string {
-    return ReaderReplaceRuleStore.applyContent(content, this.readerReplaceRules, this.book);
-  }
-
   readerPreparedContentKey(content: string, chapterIndex: number): string {
     return `${chapterIndex}_${content.length}_${this.hashText(content)}_${this.readerReplaceRules.length}_` +
       `${this.readerReplaceRulesUpdateTime}_${this.chineseConverterType}`;
@@ -5554,6 +4646,13 @@ struct ReadBookPage {
 
   getPreparedReaderContent(content: string, chapterIndex: number): string {
     return this.readerPreparedContentCache.get(this.readerPreparedContentKey(content, chapterIndex)) || '';
+  }
+
+  // Whether the raw chapter body differs from what pagination consumes. Synchronous callers must not
+  // paginate the raw body in that case: its cache key would never match the prepared chapter.
+  readerContentNeedsPreparation(content: string): boolean {
+    return ReaderContentPreprocessor.hasActiveContentRules(this.readerReplaceRules) ||
+      (!this.isReaderComicModeActive() && ReaderImageSizeResolver.needsSizes(content));
   }
 
   async prepareReaderContentRules(content: string, chapterIndex: number): Promise<string> {
@@ -5568,8 +4667,10 @@ struct ReadBookPage {
       await ChineseConverter.ensureLoaded(getContext(this), this.chineseConverterType);
     }
     const converted = ChineseConverter.convertText(content, this.chineseConverterType);
-    const processed = ReaderActionMarker.limit(
+    const replaced = ReaderActionMarker.limit(
       await ReaderContentPreprocessor.apply(converted, this.readerReplaceRules, this.book));
+    // 漫画从解码结果获取尺寸，文字章节保留上游插图尺寸标记。
+    const processed = this.isReaderComicModeActive() ? replaced : await ReaderImageSizeResolver.annotate(replaced);
     const elapsedMs = Math.max(0, Date.now() - startedAt);
     if (elapsedMs >= CooperativeScheduler.DANGEROUS_OPERATION_MS) {
       console.info(`[ReaderPreprocessor] worker elapsed=${elapsedMs}ms input=${content.length}`);
@@ -5611,7 +4712,7 @@ struct ReadBookPage {
       return;
     }
     this.pendingRestorePageIndex = Math.max(this.pendingRestorePageIndex, this.currentPageIndex);
-    const raw = ReadBookEngine.get().getCachedContent(this.currentChapterIndex);
+    const raw = this.readerEngine().getCachedContent(this.currentChapterIndex);
     if (!raw) {
       return;
     }
@@ -5644,7 +4745,7 @@ struct ReadBookPage {
       return;
     }
     this.pendingRestorePageIndex = Math.max(this.pendingRestorePageIndex, this.currentPageIndex);
-    const raw = ReadBookEngine.get().getCachedContent(this.currentChapterIndex);
+    const raw = this.readerEngine().getCachedContent(this.currentChapterIndex);
     if (!raw) {
       return;
     }
@@ -5669,18 +4770,6 @@ struct ReadBookPage {
     this.verificationTitle = AppStorage.get<string>('pendingVerificationTitle') || '网页验证';
   }
 
-  openVerificationPage(): void {
-    const url = this.verificationUrl || AppStorage.get<string>('pendingVerificationUrl') || '';
-    if (!url) return;
-    router.pushUrl({
-      url: 'pages/VerifyWeb',
-      params: {
-        url: url,
-        title: this.verificationTitle || '网页验证'
-      }
-    });
-  }
-
   getProgressText(): string {
     if (this.chapters.length === 0) return '';
     if (this.contentPages.length === 0) {
@@ -5692,70 +4781,74 @@ struct ReadBookPage {
     return `${this.currentChapterIndex + 1}/${this.chapters.length} · ${pageText}/${this.contentPages.length}`;
   }
 
-  getChapterInfoText(): string {
-    if (this.chapters.length === 0) {
-      return this.book?.name || '暂无目录';
+  getReaderInfoBarConfig(): ReaderInfoBarConfig {
+    if (this.readerInfoBarConfigCacheRaw !== this.readerInfoBarConfigRaw) {
+      this.readerInfoBarConfigCacheRaw = this.readerInfoBarConfigRaw;
+      this.readerInfoBarConfigCache = ReaderInfoBarConfig.parse(this.readerInfoBarConfigRaw) ??
+        new ReaderInfoBarConfig();
     }
-    const index = this.clampChapterIndex(this.currentChapterIndex);
-    const chapter = this.chapters[index];
-    return `${index + 1}/${this.chapters.length} ${chapter ? this.getChapterTitle(index) : this.getChapterTitle()}`;
+    return this.readerInfoBarConfigCache;
   }
 
-  getReaderHeaderInfoText(): string {
-    const mode = this.readerHeaderContentMode;
-    if (mode === 'book') return this.book?.name || '未命名书籍';
-    if (mode === 'book_chapter') {
-      const title = this.getChapterTitle(this.clampChapterIndex(this.currentChapterIndex));
-      return `${this.book?.name || '未命名书籍'} · ${title}`;
-    }
-    if (mode === 'none') return '';
-    return this.getChapterTitle(this.clampChapterIndex(this.currentChapterIndex));
+  isReaderHeaderVisible(): boolean {
+    return this.readerHeaderEnabled && this.getReaderInfoBarConfig().headerVisible() &&
+      !this.isReaderComicModeActive();
   }
 
-  getReaderFooterLeftText(): string {
-    if (this.readerFooterLeftMode === 'none') return '';
-    if (this.readerFooterLeftMode === 'title') {
-      return this.getChapterTitle(this.clampChapterIndex(this.currentChapterIndex));
-    }
-    return this.getChapterInfoText();
+  getReaderInfoBarContext(): ReaderInfoBarContext {
+    const context = new ReaderInfoBarContext();
+    context.bookName = this.book?.name || '';
+    context.author = this.book?.author || '';
+    context.chapterCount = this.chapters.length;
+    context.chapterIndex = this.clampChapterIndex(this.currentChapterIndex);
+    context.chapterTitle = this.getChapterTitle(context.chapterIndex);
+    context.pageIndex = this.currentPageIndex;
+    context.pageCount = this.contentPages.length;
+    context.doublePage = this.isLandscapeDoublePageActive();
+    context.timeText = this.readerInfoTimeText;
+    context.batteryPercent = this.readerInfoBatteryPercent;
+    return context;
   }
 
-  getReaderFooterProgressText(): string {
-    const mode = this.readerFooterProgressMode;
-    if (mode === 'none') return '';
-    if (mode === 'percentage') {
-      const total = Math.max(1, this.contentPages.length);
-      const page = Math.max(0, Math.min(this.currentPageIndex, total - 1));
-      return `${Math.round(((page + 1) / total) * 100)}%`;
-    }
-    if (mode === 'chapter') {
-      return `${this.currentChapterIndex + 1}/${Math.max(1, this.chapters.length)} 章`;
-    }
-    if (mode === 'book') {
-      const chapterCount = Math.max(1, this.chapters.length);
-      return `${Math.round(((this.currentChapterIndex + 1) / chapterCount) * 100)}%`;
-    }
-    return this.getPageInfoText();
+  getReaderInfoSlotText(item: string): string {
+    return ReaderInfoBarText.leading(item, this.getReaderInfoBarContext());
   }
 
-  getReaderFooterProgressValue(): number {
-    if (this.readerFooterProgressMode === 'book') {
-      return Math.max(0, Math.min(100, ((this.currentChapterIndex + 1) / Math.max(1, this.chapters.length)) * 100));
-    }
-    return Math.max(0, Math.min(100,
-      ((Math.max(0, this.currentPageIndex) + 1) / Math.max(1, this.contentPages.length)) * 100));
+  getReaderInfoSlotBattery(item: string): number {
+    return ReaderInfoBarText.battery(item, this.getReaderInfoBarContext());
   }
 
-  getPageInfoText(): string {
-    if (this.contentPages.length === 0) {
-      return '1/1';
+  getReaderInfoProgressValue(): number {
+    const context = this.getReaderInfoBarContext();
+    return this.getReaderInfoBarConfig().progressScope === ReaderInfoProgressBar.SCOPE_BOOK ?
+      ReaderInfoBarText.bookPercent(context) : ReaderInfoBarText.chapterPercent(context);
+  }
+
+  getReaderInfoBarSidePadding(left: boolean): number {
+    if (!this.getReaderInfoBarConfig().followMargin) return ReaderInfoBarConfig.FIXED_SIDE_PADDING;
+    return left ? this.getEffectiveReaderMarginLeft() : this.getEffectiveReaderMarginRight();
+  }
+
+  /** 时间和电量只在阅读页可见、且有槽位用到时才每分钟刷新。 */
+  syncReaderInfoBarClock(): void {
+    const needed = this.readerPageVisible &&
+      (this.getReaderInfoBarConfig().usesClock(this.readerHeaderEnabled, this.readerFooterEnabled) ||
+        (this.isReaderComicModeActive() && this.readerComicSettings.infoBar));
+    if (!needed) {
+      this.readerInfoBarClock?.stop();
+      return;
     }
-    const index = Math.max(0, Math.min(this.currentPageIndex, this.contentPages.length - 1));
-    if (this.isLandscapeDoublePageActive()) {
-      const end = Math.min(index + 2, this.contentPages.length);
-      return `${index + 1}-${end}/${this.contentPages.length}`;
+    if (!this.readerInfoBarClock) {
+      this.readerInfoBarClock = new ReaderInfoBarClock((): void => {
+        this.readerInfoTimeText = ReaderInfoBarClock.timeText();
+        this.readerInfoBatteryPercent = ReaderInfoBarClock.batteryPercent();
+      });
     }
-    return `${index + 1}/${this.contentPages.length}`;
+    this.readerInfoBarClock.start();
+  }
+
+  currentReaderInfoBarLayoutIdentity(): string {
+    return `${this.readerHeaderEnabled}_${this.readerFooterEnabled}_${this.getReaderInfoBarConfig().layoutIdentity()}`;
   }
 
   getPageText(pageIndex: number): string {
@@ -5784,12 +4877,15 @@ struct ReadBookPage {
     const autoDetected = this.book?.getVariable('readerComicAutoDetected') === '1';
     this.readerComicMode = manualMode === 'comic' ||
       (manualMode !== 'text' && (autoDetected || this.readerSourceIndicatesComic()));
+    const bookMode = this.book?.getVariable('readerComicReadingMode') || '';
+    this.readerComicBookMode = bookMode ? ReaderComicMode.normalize(bookMode) : '';
+    this.readerComicZoomScale = 1;
     if (this.readerComicMode) {
       this.stopTtsReading();
       this.showSettings = false;
-      this.ttsMediaControlsExpanded = false;
     }
     this.enterReaderImmersive();
+    this.syncReaderInfoBarClock();
   }
 
   readerSourceIndicatesComic(): boolean {
@@ -5815,9 +4911,9 @@ struct ReadBookPage {
       this.book?.getVariable('readerComicManualMode') === 'text') return;
     this.readerComicMode = true;
     this.showSettings = false;
-    this.ttsMediaControlsExpanded = false;
     this.stopTtsReading();
     this.enterReaderImmersive();
+    this.syncReaderInfoBarClock();
   }
 
   toggleReaderComicReadingMode(): void {
@@ -5833,13 +4929,13 @@ struct ReadBookPage {
     });
     this.showReaderActionMenu = false;
     this.showSettings = false;
-    this.ttsMediaControlsExpanded = false;
     this.resetSlidePageEffect();
     this.syncReaderComicPageDataSource();
     if (next) {
       this.scheduleReaderComicScrollRestore();
     }
     this.enterReaderImmersive();
+    this.syncReaderInfoBarClock();
     HdsFeedback.showToast(next ? '已切换为漫画阅读' : '已切换为普通阅读');
   }
 
@@ -5848,7 +4944,7 @@ struct ReadBookPage {
   }
 
   isReaderNovelContinuousScrollModeActive(): boolean {
-    return !this.isReaderComicModeActive() && this.readerPageTurnMode === 3 && !this.ttsPagedScrollOverride;
+    return !this.isReaderComicModeActive() && this.readerPageTurnMode === 3;
   }
 
   isReaderContinuousScrollSurfaceActive(): boolean {
@@ -5856,7 +4952,7 @@ struct ReadBookPage {
   }
 
   readerEffectivePageTurnMode(): number {
-    return this.ttsPagedScrollOverride && this.readerPageTurnMode === 3 ? 0 : this.readerPageTurnMode;
+    return this.readerPageTurnMode;
   }
 
   comicBoundaryChapterSwipeDirection(offsetY: number): number {
@@ -5978,6 +5074,17 @@ struct ReadBookPage {
     if (direction === 0 || this.readerComicChapterSwitching) return;
     const startedAt = Date.now();
     const sourceChapterIndex = this.currentChapterIndex;
+    // A manual chapter switch replaces the text the speech engine is still holding. Stop that session now and
+    // read on from wherever the reader lands; a paused session simply ends. A session mirrored from the
+    // floating player is moved instead of restarted.
+    const mirroredTts = this.isMirroringActiveTtsForCurrentBook();
+    const ownTtsActive = !mirroredTts && (this.isTtsSpeaking || this.ttsReader.isSpeaking());
+    const resumeTtsAfterSwitch = ownTtsActive && !this.isTtsPaused;
+    if (resumeTtsAfterSwitch) {
+      this.stopTtsReaderForChapterSwitch();
+    } else if (ownTtsActive) {
+      this.stopTtsReading();
+    }
     this.readerComicChapterSwitching = true;
     this.readerComicBoundaryDirection = direction;
     this.readerComicBoundaryPullDistance = Math.max(48, this.readerComicBoundaryPullDistance);
@@ -5991,7 +5098,7 @@ struct ReadBookPage {
     // every boundary switch even when the previous chapter tail was already prepared.
     const chapterLoad = direction > 0 ? this.loadNextChapter(false, false) :
       this.loadPrevChapter(true, false, false);
-    await this.delay(72);
+    await sleepMs(72);
     try {
       await chapterLoad;
       // loadContent publishes the first incremental V2 page before a deep/last-page restore has necessarily
@@ -6003,12 +5110,11 @@ struct ReadBookPage {
       this.readerComicChapterTransitionY = switched ? (direction > 0 ? 28 : -28) :
         (direction > 0 ? -20 : 20);
       this.readerComicChapterTransitionOpacity = switched ? 0 : 0.35;
-      await this.delay(8);
-      animateTo({ duration: 150, curve: Curve.Friction }, () => {
+      await sleepMs(8);
+      await this.runReaderAnimation(150, Curve.Friction, () => {
         this.readerComicChapterTransitionY = 0;
         this.readerComicChapterTransitionOpacity = 1;
       });
-      await this.delay(154);
       console.info(`[ReaderBoundary] direction=${direction} switched=${switched} elapsed=${Date.now() - startedAt}ms`);
     } finally {
       this.readerComicSuppressClickUntil = Date.now() + 320;
@@ -6021,17 +5127,259 @@ struct ReadBookPage {
       this.readerComicChapterTransitionY = 0;
       this.readerComicChapterTransitionOpacity = 1;
     }
+    if (!this.readerPageVisible) return;
+    if (resumeTtsAfterSwitch) {
+      await this.startTtsReadingFromCurrentPosition(false);
+    } else if (mirroredTts && this.currentChapterIndex !== sourceChapterIndex) {
+      try {
+        await ReaderTtsFloatingSession.jumpToPosition(this.currentChapterIndex, this.currentPageIndex,
+          this.getPageStartOffset(this.currentPageIndex));
+        await this.syncMirroredTtsFocus();
+      } catch (error) {
+        console.warn('滚动切换章节后同步后台朗读位置失败:', error);
+      }
+    }
   }
 
+  /**
+   * 把当前章发布到滚动列表。列表里已有这一章（滚动越过边界后提升为当前章）时分块不变、列表不动；
+   * 否则列表换成只含这一章，相邻章节在读者滚到本章首尾附近时再接上。
+   */
   syncReaderComicPageDataSource(): void {
-    const reloaded = this.readerComicPageDataSource.replace(this.contentPages);
-    const ratios: number[] = [];
-    for (let i = 0; i < this.contentPages.length; i++) {
-      ratios.push(this.readerComicImageRatios[i] || 0);
-    }
-    this.readerComicImageRatios = ratios;
+    const segment = new ReaderScrollSegment();
+    segment.chapterIndex = this.currentChapterIndex;
+    segment.pages = this.contentPages;
+    segment.starts = this.contentPageStarts;
+    segment.ends = this.contentPageEnds;
+    segment.source = this.pagedContentText;
+    const nextChapter = this.currentChapterIndex < this.chapters.length - 1 ? this.currentChapterIndex + 1 : -1;
+    const reloaded = this.readerComicPageDataSource.setCurrent(segment, nextChapter);
     this.reanchorContinuousReaderScrollAfterReload(reloaded);
   }
+
+  /** 当前章第 pageIndex 块在列表里的序号。 */
+  readerContinuousListIndex(pageIndex: number): number {
+    return Math.max(0, this.readerComicPageDataSource.offsetOf(this.currentChapterIndex)) + Math.max(0, pageIndex);
+  }
+
+  /** 读到本章末尾附近接上下一章，开头附近接上上一章；列表里最多保留当前章前后各一章。 */
+  ensureReaderContinuousNeighbors(listStart: number, listEnd: number): void {
+    if (this.readerContinuousCommitChapter >= 0) return;
+    this.neighborLoader().ensureScrollNeighbors(listStart, listEnd, this.contentPages.length);
+  }
+
+  neighborLoader(): ReaderNeighborChapterLoader {
+    if (!this.readerNeighborLoaderInstance) {
+      this.readerNeighborLoaderInstance = new ReaderNeighborChapterLoader({
+        visible: (): boolean => this.readerPageVisible,
+        bookUrl: (): string => this.book?.bookUrl || this.bookUrl,
+        isCurrentBook: (bookUrl: string): boolean => this.isCurrentReaderEngineBook(bookUrl),
+        currentChapter: (): number => this.currentChapterIndex,
+        chapterCount: (): number => this.chapters.length,
+        isComic: (): boolean => this.isReaderComicModeActive(),
+        isScrollList: (): boolean => this.isReaderContinuousScrollSurfaceActive(),
+        isPagedComic: (): boolean => this.isReaderComicPagedMode(),
+        scrollWindow: (): ReaderContinuousDataSource => this.readerComicPageDataSource,
+        prepare: (chapterIndex: number): Promise<ReaderScrollSegment | null> =>
+          this.prepareReaderNeighborSegment(chapterIndex),
+        publishPagedNeighbor: (chapterIndex: number, pages: string[]): void => {
+          if (chapterIndex > this.currentChapterIndex) {
+            this.readerComicPagedNextChapter = chapterIndex;
+            this.readerComicPagedNextPages = pages;
+          } else {
+            this.readerComicPagedPrevChapter = chapterIndex;
+            this.readerComicPagedPrevPages = pages;
+          }
+        }
+      });
+    }
+    return this.readerNeighborLoaderInstance;
+  }
+
+  comicImageActions(): ReaderComicImageActions {
+    if (!this.readerComicImageActionsInstance) {
+      this.readerComicImageActionsInstance = new ReaderComicImageActions({
+        uiContext: (): UIContext => this.getUIContext(),
+        abilityContext: (): common.UIAbilityContext => getContext(this) as common.UIAbilityContext,
+        accentColor: (): string => this.accentColor(),
+        isLocalBook: (): boolean => !this.book || LocalBookService.isLocalBook(this.book),
+        currentChapter: (): number => this.currentChapterIndex,
+        busy: (): boolean => this.isLoading || this.readerContinuousCommitChapter >= 0,
+        refreshCurrentChapter: (): void => {
+          this.refreshCurrentChapter(this.currentPageIndex, true).catch((error: Error) => {
+            console.warn('图片地址过期后刷新本章失败:', error);
+          });
+        }
+      });
+    }
+    return this.readerComicImageActionsInstance;
+  }
+
+  /**
+   * 取相邻章节正文并按当前模式切块。切块方式与正式加载这一章完全相同，所以它成为当前章时分页一致。
+   * 不走分页缓存：缓存只留三项，挤掉当前章的分页会让章末判断失去依据。正文为空或没切出页时返回 null。
+   */
+  async prepareReaderNeighborSegment(chapterIndex: number): Promise<ReaderScrollSegment | null> {
+    const body = await this.readerEngine().peekContent(chapterIndex);
+    if (!body) return null;
+    const processed = await this.prepareReaderContentRules(body, chapterIndex);
+    const source = this.buildPagedSourceText(chapterIndex, processed);
+    const result = this.createChunkReaderPagination(source);
+    if (result.pages.length === 0) return null;
+    const segment = new ReaderScrollSegment();
+    segment.chapterIndex = chapterIndex;
+    segment.pages = result.pages;
+    segment.starts = result.starts;
+    segment.ends = result.ends;
+    segment.source = result.source;
+    return segment;
+  }
+
+  /** 漫画翻页模式：读到本话首尾附近时预先切好相邻章节，翻过去不必等待；不再相邻的旧结果丢掉。 */
+  ensureReaderComicPagedNeighbors(): void {
+    if (!this.isReaderComicPagedMode()) return;
+    const current = this.currentChapterIndex;
+    if (this.readerComicPagedPrevChapter !== current - 1 && this.readerComicPagedPrevChapter >= 0) {
+      this.readerComicPagedPrevChapter = -1;
+      this.readerComicPagedPrevPages = [];
+    }
+    if (this.readerComicPagedNextChapter !== current + 1 && this.readerComicPagedNextChapter >= 0) {
+      this.readerComicPagedNextChapter = -1;
+      this.readerComicPagedNextPages = [];
+    }
+    if (this.contentPages.length === 0 || !this.isCurrentReaderPaginationComplete()) return;
+    const spread = this.isReaderComicDualPageActive() ? 2 : 1;
+    if (this.readerComicPagedNextChapter < 0 && current < this.chapters.length - 1 &&
+      this.contentPages.length - this.currentPageIndex <= 4 + spread) {
+      this.neighborLoader().loadPagedNeighbor(current + 1);
+    }
+    if (this.readerComicPagedPrevChapter < 0 && current > 0 && this.currentPageIndex <= 3) {
+      this.neighborLoader().loadPagedNeighbor(current - 1);
+    }
+  }
+
+  /**
+   * 翻页视图已翻进预先切好的相邻章节并停在那里：把它设为当前章（下一话停在第一页，上一话停在最后一页）。
+   * 刚离开的这一话正好成了反方向的相邻章节，直接留用。失败时让视图退回本话。
+   */
+  async commitReaderComicPagedChapter(direction: number): Promise<void> {
+    const sourceChapterIndex = this.currentChapterIndex;
+    const targetChapterIndex = sourceChapterIndex + direction;
+    if (direction === 0 || targetChapterIndex < 0 || targetChapterIndex >= this.chapters.length) {
+      this.readerComicPagedController.cancelCross();
+      return;
+    }
+    const leavingPages = this.contentPages;
+    this.pendingRestorePageIndex = direction > 0 ? 0 : Number.MAX_SAFE_INTEGER;
+    try {
+      await this.loadContent(true, targetChapterIndex);
+    } catch (error) {
+      console.warn('翻页模式跨章失败:', error);
+    }
+    if (this.currentChapterIndex !== targetChapterIndex) {
+      if (this.pendingRestorePageIndex >= 0) this.pendingRestorePageIndex = -1;
+      this.readerComicPagedController.cancelCross();
+      return;
+    }
+    if (direction > 0) {
+      this.readerComicPagedPrevChapter = sourceChapterIndex;
+      this.readerComicPagedPrevPages = leavingPages;
+    } else {
+      this.readerComicPagedNextChapter = sourceChapterIndex;
+      this.readerComicPagedNextPages = leavingPages;
+    }
+    this.scheduleReaderComicProgressSave();
+    this.ensureReaderComicPagedNeighbors();
+  }
+
+  commitReaderContinuousChapter(chapterIndex: number, pageIndex: number): void {
+    if (this.readerContinuousCommitChapter >= 0 || this.readerComicChapterSwitching) return;
+    this.runReaderContinuousChapterCommit(chapterIndex, pageIndex).catch((error: Error) => {
+      console.error('滚动跨章切换当前章失败:', error);
+    });
+  }
+
+  /**
+   * 视口顶部已经是另一章：按正常加载流程把它设为当前章（进度、目录、朗读、书签等都跟着切换），
+   * 但列表里这一章的分块已经在了，发布时不改数据、不重新对齐滚动位置。
+   */
+  async runReaderContinuousChapterCommit(chapterIndex: number, pageIndex: number): Promise<void> {
+    const sourceChapterIndex = this.currentChapterIndex;
+    // 手动越过章节时朗读改从新位置继续，与上下拉切章一致；后台浮窗朗读则移到新位置。
+    const mirroredTts = this.isMirroringActiveTtsForCurrentBook();
+    const ownTtsActive = !mirroredTts && (this.isTtsSpeaking || this.ttsReader.isSpeaking());
+    const resumeTtsAfterSwitch = ownTtsActive && !this.isTtsPaused;
+    if (resumeTtsAfterSwitch) {
+      this.stopTtsReaderForChapterSwitch();
+    } else if (ownTtsActive) {
+      this.stopTtsReading();
+    }
+    this.readerContinuousCommitChapter = chapterIndex;
+    this.pendingRestorePageIndex = Math.max(0, pageIndex);
+    let switched = false;
+    try {
+      switched = await this.loadContent(true, chapterIndex);
+    } finally {
+      this.readerContinuousCommitChapter = -1;
+      if (this.currentChapterIndex !== chapterIndex && this.pendingRestorePageIndex >= 0) {
+        this.pendingRestorePageIndex = -1;
+      }
+    }
+    if (!this.readerPageVisible || this.currentChapterIndex !== chapterIndex) return;
+    console.info(`[ReaderContinuous] chapter ${sourceChapterIndex} -> ${chapterIndex} switched=${switched}`);
+    this.scheduleReaderComicProgressSave();
+    this.comicImageActions().onChapterBecameCurrent(chapterIndex);
+    const top = this.readerComicPageDataSource.itemAt(this.readerContinuousLastListStart);
+    if (top && top.isPage() && top.chapterIndex !== chapterIndex) {
+      // 提交期间读者又滚进了另一章，按最新可见区继续切换。
+      this.onReaderComicScrollIndexChanged(this.readerContinuousLastListStart, this.readerContinuousLastListEnd);
+    } else {
+      this.readerComicPageDataSource.trim(chapterIndex - 1, chapterIndex + 1);
+    }
+    if (resumeTtsAfterSwitch) {
+      await this.startTtsReadingFromCurrentPosition(false);
+    } else if (mirroredTts) {
+      try {
+        await ReaderTtsFloatingSession.jumpToPosition(this.currentChapterIndex, this.currentPageIndex,
+          this.getPageStartOffset(this.currentPageIndex));
+        await this.syncMirroredTtsFocus();
+      } catch (error) {
+        console.warn('滚动跨章后同步后台朗读位置失败:', error);
+      }
+    }
+  }
+
+  /** 小说滚动模式两章之间的分隔：章节标题由下一章第一块自己排出，这里只留间隔或加载提示。 */
+  @Builder
+  readerContinuousChapterSeparator(item: ReaderScrollItem) {
+    Column({ space: AppSpacing.MD }) {
+      if (item.pending) {
+        Row({ space: AppSpacing.MD }) {
+          LoadingProgress()
+            .width(18)
+            .height(18)
+            .color(this.getSubTextColor())
+          Text('正在加载下一章')
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.getSubTextColor())
+        }
+      } else if (item.failed) {
+        Text('下一章加载失败，继续上拉重试')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.getSubTextColor())
+      } else {
+        Row()
+          .width(48)
+          .height(1)
+          .backgroundColor(this.getSubTextColor())
+          .opacity(0.35)
+      }
+    }
+    .width('100%')
+    .height(item.pending || item.failed ? 120 : 64)
+    .justifyContent(FlexAlign.Center)
+  }
+
 
   /**
    * onDataReloaded 会重建 LazyForEach 的挂载项，部分系统版本会把 List 打回索引 0，表现为
@@ -6055,103 +5403,27 @@ struct ReadBookPage {
         return;
       }
       try {
-        this.readerComicScroller.scrollToIndex(targetIndex, false, ScrollAlign.START);
+        this.readerComicScroller.scrollToIndex(this.readerContinuousListIndex(targetIndex), false, ScrollAlign.START);
       } catch (_) {
       }
     }, 48);
   }
 
-  getReaderComicImageHeight(index: number): number {
-    // 尺寸读取期间使用接近图片宽度的短占位，避免解码失败时每张图片都遗留整屏空白。
-    const fallbackHeight = Math.max(240, this.pageViewWidth);
-    const ratio = index >= 0 && index < this.readerComicImageRatios.length ?
-      this.readerComicImageRatios[index] : 0;
-    if (ratio <= 0 || this.pageViewWidth <= 0) return fallbackHeight;
-    const height = Math.max(120, Math.min(24000, this.pageViewWidth * ratio));
-    // ListItem 会分别把浮点 vp 高度转换为物理像素；先对齐到整数像素，避免相邻项反向取整后露底。
-    return px2vp(Math.max(1, Math.round(vp2px(height))));
-  }
-
-  getReaderComicImageSeamOverlap(index: number): number {
-    return index > 0 && index < this.contentPages.length &&
-      this.isReaderImageOnlyPage(this.contentPages[index - 1]) ? px2vp(1) : 0;
-  }
-
-  getReaderComicImageRenderHeight(index: number): number {
-    return this.getReaderComicImageHeight(index) + this.getReaderComicImageSeamOverlap(index);
-  }
-
-  getReaderComicImageFit(index: number): ImageFit {
-    const ratio = index >= 0 && index < this.readerComicImageRatios.length ?
-      this.readerComicImageRatios[index] : 0;
-    // 原图比例尚未返回时保持 Contain；比例已知后容器已经严格等比，Fill 只消除边缘 letterbox。
-    return ratio > 0 ? ImageFit.Fill : ImageFit.Contain;
-  }
-
-  updateReaderComicImageRatio(index: number, sourceWidth: number, sourceHeight: number): void {
-    if (index < 0 || sourceWidth <= 0 || sourceHeight <= 0 || index >= this.contentPages.length) return;
-    const ratio = sourceHeight / sourceWidth;
-    if (!Number.isFinite(ratio) || ratio <= 0) return;
-    const currentRatio = this.readerComicImageRatios[index] || 0;
-    if (Math.abs(currentRatio - ratio) < 0.0001) return;
-    const ratios = [...this.readerComicImageRatios];
-    while (ratios.length < this.contentPages.length) {
-      ratios.push(0);
-    }
-    ratios[index] = ratio;
-    this.readerComicImageRatios = ratios;
-    // LazyForEach 不会因为外部的比例数组变化而自动重建已经生成的 ListItem。
-    // 显式通知当前图片项刷新，否则初始整屏占位会一直保留，形成图片之间的大块空白。
-    this.readerComicPageDataSource.notifyChanged(index);
-  }
-
-  async ensureReaderComicImageRatio(index: number, marker: string): Promise<void> {
-    if (index < 0 || index >= this.contentPages.length || this.readerComicImageRatios[index] > 0 ||
-      this.contentPages[index] !== marker) {
-      return;
-    }
-    const path = LocalBookService.epubImagePathFromMarker(marker);
-    if (!path || /^(?:https?:|data:)/i.test(path)) return;
-    const cachedRatio = this.readerComicImageRatioCache.get(path) || 0;
-    if (cachedRatio > 0) {
-      this.updateReaderComicImageRatio(index, 1, cachedRatio);
-      return;
-    }
-    if (this.readerComicImageRatioLoading.has(path)) return;
-    this.readerComicImageRatioLoading.add(path);
-    let file: fs.File | null = null;
-    let source: image.ImageSource | null = null;
-    try {
-      file = fs.openSync(path, fs.OpenMode.READ_ONLY);
-      source = image.createImageSource(file.fd);
-      const info = await source.getImageInfo();
-      const width = info.size.width;
-      const height = info.size.height;
-      if (width > 0 && height > 0) {
-        const ratio = height / width;
-        this.readerComicImageRatioCache.set(path, ratio);
-        if (index < this.contentPages.length && this.contentPages[index] === marker) {
-          this.updateReaderComicImageRatio(index, width, height);
-        }
-      }
-    } finally {
-      this.readerComicImageRatioLoading.delete(path);
-      if (source) {
-        try {
-          await source.release();
-        } catch (_) {
-        }
-      }
-      if (file) {
-        try {
-          fs.closeSync(file);
-        } catch (_) {
-        }
-      }
-    }
-  }
-
   scheduleReaderComicScrollRestore(): void {
+    if (this.isReaderComicPagedMode()) {
+      this.readerComicScrollRestoreSerial++;
+      this.readerComicScrollRestoring = false;
+      this.readerContinuousReachedEnd = this.contentPages.length > 0 &&
+        this.currentPageIndex >= this.contentPages.length - 1;
+      this.ensureReaderComicPagedNeighbors();
+      return;
+    }
+    if (this.readerContinuousCommitChapter >= 0 && this.readerContinuousCommitChapter === this.currentChapterIndex) {
+      // 滚动越过章节边界提升当前章：列表本来就停在读者看的位置，不能再按页首对齐。
+      this.readerComicScrollRestoreSerial++;
+      this.readerComicScrollRestoring = false;
+      return;
+    }
     if (!this.isReaderContinuousScrollSurfaceActive() || this.contentPages.length === 0) return;
     const serial = ++this.readerComicScrollRestoreSerial;
     const chapterIndex = this.currentChapterIndex;
@@ -6165,7 +5437,7 @@ struct ReadBookPage {
         return;
       }
       try {
-        this.readerComicScroller.scrollToIndex(pageIndex, false, ScrollAlign.START);
+        this.readerComicScroller.scrollToIndex(this.readerContinuousListIndex(pageIndex), false, ScrollAlign.START);
       } catch (error) {
         console.warn('恢复漫画滚动位置失败:', error);
       }
@@ -6200,9 +5472,17 @@ struct ReadBookPage {
     // ArkUI can publish one final List index while the route is being detached. That callback describes the
     // shrinking/unmounted viewport, not a user scroll, and must not replace the page captured by exit/background.
     if (!this.readerPageVisible) return;
-    this.readerContinuousVisibleStart = Math.max(0, Math.round(start));
-    this.readerContinuousVisibleEnd = Math.max(this.readerContinuousVisibleStart, Math.round(end));
-    if (this.readerContinuousVisibleEnd < this.contentPages.length - 1) {
+    const listStart = Math.max(0, Math.round(start));
+    const listEnd = Math.max(listStart, Math.round(end));
+    this.readerContinuousLastListStart = listStart;
+    this.readerContinuousLastListEnd = listEnd;
+    // 列表里还有相邻章节与分隔项；可见区换算成当前章内的序号，越出本章的部分夹到本章首尾。
+    const offset = Math.max(0, this.readerComicPageDataSource.offsetOf(this.currentChapterIndex));
+    const lastLocal = Math.max(0, this.contentPages.length - 1);
+    this.readerContinuousVisibleStart = Math.max(0, Math.min(listStart - offset, lastLocal));
+    this.readerContinuousVisibleEnd = Math.max(this.readerContinuousVisibleStart,
+      Math.min(listEnd - offset, lastLocal));
+    if (listEnd - offset < this.contentPages.length - 1) {
       this.readerContinuousReachedEnd = false;
     }
     this.pruneContinuousReaderSelectionAreas();
@@ -6210,9 +5490,14 @@ struct ReadBookPage {
       this.pendingRestorePageIndex >= 0 || this.contentPages.length === 0) {
       return;
     }
+    this.ensureReaderContinuousNeighbors(listStart, listEnd);
+    const top = this.readerComicPageDataSource.itemAt(listStart);
+    if (top && top.isPage() && top.chapterIndex !== this.currentChapterIndex) {
+      this.commitReaderContinuousChapter(top.chapterIndex, top.pageIndex);
+      return;
+    }
     const pageIndex = this.readerContinuousReachedEnd &&
-      this.readerContinuousVisibleEnd >= this.contentPages.length - 1 ? this.contentPages.length - 1 :
-      Math.max(0, Math.min(Math.round(start), this.contentPages.length - 1));
+      this.readerContinuousVisibleEnd >= lastLocal ? lastLocal : this.readerContinuousVisibleStart;
     if (pageIndex === this.currentPageIndex) return;
     this.currentPageIndex = pageIndex;
     this.currentPageText = this.contentPages[pageIndex] || '';
@@ -6227,6 +5512,8 @@ struct ReadBookPage {
   onReaderContinuousReachEnd(): void {
     if (!this.readerPageVisible || !this.isReaderContinuousScrollSurfaceActive() ||
       this.contentPages.length === 0) return;
+    // 列表末尾属于后面的章节时，本章并没有读到底；那一章被提升为当前章时会再判断。
+    if (this.readerComicPageDataSource.lastChapter() !== this.currentChapterIndex) return;
     this.readerContinuousReachedEnd = true;
     if (this.readerComicScrollRestoring || this.pendingRestorePageIndex >= 0) return;
     const lastPageIndex = this.contentPages.length - 1;
@@ -6241,6 +5528,8 @@ struct ReadBookPage {
   pruneContinuousReaderSelectionAreas(): void {
     const keepStart = Math.max(0, this.readerContinuousVisibleStart - 1);
     const keepEnd = this.readerContinuousVisibleEnd + 1;
+    this.pruneReaderContinuousV2Controllers(this.readerContinuousLastListStart - 4,
+      this.readerContinuousLastListEnd + 4);
     for (const key of Array.from(this.readerSelectableTextAreas.keys())) {
       // 原生选中键与可见段键都要按窗口清理：懒挂载后原生键只在挂载瞬间登记一次，
       // 残留的旧几何会把下一次选择窗口锚到过期位置。
@@ -6336,44 +5625,6 @@ struct ReadBookPage {
     return LocalBookService.isEpubImageMarker((text || '').trim());
   }
 
-  /**
-   * 图片 onError 后记录失败页并输出诊断日志：区分网络/本地来源，本地图检查文件是否存在，
-   * 网络图记录 Image 组件给出的错误信息，用于区分"文件缺失"与"加载/解码失败"两类空白原因。
-   */
-  markReaderComicImageBroken(index: number, page: string, error: ImageError): void {
-    if (this.readerComicBrokenPages.includes(index)) return;
-    this.readerComicBrokenPages = [...this.readerComicBrokenPages, index];
-    const payload = LocalBookService.epubImagePathFromMarker(page);
-    const isRemote = /^(?:https?:|data:)/i.test(payload);
-    let exists = false;
-    if (!isRemote && payload) {
-      try {
-        exists = fs.accessSync(payload);
-      } catch (_) {
-        exists = false;
-      }
-    }
-    const errorMessage = error?.message || '';
-    console.error(`[ReaderComic] 图片加载失败 index=${index} 来源=${isRemote ? '网络' : '本地'} ` +
-      `文件存在=${exists} message=${errorMessage} 路径=${payload}`);
-  }
-
-  /** 占位提示点击重试：移出失败集合并重建条目，触发 Image 重新加载。 */
-  retryReaderComicImage(index: number): void {
-    if (!this.readerComicBrokenPages.includes(index)) return;
-    this.readerComicBrokenPages = this.readerComicBrokenPages.filter((broken: number): boolean =>
-      broken !== index);
-    this.readerComicPageDataSource.notifyChanged(index);
-  }
-
-  getReaderPageHorizontalPadding(text: string, fallback: number): number {
-    return this.isReaderImageOnlyPage(text) ? 0 : fallback;
-  }
-
-  getReaderPageVerticalPadding(text: string, fallback: number): number {
-    return this.isReaderImageOnlyPage(text) ? 0 : fallback;
-  }
-
   getEffectiveReaderMarginLeft(): number {
     return this.getEffectiveReaderHorizontalMargin(true);
   }
@@ -6401,23 +5652,37 @@ struct ReadBookPage {
   }
 
   getReaderHeaderInfoBarHeight(): number {
-    // 页眉采用固定单行高度，避免首次测量后再次触发整章分页。
-    return 18;
+    // 页眉高度只由字号推算，避免首次测量后再次触发整章分页。
+    return this.getReaderInfoBarConfig().headerLineHeight();
   }
 
   getReaderHeaderOverlayTopInset(): number {
     // 普通阅读容器已经通过 getReaderTopSafePadding() 避让状态栏；叠页/仿真为了让纸张
     // 覆盖全屏而不消费顶部安全区，需要在页眉自身补回这段高度。
-    return this.getReaderTopSafePadding() <= 0 ? this.getReaderPageContentTopPadding() : 0;
+    return (this.getReaderTopSafePadding() <= 0 ? this.getReaderPageContentTopPadding() : 0) +
+      this.getReaderHeaderTopGap();
+  }
+
+  getReaderHeaderTopGap(): number {
+    // 扩展模式下状态栏已隐藏，页眉从屏幕顶端开始；留一小段间距，避免文字紧贴屏幕边缘和圆角。
+    // 再加上用户设置的页眉下移距离。正文的页眉预留同步增加，页眉下移不会压住首行。
+    return (this.readerExtendToStatusBar ? 8 : 0) + this.getReaderInfoBarConfig().headerOffset;
   }
 
   getReaderHeaderContentReserve(): number {
-    return this.readerHeaderEnabled && !!this.getReaderHeaderInfoText() && !this.isReaderComicModeActive() ?
-      this.getReaderHeaderInfoBarHeight() + 4 : 0;
+    return this.isReaderHeaderVisible() ?
+      this.getReaderHeaderInfoBarHeight() + this.getReaderInfoBarConfig().headerExtraHeight() + 4 +
+        this.getReaderHeaderTopGap() : 0;
   }
 
   getEffectiveReaderMarginBottom(): number {
     return this.getEffectiveReaderVerticalMargin(false);
+  }
+
+  getReaderContinuousScrollBottomPadding(): number {
+    // 与顶部的页眉占位对应：滚动模式下把页脚占位并入列表底部内边距。用按字号推算的固定高度，
+    // 页脚首次测量不会改变列表视口。
+    return this.getEffectiveReaderMarginBottom() + this.getReaderV2BottomGuard();
   }
 
   getEffectiveReaderVerticalMargin(top: boolean): number {
@@ -6505,7 +5770,7 @@ struct ReadBookPage {
     this.displayPageRenderKey++;
     this.pageRenderVersion++;
     this.refreshCurrentReaderV2RetainedPages();
-    this.prefetchNearbyReaderImages();
+    this.prewarmReaderV2ImageBitmaps(this.currentChapterIndex, this.currentPageIndex, this.pagedContentText);
   }
 
   parseAreaDimension(value: Length): number {
@@ -6524,10 +5789,47 @@ struct ReadBookPage {
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  /**
+   * 量出分页区域下缘离窗口下缘还有多远。分页区域从正文容器的顶部内边距之后开始、占满剩余高度，
+   * 所以它的下缘就是"顶部内边距 + 区域高度"。结果限制在导航条高度以内，量不到时保持原值。
+   */
+  measureReaderPageAreaBottomGap(areaHeight: number): number {
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const windowRect = context.windowStage.getMainWindowSync().getWindowProperties().windowRect;
+      const windowHeight = px2vp(windowRect.height);
+      if (windowHeight <= 0 || areaHeight <= 0) return this.readerPageAreaBottomGap;
+      const gap = windowHeight - (this.getReaderTopSafePadding() + areaHeight);
+      // 亚像素误差按贴底处理，避免来回触发重新分页。
+      if (gap < 1) return 0;
+      return Math.min(Math.max(0, this.navBarHeight), Math.round(gap * 2) / 2);
+    } catch (_) {
+      return this.readerPageAreaBottomGap;
+    }
+  }
+
+  /** 分页区域之下、仍属于本窗口的那段系统导航条区域的高度；阅读表面的纸张会延伸进这段区域。 */
+  getReaderBottomSystemExtension(): number {
+    return Math.max(0, this.readerPageAreaBottomGap);
+  }
+
+  /**
+   * 正文为避让底部导航条需要在分页区域内留出的高度，与"正文扩展至状态栏"无关。
+   * 分页区域贴到窗口底部时是整个导航条高度；系统已经把导航条排除在分页区域之外时为 0。
+   */
+  getReaderNavigationBottomReserve(): number {
+    if (this.isReaderComicModeActive()) return 0;
+    return Math.max(0, Math.max(0, this.navBarHeight) - this.getReaderBottomSystemExtension());
+  }
+
   updatePagedReaderArea(area: Area): void {
     const width = this.parseAreaDimension(area.width);
     const contentTopPadding = this.getReaderPageContentTopPadding();
     const height = this.parseAreaDimension(area.height) - contentTopPadding;
+    const previousNavigationReserve = this.getReaderNavigationBottomReserve();
+    this.readerPageAreaBottomGap = this.measureReaderPageAreaBottomGap(this.parseAreaDimension(area.height));
+    const navigationReserveChanged =
+      Math.abs(this.getReaderNavigationBottomReserve() - previousNavigationReserve) >= 0.5;
     this.readerPageContentTopPaddingSnapshot = contentTopPadding;
     if (width <= 0 || height <= 0) {
       return;
@@ -6537,7 +5839,8 @@ struct ReadBookPage {
     const globalY: Length = area.globalPosition?.y ?? 0;
     this.readerCommentPageAreaTop = this.parseAreaDimension(globalY);
     this.readerCommentPageAreaHeight = height;
-    if (Math.abs(this.pageViewWidth - width) < 0.5 && Math.abs(this.pageViewHeight - height) < 0.5) {
+    if (Math.abs(this.pageViewWidth - width) < 0.5 && Math.abs(this.pageViewHeight - height) < 0.5 &&
+      !(navigationReserveChanged && !this.readerFooterEnabled)) {
       return;
     }
     const preservingStoredOffset = !this.readerProgressRestoreConfirmed &&
@@ -6553,7 +5856,10 @@ struct ReadBookPage {
     }
     this.pageViewWidth = width;
     this.pageViewHeight = height;
-    this.refreshReaderEyeTurnForViewport();
+    // 旧视口下还在排的相邻章节会话作废，下面按新视口重新预排。
+    this.adjacentPaginationPreloadSerial++;
+    this.previousPaginationPreloadSerial++;
+    this.eyeTurn().refreshForViewport();
     AppStorage.setOrCreate<number>('readerLastPageViewWidth', width);
     AppStorage.setOrCreate<number>('readerLastPageViewHeight', height);
     this.paginateContent(this.content);
@@ -6658,19 +5964,11 @@ struct ReadBookPage {
   }
 
   getPageStartOffset(pageIndex: number): number {
-    if (this.contentPageStarts.length === 0) {
-      return 0;
-    }
-    const index = Math.max(0, Math.min(pageIndex, this.contentPageStarts.length - 1));
-    return Math.max(0, this.contentPageStarts[index]);
+    return ReaderPageOffsets.startOf(this.contentPageStarts, pageIndex);
   }
 
   getPageEndOffset(pageIndex: number): number {
-    if (this.contentPageEnds.length === 0) {
-      return this.content.length;
-    }
-    const index = Math.max(0, Math.min(pageIndex, this.contentPageEnds.length - 1));
-    return Math.max(this.getPageStartOffset(index), this.contentPageEnds[index]);
+    return ReaderPageOffsets.endOf(this.contentPageStarts, this.contentPageEnds, pageIndex, this.content.length);
   }
 
   findPageIndexByOffset(offset: number): number {
@@ -6678,17 +5976,7 @@ struct ReadBookPage {
       return Math.max(0, Math.min(this.currentPageIndex, Math.max(0, this.contentPages.length - 1)));
     }
     const sourceLength = this.pagedContentText ? this.pagedContentText.length : this.content.length;
-    const clampedOffset = Math.max(0, Math.min(offset, Math.max(0, sourceLength - 1)));
-    for (let i = 0; i < this.contentPageStarts.length; i++) {
-      if (clampedOffset >= this.contentPageStarts[i] && clampedOffset < this.contentPageEnds[i]) {
-        return i;
-      }
-      if (i < this.contentPageStarts.length - 1 &&
-        clampedOffset >= this.contentPageEnds[i] && clampedOffset < this.contentPageStarts[i + 1]) {
-        return i + 1;
-      }
-    }
-    return Math.max(0, this.contentPageStarts.length - 1);
+    return ReaderPageOffsets.pageIndexOf(this.contentPageStarts, this.contentPageEnds, offset, sourceLength);
   }
 
   restoreReaderTypographyOffsetIfAvailable(paginationComplete: boolean): boolean {
@@ -6779,10 +6067,6 @@ struct ReadBookPage {
     return current.backgroundType === 'image' ? current.backgroundImageUri : '';
   }
 
-  currentCustomThemeBackgroundTypeIndex(): number {
-    return this.currentCustomThemeScheme().backgroundType === 'image' ? 1 : 0;
-  }
-
   customThemeData(): ReaderCustomThemeData {
     return ReaderCustomThemeHelper.parse(
       this.readerCustomThemesRaw,
@@ -6795,42 +6079,6 @@ struct ReadBookPage {
 
   currentCustomThemeScheme(): ReaderCustomThemeScheme {
     return ReaderCustomThemeHelper.selected(this.customThemeData(), this.appDarkMode);
-  }
-
-  currentCustomThemeSchemes(): ReaderCustomThemeScheme[] {
-    return ReaderCustomThemeHelper.schemesForMode(this.customThemeData(), this.appDarkMode);
-  }
-
-  currentCustomThemeSelectedIndex(): number {
-    const schemes = this.currentCustomThemeSchemes();
-    const selectedId = this.currentCustomThemeScheme().id;
-    const index = schemes.findIndex((item: ReaderCustomThemeScheme) => item.id === selectedId);
-    return Math.max(0, index);
-  }
-
-  customThemeOptions(): SelectOption[] {
-    const options: SelectOption[] = [];
-    for (const item of this.currentCustomThemeSchemes()) {
-      const option: SelectOption = { value: item.name };
-      options.push(option);
-    }
-    return options;
-  }
-
-  customThemeFitSelectedIndex(): number {
-    const fit = this.currentCustomThemeScheme().backgroundImageFit;
-    return fit === 'contain' ? 1 : (fit === 'fill' ? 2 : 0);
-  }
-
-  normalizeColor(color: string, fallback: string): string {
-    const trimmed = (color || '').trim();
-    const normalized = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
-    if (/^#[0-9a-fA-F]{6}$/.test(normalized)) {
-      return normalized.toUpperCase();
-    }
-    const fallbackTrimmed = (fallback || '').trim();
-    const normalizedFallback = fallbackTrimmed.startsWith('#') ? fallbackTrimmed : `#${fallbackTrimmed}`;
-    return /^#[0-9a-fA-F]{6}$/.test(normalizedFallback) ? normalizedFallback.toUpperCase() : '#333333';
   }
 
   isReaderThemeDark(): boolean {
@@ -6975,10 +6223,6 @@ struct ReadBookPage {
     return this.readerSystemFontFamily || ReaderSystemFontHelper.currentFromStorage(this.getUIContext());
   }
 
-  isReaderFontReady(): boolean {
-    return !!this.activeReaderFontFamily || !!this.readerActiveFontFamily;
-  }
-
   clearReaderFontState(): void {
     this.activeReaderFontFamily = '';
     this.readerFontRegistered = false;
@@ -7050,8 +6294,7 @@ struct ReadBookPage {
   activateRegisteredReaderFont(familyName: string): void {
     if (this.readerFontRegistered && this.activeReaderFontFamily === familyName) {
       this.readerFontRenderReady = false;
-      this.refreshRegisteredReaderFontLater(familyName, 80);
-      this.refreshRegisteredReaderFontLater(familyName, 240);
+      this.scheduleRegisteredReaderFontRefresh(familyName);
       return;
     }
     this.readerActiveFontFamily = familyName;
@@ -7067,13 +6310,20 @@ struct ReadBookPage {
       this.refreshReaderTextRender();
       this.paginateContent(this.content);
     }, 0);
-    this.refreshRegisteredReaderFontLater(familyName, 80);
-    this.refreshRegisteredReaderFontLater(familyName, 240);
+    this.scheduleRegisteredReaderFontRefresh(familyName);
   }
 
-  refreshRegisteredReaderFontLater(familyName: string, delayMs: number): void {
+  // The engine picks a newly registered font up some frames later, so the text is refreshed twice. Activations can
+  // overlap (page show registers twice); only the timers of the latest activation run, so they do not multiply.
+  scheduleRegisteredReaderFontRefresh(familyName: string): void {
+    const serial = ++this.readerFontRefreshSerial;
+    this.refreshRegisteredReaderFontLater(familyName, 80, serial);
+    this.refreshRegisteredReaderFontLater(familyName, 240, serial);
+  }
+
+  refreshRegisteredReaderFontLater(familyName: string, delayMs: number, serial: number): void {
     setTimeout(() => {
-      if (!familyName || this.activeReaderFontFamily !== familyName) {
+      if (!familyName || this.activeReaderFontFamily !== familyName || serial !== this.readerFontRefreshSerial) {
         return;
       }
       this.readerFontRenderReady = true;
@@ -7102,7 +6352,6 @@ struct ReadBookPage {
     this.readerDarkCustomThemeBackgroundColor = settings.darkCustomThemeBackgroundColor;
     this.readerDarkCustomThemeTextColor = settings.darkCustomThemeTextColor;
     this.readerCustomThemesRaw = settings.customThemesRaw || '';
-    this.customThemeNameDraft = this.currentCustomThemeScheme().name;
     this.readerPageTurnMode = settings.pageTurnMode;
     this.readerPageTurnAnimationType = settings.pageTurnAnimationType;
     this.readerLandscapeDoublePage = settings.landscapeDoublePage;
@@ -7125,11 +6374,10 @@ struct ReadBookPage {
     this.readerUseChapterQuickJump = settings.useChapterQuickJump;
     this.readerQuickBookmarkEnabled = settings.quickBookmarkEnabled;
     this.readerHeaderEnabled = settings.readerHeaderEnabled;
-    this.readerHeaderContentMode = settings.readerHeaderContentMode;
     this.readerFooterEnabled = settings.readerFooterEnabled;
-    this.readerFooterLeftMode = settings.readerFooterLeftMode;
-    this.readerFooterProgressMode = settings.readerFooterProgressMode;
-    this.readerFooterShowProgressBar = settings.readerFooterShowProgressBar;
+    this.readerInfoBarConfigRaw = settings.readerInfoBarConfig;
+    this.readerInfoBarLayoutIdentity = this.currentReaderInfoBarLayoutIdentity();
+    this.syncReaderInfoBarClock();
     this.readerFontFamily = settings.fontFamily || '';
     this.readerFontFilePath = settings.fontFilePath || '';
     AppStorage.setOrCreate<string>('readerFontSourceName', settings.fontSourceName || '系统默认');
@@ -7200,68 +6448,15 @@ struct ReadBookPage {
     }
   }
 
-  saveReaderFontSettings(): void {
-    ReaderSettingsStore.saveFontSettings(
-      getContext(this),
-      this.readerFontFamily,
-      this.readerFontFilePath,
-      AppStorage.get<string>('readerFontSourceName') || '系统默认',
-      AppStorage.get<string>('readerFontMode') || (this.readerFontFilePath ? 'custom' : 'system'),
-      AppStorage.get<string>('readerSystemFontFamily') || this.getSystemReaderFontFamily(),
-      AppStorage.get<string>('readerCustomFontsRaw') || ''
-    ).catch((e: Error) => {
-      console.warn('保存阅读字体设置失败:', e);
-    });
-  }
-
-  getTocTitleColor(chapter: BookChapter, index: number): string {
-    if (index === this.currentChapterIndex) {
-      return this.accentColor();
-    }
-    if (chapter.cacheDate > 0) {
-      return this.isReaderThemeDark() ? '#DDEFE5' : '#244B35';
-    }
-    return this.isReaderThemeDark() ? '#B8BDC7' : '#333333';
-  }
-
   setReaderContent(text: string): void {
     this.content = text;
     this.paginateContent(text);
   }
 
+  // The panel is created each time it opens and positions itself on the current chapter.
   openTocPanel(): void {
-    this.tocPanelTab = 0;
-    this.tocSearchVisible = false;
-    this.tocSearchQuery = '';
-    this.tocSearchChapterIndexes = [];
-    this.tocSearchLoading = false;
-    this.tocSearchResultActive = false;
-    this.tocSearchRequestSerial++;
-    this.tocDatabaseChapterCount = this.chapters.length;
-    this.tocFirstVisibleGlobalIndex = this.currentChapterIndex;
-    this.tocQuickJumpArmed = false;
-    this.tocQuickJumpInputVisible = false;
-    this.tocQuickJumpDraft = '';
-    this.cancelBookmarkMultiSelect();
-    this.setTocWindowAround(this.currentChapterIndex, ScrollAlign.CENTER);
     this.showToc = true;
     this.showMenu = false;
-    this.scrollTocToCurrentChapter(false);
-    this.loadBookmarks();
-    this.loadTocDatabaseChapterCount();
-  }
-
-  async refreshTocFromPanel(): Promise<void> {
-    const searchQuery = this.tocSearchQuery;
-    await this.retryFetchChapters();
-    this.tocDatabaseChapterCount = this.chapters.length;
-    if (this.tocSearchVisible && this.tocSearchResultActive && searchQuery.trim()) {
-      await this.submitTocSearch();
-    } else {
-      this.setTocWindowAround(this.currentChapterIndex, ScrollAlign.CENTER);
-      this.scrollTocToCurrentChapter(false);
-    }
-    HdsFeedback.showToast('目录已刷新');
   }
 
   async loadBookmarks(): Promise<void> {
@@ -7335,12 +6530,12 @@ struct ReadBookPage {
   @Builder
   readerBookmarkPullHint() {
     Row() {
-      Row({ space: 8 }) {
+      Row({ space: AppSpacing.MD }) {
         SymbolGlyph($r('sys.symbol.bookmark'))
           .fontSize(19)
           .fontColor([this.bookmarkPullHintColor()])
         Text(this.bookmarkPullHintText())
-          .fontSize(14)
+          .fontSize(AppFontSize.BODY)
           .fontWeight(this.bookmarkPullReady ? FontWeight.Bold : FontWeight.Medium)
           .fontColor(this.bookmarkPullHintColor())
       }
@@ -7405,69 +6600,10 @@ struct ReadBookPage {
       await db.initWithContext(getContext(this));
       await db.deleteBookmark(bookmark.id);
       this.bookmarks = this.bookmarks.filter((item: Bookmark) => item.id !== bookmark.id);
-      this.selectedBookmarkIds = this.selectedBookmarkIds.filter((id: number) => id !== bookmark.id);
-      if (this.bookmarkMultiSelectMode && this.bookmarks.length === 0) {
-        this.cancelBookmarkMultiSelect();
-      }
       HdsFeedback.showToast('书签已删除');
     } catch (e) {
       console.error('删除书签失败:', e);
       HdsFeedback.showToast('删除书签失败');
-    }
-  }
-
-  enterBookmarkMultiSelect(bookmarkId: number): void {
-    this.bookmarkMultiSelectMode = true;
-    if (!this.selectedBookmarkIds.includes(bookmarkId)) {
-      this.selectedBookmarkIds = [...this.selectedBookmarkIds, bookmarkId];
-    }
-    setTimeout(() => {
-      try {
-        this.bookmarkScroller.closeAllSwipeActions();
-      } catch (error) {
-        console.warn('关闭书签滑动操作失败:', error);
-      }
-    }, 0);
-  }
-
-  isBookmarkSelected(bookmarkId: number): boolean {
-    return this.selectedBookmarkIds.includes(bookmarkId);
-  }
-
-  toggleBookmarkSelection(bookmarkId: number): void {
-    if (this.selectedBookmarkIds.includes(bookmarkId)) {
-      this.selectedBookmarkIds = this.selectedBookmarkIds.filter((id: number) => id !== bookmarkId);
-    } else {
-      this.selectedBookmarkIds = [...this.selectedBookmarkIds, bookmarkId];
-    }
-  }
-
-  toggleSelectAllBookmarks(): void {
-    if (this.selectedBookmarkIds.length === this.bookmarks.length) {
-      this.selectedBookmarkIds = [];
-    } else {
-      this.selectedBookmarkIds = this.bookmarks.map((bookmark: Bookmark) => bookmark.id);
-    }
-  }
-
-  cancelBookmarkMultiSelect(): void {
-    this.bookmarkMultiSelectMode = false;
-    this.selectedBookmarkIds = [];
-  }
-
-  async deleteSelectedBookmarks(): Promise<void> {
-    const ids = [...this.selectedBookmarkIds];
-    if (ids.length === 0) return;
-    try {
-      const db = AppDatabase.getInstance();
-      await db.initWithContext(getContext(this));
-      await db.deleteBookmarks(ids);
-      this.bookmarks = this.bookmarks.filter((bookmark: Bookmark) => !ids.includes(bookmark.id));
-      this.cancelBookmarkMultiSelect();
-      HdsFeedback.showToast(`已删除 ${ids.length} 条书签`);
-    } catch (e) {
-      console.error('批量删除书签失败:', e);
-      HdsFeedback.showToast('批量删除书签失败');
     }
   }
 
@@ -7478,20 +6614,20 @@ struct ReadBookPage {
     await this.jumpToReaderPositionKeepingTts(targetChapterIndex, Math.max(0, bookmark.pageIndex));
   }
 
-  formatBookmarkTime(timestamp: number): string {
-    if (timestamp <= 0) return '';
-    const date = new Date(timestamp);
-    const month = `${date.getMonth() + 1}`.padStart(2, '0');
-    const day = `${date.getDate()}`.padStart(2, '0');
-    const hour = `${date.getHours()}`.padStart(2, '0');
-    const minute = `${date.getMinutes()}`.padStart(2, '0');
-    return `${month}-${day} ${hour}:${minute}`;
-  }
-
   openSettingsPanel(): void {
     if (this.isReaderComicModeActive()) return;
     this.showReaderActionMenu = false;
     this.settingsPanelTab = 0;
+    this.showToc = false;
+    this.showTtsVoiceDropdown = false;
+    this.showSettings = true;
+    this.showMenu = false;
+  }
+
+  openReaderComicSettingsPanel(tab: number): void {
+    if (!this.isReaderComicModeActive()) return;
+    this.showReaderActionMenu = false;
+    this.settingsPanelTab = tab;
     this.showToc = false;
     this.showTtsVoiceDropdown = false;
     this.showSettings = true;
@@ -7511,8 +6647,6 @@ struct ReadBookPage {
 
   openTypographySettingsPanel(): void {
     if (this.isReaderComicModeActive()) return;
-    if (!this.readerTypographyDraftPending) this.syncReaderTypographyDraft();
-    this.showReaderTypographyValueInput = false;
     this.showReaderActionMenu = false;
     this.settingsPanelTab = 2;
     this.showToc = false;
@@ -7526,17 +6660,6 @@ struct ReadBookPage {
     this.showTtsVoiceDropdown = false;
     this.showSettings = false;
     this.showMenu = true;
-  }
-
-  static defaultTtsVoice(): TtsVoiceOption {
-    const option = new TtsVoiceOption();
-    option.id = 0;
-    option.name = '默认音色';
-    option.online = 1;
-    option.status = 'default';
-    option.language = 'zh-CN';
-    option.available = true;
-    return option;
   }
 
   async loadTtsSettingsAndVoices(): Promise<void> {
@@ -7571,7 +6694,7 @@ struct ReadBookPage {
 
   normalizeDefaultTtsVoice(): void {
     if (this.ttsOnline === 0 && this.ttsPerson === 0 && !this.ttsStyle &&
-      this.sameTtsLanguage(this.ttsLanguage || 'zh-CN', 'zh-CN')) {
+      TtsVoiceCatalog.sameLanguage(this.ttsLanguage || 'zh-CN', 'zh-CN')) {
       this.ttsOnline = 1;
       this.saveTtsSettings();
     }
@@ -7608,25 +6731,26 @@ struct ReadBookPage {
       const voices = await SystemTtsReader.listAvailableVoices();
       this.ttsCloudVoices = [];
       this.ttsCloudVoiceId = '';
-      this.ttsVoices = this.applyInstalledTtsVoiceOverrides(this.mergeWithDefaultTtsVoice(voices));
+      this.ttsVoices = TtsVoiceCatalog.applyInstalledOverrides(TtsVoiceCatalog.mergeWithDefault(voices),
+        this.ttsInstalledVoiceKeys);
       const currentCloudVoice = this.findCurrentCloudTtsVoice();
       if (currentCloudVoice) {
-        this.ttsSelectedVoiceKey = this.ttsCloudVoiceKey(currentCloudVoice);
+        this.ttsSelectedVoiceKey = TtsVoiceCatalog.cloudVoiceKey(currentCloudVoice);
         return;
       }
       const currentCustomVoice = this.findCurrentCustomTtsVoice();
       if (currentCustomVoice) {
-        this.ttsSelectedVoiceKey = this.ttsCustomVoiceKey(currentCustomVoice);
+        this.ttsSelectedVoiceKey = TtsVoiceCatalog.customVoiceKey(currentCustomVoice);
         return;
       }
       const currentVoice = this.findCurrentTtsVoice();
       if (currentVoice && currentVoice.available) {
-        this.ttsSelectedVoiceKey = this.ttsVoiceKey(currentVoice);
+        this.ttsSelectedVoiceKey = TtsVoiceCatalog.voiceKey(currentVoice);
       } else {
         this.applyTtsVoice(this.firstAvailableTtsVoice(), false);
       }
     } catch (e) {
-      this.ttsVoices = [ReadBookPage.defaultTtsVoice()];
+      this.ttsVoices = [TtsVoiceCatalog.defaultVoice()];
       this.ttsPerson = 0;
       this.ttsOnline = 1;
       this.ttsStyle = '';
@@ -7642,93 +6766,9 @@ struct ReadBookPage {
     }
   }
 
-  mergeWithDefaultTtsVoice(voices: TtsVoiceOption[]): TtsVoiceOption[] {
-    const options: TtsVoiceOption[] = [ReadBookPage.defaultTtsVoice()];
-    for (const voice of voices) {
-      const existingIndex = options.findIndex((item: TtsVoiceOption) =>
-        this.isSameTtsVoiceOption(item, voice) || this.isSameTtsDisplayVoice(item, voice));
-      if (existingIndex < 0) {
-        options.push(voice);
-      } else if (this.shouldPreferTtsVoiceOption(voice, options[existingIndex])) {
-        options[existingIndex] = voice;
-      }
-    }
-    return options;
-  }
-
   firstAvailableTtsVoice(): TtsVoiceOption {
     return this.ttsVoices.find((voice: TtsVoiceOption) => voice.available) || this.ttsVoices[0] ||
-      ReadBookPage.defaultTtsVoice();
-  }
-
-  applyInstalledTtsVoiceOverrides(voices: TtsVoiceOption[]): TtsVoiceOption[] {
-    const options: TtsVoiceOption[] = [];
-    for (const voice of voices) {
-      options.push(this.isLocallyInstalledTtsVoice(voice) ? this.markTtsVoiceOptionInstalled(voice) : voice);
-    }
-    return options;
-  }
-
-  markTtsVoiceOptionInstalled(voice: TtsVoiceOption): TtsVoiceOption {
-    const option = new TtsVoiceOption();
-    option.id = voice.id;
-    option.name = voice.name;
-    option.online = voice.online;
-    option.status = 'INSTALLED';
-    option.systemStatus = 'INSTALLED';
-    option.style = voice.style;
-    option.language = voice.language;
-    option.downloadLanguage = voice.downloadLanguage;
-    option.gender = voice.gender;
-    option.available = true;
-    option.downloadable = false;
-    return option;
-  }
-
-  isLocallyInstalledTtsVoice(voice: TtsVoiceOption): boolean {
-    const key = this.installedTtsVoiceKey(voice);
-    return !!key && this.ttsInstalledVoiceKeys.split('\n').includes(key);
-  }
-
-  installedTtsVoiceKey(voice: TtsVoiceOption): string {
-    const style = this.isKnownTtsVoiceId(voice.id) ? '' : (voice.style || '');
-    return `${voice.id}_${voice.online}_${this.normalizeTtsLanguage(voice.language || 'zh-CN')}_${style}`;
-  }
-
-  isSameTtsVoiceOption(left: TtsVoiceOption, right: TtsVoiceOption): boolean {
-    if (left.id !== right.id || left.online !== right.online ||
-      !this.sameTtsLanguage(left.language || 'zh-CN', right.language || 'zh-CN')) {
-      return false;
-    }
-    if (this.isKnownTtsVoiceId(left.id)) {
-      return true;
-    }
-    return (left.style || '') === (right.style || '');
-  }
-
-  isSameTtsDisplayVoice(left: TtsVoiceOption, right: TtsVoiceOption): boolean {
-    if (this.ttsVoiceTitle(left) === this.ttsVoiceTitle(right)) {
-      return true;
-    }
-    return (left.name || '') === (right.name || '') && left.online === right.online &&
-      this.sameTtsLanguage(left.language || 'zh-CN', right.language || 'zh-CN');
-  }
-
-  shouldPreferTtsVoiceOption(candidate: TtsVoiceOption, current: TtsVoiceOption): boolean {
-    if (candidate.available !== current.available) {
-      return candidate.available;
-    }
-    if (this.isKnownTtsVoiceId(candidate.id) !== this.isKnownTtsVoiceId(current.id)) {
-      return this.isKnownTtsVoiceId(candidate.id);
-    }
-    if (candidate.downloadable !== current.downloadable) {
-      return candidate.downloadable;
-    }
-    return !current.style && !!candidate.style;
-  }
-
-  isKnownTtsVoiceId(id: number): boolean {
-    return id === 0 || id === 8 || id === 13 || id === 21;
+      TtsVoiceCatalog.defaultVoice();
   }
 
   applyTtsVoice(voice: TtsVoiceOption, restartSpeaking: boolean): void {
@@ -7746,7 +6786,7 @@ struct ReadBookPage {
     this.ttsLanguage = voice.language;
     this.ttsCustomVoiceId = '';
     this.ttsCloudVoiceId = '';
-    this.ttsSelectedVoiceKey = this.ttsVoiceKey(voice);
+    this.ttsSelectedVoiceKey = TtsVoiceCatalog.voiceKey(voice);
     this.saveTtsSettings();
     if (shouldResume) {
       this.startTtsReadingFromCurrentPosition(false).catch((e: Error) => {
@@ -7814,7 +6854,7 @@ struct ReadBookPage {
     this.ttsSpeedAvSessionTimerId = setTimeout(() => {
       this.ttsSpeedAvSessionTimerId = -1;
       if (this.isTtsSpeaking || this.ttsReader.isSpeaking()) {
-        this.updateTtsAvSessionPlaybackState(this.ttsAvPlaybackState()).catch((e: Error) => {
+        this.ttsMediaSession().updatePlaybackState(this.ttsMediaSession().playbackState()).catch((e: Error) => {
           console.warn('更新朗读倍速媒体状态失败:', e);
         });
       }
@@ -7841,14 +6881,14 @@ struct ReadBookPage {
   currentTtsVoiceKey(): string {
     const cloudVoice = this.findCurrentCloudTtsVoice();
     if (cloudVoice) {
-      return this.ttsCloudVoiceKey(cloudVoice);
+      return TtsVoiceCatalog.cloudVoiceKey(cloudVoice);
     }
     const customVoice = this.findCurrentCustomTtsVoice();
     if (customVoice) {
-      return this.ttsCustomVoiceKey(customVoice);
+      return TtsVoiceCatalog.customVoiceKey(customVoice);
     }
     const matched = this.findCurrentTtsVoice();
-    return matched ? this.ttsVoiceKey(matched) :
+    return matched ? TtsVoiceCatalog.voiceKey(matched) :
       `${this.ttsPerson}_${this.ttsOnline}_${this.ttsLanguage || 'zh-CN'}_${this.ttsStyle || ''}_`;
   }
 
@@ -7862,7 +6902,7 @@ struct ReadBookPage {
     }
     return voice.id === this.ttsPerson && voice.online === this.ttsOnline &&
       (voice.style || '') === (this.ttsStyle || '') &&
-      this.sameTtsLanguage(voice.language || 'zh-CN', this.ttsLanguage || 'zh-CN');
+      TtsVoiceCatalog.sameLanguage(voice.language || 'zh-CN', this.ttsLanguage || 'zh-CN');
   }
 
   applyCustomTtsVoice(voice: HttpTTS, restartSpeaking: boolean): void {
@@ -7876,7 +6916,7 @@ struct ReadBookPage {
     }
     this.ttsCustomVoiceId = String(voice.id);
     this.ttsCloudVoiceId = '';
-    this.ttsSelectedVoiceKey = this.ttsCustomVoiceKey(voice);
+    this.ttsSelectedVoiceKey = TtsVoiceCatalog.customVoiceKey(voice);
     this.saveTtsSettings();
     if (shouldResume) {
       this.startTtsReadingFromCurrentPosition(false).catch((e: Error) => {
@@ -7893,81 +6933,8 @@ struct ReadBookPage {
     return this.ttsCustomVoiceOptions.find((voice: HttpTTS) => String(voice.id) === selectedId);
   }
 
-  ttsCustomVoiceKey(voice: HttpTTS): string {
-    return `custom_${voice.id}_${voice.name || ''}`;
-  }
-
   isCurrentCustomTtsVoice(voice: HttpTTS): boolean {
     return (this.ttsCustomVoiceId || '') === String(voice.id);
-  }
-
-  ttsCustomVoiceTitle(voice: HttpTTS): string {
-    const state = voice.enabled === false ? ' · 已禁用' : '';
-    return `${voice.name || '未命名音色'} · 自定义${state}`;
-  }
-
-  ttsVoiceKey(voice: TtsVoiceOption): string {
-    return `${voice.id}_${voice.online}_${voice.language || 'zh-CN'}_${voice.style || ''}_${voice.name || ''}`;
-  }
-
-  ttsVoiceTitle(voice: TtsVoiceOption): string {
-    if (voice.status === 'default') {
-      return `${voice.name} · 系统默认`;
-    }
-    const suffix = voice.online === 0 ? '在线' : '离线';
-    const gender = this.ttsVoiceGenderText(voice);
-    const state = voice.available ? '' : (voice.downloadable ? ' · 需下载' : ' · 不可用');
-    return `${voice.name} · ${suffix}${gender}${state}`;
-  }
-
-  ttsVoiceGenderText(voice: TtsVoiceOption): string {
-    const value = (voice.gender || '').toLowerCase();
-    if (value === 'male' || value === '男' || value === '男声') {
-      return ' · 男声';
-    }
-    if (value === 'female' || value === '女' || value === '女声') {
-      return ' · 女声';
-    }
-    return '';
-  }
-
-  sameTtsLanguage(left: string, right: string): boolean {
-    return this.normalizeTtsLanguage(left) === this.normalizeTtsLanguage(right);
-  }
-
-  normalizeTtsLanguage(language: string): string {
-    const value = (language || 'zh-CN').trim().replace(/_/g, '-').toLowerCase();
-    if (value === 'zh' || value === 'zh-cn' || value.startsWith('zh-hans')) {
-      return 'zh-CN';
-    }
-    if (value === 'en' || value === 'en-us') {
-      return 'en-US';
-    }
-    return value || 'zh-CN';
-  }
-
-  tocGlobalIndex(localIndex: number): number {
-    if (this.isTocSearchActive()) {
-      return this.tocSearchChapterIndexes[localIndex] ?? 0;
-    }
-    const displayIndex = this.tocWindowStart + localIndex;
-    return this.tocReverseOrder ? this.chapters.length - 1 - displayIndex : displayIndex;
-  }
-
-  tocChapterAtDisplayIndex(displayIndex: number): BookChapter {
-    const canonicalIndex = this.tocReverseOrder ? this.chapters.length - 1 - displayIndex : displayIndex;
-    return this.chapters[canonicalIndex];
-  }
-
-  toggleTocOrder(): void {
-    this.tocReverseOrder = !this.tocReverseOrder;
-    this.tocOrderRevision++;
-    this.tocSearchRequestSerial++;
-    this.tocSearchQuery = '';
-    this.tocSearchChapterIndexes = [];
-    this.tocSearchLoading = false;
-    this.tocSearchResultActive = false;
-    this.scrollTocToCurrentChapter(false);
   }
 
   applyCloudTtsVoice(voice: TtsVoiceInfo, restartSpeaking: boolean): void {
@@ -7981,7 +6948,7 @@ struct ReadBookPage {
     }
     this.ttsCloudVoiceId = voice.id;
     this.ttsCustomVoiceId = '';
-    this.ttsSelectedVoiceKey = this.ttsCloudVoiceKey(voice);
+    this.ttsSelectedVoiceKey = TtsVoiceCatalog.cloudVoiceKey(voice);
     this.saveTtsSettings();
     if (shouldResume) {
       this.startTtsReadingFromCurrentPosition(false).catch((e: Error) => {
@@ -7996,20 +6963,8 @@ struct ReadBookPage {
     return this.ttsCloudVoices.find((voice: TtsVoiceInfo) => voice.id === selectedId);
   }
 
-  ttsCloudVoiceKey(voice: TtsVoiceInfo): string {
-    return `cloud_${voice.id}`;
-  }
-
   isCurrentCloudTtsVoice(voice: TtsVoiceInfo): boolean {
     return (this.ttsCloudVoiceId || '') === voice.id;
-  }
-
-  ttsCloudVoiceTitle(voice: TtsVoiceInfo): string {
-    const tier = voice.tier === 'PREMIUM' ? '精品' : '标准';
-    const description = (voice.description || '').trim();
-    return description
-      ? `${voice.name} · ${description} · 云端${tier}`
-      : `${voice.name} · 云端${tier}`;
   }
 
   selectableCustomTtsVoices(): HttpTTS[] {
@@ -8023,37 +6978,37 @@ struct ReadBookPage {
   selectedTtsVoiceTitle(): string {
     const cloudVoice = this.findCurrentCloudTtsVoice();
     if (cloudVoice) {
-      return this.ttsCloudVoiceTitle(cloudVoice);
+      return TtsVoiceCatalog.cloudVoiceTitle(cloudVoice);
     }
     const customVoice = this.findCurrentCustomTtsVoice();
     if (customVoice && customVoice.enabled !== false) {
-      return this.ttsCustomVoiceTitle(customVoice);
+      return TtsVoiceCatalog.customVoiceTitle(customVoice);
     }
     const systemVoice = this.findCurrentTtsVoice();
     if (systemVoice && systemVoice.available) {
-      return this.ttsVoiceTitle(systemVoice);
+      return TtsVoiceCatalog.voiceTitle(systemVoice);
     }
     const customVoices = this.selectableCustomTtsVoices();
     if (this.ttsCloudVoices.length > 0) {
-      return this.ttsCloudVoiceTitle(this.ttsCloudVoices[0]);
+      return TtsVoiceCatalog.cloudVoiceTitle(this.ttsCloudVoices[0]);
     }
     if (customVoices.length > 0) {
-      return this.ttsCustomVoiceTitle(customVoices[0]);
+      return TtsVoiceCatalog.customVoiceTitle(customVoices[0]);
     }
     const systemVoices = this.selectableSystemTtsVoices();
-    return systemVoices.length > 0 ? this.ttsVoiceTitle(systemVoices[0]) : '暂无可用音色';
+    return systemVoices.length > 0 ? TtsVoiceCatalog.voiceTitle(systemVoices[0]) : '暂无可用音色';
   }
 
   ttsQuickVoiceOptions(): SelectOption[] {
     const options: SelectOption[] = [];
     for (const voice of this.ttsCloudVoices) {
-      options.push({ value: this.ttsCloudVoiceTitle(voice) });
+      options.push({ value: TtsVoiceCatalog.cloudVoiceTitle(voice) });
     }
     for (const voice of this.selectableCustomTtsVoices()) {
-      options.push({ value: this.ttsCustomVoiceTitle(voice) });
+      options.push({ value: TtsVoiceCatalog.customVoiceTitle(voice) });
     }
     for (const voice of this.selectableSystemTtsVoices()) {
-      options.push({ value: this.ttsVoiceTitle(voice) });
+      options.push({ value: TtsVoiceCatalog.voiceTitle(voice) });
     }
     if (options.length === 0) {
       options.push({ value: '暂无可用音色' });
@@ -8095,400 +7050,6 @@ struct ReadBookPage {
     if (systemIndex >= 0 && systemIndex < systemVoices.length) {
       this.applyTtsVoice(systemVoices[systemIndex], true);
     }
-  }
-
-  isTocSearchActive(): boolean {
-    return this.tocSearchVisible && this.tocSearchResultActive;
-  }
-
-  toggleTocSearch(): void {
-    if (this.tocSearchVisible) {
-      this.tocSearchVisible = false;
-      this.tocSearchQuery = '';
-      this.tocSearchChapterIndexes = [];
-      this.tocSearchLoading = false;
-      this.tocSearchResultActive = false;
-      this.tocSearchRequestSerial++;
-      this.setTocWindowAround(this.currentChapterIndex, ScrollAlign.CENTER);
-      this.scrollTocToCurrentChapter(false);
-      return;
-    }
-    this.tocSearchVisible = true;
-    this.tocQuickJumpArmed = false;
-    this.tocQuickJumpInputVisible = false;
-    this.tocQuickJumpDraft = '';
-    setTimeout(() => {
-      focusControl.requestFocus('tocChapterSearchInput');
-    }, 50);
-  }
-
-  async submitTocSearch(): Promise<void> {
-    const keyword = this.tocSearchQuery.trim();
-    if (!keyword) {
-      this.clearTocSearchResult();
-      return;
-    }
-    const requestSerial = ++this.tocSearchRequestSerial;
-    const bookUrl = this.book?.bookUrl || this.bookUrl;
-    this.tocSearchLoading = true;
-    try {
-      let matches: BookChapter[] = [];
-      let totalCount = this.chapters.length;
-      let searchSource = '内存';
-      if (this.chapters.length > 0) {
-        const normalizedKeyword = keyword.toLowerCase();
-        matches = this.chapters.filter((chapter: BookChapter) =>
-          (chapter.title || '').toLowerCase().includes(normalizedKeyword));
-      } else {
-        searchSource = '数据库';
-        const db = AppDatabase.getInstance();
-        await db.initWithContext(getContext(this));
-        matches = await db.searchBookChapters(bookUrl, keyword);
-        totalCount = await db.getBookChapterCount(bookUrl);
-      }
-      if (requestSerial !== this.tocSearchRequestSerial || !this.tocSearchVisible) return;
-      if (this.tocReverseOrder) {
-        matches = matches.slice().reverse();
-      }
-      const indexes: number[] = [];
-      for (const chapter of matches) {
-        indexes.push(chapter.index);
-      }
-      this.tocDatabaseChapterCount = totalCount;
-      this.tocSearchChapterIndexes = indexes;
-      this.tocVisibleChapters = matches;
-      this.tocWindowStart = 0;
-      this.tocSearchResultActive = true;
-      this.tocFirstVisibleGlobalIndex = indexes.length > 0 ? indexes[0] : 0;
-      this.tocVisibleItemCount = 1;
-      console.info(`[TOC] ${searchSource}目录搜索: keyword=${keyword}, total=${totalCount}, matches=${matches.length}`);
-      setTimeout(() => {
-        if (matches.length > 0) {
-          this.tocScroller.scrollToIndex(0, false, ScrollAlign.START);
-        }
-      }, 0);
-    } catch (e) {
-      console.warn('目录搜索失败:', e);
-      if (requestSerial === this.tocSearchRequestSerial) {
-        HdsFeedback.showToast('目录搜索失败');
-      }
-    } finally {
-      if (requestSerial === this.tocSearchRequestSerial) {
-        this.tocSearchLoading = false;
-      }
-    }
-  }
-
-  clearTocSearchResult(): void {
-    this.tocSearchRequestSerial++;
-    this.tocSearchQuery = '';
-    this.tocSearchLoading = false;
-    this.tocSearchResultActive = false;
-    this.tocSearchChapterIndexes = [];
-    const localIndex = this.setTocWindowAround(this.currentChapterIndex, ScrollAlign.CENTER);
-    setTimeout(() => {
-      try {
-        this.tocScroller.scrollToIndex(localIndex, false, ScrollAlign.CENTER);
-      } catch (e) {
-        console.warn('清空目录搜索后恢复定位失败:', e);
-      }
-    }, 0);
-  }
-
-  async loadTocDatabaseChapterCount(): Promise<void> {
-    const bookUrl = this.book?.bookUrl || this.bookUrl;
-    if (!bookUrl) return;
-    try {
-      const db = AppDatabase.getInstance();
-      await db.initWithContext(getContext(this));
-      this.tocDatabaseChapterCount = Math.max(await db.getBookChapterCount(bookUrl), this.chapters.length);
-    } catch (e) {
-      console.warn('读取数据库章节总数失败:', e);
-    }
-  }
-
-  updateTocScrollbarPosition(start: number, end: number): void {
-    const localStart = Math.max(0, start);
-    this.tocFirstVisibleGlobalIndex = this.tocGlobalIndex(localStart);
-    this.tocVisibleItemCount = Math.max(1, end - start + 1);
-  }
-
-  tocShouldShowVirtualScrollbar(): boolean {
-    return this.tocListViewportHeight > 0 && this.tocDatabaseChapterCount > this.tocVisibleItemCount;
-  }
-
-  tocScrollbarThumbLength(): number {
-    return VirtualListScrollbar.thumbLength(this.tocListViewportHeight,
-      this.tocDatabaseChapterCount, this.tocVisibleItemCount);
-  }
-
-  tocScrollbarThumbOffset(): number {
-    const thumbLength = this.tocScrollbarThumbLength();
-    const firstVisibleIndex = this.tocReverseOrder ?
-      this.tocDatabaseChapterCount - 1 - this.tocFirstVisibleGlobalIndex : this.tocFirstVisibleGlobalIndex;
-    return VirtualListScrollbar.thumbOffset(this.tocListViewportHeight, thumbLength,
-      this.tocDatabaseChapterCount, firstVisibleIndex, this.tocVisibleItemCount);
-  }
-
-  tocDisplayedScrollbarThumbOffset(): number {
-    return this.tocScrollbarDragging ? this.tocScrollbarDragOffset : this.tocScrollbarThumbOffset();
-  }
-
-  tocScrollbarPointerY(event: GestureEvent): number {
-    const finger = event.fingerList.length > 0 ? event.fingerList[0] : undefined;
-    return finger ? finger.localY : 0;
-  }
-
-  beginTocScrollbarDrag(event: GestureEvent): void {
-    const thumbLength = this.tocScrollbarThumbLength();
-    const currentOffset = this.tocScrollbarThumbOffset();
-    const pointerY = this.tocScrollbarPointerY(event);
-    this.tocScrollbarDragging = true;
-    this.tocScrollbarDragOffset = currentOffset;
-    if (pointerY >= currentOffset && pointerY <= currentOffset + thumbLength) {
-      this.tocScrollbarPointerAnchor = pointerY - currentOffset;
-    } else {
-      this.tocScrollbarPointerAnchor = thumbLength / 2;
-      this.updateTocScrollbarFromPointer(pointerY);
-    }
-  }
-
-  updateTocScrollbarDrag(event: GestureEvent): void {
-    if (!this.tocScrollbarDragging) return;
-    this.updateTocScrollbarFromPointer(this.tocScrollbarPointerY(event));
-  }
-
-  endTocScrollbarDrag(event: GestureEvent): void {
-    if (!this.tocScrollbarDragging) return;
-    this.updateTocScrollbarFromPointer(this.tocScrollbarPointerY(event));
-    this.tocScrollbarDragging = false;
-    this.flushTocScrollbarTarget();
-  }
-
-  cancelTocScrollbarDrag(): void {
-    this.tocScrollbarDragging = false;
-    this.tocScrollbarPendingIndex = -1;
-    if (this.tocScrollbarUpdateTimer >= 0) {
-      clearTimeout(this.tocScrollbarUpdateTimer);
-      this.tocScrollbarUpdateTimer = -1;
-    }
-  }
-
-  jumpTocScrollbarToPointer(event: GestureEvent): void {
-    this.tocScrollbarPointerAnchor = this.tocScrollbarThumbLength() / 2;
-    this.updateTocScrollbarFromPointer(this.tocScrollbarPointerY(event));
-  }
-
-  updateTocScrollbarFromPointer(pointerY: number): void {
-    const thumbLength = this.tocScrollbarThumbLength();
-    const offset = VirtualListScrollbar.clampThumbOffset(this.tocListViewportHeight, thumbLength,
-      pointerY - this.tocScrollbarPointerAnchor);
-    this.tocScrollbarDragOffset = offset;
-    const targetIndex = VirtualListScrollbar.firstVisibleIndex(this.tocListViewportHeight, thumbLength,
-      this.tocDatabaseChapterCount, this.tocVisibleItemCount, offset);
-    const targetChapterIndex = this.tocReverseOrder ?
-      this.tocDatabaseChapterCount - 1 - targetIndex : targetIndex;
-    this.tocFirstVisibleGlobalIndex = targetChapterIndex;
-    if (this.tocScrollbarDragging) {
-      this.queueTocScrollbarTarget(targetChapterIndex, TOC_SCROLLBAR_DRAG_UPDATE_INTERVAL_MS);
-      return;
-    }
-    this.queueTocScrollbarTarget(targetChapterIndex);
-  }
-
-  flushTocScrollbarTarget(): void {
-    if (this.tocScrollbarUpdateTimer >= 0) {
-      clearTimeout(this.tocScrollbarUpdateTimer);
-      this.tocScrollbarUpdateTimer = -1;
-    }
-    const pending = this.tocScrollbarPendingIndex;
-    this.tocScrollbarPendingIndex = -1;
-    this.applyTocScrollbarTarget(pending);
-  }
-
-  queueTocScrollbarTarget(targetIndex: number, delayMs: number = 16): void {
-    this.tocScrollbarPendingIndex = targetIndex;
-    if (this.tocScrollbarUpdateTimer >= 0) return;
-    this.tocScrollbarUpdateTimer = setTimeout(() => {
-      this.tocScrollbarUpdateTimer = -1;
-      const pending = this.tocScrollbarPendingIndex;
-      this.tocScrollbarPendingIndex = -1;
-      this.applyTocScrollbarTarget(pending);
-    }, delayMs);
-  }
-
-  applyTocScrollbarTarget(targetIndex: number): void {
-    if (targetIndex < 0) return;
-    if (this.isTocSearchActive()) {
-      const localIndex = this.nearestTocSearchResultIndex(targetIndex);
-      if (localIndex < 0) return;
-      this.tocFirstVisibleGlobalIndex = this.tocSearchChapterIndexes[localIndex] ?? targetIndex;
-      try {
-        this.tocScroller.scrollToIndex(localIndex, false, ScrollAlign.START);
-      } catch (e) {
-        console.warn('拖动目录滚动条定位搜索结果失败:', e);
-      }
-      return;
-    }
-    if (this.chapters.length === 0) return;
-    const target = Math.max(0, Math.min(targetIndex, this.chapters.length - 1));
-    const requestSerial = ++this.tocPositionRequestSerial;
-    this.tocPositioning = true;
-    const localIndex = this.setTocWindowAround(target, ScrollAlign.START);
-    setTimeout(() => {
-      if (requestSerial !== this.tocPositionRequestSerial) return;
-      try {
-        this.tocScroller.scrollToIndex(localIndex, false, ScrollAlign.START);
-      } catch (e) {
-        console.warn('拖动目录滚动条定位章节失败:', e);
-      } finally {
-        if (requestSerial === this.tocPositionRequestSerial) this.tocPositioning = false;
-      }
-    }, 0);
-  }
-
-  nearestTocSearchResultIndex(targetIndex: number): number {
-    const indexes = this.tocSearchChapterIndexes;
-    if (indexes.length === 0) return -1;
-    let low = 0;
-    let high = indexes.length - 1;
-    while (low < high) {
-      const mid = Math.floor((low + high) / 2);
-      if (this.tocReverseOrder ? indexes[mid] > targetIndex : indexes[mid] < targetIndex) low = mid + 1;
-      else high = mid;
-    }
-    if (low > 0 && Math.abs(indexes[low - 1] - targetIndex) <= Math.abs(indexes[low] - targetIndex)) {
-      return low - 1;
-    }
-    return low;
-  }
-
-  scrollTocVisibleEdge(toEnd: boolean): void {
-    if (!this.isTocSearchActive()) {
-      const firstChapterIndex = this.tocReverseOrder ? this.chapters.length - 1 : 0;
-      const lastChapterIndex = this.tocReverseOrder ? 0 : this.chapters.length - 1;
-      this.scrollTocToChapter(toEnd ? lastChapterIndex : firstChapterIndex,
-        toEnd ? ScrollAlign.END : ScrollAlign.START);
-      return;
-    }
-    if (this.tocVisibleChapters.length === 0) {
-      return;
-    }
-    const localIndex = toEnd ? this.tocVisibleChapters.length - 1 : 0;
-    setTimeout(() => {
-      try {
-        this.tocScroller.scrollToIndex(localIndex, true, toEnd ? ScrollAlign.END : ScrollAlign.START);
-      } catch (e) {
-        console.warn('定位目录搜索结果失败:', e);
-      }
-    }, 0);
-  }
-
-  setTocWindowAround(index: number, align: ScrollAlign): number {
-    this.tocLoadingPreviousPage = false;
-    this.tocLoadingNextPage = false;
-    if (this.chapters.length === 0) {
-      this.tocWindowStart = 0;
-      this.tocVisibleChapters = [];
-      return 0;
-    }
-    const canonicalTarget = Math.max(0, Math.min(index, this.chapters.length - 1));
-    const target = this.tocReverseOrder ? this.chapters.length - 1 - canonicalTarget : canonicalTarget;
-    let start = target - Math.floor(TOC_WINDOW_PAGE_SIZE / 2);
-    if (align === ScrollAlign.START) {
-      start = target;
-    } else if (align === ScrollAlign.END) {
-      start = target - TOC_WINDOW_PAGE_SIZE + 1;
-    }
-    start = Math.max(0, Math.min(start, Math.max(0, this.chapters.length - TOC_WINDOW_PAGE_SIZE)));
-    const end = Math.min(this.chapters.length, start + TOC_WINDOW_PAGE_SIZE);
-    const visibleChapters: BookChapter[] = [];
-    for (let displayIndex = start; displayIndex < end; displayIndex++) {
-      visibleChapters.push(this.tocChapterAtDisplayIndex(displayIndex));
-    }
-    this.tocWindowStart = start;
-    this.tocVisibleChapters = visibleChapters;
-    return target - start;
-  }
-
-  loadNextTocPage(): void {
-    if (this.isTocSearchActive() || this.tocPositioning || this.tocLoadingNextPage) {
-      return;
-    }
-    const loadedEnd = this.tocWindowStart + this.tocVisibleChapters.length;
-    if (loadedEnd >= this.chapters.length) {
-      return;
-    }
-    this.tocLoadingNextPage = true;
-    const nextEnd = Math.min(this.chapters.length, loadedEnd + TOC_WINDOW_PAGE_SIZE);
-    const nextChapters: BookChapter[] = [];
-    for (let displayIndex = loadedEnd; displayIndex < nextEnd; displayIndex++) {
-      nextChapters.push(this.tocChapterAtDisplayIndex(displayIndex));
-    }
-    this.tocVisibleChapters = this.tocVisibleChapters.concat(nextChapters);
-    setTimeout(() => {
-      this.tocLoadingNextPage = false;
-    }, 0);
-  }
-
-  loadPreviousTocPage(): void {
-    if (this.isTocSearchActive() || this.tocPositioning || this.tocLoadingPreviousPage ||
-      this.tocWindowStart <= 0) {
-      return;
-    }
-    this.tocLoadingPreviousPage = true;
-    const oldStart = this.tocWindowStart;
-    const nextStart = Math.max(0, oldStart - TOC_WINDOW_PAGE_SIZE);
-    const added = oldStart - nextStart;
-    const previousChapters: BookChapter[] = [];
-    for (let displayIndex = nextStart; displayIndex < oldStart; displayIndex++) {
-      previousChapters.push(this.tocChapterAtDisplayIndex(displayIndex));
-    }
-    this.tocWindowStart = nextStart;
-    this.tocVisibleChapters = previousChapters.concat(this.tocVisibleChapters);
-    setTimeout(() => {
-      try {
-        this.tocScroller.scrollToIndex(added, false, ScrollAlign.START);
-      } catch (e) {
-        console.warn('向前加载目录失败:', e);
-      } finally {
-        this.tocLoadingPreviousPage = false;
-      }
-    }, 0);
-  }
-
-  scrollTocToCurrentChapter(smooth: boolean = true): void {
-    if (this.chapters.length === 0) {
-      return;
-    }
-    const index = Math.max(0, Math.min(this.currentChapterIndex, this.chapters.length - 1));
-    this.scrollTocToChapter(index, ScrollAlign.CENTER, smooth);
-  }
-
-  scrollTocToChapter(index: number, align: ScrollAlign, smooth: boolean = true): void {
-    if (this.chapters.length === 0) {
-      return;
-    }
-    const targetIndex = Math.max(0, Math.min(index, this.chapters.length - 1));
-    const requestSerial = ++this.tocPositionRequestSerial;
-    this.tocPositioning = true;
-    const localIndex = this.setTocWindowAround(targetIndex, align);
-    setTimeout(() => {
-      if (requestSerial !== this.tocPositionRequestSerial) {
-        return;
-      }
-      try {
-        this.tocScroller.scrollToIndex(localIndex, smooth, align);
-      } catch (e) {
-        console.warn('定位目录章节失败:', e);
-      } finally {
-        setTimeout(() => {
-          if (requestSerial === this.tocPositionRequestSerial) {
-            this.tocPositioning = false;
-          }
-        }, 0);
-      }
-    }, 50);
   }
 
   getSubTextColor(): string {
@@ -8580,27 +7141,20 @@ struct ReadBookPage {
     return Math.max(this.statusBarSafeHeight, 32);
   }
 
-  getTopOverlayHeight(): number {
-    return 56 + this.getTopControlSafePadding();
-  }
-
   getReaderContentBottomReserve(): number {
     // The reader surface extends through the system navigation area. Reserve the footer line plus its visual
     // lift so the last正文 row cannot be painted underneath metadata moved above the gesture indicator.
-    if (!this.readerFooterEnabled || this.isReaderComicModeActive()) return 0;
-    return Math.max(8, this.getReaderBottomInfoBarHeight() + this.getReaderBottomInfoBarBottomInset() +
-      this.getReaderBottomInfoBarContentGap());
-  }
-
-  getReaderExtendedBottomSafeInset(): number {
-    // The full-screen surface still extends through the system navigation area, but正文 keeps only a small,
-    // deterministic visual guard. Do not derive this from asynchronous system-bar insets: that made the same
-    // margin setting paginate differently between the live preview and reopening a book.
-    return 8;
+    // The footer itself is painted inside the navigation area, just above the gesture indicator. With the
+    // footer on,正文 only has to clear the footer; the navigation reserve applies only when there is no footer.
+    if (this.isReaderComicModeActive()) return 0;
+    if (!this.readerFooterEnabled) return this.getReaderNavigationBottomReserve();
+    return Math.max(8, this.getReaderBottomInfoBarHeight() +
+      this.getReaderBottomInfoBarBottomInset() + this.getReaderBottomInfoBarContentGap());
   }
 
   getReaderBottomInfoBarHeight(): number {
-    const fallbackHeight = 12 + (this.readerFooterShowProgressBar ? 5 : 0);
+    const infoBarConfig = this.getReaderInfoBarConfig();
+    const fallbackHeight = infoBarConfig.fontSize + infoBarConfig.footerExtraHeight();
     if (this.readerBottomInfoBarMeasuredHeight > 0) {
       return Math.max(this.readerBottomInfoBarMeasuredHeight, fallbackHeight);
     }
@@ -8616,7 +7170,9 @@ struct ReadBookPage {
   getReaderBottomInfoBarBottomInset(): number {
     // Only lift the footer enough to sit immediately above the gesture indicator. Use half of the reported
     // navigation inset and keep the result in a narrow range so large three-button areas cannot create a gap.
-    return Math.max(6, Math.min(8, Math.max(0, this.navBarHeight) * 0.5));
+    // 用户设置的页脚上移距离加在这段上抬之上；正文的页脚预留用的是同一个值，页脚上移不会压住末行。
+    return Math.max(6, Math.min(8, Math.max(0, this.navBarHeight) * 0.5)) +
+      this.getReaderInfoBarConfig().footerOffset;
   }
 
   getReaderBottomInfoBarContentGap(): number {
@@ -8626,13 +7182,17 @@ struct ReadBookPage {
   getReaderV2BottomGuard(): number {
     // Native Paragraph pagination is created before the footer's first area callback. Use the deterministic
     // fallback line height here so measuring the real Text never invalidates a retained pagination session.
-    if (!this.readerFooterEnabled || this.isReaderComicModeActive()) return 0;
-    let footerHeight = 12 + (this.readerFooterShowProgressBar ? 5 : 0);
+    if (this.isReaderComicModeActive()) return 0;
+    // 页脚开启时正文只需让开页脚（页脚已经画在手势条上方）；没有页脚时才按导航条高度避让。
+    if (!this.readerFooterEnabled) return this.getReaderNavigationBottomReserve();
+    const infoBarConfig = this.getReaderInfoBarConfig();
+    let footerHeight = infoBarConfig.fontSize;
     try {
-      footerHeight = px2vp(Math.max(1, fp2px(12)));
+      footerHeight = px2vp(Math.max(1, fp2px(infoBarConfig.fontSize)));
     } catch (_) {
-      footerHeight = 12 + (this.readerFooterShowProgressBar ? 5 : 0);
+      footerHeight = infoBarConfig.fontSize;
     }
+    footerHeight += infoBarConfig.footerExtraHeight();
     return Math.max(8, footerHeight + this.getReaderBottomInfoBarBottomInset() +
       this.getReaderBottomInfoBarContentGap());
   }
@@ -8719,15 +7279,9 @@ struct ReadBookPage {
     return this.readerFloatingBarRight() - 48;
   }
 
-  readerTtsExpandedControlLeft(): number {
-    if (this.readerUsesSideAnchoredControls() && this.readerMenuAnchorSide < 0) {
-      return this.readerFloatingBarLeft();
-    }
-    return this.readerFloatingBarRight() - this.readerTtsExpandedControlWidth();
-  }
-
   readerBottomMenuOverlayHeight(): number {
-    return (this.readerUseChapterQuickJump ? 120 : 56) + this.readerFloatingBarBottomMargin();
+    return (this.readerUseChapterQuickJump || this.isReaderComicModeActive() ? 120 : 56) +
+      this.readerFloatingBarBottomMargin();
   }
 
   readerBottomActionOverlayHeight(): number {
@@ -8774,12 +7328,9 @@ struct ReadBookPage {
   }
 
   getReaderPaginationViewportHeight(): number {
-    // pageViewHeight is reported before the declarative bottom-safe-area expansion. Extended reading
-    // intentionally lets正文 use that system area, so pagination must include the same navigation inset that
-    // the rendered page-turn surface receives. Do not add the top inset: the hidden status bar already starts
-    // the reader at y=0, and adding it caused the previous whole-page upward shift.
-    const bottomExtension = this.readerExtendToStatusBar ? Math.max(0, this.navBarHeight) : 0;
-    return Math.max(1, this.pageViewHeight + bottomExtension);
+    // 正文始终避让底部导航条，"正文扩展至状态栏"只影响顶部，所以分页视口就是实测的分页区域。
+    // 导航条那一段由 getReaderNavigationBottomReserve() 在视口内部预留；纸张背景仍会铺到屏幕底部。
+    return Math.max(1, this.pageViewHeight);
   }
 
   getReaderBackgroundViewportHeight(): number {
@@ -8810,12 +7361,6 @@ struct ReadBookPage {
     return TextAlign.JUSTIFY;
   }
 
-  readerGraphicsTextAlignValue(): graphicsText.TextAlign {
-    if (this.readerTextAlign === 'start') return graphicsText.TextAlign.LEFT;
-    if (this.readerTextAlign === 'end') return graphicsText.TextAlign.RIGHT;
-    return graphicsText.TextAlign.JUSTIFY;
-  }
-
   getReaderAdaptiveLetterSpacing(): number {
     const availableWidth = Math.max(1,
       this.getReaderPageColumnWidth() - this.getEffectiveReaderMarginLeft() - this.getEffectiveReaderMarginRight());
@@ -8834,167 +7379,22 @@ struct ReadBookPage {
     }
   }
 
-  getReaderPageLineSpacing(pageLineHeight: number = this.getEffectiveReaderLineHeight()): number {
-    return Math.max(0, pageLineHeight - this.readerFontSize);
-  }
-
-  getReaderParagraphBoundarySpacing(pageLineHeight: number = this.getEffectiveReaderLineHeight()): number {
-    return this.getReaderPageLineSpacing(pageLineHeight) + Math.max(0, this.readerParagraphSpacing);
-  }
-
-  getMeasuredReaderParagraphBoundarySpacingPx(): number {
-    const boundaryPx = this.toMeasureNonNegativePx(this.getReaderParagraphBoundarySpacing());
-    // With visible paragraph spacing every boundary is rendered as an independent Blank. ArkUI lays
-    // that component on physical pixels, so a fractional height must be rounded upward rather than
-    // represented by an average allowance shared by the whole page.
-    return this.readerParagraphSpacing > 0 ? Math.ceil(boundaryPx) : boundaryPx;
-  }
-
-  getMeasuredReaderParagraphComponentHeightPx(metrics: ReaderParagraphMetrics,
-    pageLineHeight: number = this.getEffectiveReaderLineHeight(), componentPixelAligned: boolean = false): number {
-    const lineCount = Math.max(1, metrics.lineCount);
-    const internalGapCount = Math.max(0, lineCount - 1);
-    const shouldPixelAlignComponent = this.readerParagraphSpacing > 0 || componentPixelAligned;
-    if (internalGapCount === 0) {
-      return shouldPixelAlignComponent ? Math.ceil(metrics.heightPx) : metrics.heightPx;
-    }
-    const baseLineSpacingPx = this.toMeasureNonNegativePx(this.getReaderPageLineSpacing());
-    const targetLineSpacingPx = this.toMeasureNonNegativePx(this.getReaderPageLineSpacing(pageLineHeight));
-    const glyphRowsHeightPx = Math.max(0, metrics.heightPx - internalGapCount * baseLineSpacingPx);
-    const componentHeightPx = glyphRowsHeightPx + internalGapCount * targetLineSpacingPx;
-    // Paragraph spacing makes each paragraph an independent Text node. Its complete measured box is
-    // pixel-aligned once, while line gaps inside that node remain part of the same layout object.
-    return shouldPixelAlignComponent ? Math.ceil(componentHeightPx) : componentHeightPx;
-  }
-
-  getMeasuredReaderParagraphBoundarySpacingForLineHeightPx(pageLineHeight: number,
-    componentBoundaryPixelAligned: boolean = false): number {
-    const boundaryPx = this.toMeasureNonNegativePx(this.getReaderParagraphBoundarySpacing(pageLineHeight));
-    return this.readerParagraphSpacing > 0 || componentBoundaryPixelAligned ? Math.ceil(boundaryPx) : boundaryPx;
-  }
-
-  getMeasuredReaderPageBodyHeightPx(metricsList: ReaderParagraphMetrics[], pageLineHeight: number,
-    componentPixelAligned: boolean[] = []): number {
-    let paragraphHeightPx = 0;
-    let boundaryHeightPx = 0;
-    for (let index = 0; index < metricsList.length; index++) {
-      paragraphHeightPx += this.getMeasuredReaderParagraphComponentHeightPx(metricsList[index], pageLineHeight,
-        componentPixelAligned[index] === true);
-    }
-    if (metricsList.length > 1) {
-      for (let index = 0; index < metricsList.length - 1; index++) {
-        boundaryHeightPx += this.getMeasuredReaderParagraphBoundarySpacingForLineHeightPx(pageLineHeight,
-          componentPixelAligned[index] === true || componentPixelAligned[index + 1] === true);
-      }
-    }
-    const heightScale = this.getReaderPaginationHeightScale();
-    return paragraphHeightPx * heightScale +
-      boundaryHeightPx * (this.readerParagraphSpacing > 0 ? 1 : heightScale);
-  }
-
-  getReaderAdaptivePageLineHeight(text: string, chapterIndex: number, pageIndex: number,
-    pageStart: number = -1, documentSource: string = ''): number {
-    const baseLineHeight = this.getEffectiveReaderLineHeight();
-    if (!text || this.isReaderNovelContinuousScrollModeActive() || this.isReaderImageOnlyPage(text)) {
-      return baseLineHeight;
-    }
-    const source = documentSource || (chapterIndex === this.currentChapterIndex ? this.pagedContentText : '');
-    const resolvedStart = pageStart >= 0 ? pageStart :
-      (chapterIndex === this.currentChapterIndex ? this.getPageStartOffset(pageIndex) : -1);
-    if (!source || resolvedStart < 0 || this.isReaderChapterLastPage(text, resolvedStart, source)) {
-      return baseLineHeight;
-    }
-
-    const horizontalPadding = this.getEffectiveReaderMarginLeft() + this.getEffectiveReaderMarginRight();
-    const verticalPadding = this.getEffectiveReaderMarginTop() + this.getReaderContentBottomPadding() +
-      this.getReaderPaginationBottomInfoBarHeight() + this.getReaderPaginationRenderGuardHeight();
-    const columnWidth = this.getReaderPageColumnWidth();
-    const availableWidth = Math.max(1, columnWidth - horizontalPadding);
-    const availableHeight = Math.max(1, this.getReaderPaginationViewportHeight() - verticalPadding);
-    const cacheKey = `${chapterIndex}_${pageIndex}_${resolvedStart}_${this.pageViewWidth}_${availableHeight}_` +
-      `${this.readerTypographyCacheIdentity()}_${this.hashText(text)}`;
-    const cached = this.readerAdaptiveLineHeightCache.get(cacheKey);
-    if (cached !== undefined) return cached;
-
-    const availableHeightPx = this.toMeasurePx(availableHeight);
-    const paragraphs = this.getReaderTextParagraphs(text);
-    const paragraphMetrics: ReaderParagraphMetrics[] = [];
-    const componentPixelAligned: boolean[] = [];
-    let adaptableInternalGapCount = 0;
-    for (const paragraph of paragraphs) {
-      const metrics = this.readerParagraphMetrics(paragraph.text, availableWidth,
-        chapterIndex, source, resolvedStart + paragraph.start);
-      paragraphMetrics.push(metrics);
-      componentPixelAligned.push(this.readerParagraphRendersAsIndependentComponent(paragraph.text));
-      // Inline comment bubbles remain part of their paragraph's Text node. Count its ordinary
-      // line gaps just like plain text; only standalone action rows and images are fixed blocks.
-      const standaloneAction = ReaderActionMarker.parse(paragraph.text) &&
-        !this.hasInlineReaderSourceAction(paragraph.text);
-      if (!standaloneAction && !LocalBookService.isEpubImageMarker(paragraph.text)) {
-        const lineCount = Math.max(1, metrics.lineCount);
-        adaptableInternalGapCount += Math.max(0, lineCount - 1);
-      }
-    }
-    const measuredHeightPx = this.getMeasuredReaderPageBodyHeightPx(
-      paragraphMetrics, baseLineHeight, componentPixelAligned);
-    // Preserve one physical pixel for the final component snap. This is density-independent and therefore does
-    // not create a visible vp reserve, but prevents a page made from many paragraph Text nodes from crossing the
-    // fixed 8vp bottom boundary after ArkUI rounds its last row.
-    const renderSnapGuardPx = 1;
-    const remainingHeightPx = Math.max(0, availableHeightPx - measuredHeightPx - renderSnapGuardPx);
-    let adaptiveLineHeight = baseLineHeight;
-    // All spacing is placed strictly between text lines. Internal text gaps and paragraph boundaries
-    // are the only adjustable positions; fixed action/image rows retain their measured height.
-    const adaptableGapCount = adaptableInternalGapCount + Math.max(0, paragraphs.length - 1);
-    if (adaptableGapCount > 0 && remainingHeightPx > 0.5) {
-      const hasIndependentlyRoundedParagraph = componentPixelAligned.some((value: boolean): boolean => value);
-      if (this.readerParagraphSpacing > 0 || hasIndependentlyRoundedParagraph) {
-        // Each paragraph Text and boundary Blank rounds independently. Search using that same rendered
-        // component model; dividing the remainder once can otherwise round every node upward and push
-        // the final line through the configured bottom margin.
-        let low = baseLineHeight;
-        let high = baseLineHeight + Math.max(0, px2vp(remainingHeightPx / adaptableGapCount));
-        for (let index = 0; index < 14; index++) {
-          const middle = (low + high) / 2;
-          if (this.getMeasuredReaderPageBodyHeightPx(paragraphMetrics, middle, componentPixelAligned) <=
-            availableHeightPx - renderSnapGuardPx) {
-            low = middle;
-          } else {
-            high = middle;
-          }
-        }
-        try {
-          const spacingPx = Math.floor(vp2px(this.getReaderPageLineSpacing(low)));
-          adaptiveLineHeight = this.readerFontSize + px2vp(Math.max(0, spacingPx));
-        } catch (_) {
-          adaptiveLineHeight = low;
-        }
-      } else {
-        adaptiveLineHeight = baseLineHeight + Math.max(0, px2vp(remainingHeightPx / adaptableGapCount));
-      }
-    }
-    this.readerAdaptiveLineHeightCache.set(cacheKey, adaptiveLineHeight);
-    while (this.readerAdaptiveLineHeightCache.size > 96) {
-      const oldestKey = this.readerAdaptiveLineHeightCache.keys().next().value as string | undefined;
-      if (oldestKey === undefined) break;
-      this.readerAdaptiveLineHeightCache.delete(oldestKey);
-    }
-    return adaptiveLineHeight;
-  }
-
-  isReaderChapterLastPage(text: string, pageStart: number, documentSource: string): boolean {
-    let pageEnd = Math.max(0, Math.min(documentSource.length, pageStart + (text || '').length));
-    while (pageEnd < documentSource.length && this.isReaderTrimChar(documentSource.charAt(pageEnd))) pageEnd++;
-    return pageEnd >= documentSource.length;
-  }
-
   onReadLayoutChanged(): void {
     if (this.readerEntryInitializing || this.readerLayoutCommitInProgress) return;
     this.scheduleReaderLayoutChange();
   }
 
   onReaderChromeChanged(): void {
+    const layoutIdentity = this.currentReaderInfoBarLayoutIdentity();
+    const layoutChanged = layoutIdentity !== this.readerInfoBarLayoutIdentity;
+    this.readerInfoBarLayoutIdentity = layoutIdentity;
+    this.syncReaderInfoBarClock();
     if (this.readerEntryInitializing) return;
+    if (!layoutChanged) {
+      // 只换了显示内容或颜色、边距等不占正文高度的外观，不需要重新分页。
+      this.saveReaderChromeSettings();
+      return;
+    }
     const readingOffset = this.getReaderStableReflowOffset();
     this.readerTypographyRestoreOffset = readingOffset;
     this.invalidateReaderTypographyLayout();
@@ -9292,16 +7692,16 @@ struct ReadBookPage {
   }
 
   onTtsCoverSettingsChanged(): void {
-    if (!this.isTtsSpeaking && !this.ttsReader.isSpeaking() && !this.ttsAvSession) {
-      this.refreshTtsMediaImage().catch((e: Error) => {
+    if (!this.isTtsSpeaking && !this.ttsReader.isSpeaking() && !this.ttsMediaSession().hasSession()) {
+      this.ttsMediaSession().refreshMediaImage().catch((e: Error) => {
         console.warn('刷新朗读媒体封面失败:', e);
       });
       return;
     }
-    this.refreshTtsMediaImage().then(() => {
-      return this.updateTtsAvSessionPlaybackState(
+    this.ttsMediaSession().refreshMediaImage().then(() => {
+      return this.ttsMediaSession().updatePlaybackState(
         this.isTtsSpeaking || this.ttsReader.isSpeaking() ?
-          this.ttsAvPlaybackState() : avSession.PlaybackState.PLAYBACK_STATE_STOP
+          this.ttsMediaSession().playbackState() : avSession.PlaybackState.PLAYBACK_STATE_STOP
       );
     }).catch((e: Error) => {
       console.warn('同步朗读媒体封面失败:', e);
@@ -9506,17 +7906,6 @@ struct ReadBookPage {
     return Math.round(storedOffset);
   }
 
-
-
-
-
-
-
-
-
-
-
-
   committedLocalPageTurnCheckpointPageIndex(): number {
     // During an animated turn the incoming page is already the committed visual destination, while
     // currentPageIndex is intentionally updated only after the motion finishes. Home can freeze that handoff for
@@ -9559,7 +7948,7 @@ struct ReadBookPage {
       console.info('[ReaderProgress] ignored save from superseded reader page');
       return;
     }
-    const engine = ReadBookEngine.get();
+    const engine = this.readerEngine();
     const stableVisibleProgress = this.canSaveReadingProgress();
     let chapterIndex = this.clampChapterIndex(this.currentChapterIndex);
     let pageIndex = Math.max(0, Math.min(this.currentPageIndex, Math.max(0, this.contentPages.length - 1)));
@@ -9696,42 +8085,49 @@ struct ReadBookPage {
   }
 
   @Builder
+  readerInfoBarAccentLine(progress: boolean) {
+    if (progress) {
+      Progress({ value: this.getReaderInfoProgressValue(), total: 100, type: ProgressType.Linear })
+        .width('100%')
+        .height(2)
+        .color(this.accentColor())
+        .backgroundColor(this.readerChapterTrackColor())
+    } else {
+      Row()
+        .width('100%')
+        .height(0.5)
+        .backgroundColor(this.getSubTextColor())
+        .opacity(0.35)
+    }
+  }
+
+  @Builder
   readerBottomInfoBar() {
     Column({ space: 3 }) {
-      if (this.readerFooterShowProgressBar) {
-        Progress({ value: this.getReaderFooterProgressValue(), total: 100, type: ProgressType.Linear })
-          .width('100%')
-          .height(2)
-          .color(this.accentColor())
-          .backgroundColor(this.readerChapterTrackColor())
+      if (this.getReaderInfoBarConfig().progressBar === ReaderInfoProgressBar.FOOTER) {
+        this.readerInfoBarAccentLine(true)
+      } else if (this.getReaderInfoBarConfig().footerDivider) {
+        this.readerInfoBarAccentLine(false)
       }
-      Row() {
-        if (this.getReaderFooterLeftText()) {
-          Text(this.getReaderFooterLeftText())
-            .fontSize(12)
-            .fontColor(this.getSubTextColor())
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .layoutWeight(1)
-        } else {
-          Blank().layoutWeight(1)
-        }
-
-        if (this.getReaderFooterProgressText()) {
-          Text(this.getReaderFooterProgressText())
-            .fontSize(12)
-            .fontColor(this.getSubTextColor())
-            .textAlign(TextAlign.End)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .margin({ left: 12 })
-        }
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
+      ReaderInfoBarRow({
+        leftText: this.getReaderInfoSlotText(this.getReaderInfoBarConfig().footerLeft),
+        centerText: this.getReaderInfoSlotText(this.getReaderInfoBarConfig().footerCenter),
+        rightText: this.getReaderInfoSlotText(this.getReaderInfoBarConfig().footerRight),
+        leftBattery: this.getReaderInfoSlotBattery(this.getReaderInfoBarConfig().footerLeft),
+        centerBattery: this.getReaderInfoSlotBattery(this.getReaderInfoBarConfig().footerCenter),
+        rightBattery: this.getReaderInfoSlotBattery(this.getReaderInfoBarConfig().footerRight),
+        textSize: this.getReaderInfoBarConfig().fontSize,
+        textColor: this.getSubTextColor(),
+        textOpacity: this.getReaderInfoBarConfig().opacity / 100
+      })
     }
     .width('100%')
-    .padding({ left: 28, right: 28, top: 0, bottom: 0 })
+    .padding({
+      left: this.getReaderInfoBarSidePadding(true),
+      right: this.getReaderInfoBarSidePadding(false),
+      top: 0,
+      bottom: 0
+    })
     .alignItems(HorizontalAlign.Center)
     .backgroundColor(Color.Transparent)
     .translate({ y: this.getReaderBottomInfoBarVisualOffsetY() })
@@ -9743,18 +8139,36 @@ struct ReadBookPage {
 
   @Builder
   readerHeaderInfoBar() {
-    Row() {
-      Text(this.getReaderHeaderInfoText())
-        .fontSize(12)
-        .fontColor(this.getSubTextColor())
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
+    Column({ space: 3 }) {
+      Row() {
+        ReaderInfoBarRow({
+          leftText: this.getReaderInfoSlotText(this.getReaderInfoBarConfig().headerLeft),
+          centerText: this.getReaderInfoSlotText(this.getReaderInfoBarConfig().headerCenter),
+          rightText: this.getReaderInfoSlotText(this.getReaderInfoBarConfig().headerRight),
+          leftBattery: this.getReaderInfoSlotBattery(this.getReaderInfoBarConfig().headerLeft),
+          centerBattery: this.getReaderInfoSlotBattery(this.getReaderInfoBarConfig().headerCenter),
+          rightBattery: this.getReaderInfoSlotBattery(this.getReaderInfoBarConfig().headerRight),
+          textSize: this.getReaderInfoBarConfig().fontSize,
+          textColor: this.getSubTextColor(),
+          textOpacity: this.getReaderInfoBarConfig().opacity / 100
+        })
+      }
+      .width('100%')
+      .height(this.getReaderHeaderInfoBarHeight())
+      .alignItems(VerticalAlign.Center)
+
+      if (this.getReaderInfoBarConfig().progressBar === ReaderInfoProgressBar.HEADER) {
+        this.readerInfoBarAccentLine(true)
+      } else if (this.getReaderInfoBarConfig().headerDivider) {
+        this.readerInfoBarAccentLine(false)
+      }
     }
     .width('100%')
-    .height(this.getReaderHeaderInfoBarHeight() + this.getReaderHeaderOverlayTopInset())
-    .padding({ top: this.getReaderHeaderOverlayTopInset(), left: 28, right: 28 })
-    .alignItems(VerticalAlign.Center)
+    .padding({
+      top: this.getReaderHeaderOverlayTopInset(),
+      left: this.getReaderInfoBarSidePadding(true),
+      right: this.getReaderInfoBarSidePadding(false)
+    })
     .backgroundColor(Color.Transparent)
     .hitTestBehavior(HitTestMode.None)
   }
@@ -9801,225 +8215,6 @@ struct ReadBookPage {
     this.saveReadConfig();
   }
 
-  @Builder
-  ttsExpandedMediaControlsBar() {
-    HdsTabs({ barPosition: BarPosition.End, index: 0 }) {
-      TabContent() {
-        Column()
-      }
-      .height(48)
-      .tabBar(this.ttsMediaTimerControl())
-
-      TabContent() {
-        Column()
-      }
-      .height(48)
-      .tabBar(this.ttsMediaSymbolControl($r('sys.symbol.arrow_left'),
-        this.canPlayPreviousTtsChapter(), '上一章'))
-
-      TabContent() {
-        Column()
-      }
-      .height(48)
-      .tabBar(this.ttsMediaSymbolControl(this.isTtsSpeaking && !this.isTtsPaused ?
-        $r('sys.symbol.pause') : $r('sys.symbol.play'), true,
-        this.isTtsSpeaking && !this.isTtsPaused ? '暂停朗读' : '播放朗读'))
-
-      TabContent() {
-        Column()
-      }
-      .height(48)
-      .tabBar(this.ttsMediaSymbolControl($r('sys.symbol.arrow_right'),
-        this.canPlayNextTtsChapter(), '下一章'))
-
-      TabContent() {
-        Column()
-      }
-      .height(48)
-      .tabBar(this.ttsMediaSpeedControl())
-
-      TabContent() {
-        Column()
-      }
-      .height(48)
-      .tabBar(this.ttsMediaSymbolControl($r('sys.symbol.xmark'), true, '关闭朗读控制'))
-    }
-    .key(`reader_tts_controls_bar_${this.themeRevision}_${this.isReaderThemeDark() ? 'dark' : 'light'}`)
-    .barBackgroundColor(this.readerGlassPanelColor())
-    .barMode(BarMode.Fixed)
-    .barHeight(48)
-    .barOverlap(true)
-    .barFloatingStyle({
-      barWidth: {
-        smallWidth: this.readerTtsExpandedControlWidth(),
-        mediumWidth: this.readerTtsExpandedControlWidth(),
-        largeWidth: this.readerTtsExpandedControlWidth()
-      },
-      systemMaterialEffect: {
-        materialType: ImmersiveMaterialRuntime.materialType(),
-        materialLevel: ImmersiveMaterialRuntime.materialLevel()
-      },
-      barSideMargin: 0,
-      barBottomMargin: 4,
-      gradientMask: {
-        maskColor: '#00000000',
-        maskHeight: 56
-      },
-      adaptToHandedness: false,
-      thermoCtrl: true,
-      barOpacity: 1
-    })
-    .scrollable(false)
-    .onContentWillChange(() => false)
-    .onTabBarClick((index: number) => {
-      this.handleTtsExpandedControl(index);
-    })
-    .width(this.readerTtsExpandedControlWidth())
-    .height(56)
-    .position({ x: this.readerTtsExpandedControlLeft(), y: '100%' })
-    .translate({
-      y: -(this.readerBottomMenuOverlayHeight() + 66)
-    })
-  }
-
-  @Builder
-  ttsExpandedMediaControlsCompat() {
-    Row() {
-      Stack() {
-        this.ttsMediaTimerControl()
-      }
-      .layoutWeight(1)
-      .onClick(() => this.handleTtsExpandedControl(0))
-
-      Stack() {
-        this.ttsMediaSymbolControl($r('sys.symbol.arrow_left'),
-          this.canPlayPreviousTtsChapter(), '上一章')
-      }
-      .layoutWeight(1)
-      .onClick(() => this.handleTtsExpandedControl(1))
-
-      Stack() {
-        this.ttsMediaSymbolControl(this.isTtsSpeaking && !this.isTtsPaused ?
-          $r('sys.symbol.pause') : $r('sys.symbol.play'), true,
-          this.isTtsSpeaking && !this.isTtsPaused ? '暂停朗读' : '播放朗读')
-      }
-      .layoutWeight(1)
-      .onClick(() => this.handleTtsExpandedControl(2))
-
-      Stack() {
-        this.ttsMediaSymbolControl($r('sys.symbol.arrow_right'),
-          this.canPlayNextTtsChapter(), '下一章')
-      }
-      .layoutWeight(1)
-      .onClick(() => this.handleTtsExpandedControl(3))
-
-      Stack() {
-        this.ttsMediaSpeedControl()
-      }
-      .layoutWeight(1)
-      .onClick(() => this.handleTtsExpandedControl(4))
-
-      Stack() {
-        this.ttsMediaSymbolControl($r('sys.symbol.xmark'), true, '关闭朗读控制')
-      }
-      .layoutWeight(1)
-      .onClick(() => this.handleTtsExpandedControl(5))
-    }
-    .width(this.readerTtsExpandedControlWidth())
-    .height(56)
-    .padding({ left: 4, right: 4 })
-    .position({ x: this.readerTtsExpandedControlLeft(), y: '100%' })
-    .translate({ y: -(this.readerBottomMenuOverlayHeight() + 66) })
-    .borderRadius(28)
-    .backgroundColor(this.readerGlassPanelColor())
-    .backdropBlur(22)
-    .border({ width: 1, color: this.readerGlassBorderColor() })
-    .shadow({ radius: 10, color: this.readerGlassShadowColor(), offsetX: 0, offsetY: 3 })
-  }
-
-  @Builder
-  ttsMediaTimerControl() {
-    Stack({ alignContent: Alignment.Center }) {
-      SymbolGlyph($r('sys.symbol.timer'))
-        .fontSize(22)
-        .fontColor([this.getTextColor()])
-
-      if (this.ttsSleepTimerMinutes > 0) {
-        Text(`${Math.max(1, Math.ceil(this.ttsSleepTimerRemainingSeconds / 60))}`)
-          .fontSize(8)
-          .fontWeight(FontWeight.Bold)
-          .fontColor('#FFFFFF')
-          .textAlign(TextAlign.Center)
-          .width(16)
-          .height(16)
-          .borderRadius(8)
-          .backgroundColor(this.accentColor())
-          .position({ x: 25, y: 2 })
-      }
-    }
-    .width('100%')
-    .height(48)
-    .accessibilityText(this.ttsSleepTimerMinutes > 0 ?
-      `朗读定时剩余 ${Math.max(1, Math.ceil(this.ttsSleepTimerRemainingSeconds / 60))} 分钟` : '设置朗读定时')
-    .translate({ y: -2 })
-  }
-
-  @Builder
-  ttsMediaSymbolControl(icon: Resource, enabled: boolean, accessibilityLabel: string) {
-    Stack({ alignContent: Alignment.Center }) {
-      SymbolGlyph(icon)
-        .fontSize(22)
-        .fontColor([enabled ? this.getTextColor() : this.getSubTextColor()])
-    }
-    .width('100%')
-    .height(48)
-    .opacity(enabled ? 1 : 0.45)
-    .accessibilityText(accessibilityLabel)
-    .translate({ y: -2 })
-  }
-
-  @Builder
-  ttsMediaSpeedControl() {
-    Text(`${this.ttsSpeed.toFixed(1)}x`)
-      .fontSize(13)
-      .fontWeight(FontWeight.Bold)
-      .fontColor(this.getTextColor())
-      .textAlign(TextAlign.Center)
-      .width('100%')
-      .height(48)
-      .translate({ y: -2 })
-  }
-
-  readerTtsExpandedControlWidth(): number {
-    return 264;
-  }
-
-  handleTtsExpandedControl(index: number): void {
-    if (index === 0) {
-      this.cycleTtsSleepTimer();
-    } else if (index === 1 && this.canPlayPreviousTtsChapter()) {
-      this.playPreviousChapterFromMediaSession();
-    } else if (index === 2) {
-      this.toggleTtsReading();
-      this.showMenu = true;
-    } else if (index === 3 && this.canPlayNextTtsChapter()) {
-      this.playNextChapterFromMediaSession();
-    } else if (index === 4) {
-      this.cycleTtsSpeed();
-    } else if (index === 5) {
-      this.ttsMediaControlsExpanded = false;
-      this.showMenu = true;
-      this.syncTtsSystemMediaControls();
-    }
-  }
-
-  cycleTtsSleepTimer(): void {
-    const options: number[] = [0, 15, 30, 60, 90, 120];
-    const currentIndex = options.indexOf(this.ttsSleepTimerMinutes);
-    const nextMinutes = options[(currentIndex + 1) % options.length];
-    this.setTtsSleepTimer(nextMinutes);
-  }
-
   setTtsSleepTimer(minutes: number): void {
     this.clearTtsSleepTimer();
     if (minutes <= 0) {
@@ -10055,32 +8250,12 @@ struct ReadBookPage {
     this.updateTtsFloatingSession();
   }
 
-  cycleTtsSpeed(): void {
-    const speeds: number[] = [0.8, 1.0, 1.2, 1.5, 2.0];
-    let nextIndex = speeds.findIndex((speed: number) => speed > this.ttsSpeed + 0.01);
-    if (nextIndex < 0) {
-      nextIndex = 0;
-    }
-    this.applyTtsSpeed(speeds[nextIndex]);
-    HdsFeedback.showToast(`朗读倍速 ${speeds[nextIndex].toFixed(1)}x`);
-  }
-
-  shouldShowTtsMediaControls(): boolean {
-    return !this.isReaderComicModeActive() && this.ttsMediaControlsExpanded &&
-      (this.isTtsSpeaking || this.ttsReader.isSpeaking()) &&
-      this.showMenu && !this.showToc && !this.showSettings && !this.shouldBlockReaderInteraction();
-  }
-
   canPlayPreviousTtsChapter(): boolean {
     return this.chapters.length > 0 && this.currentChapterIndex > 0;
   }
 
   canPlayNextTtsChapter(): boolean {
     return this.chapters.length > 0 && this.currentChapterIndex < this.chapters.length - 1;
-  }
-
-  disabledButtonColor(): string {
-    return this.isReaderThemeDark() ? '#44515A66' : '#C8CDD4';
   }
 
   @Builder
@@ -10262,21 +8437,6 @@ struct ReadBookPage {
       this.chapters.length > 0 && !this.isReaderInteractiveActionActive();
   }
 
-  handleReaderPagedContentClick(event: ClickEvent): void {
-    if (this.consumeSuppressedReaderTapClick() || this.showMenu || this.showToc || this.showSettings ||
-      this.shouldBlockReaderInteraction()) {
-      return;
-    }
-    const x = Number(event.x);
-    const y = Number(event.y);
-    if (this.readerEffectivePageTurnMode() === 1) {
-      this.updateReaderMenuAnchorByPoint(x);
-      this.showMenu = true;
-      return;
-    }
-    this.commitReaderTapByPoint(x, y);
-  }
-
   handleReaderPanStart(event: GestureEvent): void {
     if (this.readerPageTurnGestureCommitted) {
       return;
@@ -10285,6 +8445,7 @@ struct ReadBookPage {
       return;
     }
     this.captureReaderCurlStartRegion(event);
+    this.updateReaderCurlFinger(event);
     this.readerPanActive = true;
     this.deferReaderPaginationForInteraction();
     this.readerTouchMoved = false;
@@ -10363,6 +8524,7 @@ struct ReadBookPage {
       this.readerTouchMoved = true;
       this.suppressReaderTapClick = true;
     }
+    this.updateReaderCurlFinger(event);
     this.updateSlidePageEffect(this.getReaderPageTurnGestureOffset(offsetX, offsetY));
   }
 
@@ -10371,6 +8533,7 @@ struct ReadBookPage {
       return;
     }
     this.readerPanActive = false;
+    this.readerEmulationFlipPainter.releaseCorner();
     this.deferReaderPaginationForInteraction();
     if (this.bookmarkPullActive) {
       this.readerTouchMoved = true;
@@ -10401,6 +8564,7 @@ struct ReadBookPage {
       return;
     }
     this.readerPanActive = false;
+    this.readerEmulationFlipPainter.releaseCorner();
     this.deferReaderPaginationForInteraction();
     if (this.bookmarkPullActive) {
       this.suppressReaderTapClick = true;
@@ -10460,9 +8624,7 @@ struct ReadBookPage {
       this.slideResetSerial++;
       // An explicitly rendered action owns its exact hit region. Page-turn tap zones only run
       // when no action was hit, so justified line-end comments remain accessible near an edge.
-      const actionMarker = this.shouldUseReaderLayoutV2(this.pagedContentText) ?
-        this.readerV2ActionAtLocalPoint(readerLocalX, readerLocalY) :
-        this.readerSourceActionAtPoint(globalX, globalY);
+      const actionMarker = this.readerV2ActionAtLocalPoint(readerLocalX, readerLocalY);
       if (actionMarker) {
         this.readerTouchActionMarker = actionMarker;
         this.beginReaderInteractiveAction();
@@ -10550,7 +8712,7 @@ struct ReadBookPage {
     const shouldResume = this.isTtsSpeaking || this.ttsReader.isSpeaking();
     if (shouldResume) {
       this.stopTtsReaderForChapterSwitch();
-      await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
+      await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
     }
     this.currentPageIndex = Math.max(0, targetPageIndex);
     this.pendingRestorePageIndex = this.currentPageIndex;
@@ -10682,59 +8844,6 @@ struct ReadBookPage {
     return actions[safeIndex];
   }
 
-  cycleTapZoneAction(index: number): void {
-    const actions = this.readerTapZoneActionsList();
-    const safeIndex = Math.max(0, Math.min(8, Math.round(index)));
-    actions[safeIndex] = (actions[safeIndex] + 1) % 4;
-    this.setTapZoneActions(actions.join(','));
-  }
-
-  setTapZoneActions(actions: string): void {
-    const normalized = this.normalizeTapZoneActions(actions);
-    this.readerTapZoneActions = normalized;
-    ReaderSettingsStore.saveTapZoneActions(getContext(this), normalized).catch((e: Error) => {
-      console.error('保存点击区域动作失败:', e);
-    });
-  }
-
-  normalizeTapZoneActions(actions: string): string {
-    const fallback = [3, 3, 3, 3, 1, 2, 2, 2, 2];
-    const parts = (actions || '').split(',');
-    const result: number[] = [];
-    for (let i = 0; i < 9; i++) {
-      const parsed = Number(parts[i]);
-      result.push(Number.isFinite(parsed) && parsed >= 0 && parsed <= 3 ? Math.round(parsed) : fallback[i]);
-    }
-    return result.join(',');
-  }
-
-  tapActionLabel(action: number): string {
-    switch (action) {
-      case 1:
-        return '菜单';
-      case 2:
-        return '下一页';
-      case 3:
-        return '上一页';
-      case 0:
-      default:
-        return '无动作';
-    }
-  }
-
-  tapZoneCellColor(action: number): string {
-    if (action === 1) {
-      return '#332A6FCC';
-    }
-    if (action === 2) {
-      return '#2239A86B';
-    }
-    if (action === 3) {
-      return '#22A85C39';
-    }
-    return '#14000000';
-  }
-
   tapZoneSummaryText(): string {
     const actions = this.readerTapZoneActionsList();
     let menuCount = 0;
@@ -10864,10 +8973,10 @@ struct ReadBookPage {
 
   @Builder
   settingsPanel() {
-    Column({ space: 12 }) {
+    Column({ space: AppSpacing.LG }) {
       Row() {
         Text(this.settingsPanelTitle())
-          .fontSize(20)
+          .fontSize(AppFontSize.TITLE)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.getTextColor())
 
@@ -10907,6 +9016,18 @@ struct ReadBookPage {
             }
             .width('100%')
             .transition(this.readerSettingsContentTransition(1))
+          } else if (this.settingsPanelTab === 3) {
+            Column() {
+              this.readerComicModeSettingsPanel()
+            }
+            .width('100%')
+            .transition(this.readerSettingsContentTransition(-1))
+          } else if (this.settingsPanelTab === 4) {
+            Column() {
+              this.readerComicDisplaySettingsPanel()
+            }
+            .width('100%')
+            .transition(this.readerSettingsContentTransition(1))
           } else {
             Column() {
               this.readerTypographySettingsPanel()
@@ -10926,7 +9047,7 @@ struct ReadBookPage {
     }
     .width(this.readerFloatingBarWidth())
     .height(this.readerSettingsPanelHeight())
-    .padding({ left: 20, right: this.readerSettingsScrollBarRightInset(), top: 16, bottom: 0 })
+    .padding({ left: AppSpacing.XXL, right: this.readerSettingsScrollBarRightInset(), top: AppSpacing.XL, bottom: 0 })
     .borderRadius(ThemeRuntime.glassCornerRadius(28, 'panel'))
     .clip(true)
     .backgroundColor(this.readerGlassPanelColor())
@@ -10939,6 +9060,8 @@ struct ReadBookPage {
   }
 
   settingsPanelTitle(): string {
+    if (this.settingsPanelTab === 3) return '阅读方式';
+    if (this.settingsPanelTab === 4) return '画面设置';
     if (this.settingsPanelTab === 1) return '朗读设置';
     if (this.settingsPanelTab === 2) return '排版设置';
     return '阅读设置';
@@ -10955,17 +9078,17 @@ struct ReadBookPage {
 
   @Builder
   readerTypographySettingsPanel() {
-    Column({ space: 4 }) {
+    Column({ space: AppSpacing.XS }) {
       // 正文排版作为面板首项，统一调整字号、字距、行距、段距及四侧边距。
       this.readerTypographyCombinedSettings()
-      this.readerSelectSettingItem('正文对齐方式', '设置正文段落的水平对齐方式',
+      this.readerSelectSettingItem('正文对齐方式', '正文段落的水平对齐',
         this.readerTextAlignOptions(), this.readerTextAlignSelectedIndex(), (index: number) => {
           this.setReaderTextAlignByIndex(index);
         }, 'reader_text_align_select')
       this.readerHeaderFooterSettingsPanel()
       this.readerFontEntryItem()
 
-      this.readerSwitchSettingItem('正文扩展至状态栏', '开启后正文同时延伸到顶部状态栏和底部系统安全区', this.readerExtendToStatusBar,
+      this.readerSwitchSettingItem('正文扩展至状态栏', '隐藏状态栏，正文延伸到屏幕顶部', this.readerExtendToStatusBar,
         (checked: boolean) => {
           this.setReaderExtendToStatusBar(checked);
         })
@@ -11002,30 +9125,6 @@ struct ReadBookPage {
     });
   }
 
-  readerTypographyOptions(): SelectOption[] {
-    return [
-      { value: '字号' },
-      { value: '字距' },
-      { value: '行距' },
-      { value: '段落间距' },
-      { value: '左边距' },
-      { value: '右边距' },
-      { value: '上边距' },
-      { value: '下边距' }
-    ];
-  }
-
-  readerTypographySelectedLabel(): string {
-    if (this.readerTypographySelection === 1) return '字距';
-    if (this.readerTypographySelection === 2) return '行距';
-    if (this.readerTypographySelection === 3) return '段落间距';
-    if (this.readerTypographySelection === 4) return '左边距';
-    if (this.readerTypographySelection === 5) return '右边距';
-    if (this.readerTypographySelection === 6) return '上边距';
-    if (this.readerTypographySelection === 7) return '下边距';
-    return '字号';
-  }
-
   readerTextAlignOptions(): SelectOption[] {
     return [{ value: '两端对齐' }, { value: '左对齐' }, { value: '右对齐' }];
   }
@@ -11047,218 +9146,61 @@ struct ReadBookPage {
 
   @Builder
   readerTypographyCombinedSettings() {
-    Row({ space: 8 }) {
-      Select(this.readerTypographyOptions())
-        .id('reader_typography_selector')
-        .selected(this.readerTypographySelection)
-        .value(this.readerTypographySelectedLabel())
-        .font({ size: 15 })
-        .fontColor(this.getSubTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.START)
-        .padding({ left: 0, right: 0 })
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.getTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.isReaderThemeDark()))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor()))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial())
-        .onSelect((index: number) => {
-          this.showReaderTypographyValueInput = false;
-          this.readerTypographySelection = Math.max(0, Math.min(index, 7));
-        })
-      Blank()
-        .layoutWeight(1)
-      this.readerSliderStepButton($r('sys.symbol.minus'), '减小当前排版参数',
-        this.readerTypographyValue(this.readerTypographySelection) > this.readerTypographyMin(this.readerTypographySelection),
-        () => this.stepReaderTypographyValue(this.readerTypographySelection, -1))
-      if (this.showReaderTypographyValueInput) {
-        TextInput({ text: this.readerTypographyValueDraft,
-          placeholder: `${this.readerTypographyValue(this.readerTypographySelection)}` })
-          .type(InputType.Number)
-          .enterKeyType(EnterKeyType.Done)
-          .defaultFocus(true)
-          .fontSize(15)
-          .fontColor(this.getTextColor())
-          .width(52)
-          .height(36)
-          .padding(0)
-          .textAlign(TextAlign.Center)
-          .backgroundColor(this.readerSolidPanelColor())
-          .borderRadius(6)
-          .onChange((value: string) => {
-            this.readerTypographyValueDraft = value.replace(/[^0-9]/g, '').substring(0, 3);
-          })
-          .onSubmit(() => {
-            this.applyReaderTypographyValueInput();
-          })
-          .onBlur(() => {
-            this.applyReaderTypographyValueInput();
-          })
-      } else {
-        Text(`${Math.round(this.readerTypographyValue(this.readerTypographySelection))}`)
-          .fontSize(15)
-          .fontColor(this.getTextColor())
-          .width(52)
-          .height(36)
-          .textAlign(TextAlign.Center)
-          .onClick(() => {
-            this.openReaderTypographyValueInput();
-          })
-      }
-      this.readerSliderStepButton($r('sys.symbol.plus'), '增大当前排版参数',
-        this.readerTypographyValue(this.readerTypographySelection) < this.readerTypographyMax(this.readerTypographySelection),
-        () => this.stepReaderTypographyValue(this.readerTypographySelection, 1))
-    }
-    .width('100%')
-    // Keep the selector on the same content baseline as the settings below.
-    .padding({ left: 0, right: 0, top: 12, bottom: 12 })
-    .alignItems(VerticalAlign.Center)
-  }
-
-  readerTypographyMin(index: number): number {
-    if (index === 0) return 14;
-    return 0;
-  }
-
-  readerTypographyMax(index: number): number {
-    if (index === 0) return 50;
-    if (index === 1) return 8;
-    if (index === 2) return 52;
-    if (index === 3) return 32;
-    if (index === 4 || index === 5) return 80;
-    return 120;
+    ReaderTypographyStepper({
+      initialValues: this.readerTypographyInitialValues(),
+      dark: this.isReaderThemeDark(),
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      accentColor: this.accentColor(),
+      inputColor: this.readerSolidPanelColor(),
+      menuColor: ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor()),
+      onChange: (values: number[]): void => this.onReaderTypographyDraftChange(values)
+    })
   }
 
   @Builder
   readerHeaderFooterSettingsPanel() {
-    Column({ space: 4 }) {
-      this.readerSwitchSettingItem('显示页眉', '在正文顶部显示书名或当前章节标题', this.readerHeaderEnabled,
-        (checked: boolean) => {
-          this.readerHeaderEnabled = checked;
-        })
+    ReaderHeaderFooterSettings({
+      dark: this.isReaderThemeDark(),
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      accentColor: this.accentColor(),
+      switchColor: this.buttonColor(),
+      menuColor: ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor())
+    })
+  }
 
-      if (this.readerHeaderEnabled) {
-        this.readerSelectSettingItem('页眉内容', '选择页眉中显示的信息', this.readerHeaderContentOptions(),
-          this.readerHeaderContentSelectedIndex(), (index: number) => {
-            const values = this.readerHeaderContentValues();
-            this.readerHeaderContentMode = index >= 0 && index < values.length ? values[index] : 'chapter';
-          }, 'reader_header_content_select')
-      }
-
-      this.readerSwitchSettingItem('显示页脚', '显示章节信息和阅读进度', this.readerFooterEnabled,
-        (checked: boolean) => {
-          this.readerFooterEnabled = checked;
-        })
-
-      if (this.readerFooterEnabled) {
-        this.readerSelectSettingItem('页脚左侧', '选择页脚左侧显示的信息', this.readerFooterLeftOptions(),
-          this.readerFooterLeftSelectedIndex(), (index: number) => {
-            const values = this.readerFooterLeftValues();
-            this.readerFooterLeftMode = index >= 0 && index < values.length ? values[index] : 'chapter';
-          }, 'reader_footer_left_select')
-
-        this.readerSelectSettingItem('阅读进度', '选择页脚右侧显示的进度类型', this.readerFooterProgressOptions(),
-          this.readerFooterProgressSelectedIndex(), (index: number) => {
-            const values = this.readerFooterProgressValues();
-            this.readerFooterProgressMode = index >= 0 && index < values.length ? values[index] : 'page';
-          }, 'reader_footer_progress_select')
-
-        this.readerSwitchSettingItem('显示进度条', '在页脚上方显示本章阅读进度', this.readerFooterShowProgressBar,
-          (checked: boolean) => {
-            this.readerFooterShowProgressBar = checked;
-          })
-      }
+  // The stepper edits a draft; nothing is laid out until the short debounce below commits the whole set at once.
+  readerTypographyInitialValues(): number[] {
+    if (this.readerTypographyDraftPending && this.readerTypographyDraft.length === ReaderTypographyField.COUNT) {
+      return [...this.readerTypographyDraft];
     }
-    .width('100%')
-    .padding({ bottom: 8 })
+    return [this.readerFontSize, this.readerLetterSpacing, this.readerLineHeight, this.readerParagraphSpacing,
+      this.readerMarginLeft, this.readerMarginRight, this.readerMarginTop, this.readerMarginBottom];
   }
 
-  readerTypographyValue(settingIndex: number): number {
-    if (settingIndex === 0) return this.readerTypographyFontSize;
-    if (settingIndex === 1) return this.readerTypographyLetterSpacing;
-    if (settingIndex === 2) return this.readerTypographyLineHeight;
-    if (settingIndex === 3) return this.readerTypographyParagraphSpacing;
-    if (settingIndex === 4) return this.readerTypographyMarginLeft;
-    if (settingIndex === 5) return this.readerTypographyMarginRight;
-    if (settingIndex === 6) return this.readerTypographyMarginTop;
-    return this.readerTypographyMarginBottom;
-  }
-
-  openReaderTypographyValueInput(): void {
-    this.readerTypographyValueDraft = '';
-    this.showReaderTypographyValueInput = true;
-  }
-
-  applyReaderTypographyValueInput(): void {
-    if (!this.showReaderTypographyValueInput) return;
-    const value = Number(this.readerTypographyValueDraft);
-    if (!this.readerTypographyValueDraft.trim() || !Number.isFinite(value)) {
-      this.showReaderTypographyValueInput = false;
-      return;
-    }
-    this.applyReaderTypographyValue(this.readerTypographySelection, value);
-    this.showReaderTypographyValueInput = false;
-  }
-
-  applyReaderTypographyValue(settingIndex: number, value: number): void {
-    const rounded = Math.round(value);
-    if (settingIndex === 0) {
-      this.readerTypographyFontSize = Math.max(14, Math.min(rounded, 50));
-    } else if (settingIndex === 1) {
-      this.readerTypographyLetterSpacing = Math.max(0, Math.min(rounded, 8));
-    } else if (settingIndex === 2) {
-      this.readerTypographyLineHeight = Math.max(0, Math.min(rounded, 52));
-    } else if (settingIndex === 3) {
-      this.readerTypographyParagraphSpacing = Math.max(0, Math.min(rounded, 32));
-    } else if (settingIndex === 4) {
-      this.readerTypographyMarginLeft = Math.max(0, Math.min(rounded, 80));
-    } else if (settingIndex === 5) {
-      this.readerTypographyMarginRight = Math.max(0, Math.min(rounded, 80));
-    } else if (settingIndex === 6) {
-      this.readerTypographyMarginTop = Math.max(0, Math.min(rounded, 120));
-    } else {
-      this.readerTypographyMarginBottom = Math.max(0, Math.min(rounded, 120));
-    }
+  onReaderTypographyDraftChange(values: number[]): void {
+    if (values.length !== ReaderTypographyField.COUNT) return;
+    this.readerTypographyDraft = values;
     this.readerTypographyDraftPending = true;
-    this.readerTypographyValueRevision++;
     this.scheduleReaderTypographyChange();
-  }
-
-  stepReaderTypographyValue(settingIndex: number, delta: number): void {
-    const nextValue = this.readerTypographyValue(settingIndex) + delta;
-    this.applyReaderTypographyValue(settingIndex, nextValue);
-  }
-
-  syncReaderTypographyDraft(): void {
-    this.readerTypographyFontSize = this.readerFontSize;
-    this.readerTypographyLetterSpacing = this.readerLetterSpacing;
-    this.readerTypographyLineHeight = this.readerLineHeight;
-    this.readerTypographyParagraphSpacing = this.readerParagraphSpacing;
-    this.readerTypographyMarginLeft = this.readerMarginLeft;
-    this.readerTypographyMarginRight = this.readerMarginRight;
-    this.readerTypographyMarginTop = this.readerMarginTop;
-    this.readerTypographyMarginBottom = this.readerMarginBottom;
-    this.readerTypographyValueRevision++;
   }
 
   commitReaderTypographyDraft(): void {
     if (!this.readerTypographyDraftPending) return;
-    this.readerLayoutCommitInProgress = true;
-    this.readerFontSize = this.readerTypographyFontSize;
-    this.readerLetterSpacing = this.readerTypographyLetterSpacing;
-    this.readerLineHeight = this.readerTypographyLineHeight;
-    this.readerParagraphSpacing = this.readerTypographyParagraphSpacing;
-    this.readerMarginLeft = this.readerTypographyMarginLeft;
-    this.readerMarginRight = this.readerTypographyMarginRight;
-    this.readerMarginTop = this.readerTypographyMarginTop;
-    this.readerMarginBottom = this.readerTypographyMarginBottom;
-    this.readerLayoutCommitInProgress = false;
+    const draft = this.readerTypographyDraft;
     this.readerTypographyDraftPending = false;
+    if (draft.length !== ReaderTypographyField.COUNT) return;
+    this.readerLayoutCommitInProgress = true;
+    this.readerFontSize = draft[ReaderTypographyField.FONT_SIZE];
+    this.readerLetterSpacing = draft[ReaderTypographyField.LETTER_SPACING];
+    this.readerLineHeight = draft[ReaderTypographyField.LINE_HEIGHT];
+    this.readerParagraphSpacing = draft[ReaderTypographyField.PARAGRAPH_SPACING];
+    this.readerMarginLeft = draft[ReaderTypographyField.MARGIN_LEFT];
+    this.readerMarginRight = draft[ReaderTypographyField.MARGIN_RIGHT];
+    this.readerMarginTop = draft[ReaderTypographyField.MARGIN_TOP];
+    this.readerMarginBottom = draft[ReaderTypographyField.MARGIN_BOTTOM];
+    this.readerLayoutCommitInProgress = false;
   }
 
   @Builder
@@ -11266,7 +9208,7 @@ struct ReadBookPage {
     Column({ space: 14 }) {
       this.readerReplaceRulesEntryItem()
 
-      this.readerSelectSettingItem('翻页方式', '选择上下滑动、横向滑动或滚动阅读',
+      this.readerSelectSettingItem('翻页方式', '上下滑动、横向滑动或滚动阅读',
         this.pageTurnModeOptions(), this.pageTurnModeSelectedIndex(), (index: number) => {
           this.switchPageTurnMode(this.pageTurnModeByIndex(index));
         }, 'reader_page_turn_mode_select')
@@ -11276,40 +9218,40 @@ struct ReadBookPage {
       }
 
       if (this.readerPageTurnMode === 2) {
-        this.readerSelectSettingItem('翻页动画', '选择翻页时使用的页面切换效果',
+        this.readerSelectSettingItem('翻页动画', '翻页时的切换效果',
           this.pageTurnAnimationOptions(), this.pageTurnAnimationSelectedIndex(), (index: number) => {
             this.setReaderPageTurnAnimationType(index);
           }, 'reader_page_turn_animation_select_horizontal')
       } else if (this.readerPageTurnMode === 0) {
-        this.readerSelectSettingItem('翻页动画', '选择翻页时使用的页面切换效果',
+        this.readerSelectSettingItem('翻页动画', '翻页时的切换效果',
           this.pageTurnAnimationOptions(), this.pageTurnAnimationSelectedIndex(), (index: number) => {
             this.setReaderPageTurnAnimationType(index);
           }, 'reader_page_turn_animation_select_vertical')
       }
 
-      this.readerSwitchSettingItem('使用双翻页', '横屏或折叠屏展开等宽屏状态下同时显示左右两页',
+      this.readerSwitchSettingItem('使用双翻页', '横屏、折叠屏展开等宽屏下并排显示两页',
         this.readerLandscapeDoublePage, (checked: boolean) => {
           this.setReaderLandscapeDoublePage(checked);
         })
 
-      this.readerSelectSettingItem('屏幕方向', '设置正文阅读时使用的屏幕方向',
+      this.readerSelectSettingItem('屏幕方向', '阅读正文时的屏幕方向',
         this.screenOrientationOptions(), this.screenOrientationSelectedIndex(), (index: number) => {
           this.setReaderScreenOrientationByIndex(index);
         }, 'reader_screen_orientation_select')
 
-      this.readerSwitchSettingItem('音量键翻页', '阅读页获得焦点时使用音量上/下键翻页', this.readerVolumeTurnPage,
+      this.readerSwitchSettingItem('音量键翻页', '音量上/下键翻到上一页/下一页', this.readerVolumeTurnPage,
         (checked: boolean) => {
           this.setReaderVolumeTurnPage(checked);
         })
 
-      this.readerSwitchSettingItem('快速添加书签', '正文下拉时快速添加或删除当前页书签', this.readerQuickBookmarkEnabled,
+      this.readerSwitchSettingItem('快速添加书签', '下拉正文添加或删除当前页书签', this.readerQuickBookmarkEnabled,
         (checked: boolean) => {
           this.setReaderQuickBookmarkEnabled(checked);
         })
 
-      this.readerSwitchSettingItem('眼动翻页（beta）', '视线到达正文底部后提示向上看，向上看即翻到下一页；图像仅在设备本地处理',
+      this.readerSwitchSettingItem('眼动翻页（beta）', '看到页底后向上看即翻页；摄像头图像仅在本机处理',
         this.readerEyeTurnEnabled, (checked: boolean) => {
-          this.setReaderEyeTurnEnabled(checked);
+          this.eyeTurn().setEnabled(checked);
         })
 
       if (this.readerEyeTurnEnabled) {
@@ -11328,7 +9270,7 @@ struct ReadBookPage {
             .width(42)
             .height(42)
             .borderRadius(21)
-            .fontSize(13)
+            .fontSize(AppFontSize.BODY)
             .fontColor(theme.textColor)
             .textAlign(TextAlign.Center)
             .backgroundColor(theme.backgroundColor)
@@ -11346,154 +9288,15 @@ struct ReadBookPage {
       .width('100%')
 
       if (this.currentReaderThemeIndex() === ReaderThemeHelper.CUSTOM_THEME_INDEX) {
-        Column({ space: 10 }) {
-          Row({ space: 8 }) {
-            Select(this.customThemeOptions())
-              .selected(this.currentCustomThemeSelectedIndex())
-              .value(this.currentCustomThemeScheme().name)
-              .font({ size: 14 })
-              .fontColor(this.getTextColor())
-              .backgroundColor(this.appDarkMode ? '#24FFFFFF' : '#12000000')
-              .borderRadius(16)
-              .border({ width: 0 })
-              .layoutWeight(1)
-              .divider(null)
-              .optionBgColor(Color.Transparent)
-              .optionFontColor(this.getTextColor())
-              .selectedOptionFontColor(this.accentColor())
-              .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.isReaderThemeDark()))
-              .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor()))
-              .menuBackgroundBlurStyle(BlurStyle.NONE)
-              .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial())
-              .onSelect((index: number) => {
-                this.selectCustomTheme(index);
-              })
-            Button('新增')
-              .height(36)
-              .fontSize(13)
-              .backgroundColor(this.accentColor())
-              .fontColor('#FFFFFF')
-              .onClick(() => {
-                this.addCustomTheme();
-              })
-            Button('删除')
-              .height(36)
-              .fontSize(13)
-              .backgroundColor(this.appDarkMode ? '#24FFFFFF' : '#12000000')
-              .fontColor(this.getTextColor())
-              .onClick(() => {
-                this.deleteCurrentCustomTheme();
-              })
+        ReaderCustomThemeEditor({
+          dark: this.isReaderThemeDark(),
+          textColor: this.getTextColor(),
+          accentColor: this.accentColor(),
+          menuColor: ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor()),
+          onChanged: (): void => {
+            this.saveReadConfig();
           }
-          .width('100%')
-          TextInput({ text: this.customThemeNameDraft, placeholder: '输入方案名称' })
-            .fontSize(14)
-            .fontColor(this.getTextColor())
-            .height(36)
-            .padding({ left: 10, right: 10 })
-            .backgroundColor(this.appDarkMode ? '#24FFFFFF' : '#12000000')
-            .borderRadius(8)
-            .onChange((value: string) => {
-              this.customThemeNameDraft = value.substring(0, 20);
-            })
-            .onSubmit(() => {
-              this.renameCurrentCustomTheme(this.customThemeNameDraft);
-            })
-            .onBlur(() => {
-              this.renameCurrentCustomTheme(this.customThemeNameDraft);
-            })
-          Row() {
-            Text('背景设置')
-              .fontSize(14)
-              .fontColor(this.getTextColor())
-            Blank()
-            Select([{ value: '背景色' }, { value: '背景图片' }])
-              .selected(this.currentCustomThemeBackgroundTypeIndex())
-              .value(this.currentCustomThemeBackgroundTypeIndex() === 1 ? '背景图片' : '背景色')
-              .font({ size: 14 })
-              .fontColor(this.getTextColor())
-              .backgroundColor(this.appDarkMode ? '#24FFFFFF' : '#12000000')
-              .borderRadius(16)
-              .border({ width: 0 })
-              .optionBgColor(Color.Transparent)
-              .divider(null)
-              .optionFontColor(this.getTextColor())
-              .selectedOptionFontColor(this.accentColor())
-              .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.isReaderThemeDark()))
-              .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor()))
-              .menuBackgroundBlurStyle(BlurStyle.NONE)
-              .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial())
-              .onSelect((index: number) => {
-                this.setCurrentCustomThemeBackgroundType(index);
-              })
-          }
-          .width('100%')
-          if (this.currentCustomThemeBackgroundTypeIndex() === 0) {
-            AdaptiveColorPicker({
-              value: this.currentCustomThemeBackgroundColor(),
-              placeholder: this.currentCustomThemeBackgroundColor(),
-              appDarkMode: this.appDarkMode,
-              accentColor: this.accentColor(),
-              optionTitle: '背景颜色',
-              onColorChange: (value: string) => {
-                this.setCurrentThemeBackgroundColor(value);
-              }
-            })
-          } else {
-            Row({ space: 8 }) {
-              Button(this.currentCustomThemeScheme().backgroundImageUri ? '更换背景图片' : '选择背景图片')
-                .height(36)
-                .fontSize(13)
-                .backgroundColor(this.accentColor())
-                .fontColor('#FFFFFF')
-                .onClick(() => {
-                  this.chooseCurrentCustomThemeImage();
-                })
-              if (this.currentCustomThemeScheme().backgroundImageUri) {
-                Button('移除图片')
-                  .height(36)
-                  .fontSize(13)
-                  .backgroundColor(this.appDarkMode ? '#24FFFFFF' : '#12000000')
-                  .fontColor(this.getTextColor())
-                  .onClick(() => {
-                    this.clearCurrentCustomThemeImage();
-                  })
-                Select([{ value: '裁剪填充' }, { value: '完整显示' }, { value: '拉伸铺满' }])
-                  .selected(this.customThemeFitSelectedIndex())
-                  .value(['裁剪填充', '完整显示', '拉伸铺满'][this.customThemeFitSelectedIndex()])
-                  .font({ size: 13 })
-                  .fontColor(this.getTextColor())
-                  .backgroundColor(this.appDarkMode ? '#24FFFFFF' : '#12000000')
-                  .borderRadius(16)
-                  .border({ width: 0 })
-                  .layoutWeight(1)
-                  .divider(null)
-                  .optionBgColor(Color.Transparent)
-                  .optionFontColor(this.getTextColor())
-                  .selectedOptionFontColor(this.accentColor())
-                  .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.isReaderThemeDark()))
-                  .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor()))
-                  .menuBackgroundBlurStyle(BlurStyle.NONE)
-                  .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial())
-                  .onSelect((index: number) => {
-                    this.setCurrentCustomThemeImageFit(index);
-                  })
-              }
-            }
-            .width('100%')
-          }
-          AdaptiveColorPicker({
-            value: this.currentCustomThemeTextColor(),
-            placeholder: this.currentCustomThemeTextColor(),
-            appDarkMode: this.appDarkMode,
-            accentColor: this.accentColor(),
-            optionTitle: '文字颜色',
-            onColorChange: (value: string) => {
-              this.setCurrentThemeTextColor(value);
-            }
-          })
-        }
-        .width('100%')
+        })
       }
 
       this.readerPreloadSettingItem()
@@ -11506,12 +9309,12 @@ struct ReadBookPage {
     Row() {
       Column() {
         Text('阅读字体')
-          .fontSize(15)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontColor(this.getTextColor())
-        Text('正文 / 标题 / 正则样式设置')
-          .fontSize(12)
+        Text('正文、标题、正则样式')
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.getSubTextColor())
-          .margin({ top: 4 })
+          .margin({ top: AppSpacing.XS })
       }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
@@ -11532,12 +9335,12 @@ struct ReadBookPage {
     Row() {
       Column() {
         Text('替换净化')
-          .fontSize(15)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontColor(this.getTextColor())
-        Text('管理正文与章节标题的替换规则')
-          .fontSize(12)
+        Text('正文与章节标题的替换规则')
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.getSubTextColor())
-          .margin({ top: 4 })
+          .margin({ top: AppSpacing.XS })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
@@ -11557,112 +9360,27 @@ struct ReadBookPage {
 
   @Builder
   ttsQuickSettingsPanel() {
-    Column({ space: 14 }) {
-      Row() {
-        Text('朗读倍速')
-          .fontSize(15)
-          .fontColor(this.getTextColor())
-          .layoutWeight(1)
-        Text(`${this.ttsSpeed.toFixed(1)}x`)
-          .fontSize(14)
-          .fontColor(this.getSubTextColor())
+    ReaderTtsQuickSettingsPanel({
+      speed: this.ttsSpeed,
+      voicesLoading: this.ttsVoicesLoading,
+      voiceTitle: this.selectedTtsVoiceTitle(),
+      sleepTimerMinutes: this.ttsSleepTimerMinutes,
+      sleepTimerRemainingSeconds: this.ttsSleepTimerRemainingSeconds,
+      speaking: this.isTtsSpeaking,
+      dark: this.isReaderThemeDark(),
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      accentColor: this.accentColor(),
+      actionColor: this.buttonColor(),
+      onSpeedChange: (speed: number): void => this.applyTtsSpeed(speed),
+      onOpenVoicePicker: (): void => {
+        this.showTtsVoiceDropdown = true;
+      },
+      onSleepTimerChange: (minutes: number): void => this.setTtsSleepTimer(minutes),
+      onToggleReading: (): void => {
+        this.toggleTtsReading();
       }
-      .width('100%')
-
-      Row({ space: 10 }) {
-        this.readerSliderStepButton($r('sys.symbol.minus'), '降低朗读倍速', this.ttsSpeed > 0.5, () => {
-          this.applyTtsSpeed(this.ttsSpeed - 0.1);
-        })
-      Slider({ value: this.ttsSpeed, min: 0.5, max: 2, step: 0.1 })
-        .layoutWeight(1)
-        .showTips(true)
-          .selectedColor(this.accentColor())
-        .sliderInteractionMode(ImmersiveMaterialRuntime.supportsHds() ?
-          SliderInteraction.SLIDE_AND_CLICK_UP : SliderInteraction.SLIDE_ONLY)
-          .onChange((value: number) => {
-            this.applyTtsSpeed(value);
-          })
-        this.readerSliderStepButton($r('sys.symbol.plus'), '提高朗读倍速', this.ttsSpeed !== 2, () => {
-          this.applyTtsSpeed(this.ttsSpeed + 0.1);
-        })
-      }
-      .width('100%')
-
-      Row({ space: 8 }) {
-        this.ttsSpeedChip(0.8)
-        this.ttsSpeedChip(1.0)
-        this.ttsSpeedChip(1.2)
-        this.ttsSpeedChip(1.5)
-        this.ttsSpeedChip(2.0)
-      }
-      .width('100%')
-
-      Row() {
-        Text('朗读音色')
-          .fontSize(15)
-          .fontColor(this.getTextColor())
-          .layoutWeight(1)
-        if (this.ttsVoicesLoading) {
-          Text('加载中')
-            .fontSize(12)
-            .fontColor(this.getSubTextColor())
-        }
-      }
-      .width('100%')
-
-      Row() {
-        Text(this.selectedTtsVoiceTitle())
-          .fontSize(14)
-          .fontColor(this.getTextColor())
-          .layoutWeight(1)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-        SymbolGlyph($r('sys.symbol.chevron_down'))
-          .fontSize(16)
-          .fontColor([this.getSubTextColor()])
-          .margin({ left: 10 })
-      }
-        .width('100%')
-        .height(44)
-        .padding({ left: 14, right: 14 })
-        .backgroundColor(this.isReaderThemeDark() ? '#24272D' : '#EEF0F3')
-        .borderRadius(8)
-        .onClick(() => {
-          this.showTtsVoiceDropdown = true;
-        })
-
-      Row() {
-        Text('朗读定时')
-          .fontSize(15)
-          .fontColor(this.getTextColor())
-          .layoutWeight(1)
-        Text(this.ttsSleepTimerMinutes > 0 ?
-          `剩余 ${Math.max(1, Math.ceil(this.ttsSleepTimerRemainingSeconds / 60))} 分钟` : '未设置')
-          .fontSize(12)
-          .fontColor(this.getSubTextColor())
-      }
-      .width('100%')
-
-      Row({ space: 8 }) {
-        this.ttsSleepTimerChip(15)
-        this.ttsSleepTimerChip(30)
-        this.ttsSleepTimerChip(60)
-        this.ttsSleepTimerChip(90)
-        this.ttsSleepTimerChip(120)
-      }
-      .width('100%')
-
-      Button(this.isTtsSpeaking ? '停止朗读' : '开始朗读')
-        .width('100%')
-        .height(40)
-        .backgroundColor(this.isTtsSpeaking ? '#E53935' : this.buttonColor())
-        .fontColor('#FFFFFF')
-        .onClick(() => {
-          this.toggleTtsReading();
-        })
-    }
-    .width('100%')
+    })
   }
 
   @Builder
@@ -11676,183 +9394,43 @@ struct ReadBookPage {
           this.showTtsVoiceDropdown = false;
         })
 
-      Column() {
-        Row() {
-          Text('朗读音色')
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.getTextColor())
-
-          Blank()
-            .layoutWeight(1)
-
-          ImmersiveBackButton({
-            icon: $r('sys.symbol.xmark'),
-            iconOffsetX: 0,
-            iconColor: this.readerControlIconColor(),
-            darkMode: this.isReaderThemeDark(),
-            buttonSize: 40,
-            containerWidth: 40,
-            containerHeight: 40,
-            startInset: 0,
-            materialScale: 0.83,
-            compactLayout: true,
-            accessibilityLabel: '关闭音色选择',
-            onBack: () => {
-              this.showTtsVoiceDropdown = false;
-            }
-          })
+      ReaderTtsVoicePickerPanel({
+        cloudVoices: this.ttsCloudVoices,
+        customVoices: this.selectableCustomTtsVoices(),
+        systemVoices: this.selectableSystemTtsVoices(),
+        selectedKey: this.currentTtsVoiceKey(),
+        dark: this.isReaderThemeDark(),
+        textColor: this.getTextColor(),
+        subTextColor: this.getSubTextColor(),
+        accentColor: this.accentColor(),
+        panelColor: this.readerGlassPanelColor(),
+        panelBorderColor: this.readerGlassBorderColor(),
+        panelShadowColor: this.readerGlassShadowColor(),
+        selectedColor: this.tocSelectedBackgroundColor(),
+        panelWidth: this.readerFloatingBarWidth(),
+        panelHeight: this.readerTocPanelHeight(),
+        onClose: (): void => {
+          this.showTtsVoiceDropdown = false;
+        },
+        onSelectCloudVoice: (voice: TtsVoiceInfo): void => {
+          this.showTtsVoiceDropdown = false;
+          this.applyCloudTtsVoice(voice, true);
+        },
+        onSelectCustomVoice: (voice: HttpTTS): void => {
+          this.showTtsVoiceDropdown = false;
+          this.applyCustomTtsVoice(voice, true);
+        },
+        onSelectSystemVoice: (voice: TtsVoiceOption): void => {
+          this.showTtsVoiceDropdown = false;
+          this.applyTtsVoice(voice, true);
         }
-        .width('100%')
-        .padding({ left: 20, right: 16, top: 12, bottom: 10 })
-        .alignItems(VerticalAlign.Center)
-
-        Scroll() {
-          Column() {
-            if (this.ttsCloudVoices.length > 0) {
-              this.ttsVoiceDropdownSectionTitle('云端音色')
-              ForEach(this.ttsCloudVoices, (voice: TtsVoiceInfo) => {
-                this.ttsVoiceDropdownOption(this.ttsCloudVoiceTitle(voice),
-                  this.isCurrentCloudTtsVoice(voice), () => {
-                    this.showTtsVoiceDropdown = false;
-                    this.applyCloudTtsVoice(voice, true);
-                  })
-              }, (voice: TtsVoiceInfo) => this.ttsCloudVoiceKey(voice))
-            }
-
-            if (this.selectableCustomTtsVoices().length > 0) {
-              this.ttsVoiceDropdownSectionTitle('自定义音色')
-              ForEach(this.selectableCustomTtsVoices(), (voice: HttpTTS) => {
-                this.ttsVoiceDropdownOption(this.ttsCustomVoiceTitle(voice),
-                  this.isCurrentCustomTtsVoice(voice), () => {
-                    this.showTtsVoiceDropdown = false;
-                    this.applyCustomTtsVoice(voice, true);
-                  })
-              }, (voice: HttpTTS) => this.ttsCustomVoiceKey(voice))
-            }
-
-            if (this.selectableSystemTtsVoices().length > 0) {
-              this.ttsVoiceDropdownSectionTitle('系统音色')
-              ForEach(this.selectableSystemTtsVoices(), (voice: TtsVoiceOption) => {
-                this.ttsVoiceDropdownOption(this.ttsVoiceTitle(voice),
-                  this.isCurrentTtsVoice(voice), () => {
-                    this.showTtsVoiceDropdown = false;
-                    this.applyTtsVoice(voice, true);
-                  })
-              }, (voice: TtsVoiceOption) => this.ttsVoiceKey(voice))
-            }
-          }
-          .width('100%')
-          .padding({ left: 12, right: 12, bottom: 16 })
-        }
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        .width('100%')
-        .layoutWeight(1)
-        .scrollBar(BarState.Auto)
-        .scrollBarColor(this.isReaderThemeDark() ? '#668A8F98' : '#667A6F63')
-      }
-      .width(this.readerFloatingBarWidth())
-      .height(this.readerTocPanelHeight())
-      .borderRadius(ThemeRuntime.glassCornerRadius(28, 'panel'))
-      .clip(true)
-      .backgroundColor(this.readerGlassPanelColor())
-      .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-      .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: this.readerGlassBorderColor() })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('panel'), color: this.readerGlassShadowColor(),
-        offsetX: ThemeRuntime.glassShadowOffsetX('panel'), offsetY: ThemeRuntime.glassShadowOffsetY('panel') })
-      .position({ x: this.readerFloatingBarLeft(), y: '100%' })
-      .translate({ y: -(this.readerTocPanelHeight() + this.readerFloatingPanelBottomInset()) })
-      .transition(this.readerPanelTransition())
+      })
+        .position({ x: this.readerFloatingBarLeft(), y: '100%' })
+        .translate({ y: -(this.readerTocPanelHeight() + this.readerFloatingPanelBottomInset()) })
+        .transition(this.readerPanelTransition())
     }
     .width('100%')
     .height('100%')
-  }
-
-  @Builder
-  ttsVoiceDropdownSectionTitle(title: string) {
-    Text(title)
-      .fontSize(12)
-      .fontWeight(FontWeight.Medium)
-      .fontColor(this.getSubTextColor())
-      .width('100%')
-      .padding({ left: 10, right: 10, top: 12, bottom: 6 })
-  }
-
-  @Builder
-  ttsVoiceDropdownOption(title: string, selected: boolean, action: () => void) {
-    Row() {
-      Text(title)
-        .fontSize(14)
-        .fontColor(this.getTextColor())
-        .layoutWeight(1)
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-      if (selected) {
-        SymbolGlyph($r('sys.symbol.checkmark'))
-          .fontSize(18)
-          .fontColor([this.accentColor()])
-          .margin({ left: 10 })
-      }
-    }
-    .width('100%')
-    .constraintSize({ minHeight: 48 })
-    .padding({ left: 12, right: 12, top: 9, bottom: 9 })
-    .borderRadius(8)
-    .backgroundColor(selected ? this.tocSelectedBackgroundColor() : Color.Transparent)
-    .onClick(action)
-  }
-
-  @Builder
-  ttsSpeedChip(value: number) {
-    Text(`${value.toFixed(1)}x`)
-      .fontSize(13)
-      .fontColor(Math.abs(this.ttsSpeed - value) < 0.01 ? '#FFFFFF' : this.getTextColor())
-      .textAlign(TextAlign.Center)
-      .layoutWeight(1)
-      .height(32)
-      .borderRadius(16)
-      .backgroundColor(Math.abs(this.ttsSpeed - value) < 0.01 ? this.accentColor() :
-        (this.isReaderThemeDark() ? '#24272D' : '#EEF0F3'))
-      .onClick(() => {
-        this.applyTtsSpeed(value);
-      })
-  }
-
-  @Builder
-  ttsSleepTimerChip(minutes: number) {
-    Text(`${minutes}分`)
-      .fontSize(13)
-      .fontColor(this.ttsSleepTimerMinutes === minutes ? '#FFFFFF' : this.getTextColor())
-      .textAlign(TextAlign.Center)
-      .layoutWeight(1)
-      .height(32)
-      .borderRadius(16)
-      .backgroundColor(this.ttsSleepTimerMinutes === minutes ? this.accentColor() :
-        (this.isReaderThemeDark() ? '#24272D' : '#EEF0F3'))
-      .accessibilityText(this.ttsSleepTimerMinutes === minutes ?
-        `关闭 ${minutes} 分钟朗读定时` : `设置 ${minutes} 分钟朗读定时`)
-      .onClick(() => {
-        this.setTtsSleepTimer(this.ttsSleepTimerMinutes === minutes ? 0 : minutes);
-      })
-  }
-
-  @Builder
-  readerSliderStepButton(icon: Resource, accessibilityText: string, enabled: boolean, action: () => void) {
-    ImmersiveBackButton({
-      icon: icon,
-      accessibilityLabel: accessibilityText,
-      iconColor: this.readerControlIconColor(),
-      disabledIconColor: this.getSubTextColor(),
-      darkMode: this.isReaderThemeDark(),
-      buttonEnabled: enabled,
-      buttonSize: 34,
-      containerWidth: 34,
-      containerHeight: 34,
-      startInset: 0,
-      compactLayout: true,
-      onBack: action
-    })
   }
 
   pageTurnModeOptions(): SelectOption[] {
@@ -11916,13 +9494,6 @@ struct ReadBookPage {
     return 0;
   }
 
-  pageTurnAnimationValue(): string {
-    const options = this.pageTurnAnimationOptions();
-    const index = this.pageTurnAnimationSelectedIndex();
-    const option = options[index];
-    return option && typeof option.value === 'string' ? option.value : '无动画';
-  }
-
   screenTimeoutOptions(): SelectOption[] {
     return [
       { value: '跟随系统' },
@@ -11981,86 +9552,34 @@ struct ReadBookPage {
 
   @Builder
   readerTapZoneSettingItem() {
-    Row() {
-      Column() {
-        Text('点击区域动作')
-          .fontSize(15)
-          .fontColor(this.getTextColor())
-        Text(this.tapZoneSummaryText())
-          .fontSize(12)
-          .fontColor(this.getSubTextColor())
-          .margin({ top: 4 })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Button('配置')
-        .height(34)
-        .fontSize(13)
-        .backgroundColor(this.buttonColor())
-        .fontColor('#FFFFFF')
-        .margin({ left: 12 })
-        .onClick(() => {
-          this.presentTapZoneSettings();
-        })
-    }
-    .width('100%')
-    .constraintSize({ minHeight: 56 })
-    .alignItems(VerticalAlign.Center)
+    ReaderSettingActionRow({
+      title: '点击区域动作',
+      description: this.tapZoneSummaryText(),
+      actionText: '配置',
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      buttonColor: this.buttonColor(),
+      buttonTextColor: ThemeRuntime.onAccentColor(),
+      onAction: (): void => this.presentTapZoneSettings()
+    })
   }
-
-
 
   @Builder
   readerSelectSettingItem(title: string, description: string, options: SelectOption[], selected: number,
     onSelect: (index: number) => void, controlId: string) {
-    Row() {
-      Column() {
-        Text(title)
-          .fontSize(15)
-          .fontColor(this.getTextColor())
-        Text(description)
-          .fontSize(12)
-          .fontColor(this.getSubTextColor())
-          .margin({ top: 4 })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Select(options)
-        .id(controlId)
-        .selected(selected)
-        .value(this.readerSelectOptionValue(options, selected))
-        .font({ size: 14 })
-        .fontColor(this.getSubTextColor())
-        .backgroundColor(Color.Transparent)
-        .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
-        // Keep the hit area rectangular, but soften its corners to match the rounded settings cards.
-        .borderRadius(16)
-        .border({ width: 0 })
-        .optionBgColor(Color.Transparent)
-        .divider(null)
-        .optionFontColor(this.getTextColor())
-        .selectedOptionFontColor(this.accentColor())
-        .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.isReaderThemeDark()))
-        .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor()))
-        .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial())
-        .onSelect((index: number) => {
-          onSelect(index);
-        })
-    }
-    .width('100%')
-    .constraintSize({ minHeight: 56 })
-    .alignItems(VerticalAlign.Center)
-  }
-
-  readerSelectOptionValue(options: SelectOption[], index: number): ResourceStr {
-    if (index >= 0 && index < options.length) {
-      return options[index].value;
-    }
-    return options.length > 0 ? options[0].value : '';
+    ReaderSettingSelectRow({
+      title: title,
+      description: description,
+      options: options,
+      selected: selected,
+      controlId: controlId,
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      accentColor: this.accentColor(),
+      dark: this.isReaderThemeDark(),
+      menuColor: ThemeRuntime.dropdownPanelColor(this.isReaderThemeDark(), this.getBackgroundColor()),
+      onSelect: onSelect
+    })
   }
 
   readerPreloadChapterOptions(): SelectOption[] {
@@ -12073,63 +9592,25 @@ struct ReadBookPage {
 
   @Builder
   readerSwitchSettingItem(title: string, description: string, checked: boolean, onChange: (checked: boolean) => void) {
-    Row() {
-      Column() {
-        Text(title)
-          .fontSize(15)
-          .fontColor(this.getTextColor())
-        Text(description)
-          .fontSize(12)
-          .fontColor(this.getSubTextColor())
-          .margin({ top: 4 })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Toggle({ type: ToggleType.Switch, isOn: checked })
-        .selectedColor(this.buttonColor())
-        .onChange((value: boolean) => {
-          onChange(value);
-        })
-    }
-    .width('100%')
-    .constraintSize({ minHeight: 56 })
-    .alignItems(VerticalAlign.Center)
+    ReaderSettingSwitchRow({
+      title: title,
+      description: description,
+      checked: checked,
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      onChange: onChange
+    })
   }
 
   @Builder
   readerEyeTurnCalibrationSettingItem() {
-    Row() {
-      Column() {
-        Text('眼动校准')
-          .fontSize(15)
-          .fontColor(this.getTextColor())
-        Text(this.arEngineFaceActive ? 'AR 自动校准 · 无需手动校准' :
-          `${this.isReaderEyeLandscape() ? '横屏' : '竖屏'} · ${this.readerEyeTurnStatus}`)
-          .fontSize(12)
-          .fontColor(this.getSubTextColor())
-          .margin({ top: 4 })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      if (!this.arEngineFaceActive) {
-        // AR Engine gaze needs no per-device calibration; only the camera fallback does.
-        Button(this.currentReaderEyeCalibrationRaw() ? '重新校准' : '开始校准')
-          .height(36)
-          .fontSize(13)
-          .fontColor('#FFFFFF')
-          .backgroundColor(this.accentColor())
-          .onClick((): void => this.openReaderEyeCalibration())
-      }
-    }
-    .width('100%')
-    .constraintSize({ minHeight: 56 })
-    .alignItems(VerticalAlign.Center)
-  }
-
-  readerEyeTurnPromptVisible(): boolean {
-    return (this.readerEyeTurnStatus || '').indexOf('向上看，翻下一页') >= 0;
+    ReaderEyeTurnCalibrationSettingItem({
+      state: this.eyeTurnState,
+      coordinator: this.eyeTurn(),
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      accentColor: this.accentColor()
+    })
   }
 
   readerEyeTurnPromptTop(): number {
@@ -12140,14 +9621,14 @@ struct ReadBookPage {
 
   @Builder
   readerEyeTurnPrompt() {
-    if (this.readerEyeTurnPromptVisible()) {
+    if (this.eyeTurnState.promptVisible()) {
       Row() {
         Text('向上看，翻下一页')
-          .fontSize(14)
+          .fontSize(AppFontSize.BODY)
           .fontWeight(FontWeight.Medium)
           .fontColor('#F8FFFFFF')
-          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-          .borderRadius(18)
+          .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.MD, bottom: AppSpacing.MD })
+          .borderRadius(ThemeRuntime.buttonRadius())
           .backgroundColor('#B35C7569')
           .shadow({ radius: 12, color: '#45000000', offsetX: 0, offsetY: 4 })
       }
@@ -12163,180 +9644,59 @@ struct ReadBookPage {
 
   @Builder
   readerEyeCalibrationPanel() {
-    Stack({ alignContent: Alignment.Center }) {
-      Column({ space: 18 }) {
-        Row() {
-          Text('眼动翻页校准')
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.getTextColor())
-          Blank()
-          Button({ type: ButtonType.Circle }) {
-            SymbolGlyph($r('sys.symbol.xmark'))
-              .fontSize(18)
-              .fontColor([this.getTextColor()])
-          }
-          .width(38)
-          .height(38)
-          .backgroundColor(this.isReaderThemeDark() ? '#28FFFFFF' : '#12000000')
-          .onClick((): void => this.cancelReaderEyeCalibration())
-        }
-        .width('100%')
-
-        Text(this.readerEyeCalibrationInstruction())
-          .fontSize(17)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.getTextColor())
-          .textAlign(TextAlign.Center)
-
-        Text('头部和手机保持稳定，只用眼睛跟随圆点缓慢移动。请不要提前看向圆点将要到达的位置。')
-          .fontSize(13)
-          .fontColor(this.getSubTextColor())
-          .textAlign(TextAlign.Center)
-          .lineHeight(20)
-
-        Progress({ value: this.readerEyeCalibrationProgress, total: 100, type: ProgressType.Linear })
-          .width('100%')
-          .height(6)
-          .color(this.accentColor())
-        Text(this.readerEyeTurnStatus)
-          .fontSize(12)
-          .fontColor(this.getSubTextColor())
-          .textAlign(TextAlign.Center)
-        if (!this.readerEyeCalibrationSessionActive) {
-          Button('开始三步校准')
-            .width('100%')
-            .height(46)
-            .fontSize(15)
-            .fontColor('#FFFFFF')
-            .backgroundColor(this.accentColor())
-            .onClick((): void => this.beginReaderEyeCalibrationCapture())
-        } else {
-          Button(this.readerEyeCalibrationCapturing ? '采样中…' :
-            `开始采样（${this.currentReaderEyeCalibrationTargetLabel()}）`)
-            .width('100%')
-            .height(46)
-            .fontSize(15)
-            .fontColor('#FFFFFF')
-            .backgroundColor(this.readerEyeCalibrationCapturing ?
-              (this.isReaderThemeDark() ? '#33FFFFFF' : '#33000000') : this.accentColor())
-            .enabled(!this.readerEyeCalibrationCapturing)
-            .onClick((): void => this.startReaderEyeCalibrationPhaseSampling())
-        }
-      }
-      .width('calc(100% - 48vp)')
-      .constraintSize({ maxWidth: 480 })
-      .padding(24)
-      .borderRadius(28)
-      .backgroundColor(this.readerGlassPanelColor())
-      .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-      .border({ width: 1, color: this.readerGlassBorderColor() })
-      .margin({ bottom: 24 })
-
-      Stack({ alignContent: Alignment.Center }) {
-        Row()
-          .width(this.readerEyeCalibrationPreviewWidthVp() * 0.48)
-          .height(this.readerEyeCalibrationPreviewHeightVp() * 0.76)
-          .borderRadius(999)
-          .border({ width: 2, color: this.accentColor(), style: BorderStyle.Dashed })
-
-        Column() {
-          Blank()
-          Text(this.readerEyeCalibrationPreviewHint())
-            .fontSize(11)
-            .fontColor('#FFFFFF')
-            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-            .borderRadius(12)
-            .backgroundColor('#88000000')
-            .margin({ bottom: 8 })
-        }
-        .height('100%')
-      }
-      .width(this.readerEyeCalibrationPreviewWidthVp())
-      .height(this.readerEyeCalibrationPreviewHeightVp())
-      .position({
-        x: this.readerEyeCalibrationPreviewLeftVp(),
-        y: this.readerEyeCalibrationPreviewTopVp()
-      })
-      .borderRadius(20)
-      .border({ width: 1, color: '#70FFFFFF' })
-      .hitTestBehavior(HitTestMode.None)
-
-      if (this.readerEyeCalibrationSessionActive && this.readerEyeCalibrationStep >= 0 &&
-        this.readerEyeCalibrationStep < READER_EYE_CALIBRATION_PHASE_COUNT) {
-        Row()
-          .width(24)
-          .height(24)
-          .borderRadius(12)
-          .backgroundColor(this.accentColor())
-          .border({ width: 4, color: this.isReaderThemeDark() ? '#A0FFFFFF' : '#D0FFFFFF' })
-          .shadow({ radius: 16, color: this.accentColor(), offsetX: 0, offsetY: 0 })
-          .position({
-            x: Math.max(0, (this.readerEyeCalibrationOverlayWidth - 24) / 2),
-            y: this.readerEyeCalibrationTargetTopVp()
-          })
-      }
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor('#66000000')
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-    .zIndex(4)
-    .onAreaChange((_oldArea: Area, newArea: Area): void => {
-      const width = this.parseAreaDimension(newArea.width);
-      const height = this.parseAreaDimension(newArea.height);
-      if (width > 0 && Math.abs(width - this.readerEyeCalibrationOverlayWidth) >= 0.5) {
-        this.readerEyeCalibrationOverlayWidth = width;
-      }
-      if (height > 0 && Math.abs(height - this.readerEyeCalibrationOverlayHeight) >= 0.5) {
-        this.readerEyeCalibrationOverlayHeight = height;
-      }
+    ReaderEyeCalibrationPanel({
+      state: this.eyeTurnState,
+      coordinator: this.eyeTurn(),
+      dark: this.isReaderThemeDark(),
+      textColor: this.getTextColor(),
+      subTextColor: this.getSubTextColor(),
+      accentColor: this.accentColor(),
+      panelColor: this.readerGlassPanelColor(),
+      panelBorderColor: this.readerGlassBorderColor(),
+      viewportWidth: this.pageViewWidth,
+      viewportHeight: this.pageViewHeight,
+      statusBarHeight: this.statusBarSafeHeight,
+      navBarHeight: this.navBarHeight
     })
-    .onClick((): void => {})
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+      .zIndex(4)
   }
 
-  readerEyeCalibrationTargetTopVp(): number {
-    const overlayHeight = this.readerEyeCalibrationOverlayHeight > 0 ?
-      this.readerEyeCalibrationOverlayHeight : Math.max(1, this.pageViewHeight);
-    // Keep both targets clear of the system bars so they stay visible and reachable.
-    const top = 4 + Math.max(0, this.statusBarSafeHeight);
-    const bottom = Math.max(top, overlayHeight - 28 - Math.max(0, this.navBarHeight));
-    const progress = Math.max(0, Math.min(1, (this.readerEyeCalibrationTargetY + 1) / 2));
-    return top + (bottom - top) * progress;
-  }
-
-  readerEyeCalibrationPreviewWidthVp(): number {
-    const overlayWidth = this.readerEyeCalibrationOverlayWidth > 0 ?
-      this.readerEyeCalibrationOverlayWidth : Math.max(1, this.pageViewWidth);
-    const overlayHeight = this.readerEyeCalibrationOverlayHeight > 0 ?
-      this.readerEyeCalibrationOverlayHeight : Math.max(1, this.pageViewHeight);
-    return Math.max(150, Math.min(300, overlayWidth - 48, overlayHeight * 0.40 / 0.75));
-  }
-
-  readerEyeCalibrationPreviewHeightVp(): number {
-    return this.readerEyeCalibrationPreviewWidthVp() * 0.75;
-  }
-
-  readerEyeCalibrationPreviewLeftVp(): number {
-    const overlayWidth = this.readerEyeCalibrationOverlayWidth > 0 ?
-      this.readerEyeCalibrationOverlayWidth : Math.max(1, this.pageViewWidth);
-    return Math.max(0, (overlayWidth - this.readerEyeCalibrationPreviewWidthVp()) / 2);
-  }
-
-  readerEyeCalibrationPreviewTopVp(): number {
-    return 18;
-  }
-
-  readerEyeCalibrationPreviewHint(): string {
-    if (!this.readerEyeCalibrationCapturing) return '请让完整面部位于虚线框内';
-    if (this.readerEyeTurnStatus.indexOf('未检测到') >= 0) return '未检测到面部，请调整距离和角度';
-    if (this.readerEyeTurnStatus.indexOf('不稳定') >= 0) return '请保证正面光线充足';
-    return '面部保持在框内，仅在本机处理';
-  }
-
-  readerEyeCalibrationInstruction(): string {
-    const label = this.currentReaderEyeCalibrationTargetLabel();
-    return `第 ${this.readerEyeCalibrationStep + 1}/3 步：注视${label}目标点`;
+  // Camera permission, gaze signal source and calibration live in the coordinator; the page decides when a gaze
+  // turn is allowed and performs it.
+  eyeTurn(): ReaderEyeTurnCoordinator {
+    if (!this.eyeTurnCoordinator) {
+      this.eyeTurnCoordinator = new ReaderEyeTurnCoordinator(this.eyeTurnState, {
+        abilityContext: (): common.UIAbilityContext => getContext(this) as common.UIAbilityContext,
+        enabled: (): boolean => this.readerEyeTurnEnabled,
+        setEnabled: (enabled: boolean): void => {
+          this.readerEyeTurnEnabled = enabled;
+        },
+        calibration: (landscape: boolean): string =>
+          landscape ? this.readerEyeTurnLandscapeCalibration : this.readerEyeTurnPortraitCalibration,
+        setCalibration: (landscape: boolean, raw: string): void => {
+          if (landscape) this.readerEyeTurnLandscapeCalibration = raw;
+          else this.readerEyeTurnPortraitCalibration = raw;
+        },
+        nextDwellMs: (): number => this.readerEyeTurnNextDwellMs,
+        saveSettings: (): void => this.saveReaderEyeTurnSettings(),
+        pageVisible: (): boolean => this.readerPageVisible,
+        viewportWidth: (): number => this.pageViewWidth,
+        viewportHeight: (): number => this.pageViewHeight,
+        canTurn: (): boolean => this.readerEyeTurnCanTrigger(),
+        blockReason: (): string => this.readerEyeTurnBlockReason(),
+        turnNext: (): void => {
+          this.runPageTurnAnimation(1, 'tap').catch((error: Error): void => {
+            console.warn('[EyeTurn] page turn failed:', error.message);
+          });
+        },
+        closePanels: (): void => {
+          this.showMenu = false;
+          this.showSettings = false;
+        }
+      });
+    }
+    return this.eyeTurnCoordinator;
   }
 
   @Builder
@@ -12347,27 +9707,28 @@ struct ReadBookPage {
       Row() {
         Column() {
           Text('预缓存设置')
-            .fontSize(15)
+            .fontSize(AppFontSize.BODY_LARGE)
             .fontColor(this.getTextColor())
-          Text(this.readerPreloadEnabled ? '阅读过程中提前缓存后续章节' : '已关闭自动预缓存')
-            .fontSize(12)
+          Text('阅读时提前缓存后续章节')
+            .fontSize(AppFontSize.CAPTION)
             .fontColor(this.getSubTextColor())
-            .margin({ top: 4 })
+            .margin({ top: AppSpacing.XS })
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
 
-        Toggle({ type: ToggleType.Switch, isOn: this.readerPreloadEnabled })
-          .selectedColor(this.buttonColor())
-          .onChange((value: boolean) => {
+        AdaptiveSwitch({
+          isOn: this.readerPreloadEnabled,
+          onChange: (value: boolean) => {
             this.setReaderPreloadEnabled(value);
-          })
+          }
+        })
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
       if (this.readerPreloadEnabled) {
-        this.readerSelectSettingItem('下一章节数', '选择自动预缓存的后续章节数量',
+        this.readerSelectSettingItem('下一章节数', '预缓存的后续章节数',
           this.readerPreloadChapterOptions(), this.readerPreloadChapterCount - 1,
           (index: number) => this.setReaderPreloadChapterCount(index + 1),
           'reader_preload_chapter_count_select')
@@ -12500,114 +9861,6 @@ struct ReadBookPage {
     });
   }
 
-  setCurrentThemeBackgroundColor(color: string): void {
-    const value = this.normalizeColor(color, this.currentCustomThemeBackgroundColor());
-    const data = this.customThemeData();
-    ReaderCustomThemeHelper.selected(data, this.appDarkMode).backgroundColor = value;
-    this.persistCustomThemeData(data);
-  }
-
-  setCurrentThemeTextColor(color: string): void {
-    const value = this.normalizeColor(color, this.currentCustomThemeTextColor());
-    const data = this.customThemeData();
-    ReaderCustomThemeHelper.selected(data, this.appDarkMode).textColor = value;
-    this.persistCustomThemeData(data);
-  }
-
-  persistCustomThemeData(data: ReaderCustomThemeData): void {
-    const selected = ReaderCustomThemeHelper.selected(data, this.appDarkMode);
-    if (this.appDarkMode) {
-      this.readerDarkCustomThemeBackgroundColor = selected.backgroundColor;
-      this.readerDarkCustomThemeTextColor = selected.textColor;
-    } else {
-      this.readerLightCustomThemeBackgroundColor = selected.backgroundColor;
-      this.readerLightCustomThemeTextColor = selected.textColor;
-    }
-    this.readerCustomThemesRaw = ReaderCustomThemeHelper.stringify(data);
-    this.saveReaderThemeSettings();
-    this.saveReadConfig();
-  }
-
-  addCustomTheme(): void {
-    const data = this.customThemeData();
-    const item = ReaderCustomThemeHelper.add(data, this.appDarkMode);
-    this.customThemeNameDraft = item.name;
-    this.persistCustomThemeData(data);
-  }
-
-  deleteCurrentCustomTheme(): void {
-    const data = this.customThemeData();
-    if (ReaderCustomThemeHelper.schemesForMode(data, this.appDarkMode).length <= 1) {
-      HdsFeedback.showToast('至少保留一套自定义背景');
-      return;
-    }
-    ReaderCustomThemeHelper.removeSelected(data, this.appDarkMode);
-    this.customThemeNameDraft = ReaderCustomThemeHelper.selected(data, this.appDarkMode).name;
-    this.persistCustomThemeData(data);
-  }
-
-  selectCustomTheme(index: number): void {
-    const data = this.customThemeData();
-    const schemes = ReaderCustomThemeHelper.schemesForMode(data, this.appDarkMode);
-    if (index < 0 || index >= schemes.length) {
-      return;
-    }
-    ReaderCustomThemeHelper.select(data, this.appDarkMode, schemes[index].id);
-    this.customThemeNameDraft = schemes[index].name;
-    this.persistCustomThemeData(data);
-  }
-
-  renameCurrentCustomTheme(name: string): void {
-    const data = this.customThemeData();
-    const current = ReaderCustomThemeHelper.selected(data, this.appDarkMode);
-    const value = (name || '').trim().substring(0, 20);
-    if (!value) {
-      this.customThemeNameDraft = current.name;
-      return;
-    }
-    current.name = value;
-    this.customThemeNameDraft = value;
-    this.persistCustomThemeData(data);
-  }
-
-  async chooseCurrentCustomThemeImage(): Promise<void> {
-    const data = this.customThemeData();
-    const current = ReaderCustomThemeHelper.selected(data, this.appDarkMode);
-    try {
-      const imageUri = await ReaderBackgroundImageStore.pickAndSave(getContext(this), current.id);
-      if (!imageUri) {
-        return;
-      }
-      current.backgroundImageUri = imageUri;
-      current.backgroundType = 'image';
-      this.persistCustomThemeData(data);
-    } catch (e) {
-      console.error('选择阅读背景图片失败:', e);
-      HdsFeedback.showToast('选择背景图片失败');
-    }
-  }
-
-  clearCurrentCustomThemeImage(): void {
-    const data = this.customThemeData();
-    const current = ReaderCustomThemeHelper.selected(data, this.appDarkMode);
-    current.backgroundImageUri = '';
-    current.backgroundType = 'color';
-    this.persistCustomThemeData(data);
-  }
-
-  setCurrentCustomThemeBackgroundType(index: number): void {
-    const data = this.customThemeData();
-    ReaderCustomThemeHelper.selected(data, this.appDarkMode).backgroundType = index === 1 ? 'image' : 'color';
-    this.persistCustomThemeData(data);
-  }
-
-  setCurrentCustomThemeImageFit(index: number): void {
-    const fits = ['cover', 'contain', 'fill'];
-    const data = this.customThemeData();
-    ReaderCustomThemeHelper.selected(data, this.appDarkMode).backgroundImageFit = fits[index] || 'cover';
-    this.persistCustomThemeData(data);
-  }
-
   saveReaderInteractionSettings(): void {
     ReaderSettingsStore.saveReadingInteractionSettings(
       getContext(this),
@@ -12626,48 +9879,6 @@ struct ReadBookPage {
     this.saveReadConfig();
   }
 
-  setReaderEyeTurnEnabled(enabled: boolean): void {
-    const serial = ++this.readerEyePermissionRequestSerial;
-    if (!enabled) {
-      this.readerEyeTurnEnabled = false;
-      this.readerEyeTurnStatus = '未启用';
-      this.showReaderEyeCalibration = false;
-      this.stopArEyeTurnHost();
-    this.readerEyeTurnController.stop().catch((error: Error): void => {
-        console.warn('[EyeTurn] disable release failed:', error.message);
-      });
-      this.saveReaderEyeTurnSettings();
-      return;
-    }
-    this.readerEyeTurnStatus = '正在请求相机权限';
-    EyeTurnController.requestPermission(getContext(this) as common.UIAbilityContext)
-      .then((granted: boolean): void => {
-        if (serial !== this.readerEyePermissionRequestSerial) return;
-        if (!granted) {
-          this.readerEyeTurnEnabled = false;
-          this.readerEyeTurnStatus = '未获得相机权限';
-          HdsFeedback.showToast('需要相机权限才能使用眼动翻页');
-          this.saveReaderEyeTurnSettings();
-          return;
-        }
-        this.readerEyeTurnEnabled = true;
-        this.readerEyeTurnStatus = '正在启动眼动识别';
-        this.saveReaderEyeTurnSettings();
-        if (!this.currentReaderEyeCalibrationRaw()) {
-          this.openReaderEyeCalibration();
-        }
-        // Conditional XComponent mounting happens after this state update; its onLoad callback starts the camera.
-        setTimeout((): void => this.startReaderEyeTurnIfReady(), 0);
-      })
-      .catch((error: Error): void => {
-        if (serial !== this.readerEyePermissionRequestSerial) return;
-        this.readerEyeTurnEnabled = false;
-        this.readerEyeTurnStatus = '相机权限请求失败';
-        HdsFeedback.showToast(`眼动翻页启用失败：${error.message}`);
-        this.saveReaderEyeTurnSettings();
-      });
-  }
-
   saveReaderEyeTurnSettings(): void {
     ReaderSettingsStore.saveEyeTurnSettings(
       getContext(this),
@@ -12684,232 +9895,11 @@ struct ReadBookPage {
     this.saveReadConfig();
   }
 
-  setReaderEyeTurnDirectionEnabled(previous: boolean, enabled: boolean): void {
-    if (previous) this.readerEyeTurnPreviousEnabled = enabled;
-    else this.readerEyeTurnNextEnabled = enabled;
-    this.configureReaderEyeTurnController();
-    this.saveReaderEyeTurnSettings();
-  }
-
-  readerEyeDwellOptions(): SelectOption[] {
-    return [
-      { value: '0.5秒' },
-      { value: '0.65秒' },
-      { value: '0.85秒' },
-      { value: '1.1秒' },
-      { value: '1.4秒' }
-    ];
-  }
-
-  readerEyeDwellValues(): number[] {
-    return [500, 650, 850, 1100, 1400];
-  }
-
-  readerEyeDwellSelectedIndex(value: number): number {
-    const values = this.readerEyeDwellValues();
-    let selected = 0;
-    let distance = Number.MAX_SAFE_INTEGER;
-    for (let index = 0; index < values.length; index++) {
-      const nextDistance = Math.abs(values[index] - value);
-      if (nextDistance < distance) {
-        selected = index;
-        distance = nextDistance;
-      }
-    }
-    return selected;
-  }
-
-  setReaderEyeDwell(previous: boolean, index: number): void {
-    const values = this.readerEyeDwellValues();
-    const value = index >= 0 && index < values.length ? values[index] : 850;
-    if (previous) this.readerEyeTurnPreviousDwellMs = value;
-    else this.readerEyeTurnNextDwellMs = value;
-    this.configureReaderEyeTurnController();
-    this.saveReaderEyeTurnSettings();
-  }
-
-  isReaderEyeLandscape(): boolean {
-    // `pageViewWidth` can be the width of one pane in landscape double-page mode, which is smaller than the page
-    // height and previously saved a landscape calibration into the portrait slot. Display geometry represents the
-    // physical screen orientation and must be the primary source for camera calibration selection.
-    try {
-      const currentDisplay = display.getDefaultDisplaySync();
-      if (currentDisplay.width > 0 && currentDisplay.height > 0) {
-        return currentDisplay.width > currentDisplay.height;
-      }
-    } catch (_error) {
-      // Fall through to the measured reader viewport on devices without synchronous display geometry.
-    }
-    if (this.pageViewWidth > 0 && this.pageViewHeight > 0) {
-      return this.pageViewWidth > this.pageViewHeight;
-    }
-    return false;
-  }
-
-  currentReaderEyeCalibrationRaw(): string {
-    // AR Engine reports the gaze direction directly, so a per-device pitch/iris
-    // calibration is neither needed nor meaningful. A synthetic centre/top/bottom
-    // mapping plus the controller's runtime baseline is enough; the top/centre/bottom
-    // recall calibration stays for the camera fallback only.
-    if (this.arEngineFaceActive) return AR_EYE_CALIBRATION_RAW;
-    const landscape = this.isReaderEyeLandscape();
-    const preferred = landscape ? this.readerEyeTurnLandscapeCalibration : this.readerEyeTurnPortraitCalibration;
-    // Keep existing users functional after fixing the old double-page orientation misclassification. The next
-    // explicit calibration is persisted into the correct orientation slot.
-    const stored = preferred ||
-      (landscape ? this.readerEyeTurnPortraitCalibration : this.readerEyeTurnLandscapeCalibration);
-    // No stored calibration must not disable eye-turning: the default iris mapping plus
-    // the runtime baseline is already usable, and calibration stays optional.
-    return stored || DEFAULT_EYE_CALIBRATION_RAW;
-  }
-
-  configureReaderEyeTurnController(): void {
-    const landscape = this.isReaderEyeLandscape();
-    this.readerEyeTurnConfiguredLandscape = landscape;
-    const calibrationRaw = this.currentReaderEyeCalibrationRaw();
-    this.readerEyeTurnController.configure(
-      calibrationRaw,
-      this.readerEyeTurnNextDwellMs,
-      (status: string): void => {
-        if (this.readerEyeTurnStatus !== status) this.readerEyeTurnStatus = status;
-      },
-      (sample: EyeTurnSample): void => this.consumeReaderEyeCalibrationSample(sample),
-      (direction: number): void => {
-        if (direction <= 0) {
-          this.readerEyeTurnStatus = '请回看屏幕中央';
-          return;
-        }
-        if (!this.readerEyeTurnCanTrigger()) return;
-        this.runPageTurnAnimation(1, 'tap').catch((error: Error): void => {
-          console.warn('[EyeTurn] page turn failed:', error.message);
-        });
-      },
-      (): boolean => {
-        const allowed = this.readerEyeTurnCanTrigger();
-        if (!allowed) console.info('[EyeTurn] turn blocked: ' + this.readerEyeTurnBlockReason());
-        return allowed;
-      }
-    );
-  }
-
-  startReaderEyeTurnIfReady(): void {
-    if (!this.readerEyeTurnEnabled || !this.readerPageVisible || !this.readerEyeTurnSurfaceId) {
-      console.info(`[EyeTurn] start skipped enabled=${this.readerEyeTurnEnabled} ` +
-        `visible=${this.readerPageVisible} surface=${this.readerEyeTurnSurfaceId ? 'set' : 'EMPTY'}`);
-      return;
-    }
-    this.configureReaderEyeTurnController();
-    // AR Engine takes exclusive control of the camera, so the legacy camera
-    // pipeline must not start in parallel: it would lose the camera, leaving
-    // the preview and calibration without frames.
-    this.startArEyeTurnHostIfAvailable();
-  }
-
-  /**
-   * Prefers AR Engine for gaze signals and only falls back to the camera
-   * pipeline when the kit is unavailable on this device.
-   */
-  private startArEyeTurnHostIfAvailable(): void {
-    if (!READER_EYE_TURN_AR_ENABLED) {
-      this.startReaderEyeTurnCamera();
-      return;
-    }
-    // Page turns re-enter this path; keep a single AR session alive instead of
-    // rebuilding it on every call.
-    if (this.arEyeTurnHost || this.arEyeTurnHostLoading) return;
-    this.arEyeTurnHostLoading = true;
-    import('../core/reader/ArEngineEyeTracker').then((ar): void => {
-      if (!this.readerEyeTurnEnabled || !this.readerPageVisible) {
-        this.arEyeTurnHostLoading = false;
-        return;
-      }
-      if (!ar.ArEngineEyeTracker.isAvailable()) {
-        this.arEyeTurnHostLoading = false;
-        this.startReaderEyeTurnCamera();
-        return;
-      }
-      ar.createArEngineEyeTurnHost((signal: ArEyeSignal): void => {
-        if (signal.blink > 0.65) return;
-        const score = signal.lookDown - signal.lookUp;
-        this.readerEyeTurnController.submitExternalScore(score, signal.confidence);
-      }, (active: boolean): void => {
-        this.arEngineFaceActive = active;
-        // Switching the signal source also switches the calibration strategy.
-        this.configureReaderEyeTurnController();
-        if (active) {
-          if (!this.showReaderEyeCalibration) {
-            // AR now owns the camera, so release the camera pipeline.
-            this.readerEyeTurnController.stop().catch((): void => {});
-          }
-        } else {
-          // AR failed to start; fall back to the camera unless it already runs.
-          this.startReaderEyeTurnCamera();
-        }
-      }).then((host: ArEyeTurnHost | null): void => {
-        this.arEyeTurnHostLoading = false;
-        if (!host) {
-          this.startReaderEyeTurnCamera();
-          return;
-        }
-        if (!this.readerEyeTurnEnabled || !this.readerPageVisible) {
-          host.stop();
-          return;
-        }
-        this.stopArEyeTurnHost();
-        this.arEyeTurnHost = host;
-        this.arEyeTurnHostMounted = true;
-      }).catch((error: Error): void => {
-        this.arEyeTurnHostLoading = false;
-        console.warn('[EyeTurn] AR host unavailable:', error.message);
-        this.startReaderEyeTurnCamera();
-      });
-    }).catch((error: Error): void => {
-      // AR Engine is not present on this device; the camera path keeps working.
-      this.arEyeTurnHostLoading = false;
-      console.warn('[EyeTurn] AR kit not available:', error.message);
-      this.startReaderEyeTurnCamera();
-    });
-  }
-
-  private startReaderEyeTurnCamera(): void {
-    if (!this.readerEyeTurnEnabled || !this.readerPageVisible || !this.readerEyeTurnSurfaceId) return;
-    if (this.readerEyeTurnController.isRunning()) return;
-    this.readerEyeTurnController.start(
-      getContext(this) as common.UIAbilityContext,
-      this.readerEyeTurnSurfaceId
-    ).catch((error: Error): void => {
-      this.readerEyeTurnStatus = `眼动识别启动失败：${error.message}`;
-    });
-  }
-
-  /** True when either AR Engine or the camera pipeline is producing gaze samples. */
-  private readerEyeTurnSignalReady(): boolean {
-    return this.arEngineFaceActive || this.readerEyeTurnController.isRunning();
-  }
-
-  private stopArEyeTurnHost(): void {
-    const host = this.arEyeTurnHost;
-    this.arEyeTurnHost = null;
-    this.arEyeTurnHostMounted = false;
-    this.arEngineFaceActive = false;
-    if (host) host.stop();
-  }
-
-  refreshReaderEyeTurnForViewport(): void {
-    if (!this.readerEyeTurnEnabled) return;
-    const landscape = this.isReaderEyeLandscape();
-    if (landscape === this.readerEyeTurnConfiguredLandscape) return;
-    this.configureReaderEyeTurnController();
-    if (!this.currentReaderEyeCalibrationRaw()) {
-      this.readerEyeTurnStatus = landscape ? '横屏需要校准' : '竖屏需要校准';
-    }
-  }
-
   readerEyeTurnCanTrigger(): boolean {
     // Any reader overlay pauses eye-turning: menus, the settings/action panels and the
     // comment panel all sit above the text, so a gaze turn there would act on content the
     // reader cannot see.
-    return this.readerEyeTurnEnabled && this.readerPageVisible && !this.showReaderEyeCalibration &&
+    return this.readerEyeTurnEnabled && this.readerPageVisible && !this.eyeTurnState.showCalibration &&
       !this.showMenu && !this.showToc && !this.showSettings && !this.showReaderActionMenu &&
       !this.showBookmarkActionMenu && !this.showTapZoneSettings && !this.showChangeSourceDialog &&
       !this.showReaderCommentPanel && !this.readerTextSelectionActive && !this.isLoading &&
@@ -12921,7 +9911,7 @@ struct ReadBookPage {
   private readerEyeTurnBlockReason(): string {
     if (!this.readerEyeTurnEnabled) return 'disabled';
     if (!this.readerPageVisible) return 'pageHidden';
-    if (this.showReaderEyeCalibration) return 'calibration';
+    if (this.eyeTurnState.showCalibration) return 'calibration';
     if (this.showMenu) return 'menu';
     if (this.showToc) return 'toc';
     if (this.showSettings) return 'settings';
@@ -12940,287 +9930,10 @@ struct ReadBookPage {
     if (this.readerTouchActive) return 'readerTouchActive';
     if (this.readerComicChapterSwitching) return 'comicSwitching';
     if (this.pageSlideDirection !== 0) return 'pageSlide';
-    if (this.queuedPageTurnCount > 0 || this.queuedPageTurnDirection !== 0) return 'queuedTurn';
+    if (this.pageTurnQueue.hasPending()) return 'queuedTurn';
     if (Date.now() < this.readerPaginationInteractionIdleUntil) return 'interactionIdle';
     if (this.isReaderPaginationInteractionBusy()) return 'paginationBusy';
     return 'ok';
-  }
-
-  openReaderEyeCalibration(): void {
-    this.clearReaderEyeCalibrationTimer();
-    this.readerEyeCalibrationLandscape = this.isReaderEyeLandscape();
-    this.readerEyeCalibrationStep = 0;
-    this.readerEyeCalibrationCapturing = false;
-    this.readerEyeCalibrationProgress = 0;
-    this.readerEyeCalibrationTargetY = 0;
-    this.readerEyeCalibrationPoints = [];
-    this.readerEyeCalibrationSequenceStartedAt = 0;
-    this.readerEyeCalibrationStartupAt = 0;
-    this.readerEyeTurnController.setCalibrationMode(true);
-    this.showMenu = false;
-    this.showSettings = false;
-    this.showReaderEyeCalibration = true;
-  }
-
-  beginReaderEyeCalibrationCapture(): void {
-    this.clearReaderEyeCalibrationTimer();
-    this.readerEyeTurnController.setCalibrationMode(true);
-    this.readerEyeCalibrationPoints = [];
-    this.readerEyeCalibrationProgress = 0;
-    this.readerEyeCalibrationStep = 0;
-    this.readerEyeCalibrationTargetY = 0;
-    this.readerEyeCalibrationPhaseStartedAt = 0;
-    this.readerEyeCalibrationSequenceStartedAt = 0;
-    this.readerEyeCalibrationStartupAt = Date.now();
-    this.readerEyeCalibrationCapturing = false;
-    this.readerEyeCalibrationSessionActive = true;
-    // Calibration must not turn pages: keep the controller in calibration mode for the
-    // whole session (zones, prompts and turns are all suppressed while it is set).
-    this.readerEyeTurnController.setCalibrationMode(true);
-    this.readerEyeTurnStatus = '请看向白色目标点，然后点击「开始采样」';
-    if (!this.readerEyeTurnSignalReady()) this.startReaderEyeTurnIfReady();
-  }
-
-  /** Starts the 1.5s sampling window for the current fixation (the reader taps to advance). */
-  startReaderEyeCalibrationPhaseSampling(): void {
-    if (!this.showReaderEyeCalibration ||
-      this.readerEyeCalibrationStep >= READER_EYE_CALIBRATION_PHASE_COUNT) return;
-    this.readerEyeCalibrationStartupAt = Date.now();
-    this.readerEyeCalibrationPhaseStartedAt = 0;
-    this.readerEyeCalibrationProgress = 0;
-    this.readerEyeCalibrationCapturing = true;
-    this.readerEyeTurnStatus = '请保持视线不动';
-    this.scheduleReaderEyeCalibrationTick(80);
-  }
-
-  private currentReaderEyeCalibrationTargetLabel(): string {
-    if (this.readerEyeCalibrationStep === 0) return '中央';
-    if (this.readerEyeCalibrationStep === 1) return '底部';
-    return '顶部';
-  }
-
-  consumeReaderEyeCalibrationSample(sample: EyeTurnSample): void {
-    if (!this.showReaderEyeCalibration || !this.readerEyeCalibrationCapturing) return;
-    if (this.readerEyeCalibrationLandscape !== this.isReaderEyeLandscape()) {
-      this.abortReaderEyeCalibrationAttempt('校准过程中屏幕方向发生变化，请重新开始');
-      HdsFeedback.showToast('校准过程中屏幕方向发生变化，请重新开始');
-      return;
-    }
-    const phaseStartedAt = this.readerEyeCalibrationPhaseStartedAt;
-    if (phaseStartedAt <= 0) return;
-    const capturedAt = sample.capturedAt > 0 ? sample.capturedAt : Date.now();
-    const phaseElapsed = capturedAt - phaseStartedAt;
-    // The reader aims before tapping, so the whole window is usable.
-    if (phaseElapsed < 0 || phaseElapsed > READER_EYE_CALIBRATION_HOLD_MS) return;
-    if (!sample.eyeAvailable) return;
-    const point = new ReaderEyeCalibrationPoint();
-    point.score = sample.rawScore;
-    point.pitch = sample.pitch;
-    point.eyeRatio = sample.eyeRatio;
-    point.eyeAvailable = true;
-    point.targetY = this.readerEyeCalibrationTargetY;
-    point.phase = this.readerEyeCalibrationStep;
-    point.confidence = sample.confidence;
-    this.readerEyeCalibrationPoints.push(point);
-  }
-
-  private scheduleReaderEyeCalibrationTick(delayMs: number = READER_EYE_CALIBRATION_TICK_MS): void {
-    if (!this.readerEyeCalibrationCapturing || !this.showReaderEyeCalibration) return;
-    this.clearReaderEyeCalibrationTimer();
-    this.readerEyeCalibrationTimerId = setTimeout((): void => {
-      this.readerEyeCalibrationTimerId = -1;
-      this.updateReaderEyeCalibrationSequence();
-    }, delayMs);
-  }
-
-  private updateReaderEyeCalibrationSequence(): void {
-    if (!this.readerEyeCalibrationCapturing || !this.showReaderEyeCalibration) return;
-    if (this.readerEyeCalibrationLandscape !== this.isReaderEyeLandscape()) {
-      this.abortReaderEyeCalibrationAttempt('屏幕方向已变化，请重新开始');
-      return;
-    }
-    const now = Date.now();
-    if (!this.readerEyeTurnSignalReady()) {
-      if (now - this.readerEyeCalibrationStartupAt > 8000) {
-        this.abortReaderEyeCalibrationAttempt('眼动识别启动超时，请重试');
-        return;
-      }
-      this.readerEyeTurnStatus = '正在启动眼动识别';
-      this.scheduleReaderEyeCalibrationTick(120);
-      return;
-    }
-    if (this.readerEyeCalibrationPhaseStartedAt <= 0) {
-      this.readerEyeCalibrationPhaseStartedAt = now;
-      this.scheduleReaderEyeCalibrationTick();
-      return;
-    }
-    const phaseElapsed = now - this.readerEyeCalibrationPhaseStartedAt;
-    if (phaseElapsed < READER_EYE_CALIBRATION_HOLD_MS) {
-      this.readerEyeCalibrationProgress = Math.max(0, Math.min(100,
-        phaseElapsed * 100 / READER_EYE_CALIBRATION_HOLD_MS));
-      this.scheduleReaderEyeCalibrationTick();
-      return;
-    }
-    // Sampling done: stop and wait for the reader to tap for the next fixation.
-    this.readerEyeCalibrationCapturing = false;
-    this.readerEyeCalibrationProgress = 100;
-    this.readerEyeCalibrationPhaseStartedAt = 0;
-    this.clearReaderEyeCalibrationTimer();
-    this.readerEyeCalibrationStep++;
-    if (this.readerEyeCalibrationStep >= READER_EYE_CALIBRATION_PHASE_COUNT) {
-      this.readerEyeCalibrationStep = READER_EYE_CALIBRATION_PHASE_COUNT - 1;
-      this.finishReaderEyeCalibrationFromFixation();
-      return;
-    }
-    this.readerEyeCalibrationTargetY = this.readerEyeCalibrationStep === 1 ? 1 : -1;
-    this.readerEyeTurnStatus = `请看向${this.currentReaderEyeCalibrationTargetLabel()}目标点，然后点击「开始采样」`;
-  }
-
-  /** Median absolute deviation: a robust spread used to reject an unsteady fixation. */
-  private readerEyeCalibrationSpread(values: number[]): number {
-    if (values.length === 0) return 0;
-    const median = this.readerEyeCalibrationMedian(values);
-    return this.readerEyeCalibrationMedian(
-      values.map((value: number): number => Math.abs(value - median)));
-  }
-
-  /**
-   * Builds the calibration from the three held fixations: centre, bottom zone, top zone.
-   * The sign of the deltas comes straight from the measurements, so the gesture direction
-   * can no longer be guessed wrong.
-   */
-  private finishReaderEyeCalibrationFromFixation(): void {
-    const centerRatios: number[] = [];
-    const bottomRatios: number[] = [];
-    const topRatios: number[] = [];
-    const centerPitches: number[] = [];
-    for (const point of this.readerEyeCalibrationPoints) {
-      if (!point.eyeAvailable) continue;
-      if (point.phase === 0) {
-        centerRatios.push(point.eyeRatio);
-        centerPitches.push(point.pitch);
-      } else if (point.phase === 1) {
-        bottomRatios.push(point.eyeRatio);
-      } else if (point.phase === 2) {
-        topRatios.push(point.eyeRatio);
-      }
-    }
-    const minimum = READER_EYE_CALIBRATION_MIN_PHASE_SAMPLES;
-    if (centerRatios.length < minimum || bottomRatios.length < minimum || topRatios.length < minimum) {
-      this.failReaderEyeCalibration(`有效样本不足（中央 ${centerRatios.length}／底部 ${bottomRatios.length}／顶部 ${topRatios.length}），请正对屏幕重试`);
-      return;
-    }
-    const topRatio = this.readerEyeCalibrationMedian(topRatios);
-    const bottomRatio = this.readerEyeCalibrationMedian(bottomRatios);
-    // On this hardware the reading position and the bottom line are nearly identical in iris
-    // terms, while the top line is clearly distinct. So the TOP fixation becomes the zero
-    // crossing and the bottom/reading level the positive end; the turn then fires when the
-    // gaze leaves that level upwards.
-    const travel = bottomRatio - topRatio;
-    const centerSpread = this.readerEyeCalibrationSpread(centerRatios);
-    const bottomSpread = this.readerEyeCalibrationSpread(bottomRatios);
-    const topSpread = this.readerEyeCalibrationSpread(topRatios);
-    console.warn(`[EyeTurnProbe] calibration top=${topRatio.toFixed(4)} bottom=${bottomRatio.toFixed(4)} ` +
-      `travel=${travel.toFixed(4)} center=${this.readerEyeCalibrationMedian(centerRatios).toFixed(4)} ` +
-      `spread=${centerSpread.toFixed(4)}/${bottomSpread.toFixed(4)}/${topSpread.toFixed(4)} ` +
-      `samples=${centerRatios.length}/${bottomRatios.length}/${topRatios.length}`);
-    if (Math.abs(travel) < READER_EYE_CALIBRATION_MIN_DELTA) {
-      this.failReaderEyeCalibration(`眼动差异不足（顶部 ${topRatio.toFixed(4)}／底部 ${bottomRatio.toFixed(4)}），请分别注视正文顶部和底部并保持住后重试`);
-      return;
-    }
-    if (bottomSpread > Math.abs(travel) / 2.5 || topSpread > Math.abs(travel) / 2.5) {
-      this.failReaderEyeCalibration('校准过程中视线不够稳定，请重新对准目标点并保持不动');
-      return;
-    }
-    const eyeCenter = topRatio;
-    const bottomDelta = travel;
-    // The top side needs its own span; keep it a bounded fraction of the measured travel.
-    const topDelta = (travel >= 0 ? -1 : 1) * Math.max(0.004, Math.abs(travel) * 0.15);
-    const calibration = new EyeTurnCalibration();
-    calibration.version = 3;
-    calibration.top = -1;
-    calibration.center = 0;
-    calibration.bottom = 1;
-    calibration.pitchCenter = this.readerEyeCalibrationMedian(centerPitches);
-    calibration.pitchScale = 0;
-    calibration.pitchTopDelta = 0;
-    calibration.pitchBottomDelta = 0;
-    calibration.eyeCenter = eyeCenter;
-    calibration.eyeScale = (bottomDelta - topDelta) / 2;
-    calibration.eyeTopDelta = topDelta;
-    calibration.eyeBottomDelta = bottomDelta;
-    calibration.eyeWeight = 1;
-    calibration.pitchWeight = 0;
-    // This mapping is anchored on the measured top fixation, so the runtime must not
-    // re-centre it (that used to cancel the reading position out to zero).
-    calibration.absolute = true;
-    if (!calibration.isValid()) {
-      this.failReaderEyeCalibration('眼动变化不足，请正对屏幕重新校准');
-      return;
-    }
-    const raw = calibration.encode();
-    if (this.readerEyeCalibrationLandscape) this.readerEyeTurnLandscapeCalibration = raw;
-    else this.readerEyeTurnPortraitCalibration = raw;
-    this.showReaderEyeCalibration = false;
-    this.readerEyeCalibrationSessionActive = false;
-    this.readerEyeTurnController.setCalibrationMode(false);
-    this.readerEyeTurnStatus = '眼动翻页已就绪';
-    this.configureReaderEyeTurnController();
-    this.saveReaderEyeTurnSettings();
-    HdsFeedback.showToast('眼动翻页校准完成');
-  }
-
-  private readerEyeCalibrationMedian(values: number[]): number {
-    if (values.length === 0) return 0;
-    const sorted = [...values].sort((left: number, right: number): number => left - right);
-    const middle = Math.floor(sorted.length / 2);
-    return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
-  }
-
-  private failReaderEyeCalibration(message: string): void {
-    this.readerEyeCalibrationSessionActive = false;
-    this.readerEyeTurnController.setCalibrationMode(false);
-    this.readerEyeCalibrationStep = 0;
-    this.readerEyeCalibrationProgress = 0;
-    this.readerEyeCalibrationTargetY = 0;
-    this.readerEyeCalibrationSequenceStartedAt = 0;
-    this.readerEyeTurnStatus = message;
-    HdsFeedback.showToast(message);
-  }
-
-  private abortReaderEyeCalibrationAttempt(message: string): void {
-    this.readerEyeCalibrationSessionActive = false;
-    this.clearReaderEyeCalibrationTimer();
-    this.readerEyeTurnController.setCalibrationMode(false);
-    this.readerEyeCalibrationCapturing = false;
-    this.readerEyeCalibrationStep = 0;
-    this.readerEyeCalibrationProgress = 0;
-    this.readerEyeCalibrationTargetY = 0;
-    this.readerEyeCalibrationSequenceStartedAt = 0;
-    this.readerEyeTurnStatus = message;
-  }
-
-  private clearReaderEyeCalibrationTimer(): void {
-    if (this.readerEyeCalibrationTimerId >= 0) {
-      clearTimeout(this.readerEyeCalibrationTimerId);
-      this.readerEyeCalibrationTimerId = -1;
-    }
-  }
-
-  cancelReaderEyeCalibration(): void {
-    this.clearReaderEyeCalibrationTimer();
-    this.readerEyeCalibrationCapturing = false;
-    this.showReaderEyeCalibration = false;
-    this.readerEyeTurnController.setCalibrationMode(false);
-    if (!this.currentReaderEyeCalibrationRaw()) {
-      this.readerEyeTurnEnabled = false;
-      this.readerEyeTurnStatus = '未启用';
-      this.stopArEyeTurnHost();
-    this.readerEyeTurnController.stop().catch((error: Error): void => {
-        console.warn('[EyeTurn] cancel calibration release failed:', error.message);
-      });
-      this.saveReaderEyeTurnSettings();
-    }
   }
 
   setReaderScreenTimeoutByIndex(index: number): void {
@@ -13298,6 +10011,10 @@ struct ReadBookPage {
       () => this.isTtsPaused || this.ttsReader.isPaused(),
       () => this.stopTtsFloatingSession()
     );
+    // A voice/speed change restarts reading through stop + start; the stop released the background permission.
+    if (this.readerPageDetachedFromRoute) {
+      ReaderProgressCheckpoint.retainBackground(this.ttsFloatingSessionOwnerId, (): string => this.bookUrl);
+    }
     ReaderTtsFloatingSession.configureControls(
       this.ttsFloatingSessionOwnerId,
       () => { this.playPreviousChapterFromMediaSession(); },
@@ -13381,7 +10098,7 @@ struct ReadBookPage {
           if (await this.ttsReader.resume()) {
             this.isTtsSpeaking = true;
             this.updateTtsFloatingSession();
-            await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_PLAY);
+            await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_PLAY);
             HdsFeedback.showToast('继续朗读');
           } else {
             this.isTtsPaused = true;
@@ -13390,7 +10107,7 @@ struct ReadBookPage {
           this.isTtsPaused = true;
           if (await this.ttsReader.pause()) {
             this.updateTtsFloatingSession();
-            await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_PAUSE);
+            await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_PAUSE);
             HdsFeedback.showToast('已暂停朗读');
           } else {
             this.isTtsPaused = false;
@@ -13404,22 +10121,7 @@ struct ReadBookPage {
       }
       return;
     }
-    this.ttsMediaControlsExpanded = false;
     await this.startTtsReadingFromCurrentPosition(true);
-  }
-
-  setTtsPagedScrollOverride(enabled: boolean): void {
-    const next = enabled && this.readerPageTurnMode === 3 && !this.isReaderComicModeActive();
-    if (this.ttsPagedScrollOverride === next) return;
-    this.ttsPagedScrollOverride = next;
-    this.resetSlidePageEffect();
-    if (next) {
-      // 取消纵向连续列表尚未执行的定位任务，朗读期间使用原有分页滚动与逐句高亮。
-      this.readerComicScrollRestoreSerial++;
-      this.readerComicScrollRestoring = false;
-    } else if (this.readerPageTurnMode === 3) {
-      this.scheduleReaderComicScrollRestore();
-    }
   }
 
   async startTtsReadingFromCurrentPosition(showToast: boolean,
@@ -13435,9 +10137,11 @@ struct ReadBookPage {
       this.finishTtsReading();
       return;
     }
-    this.ttsMediaControlsExpanded = false;
-    this.setTtsPagedScrollOverride(true);
-    const text = this.getTtsReadingText(readingStartOffset);
+    // A scrolling chunk spans several screens, so its start can be far above what is on screen. Begin with
+    // the first visible line instead.
+    const visibleOffset = readingStartOffset < 0 && this.usesReaderContinuousV2() ?
+      this.readerContinuousV2FirstVisibleSourceOffset() : -1;
+    const text = this.getTtsReadingText(readingStartOffset >= 0 ? readingStartOffset : visibleOffset);
     if (!text) {
       this.finishTtsReading();
       if (showToast) {
@@ -13490,14 +10194,11 @@ struct ReadBookPage {
     try {
       this.isTtsSpeaking = true;
       this.updateVolumeKeySubscription();
-      if (manualPageTurnResume) {
-        // The page-turn path already scheduled adjacent-page/chapter preloading. Repeating it here
-        // competes with the first resumed audio buffer on the UI thread.
-        this.preloadReaderContentLater();
-      } else {
-        this.preloadReaderContent();
-      }
-      const backgroundStarted = await this.startTtsBackgroundRunning();
+      // Adjacent-page/chapter preloading competes with the first audio buffer on the UI thread,
+      // which is audible as a stutter in the first sentence after a chapter handoff. The page-turn
+      // path already scheduled it; every other start defers it past that first buffer.
+      this.preloadReaderContentLater(manualPageTurnResume ? 240 : 720);
+      const backgroundStarted = await this.ttsMediaSession().startBackgroundRunning();
       if (!backgroundStarted && showToast) {
         HdsFeedback.showToast('后台朗读任务启动失败，息屏后可能中断');
       }
@@ -13550,7 +10251,7 @@ struct ReadBookPage {
           if (token !== this.ttsReadToken) {
             return;
           }
-          this.onTtsAudioStarted();
+          this.ttsMediaSession().onAudioStarted();
         },
         cloudVoiceId: cloudVoice?.id || '',
         cloudVoiceName: cloudVoice?.name || '',
@@ -13579,18 +10280,13 @@ struct ReadBookPage {
     }
   }
 
-  /** Return the last source position that can belong to an audible TTS chunk. */
+  /**
+   * Return the last source position that can belong to an audible TTS chunk. The reader engine owns the
+   * answer: it blanks decorative lines (a lone ">", "***", "---" ...) before splitting, so a chapter ending
+   * in one would otherwise leave a tail the completion guard waits for but nothing ever speaks.
+   */
   ttsSpeechTextEnd(text: string): number {
-    const source = text || '';
-    let end = source.length;
-    while (end > 0) {
-      const value = source.charAt(end - 1);
-      if (value !== ' ' && value !== '\t' && value !== '\n' && value !== '\r' && value !== '\u3000') {
-        break;
-      }
-      end--;
-    }
-    return end;
+    return this.ttsReader.speechTextEnd(text);
   }
 
   stopTtsReading(userCancelled: boolean = true): void {
@@ -13599,6 +10295,7 @@ struct ReadBookPage {
     this.clearTtsSleepTimer();
     this.isTtsPaused = false;
     ReaderTtsFloatingSession.clear(this.ttsFloatingSessionOwnerId);
+    this.releaseBackgroundProgressWriterAfterTtsStop();
     if (userCancelled) {
       this.ttsAutoContinue = false;
       this.ttsReadToken++;
@@ -13611,14 +10308,12 @@ struct ReadBookPage {
     this.ttsLastFocusPageIndex = -1;
     this.ttsReadingExpectedSourceEnd = -1;
     this.ttsChapterCompletionRetryCount = 0;
-    this.ttsMediaControlsExpanded = false;
     this.ttsPageTurnSerial++;
-    this.stopTtsBackgroundRunning();
+    this.ttsMediaSession().stopBackgroundRunning();
     if (!this.isTtsSpeaking && !this.ttsReader.isSpeaking()) {
       this.isTtsSpeaking = false;
       this.updateVolumeKeySubscription();
       this.clearTtsHighlight();
-      this.setTtsPagedScrollOverride(false);
       return;
     }
     this.ttsReader.stop();
@@ -13628,7 +10323,6 @@ struct ReadBookPage {
     this.clearTtsHighlight();
     this.ttsLastFocusChunk = null;
     this.ttsLastFocusPageIndex = -1;
-    this.setTtsPagedScrollOverride(false);
   }
 
   stopTtsReaderForChapterSwitch(): void {
@@ -13649,7 +10343,6 @@ struct ReadBookPage {
     this.ttsReader.stop();
     this.isTtsSpeaking = false;
     this.clearTtsHighlight();
-    this.setTtsPagedScrollOverride(false);
   }
 
   clearManualPageTurnTtsResumeTimer(): void {
@@ -13707,7 +10400,7 @@ struct ReadBookPage {
     this.ttsManualPageTurnResumeTimerId = setTimeout(() => {
       this.ttsManualPageTurnResumeTimerId = -1;
       if (serial !== this.ttsManualPageTurnResumeSerial || !this.ttsManualPageTurnResumePending) return;
-      if (this.isPageTurning || this.queuedPageTurnCount > 0 || this.queuedPageTurnDirection !== 0 ||
+      if (this.isPageTurning || this.pageTurnQueue.hasPending() ||
         !this.isReaderPageTurnPositionReadyForTts()) {
         this.scheduleTtsResumeAfterManualPageTurn();
         return;
@@ -13875,22 +10568,11 @@ struct ReadBookPage {
       this.persistTtsReadPosition(0, 0);
       await this.saveReadingProgress();
       this.updateTtsFloatingSession();
-      await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_PLAY);
+      await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_PLAY);
       return true;
     } finally {
       this.ttsChapterSwitching = false;
     }
-  }
-
-  async advanceTtsReadingTarget(): Promise<boolean> {
-    if (this.chapters.length === 0) {
-      return false;
-    }
-    if (this.canTurnPage(1)) {
-      await this.runTtsPageTurnAnimation(1);
-      return true;
-    }
-    return false;
   }
 
   finishTtsReading(): void {
@@ -13901,18 +10583,17 @@ struct ReadBookPage {
     this.isTtsSpeaking = false;
     this.isTtsPaused = false;
     ReaderTtsFloatingSession.clear(this.ttsFloatingSessionOwnerId);
+    this.releaseBackgroundProgressWriterAfterTtsStop();
     this.updateVolumeKeySubscription();
-    this.ttsMediaControlsExpanded = false;
     this.ttsReader.stop();
     this.invalidateTtsFocusSession();
-    this.stopTtsBackgroundRunning();
+    this.ttsMediaSession().stopBackgroundRunning();
     this.ttsPageTurnSerial++;
     this.clearTtsHighlight();
     this.ttsLastFocusChunk = null;
     this.ttsLastFocusPageIndex = -1;
     this.ttsReadingExpectedSourceEnd = -1;
     this.ttsChapterCompletionRetryCount = 0;
-    this.setTtsPagedScrollOverride(false);
     if (!this.readerPageVisible) {
       this.ttsReader.shutdown();
     }
@@ -13923,6 +10604,7 @@ struct ReadBookPage {
       const settings = await ReaderSettingsStore.load(getContext(this));
       ReaderSettingsStore.applyToStorage(settings);
       this.applyLoadedReaderSettings(settings);
+      this.loadReaderComicSettings();
       const registered = await this.registerReaderFontBySettings(
         settings.fontFamily,
         settings.fontFilePath,
@@ -13937,189 +10619,61 @@ struct ReadBookPage {
     }
   }
 
-  async startTtsBackgroundRunning(): Promise<boolean> {
-    this.ttsBackgroundDesired = true;
-    if (this.ttsBackgroundRunning) {
-      if (!this.ttsAvSession && !this.ttsAvSessionRequesting) {
-        const agent = await this.createTtsBackgroundWantAgent();
-        await this.startTtsAvSession(agent);
-      }
-      await this.updateTtsAvSessionPlaybackState(this.ttsAvPlaybackState());
-      this.startTtsBackgroundHeartbeat();
-      return !!this.ttsAvSession;
-    }
-    if (this.ttsBackgroundRequesting) {
-      return this.ttsBackgroundRunning;
-    }
-    this.ttsBackgroundRequesting = true;
-    try {
-      const agent = await this.createTtsBackgroundWantAgent();
-      await this.startTtsAvSession(agent);
-      await backgroundTaskManager.startBackgroundRunning(
-        getContext(this),
-        ['audioPlayback'],
-        agent
-      );
-      if (this.ttsBackgroundDesired) {
-        this.ttsBackgroundRunning = true;
-        this.startTtsBackgroundHeartbeat();
-        console.info(`[TTS-BG] background audio task started: ${this.ttsBackgroundDebugState()}`);
-      } else {
-        await backgroundTaskManager.stopBackgroundRunning(getContext(this));
-        await this.stopTtsAvSession();
-      }
-      return this.ttsBackgroundRunning;
-    } catch (error) {
-      this.ttsBackgroundRunning = false;
-      this.stopTtsBackgroundHeartbeat();
-      console.warn(`[TTS-BG] start background audio task failed: ${this.formatTtsBackgroundError(error as Object)}; ${this.ttsBackgroundDebugState()}`, error);
-      return false;
-    } finally {
-      this.ttsBackgroundRequesting = false;
-    }
-  }
-
-  async stopTtsBackgroundRunning(): Promise<void> {
-    this.ttsBackgroundDesired = false;
-    this.stopTtsBackgroundHeartbeat();
-    await this.stopTtsAvSession();
-    if (!this.ttsBackgroundRunning && !this.ttsBackgroundRequesting) {
-      return;
-    }
-    if (this.ttsBackgroundRequesting && !this.ttsBackgroundRunning) {
-      return;
-    }
-    this.ttsBackgroundRunning = false;
-    if (this.fullTextCaching) {
-      this.fullTextCacheBackgroundRunning = true;
-      return;
-    }
-    if (this.fullTextCacheBackgroundRunning) {
-      return;
-    }
-    try {
-      await backgroundTaskManager.stopBackgroundRunning(getContext(this));
-      console.info(`[TTS-BG] background audio task stopped: ${this.ttsBackgroundDebugState()}`);
-    } catch (error) {
-      console.warn(`[TTS-BG] stop background audio task failed: ${this.formatTtsBackgroundError(error as Object)}; ${this.ttsBackgroundDebugState()}`, error);
-    }
-  }
-
-  startTtsBackgroundHeartbeat(): void {
-    if (this.ttsBackgroundHeartbeatId >= 0) {
-      return;
-    }
-    this.ttsBackgroundHeartbeatId = setInterval(() => {
-      this.keepTtsBackgroundAlive().catch((error: Error) => {
-        console.warn(`[TTS-BG] heartbeat failed: ${this.formatTtsBackgroundError(error as Object)}; ${this.ttsBackgroundDebugState()}`, error);
+  // Background audio task, AVSession card and media keys for read-aloud. The page supplies the reading state
+  // and executes the commands the system controls send back.
+  ttsMediaSession(): ReaderTtsMediaSession {
+    if (!this.ttsMedia) {
+      this.ttsMedia = new ReaderTtsMediaSession({
+        abilityContext: (): common.UIAbilityContext => getContext(this) as common.UIAbilityContext,
+        isSpeaking: (): boolean => this.isTtsSpeaking || this.ttsReader.isSpeaking(),
+        isPaused: (): boolean => this.isTtsPaused || this.ttsReader.isPaused(),
+        audioDebugState: (): string => this.ttsReader.audioDebugState(),
+        mediaInfo: (): ReaderTtsMediaInfo => {
+          const info: ReaderTtsMediaInfo = {
+            bookUrl: this.bookUrl || '',
+            bookName: this.book?.name || '',
+            author: this.book?.author || '',
+            chapterIndex: this.currentChapterIndex,
+            chapterTitle: this.getChapterTitle(),
+            subtitle: this.getTtsAvSubtitle(),
+            pageIndex: this.currentPageIndex,
+            elapsedTime: this.getTtsPlaybackElapsedTime(),
+            duration: this.getTtsPlaybackDuration(),
+            canPlayPrevious: this.canPlayPreviousTtsChapter(),
+            canPlayNext: this.canPlayNextTtsChapter()
+          };
+          return info;
+        },
+        coverRaw: (): string => this.getBookshelfDisplayCoverRaw(),
+        coverOrigin: (): string => this.book?.origin || '',
+        onPlay: (): void => {
+          if (this.isTtsPaused || this.ttsReader.isPaused()) {
+            this.toggleTtsReading();
+          } else if (!this.isTtsSpeaking && !this.ttsReader.isSpeaking()) {
+            this.startTtsReadingFromCurrentPosition(false);
+          }
+        },
+        onPause: (): void => {
+          if (!this.isTtsPaused && (this.isTtsSpeaking || this.ttsReader.isSpeaking())) {
+            this.toggleTtsReading();
+          }
+        },
+        onStop: (): void => this.stopTtsReading(),
+        onPlayNext: (): void => {
+          this.playNextChapterFromMediaSession();
+        },
+        onPlayPrevious: (): void => {
+          this.playPreviousChapterFromMediaSession();
+        },
+        onSetSpeed: (speed: number): void => this.applyTtsSpeed(speed),
+        cacheTaskRunning: (): boolean => this.fullTextCaching,
+        cacheHoldsBackground: (): boolean => this.fullTextCacheController().backgroundRunning,
+        handBackgroundToCache: (): void => {
+          this.fullTextCacheController().backgroundRunning = true;
+        }
       });
-    }, 30000);
-  }
-
-  stopTtsBackgroundHeartbeat(): void {
-    if (this.ttsBackgroundHeartbeatId < 0) {
-      return;
     }
-    clearInterval(this.ttsBackgroundHeartbeatId);
-    this.ttsBackgroundHeartbeatId = -1;
-  }
-
-  async keepTtsBackgroundAlive(): Promise<void> {
-    if (!this.ttsBackgroundDesired || (!this.isTtsSpeaking && !this.ttsReader.isSpeaking())) {
-      this.stopTtsBackgroundHeartbeat();
-      return;
-    }
-    if (!this.ttsBackgroundRunning && !this.ttsBackgroundRequesting) {
-      await this.startTtsBackgroundRunning();
-      return;
-    }
-    await this.syncTtsSystemMediaControls();
-    const now = Date.now();
-    if (now - this.ttsBackgroundLastLogAt >= 120000) {
-      this.ttsBackgroundLastLogAt = now;
-      console.info(`[TTS-BG] heartbeat: ${this.ttsBackgroundDebugState()}`);
-    }
-  }
-
-  onTtsAudioStarted(): void {
-    console.info(`[TTS-BG] audio started: ${this.ttsBackgroundDebugState()}`);
-    this.refreshTtsBackgroundAfterAudioStarted().catch((error: Error) => {
-      console.warn(`[TTS-BG] refresh after audio started failed: ${this.formatTtsBackgroundError(error as Object)}; ${this.ttsBackgroundDebugState()}`, error);
-    });
-  }
-
-  async refreshTtsBackgroundAfterAudioStarted(): Promise<void> {
-    if (!this.ttsBackgroundRunning && !this.ttsBackgroundRequesting) {
-      await this.startTtsBackgroundRunning();
-      return;
-    }
-    await this.syncTtsSystemMediaControls();
-  }
-
-  async startTtsAvSession(agent: WantAgent): Promise<void> {
-    if (this.ttsAvSessionRequesting) {
-      return;
-    }
-    this.ttsAvSessionRequesting = true;
-    try {
-      if (!this.ttsAvSession) {
-        this.ttsAvSession = await avSession.createAVSession(getContext(this), 'LegadoReaderTts', 'audio');
-        this.registerTtsAvSessionCommands(this.ttsAvSession);
-      }
-      await this.ttsAvSession.setLaunchAbility(agent);
-      await this.ttsAvSession.setAVQueueTitle(this.book?.name || '听书');
-      await this.refreshTtsMediaImage();
-      await this.ttsAvSession.setAVMetadata(this.getTtsAvMetadata());
-      await this.ttsAvSession.setExtras({
-        bookUrl: this.bookUrl || '',
-        chapterIndex: this.currentChapterIndex,
-        chapterTitle: this.getChapterTitle()
-      });
-      await this.updateTtsAvSessionPlaybackState(this.ttsAvPlaybackState());
-      await this.ttsAvSession.activate();
-      await this.syncTtsSystemMediaControls();
-      console.info(`[TTS-BG] AVSession activated: ${this.ttsBackgroundDebugState()}`);
-    } catch (error) {
-      console.warn(`[TTS-BG] start AVSession failed: ${this.formatTtsBackgroundError(error as Object)}; ${this.ttsBackgroundDebugState()}`, error);
-    } finally {
-      this.ttsAvSessionRequesting = false;
-    }
-  }
-
-  registerTtsAvSessionCommands(session: avSession.AVSession): void {
-    session.on('play', () => {
-      if (this.isTtsPaused || this.ttsReader.isPaused()) {
-        this.toggleTtsReading();
-      } else if (!this.isTtsSpeaking && !this.ttsReader.isSpeaking()) {
-        this.startTtsReadingFromCurrentPosition(false);
-      }
-    });
-    session.on('pause', () => {
-      if (!this.isTtsPaused && (this.isTtsSpeaking || this.ttsReader.isSpeaking())) {
-        this.toggleTtsReading();
-      }
-    });
-    session.on('stop', () => {
-      this.stopTtsReading();
-    });
-    session.on('playNext', () => {
-      this.playNextChapterFromMediaSession();
-    });
-    session.on('playPrevious', () => {
-      this.playPreviousChapterFromMediaSession();
-    });
-    session.on('setSpeed', (speed: number) => {
-      this.applyTtsSpeed(speed);
-    });
-  }
-
-  unregisterTtsAvSessionCommands(session: avSession.AVSession): void {
-    try { session.off('play'); } catch (_) {}
-    try { session.off('pause'); } catch (_) {}
-    try { session.off('stop'); } catch (_) {}
-    try { session.off('playNext'); } catch (_) {}
-    try { session.off('playPrevious'); } catch (_) {}
-    try { session.off('setSpeed'); } catch (_) {}
+    return this.ttsMedia;
   }
 
   async playNextChapterFromMediaSession(): Promise<void> {
@@ -14142,7 +10696,7 @@ struct ReadBookPage {
         `resume=${shouldResume}`);
       if (shouldResume) {
         this.stopTtsReaderForChapterSwitch();
-        await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
+        await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
       } else {
         this.stopTtsReading();
       }
@@ -14167,7 +10721,7 @@ struct ReadBookPage {
       if (shouldResume) {
         await this.startTtsReadingFromCurrentPosition(false);
       } else {
-        await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_STOP);
+        await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_STOP);
       }
     } finally {
       this.ttsChapterSwitching = false;
@@ -14194,7 +10748,7 @@ struct ReadBookPage {
         `resume=${shouldResume}`);
       if (shouldResume) {
         this.stopTtsReaderForChapterSwitch();
-        await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
+        await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
       } else {
         this.stopTtsReading();
       }
@@ -14219,7 +10773,7 @@ struct ReadBookPage {
       if (shouldResume) {
         await this.startTtsReadingFromCurrentPosition(false);
       } else {
-        await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_STOP);
+        await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_STOP);
       }
     } finally {
       this.ttsChapterSwitching = false;
@@ -14248,7 +10802,7 @@ struct ReadBookPage {
         `target=${normalizedChapterIndex}/${normalizedPageIndex},resume=${shouldResume}`);
       if (shouldResume) {
         this.stopTtsReaderForChapterSwitch();
-        await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
+        await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
       }
       this.currentPageIndex = normalizedPageIndex;
       this.pendingRestorePageIndex = normalizedPageIndex;
@@ -14284,165 +10838,6 @@ struct ReadBookPage {
     }
   }
 
-  async updateTtsAvSessionPlaybackState(state: avSession.PlaybackState): Promise<void> {
-    if (!this.ttsAvSession) {
-      return;
-    }
-    try {
-      await this.refreshTtsMediaImage();
-      await this.ttsAvSession.setAVMetadata(this.getTtsAvMetadata());
-      await this.ttsAvSession.setAVPlaybackState({
-        state: state,
-        speed: AppStorage.get<number>('ttsSpeed') || 1,
-        position: {
-          elapsedTime: this.getTtsPlaybackElapsedTime(),
-          updateTime: Date.now()
-        },
-        bufferedTime: this.getTtsPlaybackDuration(),
-        loopMode: avSession.LoopMode.LOOP_MODE_SEQUENCE,
-        activeItemId: this.currentChapterIndex
-      });
-      if (state === avSession.PlaybackState.PLAYBACK_STATE_PLAY ||
-        state === avSession.PlaybackState.PLAYBACK_STATE_BUFFERING) {
-        await this.ttsAvSession.activate();
-      }
-    } catch (error) {
-      console.warn(`[TTS-BG] update AVSession playback state failed: ${this.formatTtsBackgroundError(error as Object)}; ${this.ttsBackgroundDebugState()}`, error);
-    }
-  }
-
-  async syncTtsSystemMediaControls(): Promise<void> {
-    if (!this.isTtsSpeaking && !this.ttsReader.isSpeaking()) {
-      return;
-    }
-    try {
-      if (!this.ttsAvSession) {
-        await this.startTtsBackgroundRunning();
-        return;
-      }
-      await this.ttsAvSession.activate();
-      await this.updateTtsAvSessionPlaybackState(this.ttsAvPlaybackState());
-    } catch (error) {
-      console.warn(`[TTS-BG] sync media controls failed: ${this.formatTtsBackgroundError(error as Object)}; ${this.ttsBackgroundDebugState()}`, error);
-    }
-  }
-
-  ttsAvPlaybackState(): avSession.PlaybackState {
-    return this.isTtsPaused || this.ttsReader.isPaused() ?
-      avSession.PlaybackState.PLAYBACK_STATE_PAUSE : avSession.PlaybackState.PLAYBACK_STATE_PLAY;
-  }
-
-  getTtsAvMetadata(): avSession.AVMetadata {
-    const metadata: avSession.AVMetadata = {
-      assetId: this.getTtsAvAssetId(),
-      title: this.book?.name || '朗读',
-      subtitle: this.getTtsAvSubtitle(),
-      artist: this.book?.author || '阅读',
-      author: this.book?.author || '阅读',
-      album: this.book?.name || '听书',
-      duration: this.getTtsPlaybackDuration(),
-      previousAssetId: this.canPlayPreviousTtsChapter() ? this.getTtsChapterAssetId(this.currentChapterIndex - 1) : '',
-      nextAssetId: this.canPlayNextTtsChapter() ? this.getTtsChapterAssetId(this.currentChapterIndex + 1) : '',
-      avQueueName: this.book?.name || '听书',
-      avQueueId: this.bookUrl || 'reader_tts'
-    };
-    if (this.ttsMediaPixelMap) {
-      metadata.mediaImage = this.ttsMediaPixelMap;
-      metadata.avQueueImage = this.ttsMediaPixelMap;
-    } else if (this.ttsMediaImage) {
-      metadata.mediaImage = this.ttsMediaImage;
-      metadata.avQueueImage = this.ttsMediaImage;
-    }
-    return metadata;
-  }
-
-  async refreshTtsMediaImage(): Promise<void> {
-    const serial = ++this.ttsMediaImageRefreshSerial;
-    const raw = this.getBookshelfDisplayCoverRaw();
-    if (raw && raw === this.ttsMediaImageRaw && this.ttsMediaPixelMap) {
-      return;
-    }
-    if (!raw) {
-      if (serial === this.ttsMediaImageRefreshSerial) {
-        this.ttsMediaImage = '';
-        this.ttsMediaImageRaw = '';
-        this.releaseTtsMediaPixelMap();
-      }
-      return;
-    }
-    let resolved = raw;
-    let pixelMap: image.PixelMap | null = null;
-    try {
-      const context = getContext(this);
-      const coverOrigin = this.book?.origin || '';
-      const coverPath = await BookCoverCache.prepareCoverFile(context, raw, coverOrigin, this.bookUrl);
-      if (coverPath) {
-        pixelMap = await this.createTtsMediaPixelMap(coverPath);
-        resolved = pixelMap ? coverPath :
-          await BookCoverCache.resolveCover(context, raw, coverOrigin, this.bookUrl);
-      } else {
-        resolved = await BookCoverCache.resolveCover(context, raw, coverOrigin, this.bookUrl);
-      }
-    } catch (error) {
-      console.warn('解析朗读媒体封面失败:', error);
-    }
-    if (serial === this.ttsMediaImageRefreshSerial) {
-      this.releaseTtsMediaPixelMap();
-      this.ttsMediaImage = resolved || raw;
-      this.ttsMediaImageRaw = raw;
-      this.ttsMediaPixelMap = pixelMap;
-    } else if (pixelMap) {
-      pixelMap.release().catch((e: Error) => {
-        console.warn('释放过期朗读媒体封面失败:', e);
-      });
-    }
-  }
-
-  async createTtsMediaPixelMap(path: string): Promise<image.PixelMap | null> {
-    let file: fs.File | null = null;
-    let source: image.ImageSource | null = null;
-    try {
-      file = fs.openSync(path, fs.OpenMode.READ_ONLY);
-      source = image.createImageSource(file.fd);
-      return await source.createPixelMap({
-        desiredSize: {
-          width: 512,
-          height: 512
-        }
-      });
-    } catch (error) {
-      console.warn('创建朗读媒体封面 PixelMap 失败:', error);
-      return null;
-    } finally {
-      if (source) {
-        try {
-          await source.release();
-        } catch (e) {
-        }
-      }
-      if (file) {
-        try {
-          fs.closeSync(file);
-        } catch (e) {
-        }
-      }
-    }
-  }
-
-  releaseTtsMediaPixelMap(): void {
-    if (!this.ttsMediaPixelMap) {
-      return;
-    }
-    try {
-      this.ttsMediaPixelMap.release().catch((e: Error) => {
-        console.warn('释放朗读媒体封面失败:', e);
-      });
-    } catch (e) {
-      console.warn('释放朗读媒体封面失败:', e);
-    }
-    this.ttsMediaPixelMap = null;
-  }
-
   shouldUseTtsThemeBookCover(): boolean {
     return this.themeBookCoverEnabled &&
       ThemeAssetRegistry.themeBookCovers(ThemeRuntime.bookTokens(this.appDarkMode).coverAssetId).length > 0;
@@ -14470,10 +10865,6 @@ struct ReadBookPage {
       hash = (hash * 31 + key.charCodeAt(index)) & 0x7FFFFFFF;
     }
     return hash;
-  }
-
-  ttsThemeBookCoverInterval(): number {
-    return 3200 + this.ttsThemeBookCoverSeed() % 5 * 420;
   }
 
   activeTtsThemeShelfFrame(): ResourceStr {
@@ -14511,18 +10902,6 @@ struct ReadBookPage {
     }
     const covers = this.getTtsPanelCoverList();
     return covers.length > 0 ? this.readerCoverUri(covers[0]) : '';
-  }
-
-  getTtsCoverPlaceholderColor(): string {
-    const name = this.book?.name || '';
-    if (!name) return '#007DFF';
-    const colors: string[] = ['#007DFF', '#E53935', '#43A047', '#EF6C00',
-      '#8E24AA', '#00ACC1', '#D81B60', '#5E35B1'];
-    let hash = 0;
-    for (let index = 0; index < name.length; index++) {
-      hash = name.charCodeAt(index) + ((hash << 5) - hash);
-    }
-    return colors[Math.abs(hash) % colors.length];
   }
 
   getBookshelfDisplayCoverRaw(): string {
@@ -14604,92 +10983,10 @@ struct ReadBookPage {
     return Math.max(60000, Math.round((charCount / charsPerMinute) * 60000));
   }
 
-  getTtsAvAssetId(): string {
-    return `${this.getTtsChapterAssetId(this.currentChapterIndex)}_${this.currentPageIndex}_${this.getTtsMediaImageIdentity()}`;
-  }
-
-  getTtsChapterAssetId(chapterIndex: number): string {
-    return `${this.bookUrl || 'reader_tts'}_${chapterIndex}`;
-  }
-
-  getTtsMediaImageIdentity(): string {
-    const value = this.ttsMediaImageRaw || this.ttsMediaImage || 'cover';
-    let hash = 0;
-    for (let i = 0; i < value.length; i++) {
-      hash = value.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    return Math.abs(hash).toString(16);
-  }
-
   getTtsAvSubtitle(): string {
     const progress = this.getProgressText();
     const chapter = this.getChapterTitle();
     return progress ? `${chapter} · ${progress}` : chapter;
-  }
-
-  async stopTtsAvSession(): Promise<void> {
-    if (!this.ttsAvSession) {
-      return;
-    }
-    const session = this.ttsAvSession;
-    this.ttsAvSession = null;
-    this.unregisterTtsAvSessionCommands(session);
-    try {
-      await session.setAVPlaybackState({
-        state: avSession.PlaybackState.PLAYBACK_STATE_STOP
-      });
-    } catch (error) {
-      console.warn(`[TTS-BG] mark AVSession stopped failed: ${this.formatTtsBackgroundError(error as Object)}`, error);
-    }
-    try {
-      await session.deactivate();
-    } catch (error) {
-      console.warn(`[TTS-BG] deactivate AVSession failed: ${this.formatTtsBackgroundError(error as Object)}`, error);
-    }
-    try {
-      await session.destroy();
-      console.info('[TTS-BG] AVSession destroyed');
-    } catch (error) {
-      console.warn(`[TTS-BG] destroy AVSession failed: ${this.formatTtsBackgroundError(error as Object)}`, error);
-    } finally {
-      this.ttsMediaImage = '';
-      this.ttsMediaImageRaw = '';
-      this.releaseTtsMediaPixelMap();
-    }
-  }
-
-  async createTtsBackgroundWantAgent(): Promise<WantAgent> {
-    const context = getContext(this) as common.UIAbilityContext;
-    return await wantAgent.getWantAgent({
-      wants: [{
-        bundleName: context.abilityInfo.bundleName,
-        abilityName: 'EntryAbility'
-      }],
-      actionType: wantAgent.OperationType.START_ABILITY,
-      requestCode: 1001,
-      actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-    });
-  }
-
-  ttsBackgroundDebugState(): string {
-    return `desired=${this.ttsBackgroundDesired},running=${this.ttsBackgroundRunning},requesting=${this.ttsBackgroundRequesting},speaking=${this.isTtsSpeaking},readerSpeaking=${this.ttsReader.isSpeaking()},avSession=${this.ttsAvSession ? 'yes' : 'no'},audio=${this.ttsReader.audioDebugState()}`;
-  }
-
-  formatTtsBackgroundError(error: Object | null | undefined): string {
-    if (!error) {
-      return 'unknown';
-    }
-    const record = error as Record<string, Object>;
-    const code = record['code'];
-    const message = record['message'];
-    const parts: string[] = [];
-    if (code !== undefined) {
-      parts.push(`code=${String(code)}`);
-    }
-    if (message !== undefined) {
-      parts.push(`message=${String(message)}`);
-    }
-    return parts.length > 0 ? parts.join(',') : String(error);
   }
 
   clearTtsHighlight(): void {
@@ -14711,7 +11008,7 @@ struct ReadBookPage {
   publishTtsHighlightRenderChange(): void {
     // V2 owns a root-level lightweight focus layer. Its key observes readerV2TtsPaintVersion directly, so the
     // retained正文 page stays mounted while only the yellow rectangles are replaced.
-    if (this.shouldUseReaderLayoutV2(this.pagedContentText)) {
+    if (this.shouldUseReaderLayoutV2(this.pagedContentText) || this.usesReaderContinuousV2()) {
       this.readerV2TtsPaintVersion++;
     } else {
       this.ttsHighlightRenderVersion++;
@@ -14769,13 +11066,6 @@ struct ReadBookPage {
     return result;
   }
 
-  normalizeReaderText(text: string): string {
-    return this.trimReaderContentText((text || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\u00A0/g, ' ')
-      .replace(/\n{3,}/g, '\n\n'));
-  }
-
   getPagedSourceText(): string {
     return this.buildPagedSourceText(this.currentChapterIndex, this.content || '');
   }
@@ -14802,1125 +11092,28 @@ struct ReadBookPage {
     if (!title) {
       return body;
     }
-    return titleAction ? `${title}${titleAction}\n\n${body}` : `${title}\n\n${body}`;
+    const heading = titleAction ? `${title}${titleAction}` : title;
+    const volumeTitle = this.readerVolumeTitle(chapterIndex);
+    if (!volumeTitle) {
+      return `${heading}\n\n${body}`;
+    }
+    // A volume's first chapter: the volume name becomes a heading, and cover images the source puts at the start
+    // of the chapter move under it. Unsized covers fill the rest of that page, so the chapter title starts a new one.
+    const parts = ReaderTextNormalizer.splitLeadingImages(body);
+    return parts[0] ? `${volumeTitle}\n\n${parts[0]}\n\n${heading}\n\n${parts[1]}` :
+      `${volumeTitle}\n\n${heading}\n\n${body}`;
   }
 
   normalizeChapterBody(text: string): string {
-    return this.mergeSoftWrappedChapterLines(this.trimReaderContentText((text || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\u00A0/g, ' ')
-      .replace(/\n{3,}/g, '\n\n')));
-  }
-
-  mergeSoftWrappedChapterLines(text: string): string {
-    if (!text || text.indexOf('\n') < 0) {
-      return text;
-    }
-    const rawLines = text.split('\n');
-    const result: string[] = [];
-    let current = '';
-    for (const rawLine of rawLines) {
-      const line = rawLine.trim();
-      if (!line) {
-        if (current) {
-          result.push(current);
-          current = '';
-        }
-        if (result.length > 0 && result[result.length - 1] !== '') {
-          result.push('');
-        }
-        continue;
-      }
-      if (!current) {
-        current = line;
-        continue;
-      }
-      if (this.shouldMergeReaderSoftLine(current, rawLine)) {
-        current += this.readerSoftLineJoiner(current, line) + line;
-      } else {
-        result.push(current);
-        current = line;
-      }
-    }
-    if (current) {
-      result.push(current);
-    }
-    return result.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  }
-
-  readerSoftLineJoiner(previous: string, next: string): string {
-    const left = (previous || '').trim();
-    const right = (next || '').trim();
-    if (!left || !right || /[-‐‑‒–—]$/.test(left)) {
-      return '';
-    }
-    return /[A-Za-z0-9,.:;\'"）)\]]$/.test(left) && /^[A-Za-z0-9]/.test(right) ? ' ' : '';
-  }
-
-  shouldMergeReaderSoftLine(previous: string, nextRaw: string): boolean {
-    const prev = (previous || '').trim();
-    const next = (nextRaw || '').trim();
-    if (ReaderActionMarker.has(prev) || ReaderActionMarker.has(next)) {
-      return false;
-    }
-    if (!prev || !next) {
-      return false;
-    }
-    if (/^[　\s]/.test(nextRaw)) {
-      return false;
-    }
-    if (/^[第卷章节回番外序楔引]\s*[\d一二三四五六七八九十百千万零〇壹贰叁肆伍陆柒捌玖拾]/.test(next)) {
-      return false;
-    }
-    if (/^[，,。！？!?；;：:、」』”）)]/.test(next)) {
-      return true;
-    }
-    if (/[。！？!?；;」』”）)]$/.test(prev)) {
-      return false;
-    }
-    return prev.length < 48 && next.length < 48;
+    return ReaderTextNormalizer.normalizeChapterBody(text);
   }
 
   buildIndentedChapterBody(text: string): string {
-    const normalized = this.normalizeChapterBody(text);
-    if (!normalized) {
-      return '';
-    }
-    return normalized
-      .split('\n')
-      .map((line: string) => this.indentReaderLine(line))
-      .join('\n');
-  }
-
-  indentReaderLine(line: string): string {
-    if (!line || line.trim().length === 0) {
-      return line;
-    }
-    const trimmed = line.trim();
-    // 图片标记是结构数据，不是正文段落；给它添加两个全角空格会被分页器拆成一张不可见的文本页。
-    if (LocalBookService.isEpubImageMarker(trimmed)) {
-      return trimmed;
-    }
-    if (line.startsWith('　　')) {
-      return line;
-    }
-    return `　　${line.replace(/^[　\s]+/g, '')}`;
+    return ReaderTextNormalizer.indentChapterBody(text);
   }
 
   stripDuplicatedChapterTitle(body: string, title: string): string {
-    if (!body || !title) {
-      return body;
-    }
-    const lines = body.split('\n');
-    const firstLine = (lines[0] || '').replace(/^[　\s]+/g, '').trim();
-    if (firstLine !== title) {
-      return body;
-    }
-    return this.trimReaderContentText(lines.slice(1).join('\n').replace(/^\n+/, ''));
-  }
-
-  isReaderTrimChar(value: string): boolean {
-    return value === ' ' || value === '\t' || value === '\n' || value === '\r' ||
-      value === '\u00A0' || value === '\u3000' || value === '\uFEFF' || value === '\u200B' ||
-      value === '\u200C' || value === '\u200D' || value === '\u2060';
-  }
-
-  isReaderEdgeTrimChar(value: string): boolean {
-    return this.isReaderTrimChar(value) || value === '\u3000';
-  }
-
-  // "保留段首缩进"开启时分页/分块起点仍要跳过的字符：换行与零宽不可见字符。
-  // 空格类字符（全角空格、普通空格等）在此模式下保留，段首缩进因此不被裁掉。
-  isReaderPageStartTrimChar(value: string): boolean {
-    return value === '\n' || value === '\r' || value === '\uFEFF' ||
-      value === '\u200B' || value === '\u200C' || value === '\u200D' || value === '\u2060';
-  }
-
-  // 分页/分块起点使用的裁剪字符集："保留段首缩进"开启时只跳过换行与零宽字符，
-  // 保留空格类缩进；默认行为维持全量裁剪。
-  trimPageStartChar(value: string): boolean {
-    return this.keepParagraphIndent ? this.isReaderPageStartTrimChar(value) : this.isReaderTrimChar(value);
-  }
-
-  trimReaderContentText(text: string): string {
-    const source = text || '';
-    let start = 0;
-    let end = source.length;
-    while (start < end && this.isReaderEdgeTrimChar(source.charAt(start))) {
-      start++;
-    }
-    while (end > start && this.isReaderEdgeTrimChar(source.charAt(end - 1))) {
-      end--;
-    }
-    return source.substring(start, end);
-  }
-
-  pushReaderPage(source: string, rawStart: number, rawEnd: number, pages: string[], starts: number[], ends: number[]): void {
-    let pageStart = Math.max(0, Math.min(rawStart, source.length));
-    let pageEnd = Math.max(pageStart, Math.min(rawEnd, source.length));
-    while (pageStart < pageEnd && this.trimPageStartChar(source.charAt(pageStart))) {
-      pageStart++;
-    }
-    while (pageEnd > pageStart && this.isReaderTrimChar(source.charAt(pageEnd - 1))) {
-      pageEnd--;
-    }
-    const pageText = source.substring(pageStart, pageEnd);
-    if (!pageText) {
-      return;
-    }
-    pages.push(pageText);
-    starts.push(pageStart);
-    ends.push(pageEnd);
-  }
-
-  adjustReaderActionMarkerPageEnd(source: string, start: number, rawEnd: number): number {
-    const end = Math.max(start + 1, Math.min(rawEnd, source.length));
-    let searchStart = start;
-    while (searchStart < end) {
-      let markerStart = -1;
-      for (const prefix of [ReaderActionMarker.PREFIX, ReaderActionMarker.LEGACY_PREFIX,
-        ReaderActionMarker.ORIGINAL_PREFIX]) {
-        const index = source.indexOf(prefix, searchStart);
-        if (index >= 0 && (markerStart < 0 || index < markerStart)) markerStart = index;
-      }
-      if (markerStart < 0) return end;
-      const suffix = source.indexOf(ReaderActionMarker.SUFFIX, markerStart);
-      if (suffix < 0) return end;
-      const markerEnd = suffix + ReaderActionMarker.SUFFIX.length;
-      const previousChar = markerStart > 0 ? source.charAt(markerStart - 1) : '';
-      const inlineMarker = markerStart > 0 && previousChar !== '\n' && previousChar !== '\r';
-      if (markerStart === end) {
-        return inlineMarker ? markerEnd : end;
-      }
-      if (markerStart > end) return end;
-      if (end < markerEnd) {
-        return inlineMarker ? markerEnd : (markerStart > start ? markerStart : markerEnd);
-      }
-      searchStart = markerEnd;
-    }
-    return end;
-  }
-
-  fitReaderActionMarkerPageEnd(source: string, start: number, rawEnd: number, availableWidth: number,
-    availableHeight: number, chapterIndex: number): number {
-    const adjustedEnd = this.adjustReaderActionMarkerPageEnd(source, start, rawEnd);
-    if (adjustedEnd === rawEnd || adjustedEnd <= start) return adjustedEnd;
-    // An inline marker is atomic. Appending it after the measured text can create a new rendered line,
-    // so validate that enlarged range instead of assuming the payload-free measurement still fits.
-    if (this.measureReaderTextHeight(source.substring(start, adjustedEnd), availableWidth, chapterIndex,
-      source, start) <= availableHeight) {
-      return adjustedEnd;
-    }
-    const marker = this.findReaderActionEndingAt(source, start, adjustedEnd);
-    if (!marker || marker.start <= start) return Math.max(start + 1, rawEnd);
-    return this.readerInlineActionCarryStart(source, start, marker.start, availableWidth, chapterIndex);
-  }
-
-  findReaderActionEndingAt(source: string, start: number, end: number): ReaderActionMatch | null {
-    let cursor = Math.max(0, start);
-    let result: ReaderActionMatch | null = null;
-    while (cursor < end) {
-      const local = ReaderActionMarker.findFirst(source.substring(cursor, end));
-      if (!local) break;
-      const absolute = new ReaderActionMatch();
-      absolute.marker = local.marker;
-      absolute.start = cursor + local.start;
-      absolute.end = cursor + local.end;
-      absolute.data = local.data;
-      if (absolute.end === end) result = absolute;
-      cursor = Math.max(cursor + 1, absolute.end);
-    }
-    return result;
-  }
-
-  readerInlineActionCarryStart(source: string, pageStart: number, markerStart: number, availableWidth: number,
-    chapterIndex: number): number {
-    const prefix = source.substring(pageStart, markerStart);
-    const paragraphs = this.getReaderTextParagraphs(prefix);
-    const last = paragraphs.length > 0 ? paragraphs[paragraphs.length - 1] : null;
-    if (last && last.text) {
-      const absoluteParagraphStart = pageStart + last.start;
-      const metrics = this.readerParagraphMetrics(last.text, availableWidth, chapterIndex, source,
-        absoluteParagraphStart);
-      if (metrics.lineEnds.length > 1) {
-        const previousLineEnd = metrics.lineEnds[metrics.lineEnds.length - 2];
-        const lineStart = absoluteParagraphStart + previousLineEnd;
-        if (lineStart > pageStart && lineStart < markerStart) return lineStart;
-      }
-      if (absoluteParagraphStart > pageStart && absoluteParagraphStart < markerStart) return absoluteParagraphStart;
-    }
-    // Very short first paragraphs have no earlier line boundary. Carry one complete Unicode character with
-    // the pill so the next page still renders it inline instead of exposing a standalone action row.
-    let carryStart = markerStart - 1;
-    if (carryStart > pageStart && carryStart < source.length) {
-      const code = source.charCodeAt(carryStart);
-      if (code >= 0xDC00 && code <= 0xDFFF) carryStart--;
-    }
-    return Math.max(pageStart + 1, carryStart);
-  }
-
-  findMeasuredPageEnd(source: string, start: number, availableWidth: number, availableHeight: number,
-    chapterIndex: number = this.currentChapterIndex): number {
-    let safeStart = Math.max(0, Math.min(start, source.length));
-    while (safeStart < source.length && this.isReaderTrimChar(source.charAt(safeStart))) {
-      safeStart++;
-    }
-    if (safeStart >= source.length) {
-      return source.length;
-    }
-
-    // All content uses the same block paginator. The previous pure-text path could repeatedly rebuild every
-    // earlier paragraph when paragraph spacing was enabled, while interactive text already measured complete
-    // paragraphs once. Keeping one algorithm makes the inexpensive path available to every source.
-    const blockWindowEnd = Math.min(source.length, safeStart + Math.max(4000,
-      this.getReaderLayoutWindowSize(availableWidth, availableHeight)));
-    const blockEnd = this.findBlockParagraphPageEnd(source, safeStart, blockWindowEnd,
-      availableWidth, availableHeight, chapterIndex);
-    if (blockEnd > safeStart) return blockEnd;
-
-    // The precise paragraph path intentionally falls back when interactive markers are present because its
-    // shortened display label no longer has a 1:1 source offset. Never binary-search the rest of the whole
-    // chapter in that case: each probe would rebuild every following comment bubble and dense chapters can
-    // block ArkUI for several seconds. The layout window is already at least twice the estimated visible text,
-    // so it preserves the exact bubble-aware measurement while keeping every probe local to the current page.
-    const layoutWindowEnd = Math.min(source.length,
-      safeStart + this.getReaderLayoutWindowSize(availableWidth, availableHeight));
-    let low = safeStart + 1;
-    let high = layoutWindowEnd;
-    let best = low;
-    while (low <= high) {
-      const mid = Math.floor((low + high) / 2);
-      const candidate = source.substring(safeStart, mid);
-      if (this.measureReaderTextHeight(candidate, availableWidth, chapterIndex, source, safeStart) <=
-        availableHeight) {
-        best = mid;
-        low = mid + 1;
-      } else {
-        high = mid - 1;
-      }
-    }
-
-    const end = this.chooseReaderPageBreak(source, safeStart, best);
-    return Math.max(safeStart + 1, end);
-  }
-
-  findBlockParagraphPageEnd(source: string, start: number, windowEnd: number, availableWidth: number,
-    availableHeight: number, chapterIndex: number = this.currentChapterIndex): number {
-    const layoutText = source.substring(start, Math.max(start + 1, windowEnd));
-    const paragraphs = this.getReaderTextParagraphs(layoutText);
-    let usedHeight = 0;
-    let best = start;
-    let previousIndependent = false;
-    for (let index = 0; index < paragraphs.length; index++) {
-      const paragraph = paragraphs[index];
-      const paragraphStart = start + paragraph.start;
-      const paragraphEnd = start + paragraph.end;
-      const independent = this.readerParagraphRendersAsIndependentComponent(paragraph.text);
-      const beforeSpacing = index > 0 ? this.getMeasuredReaderParagraphBoundarySpacingForLineHeightPx(
-        this.getEffectiveReaderLineHeight(), previousIndependent || independent) *
-        (this.readerParagraphSpacing > 0 ? 1 : this.getReaderPaginationHeightScale()) : 0;
-      const paragraphHeight = this.measureReaderSingleParagraphHeight(paragraph.text, availableWidth,
-        chapterIndex, source, paragraphStart);
-      if (usedHeight + beforeSpacing + paragraphHeight <= availableHeight) {
-        usedHeight += beforeSpacing + paragraphHeight;
-        best = paragraphEnd;
-        previousIndependent = independent;
-        continue;
-      }
-
-      // Use the space left after the complete paragraphs instead of moving the whole next paragraph to the
-      // following page. Comment-heavy sources frequently append a marker to every paragraph; treating all of
-      // those paragraphs as atomic left several visible lines empty at the bottom of every page.
-      const remainingHeight = Math.max(0, availableHeight - usedHeight - beforeSpacing);
-      if (remainingHeight <= 0 && best > start) return best;
-
-      // One native layout gives exact line ends for an ordinary paragraph and for the visible text before
-      // an inline action. Rebuilding that paragraph for every binary-search probe is both slower and a source
-      // of long main-thread stalls.
-      const inlineAction = ReaderActionMarker.findFirst(paragraph.text);
-      const directText = inlineAction && inlineAction.start > 0 ?
-        paragraph.text.substring(0, inlineAction.start) : paragraph.text;
-      const canUseDirectLineOffsets = !!directText &&
-        !this.hasMeasuredThemeRegexDecoration(directText, source, paragraphStart);
-      if (canUseDirectLineOffsets) {
-        const plainEnd = this.findSingleParagraphLineEnd(directText, availableWidth, remainingHeight,
-          chapterIndex, source, paragraphStart);
-        if (plainEnd > 0 && plainEnd < directText.length) {
-          const directEnd = this.chooseReaderPageBreak(source, paragraphStart, paragraphStart + plainEnd);
-          return Math.max(paragraphStart + 1, directEnd);
-        }
-        if (inlineAction && plainEnd >= directText.length) {
-          // The text fits but its fixed-width pill does not. The old generic binary search rebuilt the same
-          // interactive paragraph many times. Carry its last line with the marker using the already cached
-          // plain-text line metrics; one deterministic decision replaces O(log marker-payload) layouts.
-          return this.readerInlineActionCarryStart(source, paragraphStart,
-            paragraphStart + inlineAction.start, availableWidth, chapterIndex);
-        }
-      }
-
-      // Keep marker boundaries atomic while finding the largest fitting source range, so compact action payloads
-      // can never leak into rendered text when the text portion of an interactive paragraph is split across pages.
-      let low = paragraphStart + 1;
-      let high = paragraphEnd;
-      let paragraphBest = paragraphStart;
-      while (low <= high) {
-        const mid = Math.floor((low + high) / 2);
-        const candidateEnd = Math.min(paragraphEnd,
-          this.adjustReaderActionMarkerPageEnd(source, paragraphStart, mid));
-        const candidate = source.substring(paragraphStart, candidateEnd);
-        if (this.measureReaderSingleParagraphHeight(candidate, availableWidth, chapterIndex,
-          source, paragraphStart) <= remainingHeight) {
-          paragraphBest = Math.max(paragraphBest, candidateEnd);
-          low = mid + 1;
-        } else {
-          high = mid - 1;
-        }
-      }
-      if (paragraphBest <= paragraphStart && best > start) return best;
-      const breakEnd = this.chooseReaderPageBreak(source, paragraphStart, paragraphBest);
-      const adjustedBreakEnd = this.adjustReaderActionMarkerPageEnd(source, paragraphStart, breakEnd);
-      if (adjustedBreakEnd > breakEnd && this.measureReaderSingleParagraphHeight(
-        source.substring(paragraphStart, adjustedBreakEnd), availableWidth, chapterIndex, source, paragraphStart) >
-        remainingHeight) {
-        const marker = this.findReaderActionEndingAt(source, paragraphStart, adjustedBreakEnd);
-        if (marker && marker.start > paragraphStart) {
-          return this.readerInlineActionCarryStart(source, paragraphStart, marker.start, availableWidth, chapterIndex);
-        }
-      }
-      return Math.max(paragraphStart + 1, adjustedBreakEnd);
-    }
-    return best;
-  }
-
-  findSingleParagraphLineEnd(text: string, availableWidth: number, availableHeight: number,
-    chapterIndex: number, documentSource: string, absoluteStart: number): number {
-    if (!text || availableHeight <= 0) return -1;
-    const metrics = this.readerParagraphMetrics(text, availableWidth, chapterIndex, documentSource, absoluteStart);
-    const heightScale = this.getReaderPaginationHeightScale();
-    let end = -1;
-    for (let index = 0; index < metrics.lineEnds.length; index++) {
-      const lineBottom = (metrics.lineBottomsPx[index] || metrics.heightPx) * heightScale;
-      if (lineBottom > availableHeight) break;
-      end = Math.max(end, metrics.lineEnds[index]);
-    }
-    return end;
-  }
-
-  refineMeasuredPageEnd(source: string, start: number, initialEnd: number, availableWidth: number,
-    availableHeight: number, chapterIndex: number = this.currentChapterIndex): number {
-    let best = Math.max(start + 1, Math.min(initialEnd, source.length));
-    if (best >= source.length) {
-      return source.length;
-    }
-    if (!this.doesMeasuredReaderPageFit(source, start, best, availableWidth, availableHeight, chapterIndex)) {
-      return best;
-    }
-
-    let step = Math.max(16, Math.min(512, best - start));
-    let upper = Math.min(source.length, best + step);
-    while (upper < source.length &&
-      this.doesMeasuredReaderPageFit(source, start, upper, availableWidth, availableHeight, chapterIndex)) {
-      best = upper;
-      step = Math.min(step * 2, 4096);
-      upper = Math.min(source.length, best + step);
-    }
-    if (upper === source.length &&
-      this.doesMeasuredReaderPageFit(source, start, upper, availableWidth, availableHeight, chapterIndex)) {
-      return source.length;
-    }
-
-    let low = best + 1;
-    let high = Math.max(low, upper - 1);
-    while (low <= high) {
-      const mid = Math.floor((low + high) / 2);
-      if (this.doesMeasuredReaderPageFit(source, start, mid, availableWidth, availableHeight, chapterIndex)) {
-        best = mid;
-        low = mid + 1;
-      } else {
-        high = mid - 1;
-      }
-    }
-
-    const end = this.chooseReaderPageBreak(source, start, best);
-    return Math.max(start + 1, end);
-  }
-
-  doesMeasuredReaderPageFit(source: string, start: number, end: number, availableWidth: number,
-    availableHeight: number, chapterIndex: number = this.currentChapterIndex): boolean {
-    const safeEnd = Math.max(start + 1, Math.min(end, source.length));
-    return this.measureReaderTextHeight(source.substring(start, safeEnd), availableWidth, chapterIndex,
-      source, start) <= availableHeight;
-  }
-
-  findParagraphLayoutPageEnd(source: string, start: number, availableWidth: number, availableHeight: number,
-    chapterIndex: number = this.currentChapterIndex): number {
-    const windowEnd = Math.min(source.length, start + this.getReaderLayoutWindowSize(availableWidth, availableHeight));
-    const layoutText = source.substring(start, windowEnd);
-    if (!layoutText) {
-      return -1;
-    }
-    if (this.readerParagraphSpacing > 0 && /\n/.test(layoutText)) {
-      return -1;
-    }
-    // Placeholder spans occupy a paragraph index but do not correspond to a
-    // source-text character. Use the precise height-search path for decorated
-    // theme bubbles so line metric indexes are never mistaken for source
-    // offsets.
-    if (this.hasMeasuredThemeRegexDecoration(layoutText, source, start)) {
-      return -1;
-    }
-    if (ReaderActionMarker.has(layoutText)) {
-      return -1;
-    }
-    try {
-      const paragraph = this.buildMeasuredReaderParagraph(layoutText, availableWidth, chapterIndex, source, start);
-      const metrics = paragraph.getLineMetrics();
-      if (metrics.length === 0) {
-        return -1;
-      }
-
-      const safeHeight = Math.max(1, availableHeight - 1);
-      let end = -1;
-      for (let i = 0; i < metrics.length; i++) {
-        const metric = metrics[i];
-        if ((metric.topHeight + metric.height) * this.getReaderPaginationHeightScale() > safeHeight) {
-          break;
-        }
-        end = Math.max(end, metric.endIndex);
-      }
-
-      if (end <= 0) {
-        const firstRange = paragraph.getActualTextRange(0, true);
-        end = Math.max(1, firstRange.end);
-      }
-      if (end >= layoutText.length && windowEnd < source.length) {
-        return -1;
-      }
-      return Math.max(start + 1, Math.min(source.length, start + end));
-    } catch (error) {
-      console.error('官方段落布局分页失败，回退到文本测量分页:', error);
-      return -1;
-    }
-  }
-
-  getReaderLayoutWindowSize(availableWidth: number, availableHeight: number): number {
-    const charsPerLine = Math.max(8, Math.floor(availableWidth / Math.max(1, this.readerFontSize * 0.95)));
-    const visibleLines = Math.max(1, Math.ceil(availableHeight / this.getEffectiveReaderLineHeight()));
-    return Math.min(12000, Math.max(800, charsPerLine * (visibleLines + 6) * 2));
-  }
-
-  getReaderPaginationHeightTolerancePx(): number {
-    return 0;
-  }
-
-  getReaderPaginationRenderGuardHeight(): number {
-    // A merged Text is measured and rendered as one pixel-aligned box, so it needs no extra reserve. Visible
-    // paragraph spacing creates many independently rounded Text/Blank components; keep a tiny aggregate guard
-    // for that mode only. This prevents the observed 2-3px footer crossing without restoring the old full-line
-    // hidden reserve.
-    return this.readerParagraphSpacing > 0 ? 4 : 0;
-  }
-
-  getReaderTextParagraphs(text: string): ReaderTextParagraph[] {
-    const cached = this.readerTextParagraphsCache.get(text);
-    if (cached) return cached;
-    const source = (text || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\n{3,}/g, '\n\n');
-    const paragraphs: ReaderTextParagraph[] = [];
-    const separatorRegex = /\n+/g;
-    let start = 0;
-    let index = 0;
-    let match = separatorRegex.exec(source);
-    while (match) {
-      if (match.index > start) {
-        const paragraphText = source.substring(start, match.index);
-        paragraphs.push({
-          text: paragraphText,
-          start: start,
-          end: match.index,
-          index: index,
-          isLast: false,
-          key: `paragraph_${index}_${start}_${match.index}_${this.buildTextSliceKey(paragraphText)}`
-        });
-        index++;
-      }
-      start = match.index + match[0].length;
-      match = separatorRegex.exec(source);
-    }
-    if (start < source.length) {
-      const paragraphText = source.substring(start);
-      paragraphs.push({
-        text: paragraphText,
-        start: start,
-        end: source.length,
-        index: index,
-        isLast: false,
-        key: `paragraph_${index}_${start}_${source.length}_${this.buildTextSliceKey(paragraphText)}`
-      });
-    }
-    if (paragraphs.length === 0) {
-      paragraphs.push({
-        text: source,
-        start: 0,
-        end: source.length,
-        index: 0,
-        isLast: true,
-        key: `paragraph_empty_${this.buildTextSliceKey(source)}`
-      });
-      this.cacheReaderTextParagraphs(text, paragraphs);
-      return paragraphs;
-    }
-    const lastIndex = paragraphs.length - 1;
-    for (let i = 0; i < paragraphs.length; i++) {
-      paragraphs[i].isLast = i === lastIndex;
-      paragraphs[i].index = i;
-    }
-    this.cacheReaderTextParagraphs(text, paragraphs);
-    return paragraphs;
-  }
-
-  cacheReaderTextParagraphs(text: string, paragraphs: ReaderTextParagraph[]): void {
-    if (!text) return;
-    this.readerTextParagraphsCache.set(text, paragraphs);
-    while (this.readerTextParagraphsCache.size > 12) {
-      const oldest = this.readerTextParagraphsCache.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      this.readerTextParagraphsCache.delete(oldest);
-    }
-  }
-
-  measureReaderTextHeight(text: string, availableWidth: number,
-    chapterIndex: number = this.currentChapterIndex, documentSource: string = text,
-    absoluteStart: number = 0): number {
-    if (!text) {
-      return 0;
-    }
-    const paragraphs = this.getReaderTextParagraphs(text);
-    // With paragraph spacing disabled the renderer joins every ordinary/comment paragraph into one Text node.
-    // Measuring them as separate native Paragraph objects adds the paragraph engine's terminal line spacing at
-    // every newline, even though ArkUI's onlyBetweenLines mode adds it only once inside the merged component.
-    // Comment-heavy pages could therefore lose several real lines at the bottom despite a zero bottom margin.
-    const rendersAsOneText = this.readerParagraphSpacing <= 0 && paragraphs.length > 1 &&
-      paragraphs.every((paragraph: ReaderTextParagraph): boolean =>
-        !this.readerParagraphRendersAsIndependentComponent(paragraph.text));
-    if (rendersAsOneText) {
-      return this.measureReaderSingleParagraphHeight(text, availableWidth, chapterIndex, documentSource,
-        absoluteStart);
-    }
-    if (paragraphs.length > 1) {
-      let paragraphHeight = 0;
-      let boundaryHeight = 0;
-      for (let index = 0; index < paragraphs.length; index++) {
-        const paragraph = paragraphs[index];
-        const independent = this.readerParagraphRendersAsIndependentComponent(paragraph.text);
-        const metrics = this.readerParagraphMetrics(paragraph.text, availableWidth, chapterIndex,
-          documentSource, absoluteStart + paragraph.start);
-        paragraphHeight += this.getMeasuredReaderParagraphComponentHeightPx(metrics,
-          this.getEffectiveReaderLineHeight(), independent);
-        if (!paragraph.isLast) {
-          const nextIndependent = this.readerParagraphRendersAsIndependentComponent(paragraphs[index + 1].text);
-          boundaryHeight += this.getMeasuredReaderParagraphBoundarySpacingForLineHeightPx(
-            this.getEffectiveReaderLineHeight(), independent || nextIndependent);
-        }
-      }
-      const heightScale = this.getReaderPaginationHeightScale();
-      return paragraphHeight * heightScale + boundaryHeight *
-        (this.readerParagraphSpacing > 0 ? 1 : heightScale);
-    }
-    return this.measureReaderSingleParagraphHeight(text, availableWidth, chapterIndex, documentSource, absoluteStart);
-  }
-
-  measureReaderSingleParagraphHeight(text: string, availableWidth: number,
-    chapterIndex: number = this.currentChapterIndex, documentSource: string = text,
-    absoluteStart: number = 0): number {
-    const metrics = this.readerParagraphMetrics(text, availableWidth, chapterIndex, documentSource, absoluteStart);
-    const rawHeight = this.getMeasuredReaderParagraphComponentHeightPx(metrics, this.getEffectiveReaderLineHeight(),
-      this.readerParagraphRendersAsIndependentComponent(text));
-    return rawHeight * this.getReaderPaginationHeightScale();
-  }
-
-  getReaderPaginationHeightScale(): number {
-    const identity = this.readerPaginationHeightCalibrationIdentity();
-    if (identity !== this.readerPaginationHeightScaleIdentity) {
-      this.readerPaginationHeightScaleIdentity = identity;
-      this.readerPaginationHeightScale = READER_PAGINATION_HEIGHT_SCALE_CACHE.get(identity) || 1;
-      this.readerPaginationHeightCalibrationResolvedIdentity =
-        READER_PAGINATION_HEIGHT_SCALE_CACHE.has(identity) ? identity : '';
-    }
-    return Math.max(0.55, Math.min(1.15, this.readerPaginationHeightScale));
-  }
-
-  calibrateReaderPaginationHeightFromMergedText(paragraphs: ReaderTextParagraph[], chapterIndex: number,
-    pageStart: number, documentSource: string, pageLineHeight: number, area: Area): void {
-    // 连续滚动模式没有"页贴视口"的几何，块在屏幕上的位置随滚动任意变化，
-    // 这两类按页面几何推导排版缩放的校准不适用；误触发还会在阅读中整章重排。
-    if (this.isReaderContinuousScrollSurfaceActive()) return;
-    const independentParagraphLayout = this.readerParagraphSpacing > 0;
-    if ((!independentParagraphLayout && paragraphs.length < 3) || pageStart < 0 || !documentSource) {
-      return;
-    }
-    if (independentParagraphLayout && (paragraphs.length !== 1 ||
-      this.shouldUseTitleStyle(paragraphs[0].text, chapterIndex))) return;
-    const identity = this.readerPaginationHeightCalibrationIdentity();
-    const currentScale = this.getReaderPaginationHeightScale();
-    if (this.readerPaginationHeightCalibrationResolvedIdentity === identity) return;
-    const width = this.parseAreaDimension(area.width);
-    const actualHeight = this.parseAreaDimension(area.height);
-    if (width <= 0 || actualHeight <= 0) return;
-
-    let rawParagraphHeightPx = 0;
-    let boundaryHeightPx = 0;
-    let previousIndependent = false;
-    for (let index = 0; index < paragraphs.length; index++) {
-      const paragraph = paragraphs[index];
-      const independent = this.readerParagraphRendersAsIndependentComponent(paragraph.text);
-      const metrics = this.readerParagraphMetrics(paragraph.text, width, chapterIndex, documentSource,
-        pageStart + paragraph.start);
-      rawParagraphHeightPx += this.getMeasuredReaderParagraphComponentHeightPx(metrics,
-        pageLineHeight, independent);
-      if (index > 0) {
-        boundaryHeightPx += this.getMeasuredReaderParagraphBoundarySpacingForLineHeightPx(
-          pageLineHeight, previousIndependent || independent);
-      }
-      previousIndependent = independent;
-    }
-    if (rawParagraphHeightPx <= 0) return;
-    const actualHeightPx = this.toMeasurePx(actualHeight);
-    const rawTotalHeightPx = rawParagraphHeightPx + boundaryHeightPx;
-    const targetScale = Math.max(0.55, Math.min(1.15, independentParagraphLayout ?
-      actualHeightPx / rawParagraphHeightPx : actualHeightPx / rawTotalHeightPx));
-    this.readerPaginationHeightCalibrationResolvedIdentity = identity;
-    if (!Number.isFinite(targetScale) || Math.abs(targetScale - currentScale) < 0.012) {
-      cacheReaderPaginationHeightScale(identity, currentScale);
-      return;
-    }
-
-    this.readerPaginationHeightScale = targetScale;
-    cacheReaderPaginationHeightScale(identity, targetScale);
-    console.warn(`[ReaderPaginationCalibration] actual=${Math.round(actualHeightPx)} ` +
-      `raw=${Math.round(rawTotalHeightPx)} lineHeight=${pageLineHeight.toFixed(2)} ` +
-      `scale=${targetScale.toFixed(4)}`);
-    const readingOffset = this.getReaderStableReflowOffset();
-    this.readerTypographyRestoreOffset = readingOffset;
-    this.readerPaginationWorkSerial++;
-    this.adjacentPaginationPreloadSerial++;
-    this.previousPaginationPreloadSerial++;
-    this.readerPaginationCache.clear();
-    this.readerAdaptiveLineHeightCache.clear();
-    this.pageTurnPreviewKey = '';
-    this.pageTurnPreviewLoadingKey = '';
-    this.refreshReaderTextRender();
-    this.paginateContent(this.content);
-  }
-
-  scheduleReaderPaginationBottomFitCalibration(paragraphs: ReaderTextParagraph[], chapterIndex: number,
-    pageStart: number, area: Area): void {
-    // 页底贴合校准按"块的屏幕底部 vs 视口底部预留线"判断溢出，只在分页模式成立；
-    // 滚动模式里块的屏幕位置由滚动进度决定，该比较必然失真，还会在阅读中触发整章重排。
-    if (this.isReaderContinuousScrollSurfaceActive()) return;
-    if (this.readerParagraphSpacing <= 0 || paragraphs.length !== 1 || !paragraphs[0].isLast ||
-      chapterIndex !== this.currentChapterIndex || pageStart < 0) return;
-    const globalTop = this.parseAreaDimension(area.globalPosition?.y ?? 0);
-    const actualHeight = this.parseAreaDimension(area.height);
-    if (actualHeight <= 0) return;
-    const actualBottom = globalTop + actualHeight;
-    const taskIdentity = `${this.readerPaginationHeightCalibrationIdentity()}_${chapterIndex}_${pageStart}`;
-    if (this.readerPaginationBottomFitTimerId >= 0) clearTimeout(this.readerPaginationBottomFitTimerId);
-    this.readerPaginationBottomFitTimerId = setTimeout(() => {
-      this.readerPaginationBottomFitTimerId = -1;
-      if (chapterIndex !== this.currentChapterIndex || pageStart !== this.getCurrentPageStartOffset()) return;
-      if (taskIdentity !== this.readerPaginationBottomFitIdentity) {
-        this.readerPaginationBottomFitIdentity = taskIdentity;
-        this.readerPaginationBottomFitAttempts = 0;
-      }
-      if (this.readerPaginationBottomFitAttempts >= 3) return;
-      const desiredBottom = this.readerCommentPageAreaTop + this.pageViewHeight -
-        this.getReaderContentBottomReserve();
-      const overflow = actualBottom - desiredBottom;
-      if (!Number.isFinite(overflow) || overflow <= 0.5) return;
-
-      const identity = this.readerPaginationHeightCalibrationIdentity();
-      const currentScale = this.getReaderPaginationHeightScale();
-      const correction = Math.max(0.02, Math.min(0.08, overflow / Math.max(1, this.pageViewHeight)));
-      const nextScale = Math.max(0.55, Math.min(1.15, currentScale + correction));
-      if (nextScale <= currentScale + 0.001) return;
-      this.readerPaginationBottomFitAttempts++;
-      this.readerPaginationHeightScale = nextScale;
-      this.readerPaginationHeightScaleIdentity = identity;
-      this.readerPaginationHeightCalibrationResolvedIdentity = identity;
-      cacheReaderPaginationHeightScale(identity, nextScale);
-      console.warn(`[ReaderPaginationBottomFit] overflow=${overflow.toFixed(2)} ` +
-        `scale=${currentScale.toFixed(4)}->${nextScale.toFixed(4)}`);
-      const readingOffset = this.getReaderStableReflowOffset();
-      this.readerTypographyRestoreOffset = readingOffset;
-      this.readerPaginationWorkSerial++;
-      this.adjacentPaginationPreloadSerial++;
-      this.previousPaginationPreloadSerial++;
-      this.readerPaginationCache.clear();
-      this.readerAdaptiveLineHeightCache.clear();
-      this.pageTurnPreviewKey = '';
-      this.pageTurnPreviewLoadingKey = '';
-      this.refreshReaderTextRender();
-      this.paginateContent(this.content);
-    }, 180);
-  }
-
-  readerPaginationHeightCalibrationIdentity(): string {
-    return `${this.readerTypographyCacheIdentity()}_${this.readerParagraphCommentPaginationIdentity()}`;
-  }
-
-  readerParagraphMetrics(text: string, availableWidth: number,
-    chapterIndex: number = this.currentChapterIndex, documentSource: string = text,
-    absoluteStart: number = 0): ReaderParagraphMetrics {
-    if (!text) return { heightPx: 0, lineEnds: [], lineBottomsPx: [], lineCount: 0 };
-    const key = `${chapterIndex}_${absoluteStart}_${Math.round(availableWidth * 10)}_` +
-      `${this.readerTypographyCacheIdentity()}_${this.buildTextSliceKey(documentSource)}_` +
-      `${text.length}_${this.hashText(text)}`;
-    const cached = this.readerParagraphMetricsCache.get(key);
-    if (cached) return cached;
-
-    let result: ReaderParagraphMetrics;
-    // parse() also succeeds when a marker is appended to ordinary paragraph text. Only a truly
-    // standalone action renders as the fixed-height button row; inline comment bubbles remain a
-    // multi-line Text component and must go through native paragraph measurement below.
-    if (ReaderActionMarker.parse(text) && !this.hasInlineReaderSourceAction(text)) {
-      result = {
-        heightPx: this.toMeasurePx(Math.max(this.getEffectiveReaderLineHeight(), 32)),
-        lineEnds: [text.length],
-        lineBottomsPx: [this.toMeasurePx(Math.max(this.getEffectiveReaderLineHeight(), 32))],
-        lineCount: 1
-      };
-      this.cacheReaderParagraphMetrics(key, result);
-      return result;
-    }
-    const measuredText = this.readerActionMeasurementText(text, documentSource, absoluteStart);
-    try {
-      const layoutParagraphs = this.getReaderTextParagraphs(text);
-      const measureMergedText = this.readerParagraphSpacing <= 0 && layoutParagraphs.length > 1 &&
-        layoutParagraphs.every((paragraph: ReaderTextParagraph): boolean =>
-          !this.readerParagraphRendersAsIndependentComponent(paragraph.text));
-      const paragraph = measureMergedText ?
-        this.buildMeasuredMergedReaderParagraph(layoutParagraphs, availableWidth, chapterIndex, documentSource,
-          absoluteStart) :
-        this.buildMeasuredReaderParagraph(text, availableWidth, chapterIndex, documentSource, absoluteStart);
-      const nativeMetrics = paragraph.getLineMetrics();
-      if (nativeMetrics.length > 0) {
-        const lineEnds: number[] = [];
-        const lineBottomsPx: number[] = [];
-        for (let index = 0; index < nativeMetrics.length; index++) {
-          const metric = nativeMetrics[index];
-          lineEnds.push(metric.endIndex);
-          // LineMetrics exposes the laid-out row top and height directly. baseline + descent describes glyph
-          // metrics and can retain extra font space for custom fonts; adding that once for every independent
-          // paragraph accumulated several visible blank lines on comment-heavy pages.
-          lineBottomsPx.push(Math.max(0, metric.topHeight + metric.height));
-        }
-        // Use the paragraph engine's authoritative component height. ArkUI Text uses the same native paragraph
-        // box, whereas reconstructing the full box from a glyph baseline is especially inaccurate when regex
-        // fonts and inline comment pills are mixed in one paragraph.
-        const height = Math.max(0, paragraph.getHeight());
-        if (height > 0) {
-          result = {
-            heightPx: height,
-            lineEnds: lineEnds,
-            lineBottomsPx: lineBottomsPx,
-            lineCount: nativeMetrics.length
-          };
-          this.cacheReaderParagraphMetrics(key, result);
-          return result;
-        }
-      }
-    } catch (error) {
-      console.error('官方段落布局测量阅读文本高度失败，回退到组件测量:', error);
-    }
-    const fallbackStyle = this.getParagraphFallbackMeasureStyle(measuredText, chapterIndex);
-    const options: MeasureOptions = {
-        textContent: measuredText,
-        constraintWidth: Math.max(1, availableWidth),
-        fontSize: fallbackStyle.fontSize,
-        fontFamily: fallbackStyle.fontFamily,
-        lineHeight: this.getEffectiveReaderLineHeight(),
-        letterSpacing: this.getReaderAdaptiveLetterSpacing(),
-      fontWeight: FontWeight.Normal,
-      textAlign: this.readerTextAlignValue(),
-      wordBreak: WordBreak.BREAK_WORD
-    };
-    try {
-      const size = this.getUIContext().getMeasureUtils().measureTextSize(options);
-      const height = Number(size.height);
-      if (height > 0) {
-        const fallbackLineHeightPx = this.toMeasurePx(this.getEffectiveReaderLineHeight());
-        result = {
-          heightPx: height,
-          lineEnds: [],
-          lineBottomsPx: [],
-          lineCount: Math.max(1, Math.round(height / Math.max(1, fallbackLineHeightPx)))
-        };
-        this.cacheReaderParagraphMetrics(key, result);
-        return result;
-      }
-    } catch (error) {
-      console.error('测量阅读文本高度失败:', error);
-    }
-    const charsPerLine = Math.max(8, Math.floor(availableWidth / Math.max(1, this.readerFontSize * 1.08)));
-    const lines = Math.max(1, Math.ceil(measuredText.length / charsPerLine));
-    result = {
-      heightPx: this.toMeasurePx(lines * this.getEffectiveReaderLineHeight()),
-      lineEnds: [],
-      lineBottomsPx: [],
-      lineCount: lines
-    };
-    this.cacheReaderParagraphMetrics(key, result);
-    return result;
-  }
-
-  cacheReaderParagraphMetrics(key: string, metrics: ReaderParagraphMetrics): void {
-    this.readerParagraphMetricsCache.set(key, metrics);
-    while (this.readerParagraphMetricsCache.size > 640) {
-      const oldestKey = this.readerParagraphMetricsCache.keys().next().value as string | undefined;
-      if (!oldestKey) break;
-      this.readerParagraphMetricsCache.delete(oldestKey);
-    }
-  }
-
-  readerActionMeasurementText(text: string, documentSource: string, absoluteStart: number): string {
-    const value = text || '';
-    const source = documentSource || value;
-    const rangeStart = Math.max(0, Math.min(absoluteStart, source.length));
-    const rangeEnd = Math.min(source.length, rangeStart + value.length);
-    let searchStart = rangeStart;
-    let localCursor = 0;
-    let result = '';
-    while (searchStart < rangeEnd) {
-      let markerStart = -1;
-      for (const prefix of [ReaderActionMarker.PREFIX, ReaderActionMarker.LEGACY_PREFIX,
-        ReaderActionMarker.ORIGINAL_PREFIX]) {
-        const index = source.indexOf(prefix, searchStart);
-        if (index >= 0 && (markerStart < 0 || index < markerStart)) markerStart = index;
-      }
-      if (markerStart < 0 || markerStart >= rangeEnd) break;
-      const suffix = source.indexOf(ReaderActionMarker.SUFFIX, markerStart);
-      if (suffix < 0) break;
-      const markerEnd = suffix + ReaderActionMarker.SUFFIX.length;
-      const localStart = Math.max(0, markerStart - rangeStart);
-      const localEnd = Math.max(localStart, Math.min(value.length, markerEnd - rangeStart));
-      result += value.substring(localCursor, localStart);
-      const marker = source.substring(markerStart, markerEnd);
-      const previousChar = markerStart > 0 ? source.charAt(markerStart - 1) : '';
-      const inlineMarker = markerStart > 0 && previousChar !== '\n' && previousChar !== '\r';
-      result += inlineMarker ? this.readerInlineSourceActionLabel(marker) :
-        (ReaderActionMarker.parse(marker)?.label || '打开');
-      localCursor = localEnd;
-      if (markerEnd >= rangeEnd) break;
-      searchStart = markerEnd;
-    }
-    if (localCursor === 0) return value;
-    return `${result}${value.substring(localCursor)}`;
-  }
-
-  buildReaderMeasureTextStyle(fontSize: number, fontFamily: string): graphicsText.TextStyle {
-    return {
-      // ArkUI Text.fontSize(number) is expressed in fp. Keep font conversion separate from the vp geometry
-      // used by widths, margins and line spacing.
-      fontSize: this.toMeasureFontPx(fontSize),
-      letterSpacing: this.toMeasureFontOffsetPx(this.getReaderAdaptiveLetterSpacing()),
-      fontFamilies: [fontFamily || this.getBodyReaderFontFamily()],
-      fontWeight: graphicsText.FontWeight.W400,
-      halfLeading: false,
-      heightOnly: true,
-      heightScale: 1,
-      locale: 'zh-Hans'
-    };
-  }
-
-  buildMeasuredReaderParagraph(text: string, availableWidth: number,
-    chapterIndex: number = this.currentChapterIndex, documentSource: string = text,
-    absoluteStart: number = 0): graphicsText.Paragraph {
-    const bodyStyle = this.buildReaderMeasureTextStyle(this.readerFontSize, this.getBodyReaderFontFamily());
-    const paragraphStyle: graphicsText.ParagraphStyle = {
-      textStyle: bodyStyle,
-      align: this.readerGraphicsTextAlignValue(),
-      textDirection: graphicsText.TextDirection.LTR,
-      wordBreak: graphicsText.WordBreak.BREAK_WORD,
-      // Keep native page measurement on the same bounded breaker as the ArkUI Text nodes.
-      breakStrategy: graphicsText.BreakStrategy.GREEDY,
-      trailingSpaceOptimized: true,
-      lineSpacing: this.toMeasureNonNegativePx(Math.max(0, this.readerLineHeight)),
-      includeFontPadding: false
-    };
-    const builder = new graphicsText.ParagraphBuilder(paragraphStyle, graphicsText.FontCollection.getGlobalInstance());
-    this.addMeasuredReaderText(builder, text || '', chapterIndex, bodyStyle, documentSource, absoluteStart);
-    const paragraph = builder.build();
-    paragraph.layoutSync(this.toMeasurePx(availableWidth));
-    return paragraph;
-  }
-
-  buildMeasuredMergedReaderParagraph(paragraphs: ReaderTextParagraph[], availableWidth: number,
-    chapterIndex: number, documentSource: string, absoluteStart: number): graphicsText.Paragraph {
-    const bodyStyle = this.buildReaderMeasureTextStyle(this.readerFontSize, this.getBodyReaderFontFamily());
-    const paragraphStyle: graphicsText.ParagraphStyle = {
-      textStyle: bodyStyle,
-      align: this.readerGraphicsTextAlignValue(),
-      textDirection: graphicsText.TextDirection.LTR,
-      wordBreak: graphicsText.WordBreak.BREAK_WORD,
-      breakStrategy: graphicsText.BreakStrategy.GREEDY,
-      trailingSpaceOptimized: true,
-      lineSpacing: this.toMeasureNonNegativePx(Math.max(0, this.readerLineHeight)),
-      includeFontPadding: false
-    };
-    const builder = new graphicsText.ParagraphBuilder(paragraphStyle, graphicsText.FontCollection.getGlobalInstance());
-    for (let index = 0; index < paragraphs.length; index++) {
-      const paragraph = paragraphs[index];
-      if (index > 0) {
-        builder.pushStyle(bodyStyle);
-        builder.addText('\n');
-        builder.popStyle();
-      }
-      this.addMeasuredReaderText(builder, paragraph.text, chapterIndex, bodyStyle, documentSource,
-        absoluteStart + paragraph.start);
-    }
-    const result = builder.build();
-    result.layoutSync(this.toMeasurePx(availableWidth));
-    return result;
-  }
-
-  addMeasuredReaderText(builder: graphicsText.ParagraphBuilder, text: string, chapterIndex: number,
-    bodyStyle: graphicsText.TextStyle, documentSource: string = text, absoluteStart: number = 0): void {
-    if (this.shouldUseTitleStyle(text, chapterIndex)) {
-      const title = this.getChapterTitle(chapterIndex).trim();
-      const titleLength = Math.min(title.length, text.length);
-      const titleStyle = this.buildReaderMeasureTextStyle(this.readerTitleFontSize, this.getTitleReaderFontFamily());
-      builder.pushStyle(titleStyle);
-      builder.addText(text.substring(0, titleLength));
-      builder.popStyle();
-      const rest = text.substring(titleLength);
-      if (rest) {
-        // Inline provider actions can be stored immediately after the reader-generated title. Measuring the
-        // compact marker as ordinary text disagrees with the rendered action pill and makes title pages
-        // substantially more expensive to paginate.
-        const inlineAction = this.findMeasuredReaderInlineAction(rest, documentSource,
-          absoluteStart + titleLength);
-        if (inlineAction) {
-          this.addMeasuredReaderInlineActionText(builder, rest, chapterIndex, bodyStyle, documentSource,
-            absoluteStart + titleLength, inlineAction);
-        } else {
-          this.addMeasuredRegexReaderText(builder, rest, bodyStyle, documentSource, absoluteStart + titleLength);
-        }
-      }
-      return;
-    }
-    const inlineAction = this.findMeasuredReaderInlineAction(text, documentSource, absoluteStart);
-    if (inlineAction) {
-      this.addMeasuredReaderInlineActionText(builder, text, chapterIndex, bodyStyle, documentSource,
-        absoluteStart, inlineAction);
-      return;
-    }
-    this.addMeasuredRegexReaderText(builder, text, bodyStyle, documentSource, absoluteStart);
-  }
-
-  findMeasuredReaderInlineAction(text: string, documentSource: string,
-    absoluteStart: number): ReaderActionMatch | null {
-    const source = documentSource || text || '';
-    const rangeStart = Math.max(0, Math.min(absoluteStart, source.length));
-    const match = ReaderActionMarker.findFirst(source.substring(rangeStart));
-    if (!match || match.start < 0 || match.start >= (text || '').length) return null;
-    const markerStart = rangeStart + match.start;
-    const previousChar = markerStart > 0 ? source.charAt(markerStart - 1) : '';
-    return markerStart > 0 && previousChar !== '\n' && previousChar !== '\r' ? match : null;
-  }
-
-  addMeasuredReaderInlineActionText(builder: graphicsText.ParagraphBuilder, text: string, chapterIndex: number,
-    bodyStyle: graphicsText.TextStyle, documentSource: string, absoluteStart: number,
-    match: ReaderActionMatch): void {
-    const markerStart = Math.max(0, Math.min(match.start, text.length));
-    const markerEnd = Math.max(markerStart, Math.min(match.end, text.length));
-    const before = text.substring(0, markerStart);
-    const after = match.end <= text.length ? text.substring(markerEnd) : '';
-    if (before) {
-      this.addMeasuredRegexReaderText(builder, before, bodyStyle, documentSource, absoluteStart);
-    }
-    const actionStyle = this.buildReaderMeasureTextStyle(
-      this.readerInlineSourceActionFontSize(match.marker), this.readerInlineSourceActionFontFamily());
-    builder.pushStyle(actionStyle);
-    builder.addText(this.readerInlineSourceActionLabel(match.marker));
-    builder.popStyle();
-    if (after) {
-      this.addMeasuredRegexReaderText(builder, after, bodyStyle, documentSource, absoluteStart + match.end);
-    }
-  }
-
-  addMeasuredRegexReaderText(builder: graphicsText.ParagraphBuilder, text: string,
-    bodyStyle: graphicsText.TextStyle, documentSource: string = text, absoluteStart: number = 0): void {
-    if (!this.readerRegexFontEnabled) {
-      builder.pushStyle(bodyStyle);
-      builder.addText(text);
-      builder.popStyle();
-      return;
-    }
-    const slices = this.getRegexTextSlicesForDocumentRange(text, documentSource, absoluteStart);
-    for (const slice of slices) {
-      const style = slice.highlighted ?
-        this.buildReaderMeasureTextStyle(this.getRegexSliceFontSize(slice), this.getRegexSliceFontFamily(slice)) :
-        bodyStyle;
-      if (this.shouldUseFullThemeRegexDecoration(slice)) {
-        this.addMeasuredRegexBubbleCap(builder, slice);
-      }
-      builder.pushStyle(style);
-      builder.addText(slice.text);
-      builder.popStyle();
-      if (this.shouldUseFullThemeRegexDecoration(slice)) {
-        this.addMeasuredRegexBubbleCap(builder, slice);
-      }
-    }
-  }
-
-  addMeasuredRegexBubbleCap(builder: graphicsText.ParagraphBuilder, slice: ReadTextSlice): void {
-    const capSize = this.toMeasurePx(this.getRegexBubbleCapSize(slice));
-    builder.addPlaceholder({
-      width: capSize,
-      height: capSize,
-      align: graphicsText.PlaceholderAlignment.CENTER_OF_ROW_BOX,
-      baseline: graphicsText.TextBaseline.IDEOGRAPHIC,
-      baselineOffset: 0
-    });
-  }
-
-  hasMeasuredThemeRegexDecoration(text: string, documentSource: string, absoluteStart: number): boolean {
-    if (!this.readerRegexFontEnabled || !text) {
-      return false;
-    }
-    const slices = this.getRegexTextSlicesForDocumentRange(text, documentSource, absoluteStart);
-    for (const slice of slices) {
-      if (this.shouldUseFullThemeRegexDecoration(slice)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  getParagraphFallbackMeasureStyle(text: string, chapterIndex: number): ReaderParagraphMeasureFallback {
-    if (this.shouldUseTitleStyle(text, chapterIndex)) {
-      return {
-        fontSize: this.readerTitleFontSize,
-        fontFamily: this.getTitleReaderFontFamily()
-      };
-    }
-    if (this.readerRegexFontEnabled) {
-      const slices = this.getRegexTextSlices(text);
-      for (const slice of slices) {
-        if (slice.highlighted) {
-          return {
-            fontSize: this.getRegexSliceFontSize(slice),
-            fontFamily: this.getRegexSliceFontFamily(slice)
-          };
-        }
-      }
-    }
-    return {
-      fontSize: this.readerFontSize,
-      fontFamily: this.getBodyReaderFontFamily()
-    };
+    return ReaderTextNormalizer.stripDuplicatedTitle(body, title);
   }
 
   toMeasurePx(value: number): number {
@@ -15940,32 +11133,6 @@ struct ReadBookPage {
     }
   }
 
-  getRenderedReaderParagraphLineBoxPx(text: string, chapterIndex: number,
-    documentSource: string = text, absoluteStart: number = 0): number {
-    // ArkUI's actual glyph row is slightly taller than the configured fp size even with font padding
-    // disabled. The factor matches Text's tight row box while avoiding custom font ascent inflation.
-    let lineBoxPx = this.toMeasureFontPx(this.readerFontSize) * 1.09;
-    if (this.shouldUseTitleStyle(text, chapterIndex)) {
-      lineBoxPx = Math.max(lineBoxPx, this.toMeasureFontPx(this.readerTitleFontSize) * 1.09);
-    }
-    if (this.readerRegexFontEnabled) {
-      const slices = this.getRegexTextSlicesForDocumentRange(text, documentSource, absoluteStart);
-      for (const slice of slices) {
-        if (!slice.highlighted) continue;
-        lineBoxPx = Math.max(lineBoxPx, this.toMeasureFontPx(this.getRegexSliceFontSize(slice)) * 1.09);
-        if (this.shouldUseFullThemeRegexDecoration(slice)) {
-          lineBoxPx = Math.max(lineBoxPx, this.toMeasurePx(this.getRegexBubbleCapSize(slice)));
-        }
-      }
-    }
-    const inlineAction = this.findMeasuredReaderInlineAction(text, documentSource, absoluteStart);
-    if (inlineAction) {
-      lineBoxPx = Math.max(lineBoxPx,
-        this.toMeasureFontPx(this.readerInlineSourceActionFontSize(inlineAction.marker)) * 1.09);
-    }
-    return Math.max(1, lineBoxPx);
-  }
-
   toMeasureFontPx(value: number): number {
     try {
       return Math.max(1, fp2px(value));
@@ -15981,23 +11148,6 @@ struct ReadBookPage {
     } catch (_) {
       return value;
     }
-  }
-
-  chooseReaderPageBreak(source: string, start: number, best: number): number {
-    if (best >= source.length) {
-      return source.length;
-    }
-    const safeBest = Math.max(start + 1, Math.min(best, source.length));
-    if (safeBest > start && safeBest < source.length) {
-      const previousCode = source.charCodeAt(safeBest - 1);
-      const nextCode = source.charCodeAt(safeBest);
-      const splitsSurrogatePair = previousCode >= 0xD800 && previousCode <= 0xDBFF &&
-        nextCode >= 0xDC00 && nextCode <= 0xDFFF;
-      if (splitsSurrogatePair && safeBest - 1 > start) {
-        return safeBest - 1;
-      }
-    }
-    return safeBest;
   }
 
   followTtsChunk(chunk: TtsChunk, token: number, generation: number,
@@ -16027,6 +11177,10 @@ struct ReadBookPage {
     // the range by page, so it cannot leak onto the outgoing leaf; it does let the new sentence appear highlighted
     // during the turn instead of waiting until the animation has finished while audio continues playing.
     this.updateTtsChunkHighlight(chunk, pageIndex);
+    if (this.usesReaderContinuousV2()) {
+      this.followReaderContinuousTtsFocus(firstFocusInSession);
+      return;
+    }
     if (spreadPageIndex !== this.currentPageIndex) {
       this.animateTtsToPage(spreadPageIndex, chunk);
       return;
@@ -16039,54 +11193,12 @@ struct ReadBookPage {
     }
   }
 
-  readerHeaderContentOptions(): SelectOption[] {
-    return [{ value: '当前章节标题' }, { value: '书名' }, { value: '书名 + 章节标题' }, { value: '不显示' }];
-  }
-
-  readerHeaderContentValues(): string[] {
-    return ['chapter', 'book', 'book_chapter', 'none'];
-  }
-
-  readerHeaderContentSelectedIndex(): number {
-    const index = this.readerHeaderContentValues().indexOf(this.readerHeaderContentMode);
-    return index >= 0 ? index : 0;
-  }
-
-  readerFooterLeftOptions(): SelectOption[] {
-    return [{ value: '章节序号 + 标题' }, { value: '章节标题' }, { value: '不显示' }];
-  }
-
-  readerFooterLeftValues(): string[] {
-    return ['chapter', 'title', 'none'];
-  }
-
-  readerFooterLeftSelectedIndex(): number {
-    const index = this.readerFooterLeftValues().indexOf(this.readerFooterLeftMode);
-    return index >= 0 ? index : 0;
-  }
-
-  readerFooterProgressOptions(): SelectOption[] {
-    return [{ value: '当前页 / 总页数' }, { value: '阅读百分比' }, { value: '章节进度' }, { value: '全书进度' }, { value: '不显示' }];
-  }
-
-  readerFooterProgressValues(): string[] {
-    return ['page', 'percentage', 'chapter', 'book', 'none'];
-  }
-
-  readerFooterProgressSelectedIndex(): number {
-    const index = this.readerFooterProgressValues().indexOf(this.readerFooterProgressMode);
-    return index >= 0 ? index : 0;
-  }
-
   saveReaderChromeSettings(): void {
     ReaderSettingsStore.saveReaderChromeSettings(
       getContext(this),
       this.readerHeaderEnabled,
-      this.readerHeaderContentMode,
       this.readerFooterEnabled,
-      this.readerFooterLeftMode,
-      this.readerFooterProgressMode,
-      this.readerFooterShowProgressBar
+      this.readerInfoBarConfigRaw
     ).catch((e: Error) => {
       console.warn('保存阅读页眉页脚设置失败:', e);
     });
@@ -16124,6 +11236,11 @@ struct ReadBookPage {
     this.ttsPageTurnSerial++;
     this.finishPageTurnAnimation();
     const spreadPageIndex = this.normalizeReaderSpreadPageIndex(pageIndex);
+    if (this.usesReaderContinuousV2()) {
+      this.updateTtsChunkHighlight(this.ttsLastFocusChunk, pageIndex);
+      this.followReaderContinuousTtsFocus(true);
+      return;
+    }
     if (spreadPageIndex !== this.currentPageIndex) {
       this.currentPageIndex = spreadPageIndex;
       this.saveReadingProgress().catch((error: Error) => {
@@ -16237,6 +11354,11 @@ struct ReadBookPage {
     const pageIndex = this.findPageIndexByOffset(absoluteStart);
     if (pageIndex < 0 || pageIndex >= this.contentPages.length) return;
     const targetPageIndex = this.normalizeReaderSpreadPageIndex(pageIndex);
+    if (this.usesReaderContinuousV2()) {
+      this.ttsLastFocusPageIndex = pageIndex;
+      this.updateTtsChunkHighlight(chunk, pageIndex, false);
+      return;
+    }
     if (this.isPageTurning || this.ttsAutoTurningPage || this.ttsManualPageTurnResumePending) {
       this.scheduleCurrentTtsFocusRepublishAfterPageTurn();
       return;
@@ -16277,8 +11399,18 @@ struct ReadBookPage {
     if (this.ttsProgressSaveTimerId < 0) return;
     clearTimeout(this.ttsProgressSaveTimerId);
     this.ttsProgressSaveTimerId = -1;
-    this.saveReadingProgress().catch((error: Error) => {
+    // When reading stops behind the bookshelf, the shelf is the visible page and must pick up the new position.
+    this.saveReadingProgress(!this.readerPageVisible).catch((error: Error) => {
       console.warn('立即保存朗读句子位置失败:', error);
+    });
+  }
+
+  releaseBackgroundProgressWriterAfterTtsStop(): void {
+    // The stop-time save is queued; keep the permission until it settles. A chapter switch re-attaches the
+    // floating session right away, in which case this page is still the reader and keeps its permission.
+    this.readingProgressSaveQueue.finally(() => {
+      if (ReaderTtsFloatingSession.isOwner(this.ttsFloatingSessionOwnerId)) return;
+      ReaderProgressCheckpoint.releaseBackground(this.ttsFloatingSessionOwnerId);
     });
   }
 
@@ -16378,6 +11510,13 @@ struct ReadBookPage {
     const pageText = this.getPageText(pageIndex);
     this.mirroredTtsFocusActive = true;
     const targetPageIndex = this.normalizeReaderSpreadPageIndex(pageIndex);
+    if (this.usesReaderContinuousV2()) {
+      this.readerV2TtsSourceStart = absoluteStart;
+      this.readerV2TtsSourceEnd = absoluteEnd;
+      this.publishTtsHighlightRenderChange();
+      this.followReaderContinuousTtsFocus(false);
+      return;
+    }
     if (targetPageIndex !== this.currentPageIndex) {
       this.finishPageTurnAnimation();
       this.currentPageIndex = targetPageIndex;
@@ -16488,11 +11627,10 @@ struct ReadBookPage {
         await this.completeSimulationPageTurnMotion(1);
       } else {
         const duration = 140;
-        animateTo({ duration: duration, curve: this.pageTurnAnimationCurve() }, () => {
+        await this.runReaderAnimation(duration, this.pageTurnAnimationCurve(), () => {
           this.setPageSlideAxisOffset(-distance);
           this.pageTransitionOpacity = 1;
         });
-        await this.delay(duration + 10);
       }
       this.applyTtsPageTarget(target, turnSerial);
       await this.finishAnimatedPageTurn();
@@ -16540,11 +11678,10 @@ struct ReadBookPage {
       await this.completeSimulationPageTurnMotion(direction);
     } else {
       const duration = 140;
-      animateTo({ duration: duration, curve: this.pageTurnAnimationCurve() }, () => {
+      await this.runReaderAnimation(duration, this.pageTurnAnimationCurve(), () => {
         this.setPageSlideAxisOffset(direction > 0 ? -distance : distance);
         this.pageTransitionOpacity = 1;
       });
-      await this.delay(duration + 10);
     }
     await this.applyTtsPageTurn(direction, turnSerial);
     await this.finishAnimatedPageTurn();
@@ -16557,11 +11694,10 @@ struct ReadBookPage {
       await this.completeSimulationPageTurnMotion(direction);
     } else {
       const duration = 150;
-      animateTo({ duration: duration, curve: this.pageTurnAnimationCurve() }, () => {
+      await this.runReaderAnimation(duration, this.pageTurnAnimationCurve(), () => {
         this.setPageSlideAxisOffset(direction > 0 ? -distance : distance);
         this.pageTransitionOpacity = 1;
       });
-      await this.delay(duration + 10);
     }
     await this.applyTtsPageTurn(direction, turnSerial);
     await this.finishAnimatedPageTurn();
@@ -16598,9 +11734,21 @@ struct ReadBookPage {
     }
   }
 
-  delay(ms: number): Promise<void> {
+  // Resolves when the property animation has actually finished. A fixed timer drifts from the real end on a
+  // busy frame: firing early commits the page under a still-moving leaf, firing late leaves the finished leaf
+  // idle. The bounded fallback only covers a lost finish callback, e.g. the app is backgrounded mid-animation.
+  runReaderAnimation(duration: number, curve: Curve | ICurve, apply: () => void): Promise<void> {
     return new Promise<void>((resolve) => {
-      setTimeout(() => resolve(), ms);
+      let settled = false;
+      let fallbackTimerId = -1;
+      const settle = (): void => {
+        if (settled) return;
+        settled = true;
+        if (fallbackTimerId >= 0) clearTimeout(fallbackTimerId);
+        resolve();
+      };
+      fallbackTimerId = setTimeout(settle, Math.max(0, duration) + 120);
+      animateTo({ duration: duration, curve: curve, onFinish: settle }, apply);
     });
   }
 
@@ -16613,16 +11761,18 @@ struct ReadBookPage {
   }
 
   private resumeReaderPaginationWorkAfterPageShow(): void {
-    if (!this.pagedContentText || !this.hasPagedReaderArea()) {
-      this.preloadReaderContentLater();
-      return;
-    }
+    this.resumeCurrentReaderPaginationCompletion();
+    this.preloadReaderContentLater();
+  }
+
+  // 本章分页会话的后台补排链在页面不可见、被别的会话顶掉序号时会静默退出，这里按当前键重新挂上。
+  resumeCurrentReaderPaginationCompletion(): void {
+    if (!this.pagedContentText || !this.hasPagedReaderArea()) return;
     const key = this.buildReaderPaginationCacheKey(this.currentChapterIndex, this.pagedContentText);
     const result = this.readerPaginationCache.get(key);
     if (result && !result.complete) {
       this.scheduleReaderPaginationCompletion(this.currentChapterIndex, key, result);
     }
-    this.preloadReaderContentLater();
   }
 
   @Builder
@@ -16648,7 +11798,7 @@ struct ReadBookPage {
     while (Date.now() < deadline &&
       (this.pendingRestorePageIndex >= 0 || this.readerTypographyRestoreOffset >= 0 ||
         this.isPagedReaderAwaitingPagination() || !this.readerInitialPageReady)) {
-      await this.delay(16);
+      await sleepMs(16);
     }
   }
 
@@ -16867,30 +12017,6 @@ struct ReadBookPage {
   }
 
   @Builder
-  readerSimulationCurrentHalfPage(text: string, pageIndex: number, renderVersion: number,
-    ttsRenderVersion: number, identity: string, halfWidth: boolean = false) {
-    Column() {
-      if (this.shouldUseReaderLayoutV2(this.pagedContentText) &&
-        this.readerV2Page(this.currentChapterIndex, pageIndex, this.pagedContentText)) {
-        this.readerV2PageSurface(`simulation_current_${identity}`, this.currentChapterIndex,
-          pageIndex, this.pagedContentText)
-      } else {
-        this.styledCurrentReaderText(text, this.getReaderContentBottomPadding(), this.currentChapterIndex,
-          ttsRenderVersion, renderVersion,
-          `${this.currentReaderPageRenderIdentity(renderVersion, ttsRenderVersion)}_simulation_${identity}`,
-          pageIndex)
-      }
-    }
-    .width(halfWidth ? this.getReaderPageColumnWidth() : '100%')
-    .height('100%')
-    // Current, incoming and curl-capture leaves share this wrapper coordinate system. Keeping the
-    // status-bar inset here prevents a rapidly recycled V2 leaf from briefly losing its local translate.
-    .padding({ top: this.getReaderPageContentTopPadding() })
-    .justifyContent(FlexAlign.Start)
-    .alignItems(HorizontalAlign.Start)
-  }
-
-  @Builder
   readerSimulationIncomingHalfPage(text: string, pageIndex: number, pageStart: number,
     renderVersion: number, identity: string, halfWidth: boolean = false) {
     Column() {
@@ -16899,9 +12025,7 @@ struct ReadBookPage {
         this.readerV2PageSurface(`simulation_incoming_${identity}`, this.pageTurnIncomingChapterIndex,
           pageIndex, this.pageTurnIncomingDocumentSource)
       } else {
-        this.styledReaderText(text, this.getReaderContentBottomPadding(), this.pageTurnIncomingChapterIndex, 0,
-          renderVersion, `${this.incomingReaderPageRenderIdentity(renderVersion, text)}_simulation_${identity}`,
-          pageIndex, this.getEffectiveReaderMarginTop(), pageStart, this.pageTurnIncomingDocumentSource)
+        this.readerPlainTextLeaf(text)
       }
     }
     .width(halfWidth ? this.getReaderPageColumnWidth() : '100%')
@@ -17034,47 +12158,8 @@ struct ReadBookPage {
         this.readerV2PageSurface(`${controllerRole}_single`, this.currentChapterIndex,
           this.currentPageIndex, this.pagedContentText)
       }
-    } else if (this.isLandscapeDoublePageActive()) {
-      Row() {
-        Column() {
-          this.styledCurrentReaderText(text, this.getReaderContentBottomPadding(), this.currentChapterIndex,
-            ttsRenderVersion, renderVersion,
-            `${this.currentReaderPageRenderIdentity(renderVersion, ttsRenderVersion)}_left`, this.currentPageIndex)
-        }
-        .layoutWeight(1)
-        .height('100%')
-
-        Blank()
-          .width(READER_DOUBLE_PAGE_DIVIDER_WIDTH)
-          .height('88%')
-          .backgroundColor(this.getSubTextColor())
-          .opacity(0.22)
-
-        Column() {
-          this.styledCurrentReaderText(this.getSecondaryPageText(), this.getReaderContentBottomPadding(),
-            this.currentChapterIndex, ttsRenderVersion, renderVersion,
-            `${this.currentReaderPageRenderIdentity(renderVersion, ttsRenderVersion)}_right`, this.currentPageIndex + 1)
-        }
-        .layoutWeight(1)
-        .height('100%')
-      }
-      .width('100%')
-      .height('100%')
-      .alignItems(VerticalAlign.Center)
-      .backgroundColor(this.readerContentLayerColor())
     } else {
-      Column() {
-        this.styledCurrentReaderText(text, this.getReaderContentBottomPadding(),
-          this.currentChapterIndex,
-          ttsRenderVersion, renderVersion, this.currentReaderPageRenderIdentity(renderVersion, ttsRenderVersion),
-          this.currentPageIndex)
-      }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.Start)
-      .alignItems(HorizontalAlign.Start)
-      .backgroundColor(this.readerContentLayerColor())
-      .id(`reader_layer_${this.currentReaderPageRenderIdentity(renderVersion, ttsRenderVersion)}`)
+      this.readerPlainTextLeaf(text)
     }
   }
 
@@ -17102,51 +12187,29 @@ struct ReadBookPage {
         this.readerV2PageSurface(`${controllerRole}_single`, this.pageTurnIncomingChapterIndex,
           this.pageTurnIncomingPageIndex, this.pageTurnIncomingDocumentSource)
       }
-    } else if (this.isLandscapeDoublePageActive()) {
-      Row() {
-        Column() {
-          this.styledReaderText(text, this.getReaderContentBottomPadding(), this.pageTurnIncomingChapterIndex, 0,
-            renderVersion, `${this.incomingReaderPageRenderIdentity(renderVersion, text)}_left`,
-            this.pageTurnIncomingPageIndex, this.getEffectiveReaderMarginTop(), this.pageTurnIncomingPageStart,
-            this.pageTurnIncomingDocumentSource)
-        }
-        .layoutWeight(1)
-        .height('100%')
-
-        Blank()
-          .width(READER_DOUBLE_PAGE_DIVIDER_WIDTH)
-          .height('88%')
-          .backgroundColor(this.getSubTextColor())
-          .opacity(0.22)
-
-        Column() {
-          this.styledReaderText(this.pageTurnIncomingSecondaryText, this.getReaderContentBottomPadding(),
-            this.pageTurnIncomingChapterIndex, 0, renderVersion,
-            `${this.incomingReaderPageRenderIdentity(renderVersion, text)}_right`, this.pageTurnIncomingPageIndex + 1,
-            this.getEffectiveReaderMarginTop(), this.pageTurnIncomingSecondaryPageStart,
-            this.pageTurnIncomingDocumentSource)
-        }
-        .layoutWeight(1)
-        .height('100%')
-      }
-      .width('100%')
-      .height('100%')
-      .alignItems(VerticalAlign.Center)
-      .backgroundColor(this.readerContentLayerColor())
     } else {
-      Column() {
-        this.styledReaderText(text, this.getReaderContentBottomPadding(),
-          this.pageTurnIncomingChapterIndex, 0,
-          renderVersion, this.incomingReaderPageRenderIdentity(renderVersion, text), this.pageTurnIncomingPageIndex,
-          this.getEffectiveReaderMarginTop(), this.pageTurnIncomingPageStart, this.pageTurnIncomingDocumentSource)
-      }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.Start)
-      .alignItems(HorizontalAlign.Start)
-      .backgroundColor(this.readerContentLayerColor())
-      .id(`reader_incoming_layer_${this.incomingReaderPageRenderIdentity(renderVersion, text)}`)
+      this.readerPlainTextLeaf(text)
     }
+  }
+
+  // Text shown where no V2 page exists yet: loading and error placeholders, and the brief moment before an
+  // adjacent chapter has been paginated. Markers are stripped; nothing here is selectable or interactive.
+  @Builder
+  readerPlainTextLeaf(text: string) {
+    Text(ReaderActionMarker.strip(LocalBookService.stripEpubImageMarkers(text || '', false), false))
+      .fontSize(this.readerFontSize)
+      .fontFamily(this.getBodyReaderFontFamily())
+      .fontColor(this.getTextColor())
+      .lineSpacing(LengthMetrics.vp(Math.max(0, this.readerLineHeight)))
+      .textAlign(this.readerTextAlignValue())
+      .width('100%')
+      .padding({
+        left: this.getEffectiveReaderMarginLeft(),
+        right: this.getEffectiveReaderMarginRight(),
+        top: this.getEffectiveReaderMarginTop(),
+        bottom: this.getReaderContentBottomPadding()
+      })
+      .hitTestBehavior(HitTestMode.None)
   }
 
   currentReaderPageRenderIdentity(renderVersion: number = this.pageRenderVersion,
@@ -17162,286 +12225,10 @@ struct ReadBookPage {
     );
   }
 
-  incomingReaderPageRenderIdentity(renderVersion: number, text: string): string {
-    return this.readerPageRenderIdentity(
-      'incoming',
-      this.pageTurnIncomingChapterIndex,
-      this.pageTurnIncomingPageIndex,
-      renderVersion,
-      0,
-      text,
-      this.pageTurnIncomingRenderVersion
-    );
-  }
-
   readerPageRenderIdentity(prefix: string, chapterIndex: number, pageIndex: number, renderVersion: number,
     ttsRenderVersion: number, text: string, displayKey: number = 0): string {
     return `${prefix}_${chapterIndex}_${pageIndex}_${displayKey}_${renderVersion}_${ttsRenderVersion}_` +
       `${this.buildTextSliceKey(text || '')}`;
-  }
-
-  effectiveReaderPageRenderIdentity(pageRenderIdentity: string, chapterIndex: number, renderVersion: number,
-    ttsRenderVersion: number, text: string): string {
-    return pageRenderIdentity || this.readerPageRenderIdentity(
-      'paragraph',
-      chapterIndex,
-      this.currentPageIndex,
-      renderVersion,
-      ttsRenderVersion,
-      text
-    );
-  }
-
-  @Builder
-  styledCurrentReaderText(text: string, bottomPadding: number, chapterIndex: number = this.currentChapterIndex,
-    ttsRenderVersion: number = this.ttsHighlightRenderVersion, contentRenderVersion: number = this.pageRenderVersion,
-    pageRenderIdentity: string = this.currentReaderPageRenderIdentity(contentRenderVersion, ttsRenderVersion),
-    pageIndex: number = this.currentPageIndex) {
-    Column() {
-      ForEach(this.getReaderTextParagraphGroups(text), (group: ReaderTextParagraphGroup) => {
-        this.styledReaderParagraphGroup(group, chapterIndex, this.hasActiveTtsHighlight(text), ttsRenderVersion,
-          contentRenderVersion, pageRenderIdentity, this.getPageStartOffset(pageIndex), this.pagedContentText,
-          this.getReaderAdaptivePageLineHeight(text, chapterIndex, pageIndex,
-            this.getPageStartOffset(pageIndex), this.pagedContentText))
-      }, (group: ReaderTextParagraphGroup) => `${pageRenderIdentity}_${group.key}`)
-    }
-    .width('100%')
-    .id(`reader_text_${pageRenderIdentity}`)
-    .padding({
-      left: this.getReaderPageHorizontalPadding(text, this.getEffectiveReaderMarginLeft()),
-      right: this.getReaderPageHorizontalPadding(text, this.getEffectiveReaderMarginRight()),
-      top: this.getReaderPageVerticalPadding(text, this.getEffectiveReaderMarginTop()),
-      bottom: this.getReaderPageVerticalPadding(text, bottomPadding)
-    })
-  }
-
-  @Builder
-  styledReaderText(text: string, bottomPadding: number, chapterIndex: number = this.currentChapterIndex,
-    ttsRenderVersion: number = this.ttsHighlightRenderVersion, contentRenderVersion: number = this.pageRenderVersion,
-    pageRenderIdentity: string = this.readerPageRenderIdentity('text', chapterIndex, this.currentPageIndex,
-      contentRenderVersion, ttsRenderVersion, text), pageIndex: number = this.currentPageIndex,
-    topPadding: number = this.getEffectiveReaderMarginTop(), pageStartOverride: number = -2,
-    documentSourceOverride: string = '') {
-    Column() {
-      ForEach(this.getReaderTextParagraphGroups(text), (group: ReaderTextParagraphGroup) => {
-        this.styledReaderParagraphGroup(group, chapterIndex, this.hasActiveTtsHighlight(text), ttsRenderVersion,
-          contentRenderVersion, pageRenderIdentity,
-          pageStartOverride >= -1 ? pageStartOverride :
-            (chapterIndex === this.currentChapterIndex ? this.getPageStartOffset(pageIndex) : -1),
-          documentSourceOverride || (chapterIndex === this.currentChapterIndex ? this.pagedContentText : ''),
-          this.getReaderAdaptivePageLineHeight(text, chapterIndex, pageIndex,
-            pageStartOverride >= -1 ? pageStartOverride :
-              (chapterIndex === this.currentChapterIndex ? this.getPageStartOffset(pageIndex) : -1),
-            documentSourceOverride || (chapterIndex === this.currentChapterIndex ? this.pagedContentText : '')))
-      }, (group: ReaderTextParagraphGroup) => `${pageRenderIdentity}_${group.key}`)
-    }
-    .width('100%')
-    .id(`reader_text_${pageRenderIdentity}`)
-    .padding({
-      left: this.getReaderPageHorizontalPadding(text, this.getEffectiveReaderMarginLeft()),
-      right: this.getReaderPageHorizontalPadding(text, this.getEffectiveReaderMarginRight()),
-      top: this.getReaderPageVerticalPadding(text, topPadding),
-      bottom: this.getReaderPageVerticalPadding(text, bottomPadding)
-    })
-  }
-
-  getReaderTextParagraphGroups(text: string): ReaderTextParagraphGroup[] {
-    const paragraphs = this.getReaderTextParagraphs(text);
-    const groups: ReaderTextParagraphGroup[] = [];
-    let mergeableParagraphs: ReaderTextParagraph[] = [];
-    // 滚动模式把连续的普通段落合并进同一个 Text：该 Text 同时是长按选择的主体，
-    // 跨段选择与显示层共用同一布局（对齐横向 V2 整页选中层的思路）。分块按字符数切分、
-    // 不做高度贴合，合并不影响分页边界。
-    const mergeAcrossParagraphs = this.isReaderNovelContinuousScrollModeActive();
-    const flushMergeableParagraphs = (): void => {
-      if (mergeableParagraphs.length === 0) return;
-      groups.push({
-        paragraphs: mergeableParagraphs,
-        mergeable: true,
-        key: `merged_${mergeableParagraphs[0].index}_${mergeableParagraphs[mergeableParagraphs.length - 1].index}`
-      });
-      mergeableParagraphs = [];
-    };
-    for (const paragraph of paragraphs) {
-      // Paragraph-comment pills are inline spans in the same Text as ordinary content. Keeping them in a
-      // merged group makes ArkUI use one line breaker and one pixel-aligned text box for the whole page,
-      // instead of changing the page geometry merely because comments are enabled. Other source actions
-      // remain independent controls because their interaction semantics are not paragraph annotations.
-      if (this.readerParagraphRendersAsIndependentComponent(paragraph.text)) {
-        flushMergeableParagraphs();
-        groups.push({
-          paragraphs: [paragraph],
-          mergeable: false,
-          key: `special_${paragraph.key}`
-        });
-      } else {
-        mergeableParagraphs.push(paragraph);
-        if (!mergeAcrossParagraphs) flushMergeableParagraphs();
-      }
-    }
-    flushMergeableParagraphs();
-    return groups;
-  }
-
-  readerParagraphRendersAsIndependentComponent(text: string): boolean {
-    if (LocalBookService.isEpubImageMarker(text) || !!ReaderActionMarker.parse(text)) {
-      return true;
-    }
-    const inlineAction = this.readerInlineSourceActionMatch(text);
-    return !!inlineAction && !this.isReaderParagraphCommentAction(inlineAction.data);
-  }
-
-  @Builder
-  styledReaderParagraphGroup(group: ReaderTextParagraphGroup, chapterIndex: number,
-    ttsHighlightActive: boolean, ttsRenderVersion: number, contentRenderVersion: number,
-    pageRenderIdentity: string, pageStart: number, documentSource: string, pageLineHeight: number) {
-    if (group.mergeable) {
-      this.styledMergedReaderParagraphs(group.paragraphs, chapterIndex, ttsHighlightActive, ttsRenderVersion,
-        contentRenderVersion, `${pageRenderIdentity}_${group.key}`, pageStart, documentSource, pageLineHeight)
-      this.readerParagraphGap(group.paragraphs[group.paragraphs.length - 1], pageLineHeight)
-    } else {
-      ForEach(group.paragraphs, (paragraph: ReaderTextParagraph) => {
-        this.styledReaderParagraph(paragraph, chapterIndex, ttsHighlightActive, ttsRenderVersion,
-          contentRenderVersion, pageRenderIdentity, pageStart, documentSource, pageLineHeight)
-        this.readerParagraphGap(paragraph, pageLineHeight)
-      }, (paragraph: ReaderTextParagraph) => `${pageRenderIdentity}_${paragraph.key}`)
-    }
-  }
-
-  mergedReaderParagraphText(paragraphs: ReaderTextParagraph[]): string {
-    return paragraphs.map((paragraph: ReaderTextParagraph) => {
-      if (!this.hasInlineReaderSourceAction(paragraph.text)) return paragraph.text;
-      return `${this.readerInlineSourceActionText(paragraph.text)}${this.readerInlineSourceActionLabel(paragraph.text)}`;
-    }).join('\n');
-  }
-
-  readerSelectablePageTextKey(pageRenderIdentity: string, contentRenderVersion: number,
-    ttsRenderVersion: number, text: string): string {
-    return `${pageRenderIdentity}_${contentRenderVersion}_${ttsRenderVersion}_merged_${this.buildTextSliceKey(text)}`;
-  }
-
-  @Builder
-  styledMergedReaderParagraphs(paragraphs: ReaderTextParagraph[], chapterIndex: number,
-    ttsHighlightActive: boolean, ttsRenderVersion: number, contentRenderVersion: number,
-    pageRenderIdentity: string, pageStart: number, documentSource: string, pageLineHeight: number) {
-    Text('', { controller: this.readerSelectableTextController(this.readerSelectablePageTextKey(
-      pageRenderIdentity, contentRenderVersion, ttsRenderVersion, this.mergedReaderParagraphText(paragraphs))) }) {
-      ForEach(paragraphs, (paragraph: ReaderTextParagraph, paragraphIndex: number) => {
-        if (paragraphIndex > 0) {
-          Span('\n')
-            .fontSize(this.readerFontSize)
-            .fontFamily(this.getBodyReaderFontFamily())
-        }
-        if (this.hasInlineReaderSourceAction(paragraph.text)) {
-          if (this.shouldUseTitleStyle(paragraph.text, chapterIndex)) {
-            ForEach(this.getTitleTextSlices(this.readerInlineSourceActionParagraphData(paragraph), chapterIndex,
-              ttsHighlightActive), (slice: ReadTextSlice) => {
-              Span(slice.text)
-                .fontSize(this.readerTitleFontSize)
-                .fontFamily(this.getTitleReaderFontFamily())
-                .fontColor(slice.ttsHighlighted ? this.getTtsHighlightTextColor() : this.getTextColor())
-                .textBackgroundStyle(slice.ttsHighlighted ? {
-                  color: this.getTtsHighlightColor(),
-                  radius: 4
-                } : {})
-            }, (slice: ReadTextSlice) =>
-              `merged_inline_title_${pageRenderIdentity}_${paragraph.key}_${slice.key}`)
-          } else {
-            ForEach(this.getStyledParagraphTextSlices(this.readerInlineSourceActionParagraphData(paragraph),
-              ttsHighlightActive, pageStart, documentSource), (slice: ReadTextSlice) => {
-              this.styledRegexSlice(slice)
-            }, (slice: ReadTextSlice) =>
-              `merged_inline_${pageRenderIdentity}_${paragraph.key}_${slice.key}`)
-          }
-          Span(this.readerInlineSourceActionLabel(paragraph.text))
-            .fontSize(this.readerInlineSourceActionFontSize(paragraph.text))
-            .fontFamily(this.readerInlineSourceActionFontFamily())
-            .fontColor(this.readerInlineSourceActionFontColor(paragraph.text))
-            .textBackgroundStyle({
-              color: this.readerInlineSourceActionBackgroundColor(paragraph.text),
-              radius: this.readerInlineSourceActionRadius(paragraph.text)
-            })
-            .textShadow(this.readerInlineSourceActionTextShadow(paragraph.text))
-            .onClick(() => {
-              const match = this.readerInlineSourceActionMatch(paragraph.text);
-              if (match) {
-                this.beginReaderInteractiveAction();
-                this.openReaderSourceAction(match.marker);
-              }
-            })
-        } else if (this.shouldUseTitleStyle(paragraph.text, chapterIndex)) {
-          ForEach(this.getTitleTextSlices(paragraph, chapterIndex, ttsHighlightActive), (slice: ReadTextSlice) => {
-            Span(slice.text)
-              .fontSize(this.readerTitleFontSize)
-              .fontFamily(this.getTitleReaderFontFamily())
-              .fontColor(slice.ttsHighlighted ? this.getTtsHighlightTextColor() : this.getTextColor())
-              .textBackgroundStyle(slice.ttsHighlighted ? {
-                color: this.getTtsHighlightColor(),
-                radius: 4
-              } : {})
-          }, (slice: ReadTextSlice) =>
-            `merged_title_${pageRenderIdentity}_${paragraph.key}_${slice.key}`)
-          ForEach(this.getTitleBodyTextSlices(paragraph, chapterIndex, ttsHighlightActive, pageStart,
-            documentSource), (slice: ReadTextSlice) => {
-            this.styledRegexSlice(slice)
-          }, (slice: ReadTextSlice) =>
-            `merged_title_body_${pageRenderIdentity}_${paragraph.key}_${slice.key}`)
-        } else {
-          ForEach(this.getStyledParagraphTextSlices(paragraph, ttsHighlightActive, pageStart, documentSource),
-            (slice: ReadTextSlice) => {
-            this.styledRegexSlice(slice)
-          }, (slice: ReadTextSlice) =>
-            `merged_body_${pageRenderIdentity}_${paragraph.key}_${slice.key}`)
-        }
-      }, (paragraph: ReaderTextParagraph) => `merged_${pageRenderIdentity}_${paragraph.key}`)
-    }
-    .lineSpacing(LengthMetrics.vp(this.getReaderPageLineSpacing(pageLineHeight)), { onlyBetweenLines: true })
-    .halfLeading(false)
-    .includeFontPadding(false)
-    .fontColor(this.getTextColor())
-    .letterSpacing(this.getReaderAdaptiveLetterSpacing())
-    .textAlign(this.readerTextAlignValue())
-    .wordBreak(WordBreak.BREAK_WORD)
-    .lineBreakStrategy(LineBreakStrategy.GREEDY)
-    .copyOption(CopyOptions.LocalDevice)
-    .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
-    .editMenuOptions(this.readerTextEditMenuOptions(() => this.mergedReaderParagraphText(paragraphs)))
-    .onCopy(() => this.scheduleReaderTextSelectionClear())
-    .width('100%')
-    .onAreaChange((_oldValue: Area, newValue: Area) => {
-      const mergedText = this.mergedReaderParagraphText(paragraphs);
-      const selectableKey = this.readerSelectablePageTextKey(pageRenderIdentity, contentRenderVersion,
-        ttsRenderVersion, mergedText);
-      this.rememberReaderSelectableText(
-        selectableKey,
-        mergedText,
-        newValue,
-        this.readerSelectableTextController(selectableKey)
-      );
-      this.rememberMergedReaderInlineSourceActionAreas(paragraphs, selectableKey, pageRenderIdentity, newValue);
-      this.calibrateReaderPaginationHeightFromMergedText(paragraphs, chapterIndex, pageStart, documentSource,
-        pageLineHeight, newValue);
-      this.scheduleReaderPaginationBottomFitCalibration(paragraphs, chapterIndex, pageStart, newValue);
-    })
-    .id(`reader_merged_${pageRenderIdentity}_${this.buildTextSliceKey(this.mergedReaderParagraphText(paragraphs))}`)
-  }
-
-  rememberMergedReaderInlineSourceActionAreas(paragraphs: ReaderTextParagraph[], selectableKey: string,
-    pageIdentity: string, area: Area): void {
-    const left = Number(area.globalPosition.x);
-    const top = Number(area.globalPosition.y);
-    const width = this.parseAreaDimension(area.width);
-    const height = this.parseAreaDimension(area.height);
-    if (!Number.isFinite(left) || !Number.isFinite(top) || width <= 0 || height <= 0) return;
-    this.readerPendingMergedActionBounds.set(selectableKey, {
-      paragraphs: paragraphs,
-      selectableKey: selectableKey,
-      left: left,
-      top: top,
-      pageIdentity: pageIdentity,
-      attempts: 0
-    });
-    this.scheduleReaderSourceActionBoundsFlush();
   }
 
   registerMergedReaderInlineSourceActionBounds(task: ReaderMergedActionBoundsTask, visibleText: string): boolean {
@@ -17494,216 +12281,6 @@ struct ReadBookPage {
     }
   }
 
-  @Builder
-  styledReaderParagraph(paragraph: ReaderTextParagraph, chapterIndex: number = this.currentChapterIndex,
-    ttsHighlightActive: boolean = true, ttsRenderVersion: number = this.ttsHighlightRenderVersion,
-    contentRenderVersion: number = this.pageRenderVersion, pageRenderIdentity: string = '', pageStart: number = -1,
-    documentSource: string = this.pagedContentText, pageLineHeight: number = this.getEffectiveReaderLineHeight()) {
-    if (LocalBookService.isEpubImageMarker(paragraph.text)) {
-      this.readerEpubImage(paragraph.text, pageRenderIdentity)
-    } else if (this.hasInlineReaderSourceAction(paragraph.text)) {
-      this.readerInlineSourceActionParagraph(paragraph, chapterIndex, ttsHighlightActive, ttsRenderVersion,
-        contentRenderVersion, pageRenderIdentity, pageStart, documentSource, pageLineHeight)
-    } else if (ReaderActionMarker.parse(paragraph.text)) {
-      this.readerSourceAction(paragraph.text)
-    } else if (this.shouldUseTitleStyle(paragraph.text, chapterIndex)) {
-      Text('', { controller: this.readerSelectableTextController(
-        this.readerSelectableTextKey('title', pageRenderIdentity, contentRenderVersion, ttsRenderVersion,
-          paragraph)) }) {
-        ForEach(this.getTitleTextSlices(paragraph, chapterIndex, ttsHighlightActive), (slice: ReadTextSlice) => {
-          Span(slice.text)
-            .fontSize(this.readerTitleFontSize)
-            .fontFamily(this.getTitleReaderFontFamily())
-            .fontColor(slice.ttsHighlighted ? this.getTtsHighlightTextColor() : this.getTextColor())
-            .textBackgroundStyle(slice.ttsHighlighted ? {
-              color: this.getTtsHighlightColor(),
-              radius: 4
-            } : {})
-        }, (slice: ReadTextSlice) =>
-          `title_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, chapterIndex, contentRenderVersion,
-            ttsRenderVersion, paragraph.text)}_${paragraph.key}_${slice.key}`)
-        ForEach(this.getTitleBodyTextSlices(paragraph, chapterIndex, ttsHighlightActive, pageStart, documentSource),
-          (slice: ReadTextSlice) => {
-          this.styledRegexSlice(slice)
-        }, (slice: ReadTextSlice) =>
-          `title_body_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, chapterIndex, contentRenderVersion,
-            ttsRenderVersion, paragraph.text)}_${paragraph.key}_${slice.key}`)
-      }
-      .lineSpacing(LengthMetrics.vp(this.getReaderPageLineSpacing(pageLineHeight)), { onlyBetweenLines: true })
-      .halfLeading(false)
-      .includeFontPadding(false)
-      .fontColor(this.getTextColor())
-      .letterSpacing(this.getReaderAdaptiveLetterSpacing())
-      .textAlign(this.readerTextAlignValue())
-      .wordBreak(WordBreak.BREAK_WORD)
-      .lineBreakStrategy(LineBreakStrategy.GREEDY)
-      .copyOption(CopyOptions.LocalDevice)
-      .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
-      .editMenuOptions(this.readerTextEditMenuOptions(() => paragraph.text))
-      .onCopy(() => this.scheduleReaderTextSelectionClear())
-      .width('100%')
-      .onAreaChange((_oldValue: Area, newValue: Area) => {
-        this.rememberReaderSelectableText(
-          this.readerSelectableTextKey('title', pageRenderIdentity, contentRenderVersion, ttsRenderVersion,
-            paragraph),
-          paragraph.text,
-          newValue
-        );
-      })
-      .id(`reader_title_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, chapterIndex, contentRenderVersion,
-        ttsRenderVersion, paragraph.text)}_${paragraph.key}`)
-    } else if (this.readerRegexFontEnabled) {
-      this.regexReaderText(paragraph, ttsHighlightActive, ttsRenderVersion, contentRenderVersion,
-        this.effectiveReaderPageRenderIdentity(pageRenderIdentity, chapterIndex, contentRenderVersion,
-          ttsRenderVersion, paragraph.text), pageStart, documentSource, pageLineHeight)
-    } else {
-      Text('', { controller: this.readerSelectableTextController(
-        this.readerSelectableTextKey('plain', pageRenderIdentity, contentRenderVersion, ttsRenderVersion,
-          paragraph)) }) {
-        ForEach(this.getStyledParagraphTextSlices(paragraph, ttsHighlightActive, pageStart, documentSource),
-          (slice: ReadTextSlice) => {
-          Span(slice.text)
-            .fontSize(this.readerFontSize)
-            .fontFamily(this.getBodyReaderFontFamily())
-            .fontColor(this.getStyledSliceFontColor(slice))
-            .textBackgroundStyle(this.getStyledSliceBackgroundStyle(slice))
-            .textShadow(this.getStyledSliceTextShadow(slice))
-            .decoration(this.getStyledSliceDecoration(slice))
-        }, (slice: ReadTextSlice) =>
-          `${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, chapterIndex, contentRenderVersion,
-            ttsRenderVersion, paragraph.text)}_${paragraph.key}_${slice.key}`)
-      }
-        .lineSpacing(LengthMetrics.vp(this.getReaderPageLineSpacing(pageLineHeight)), { onlyBetweenLines: true })
-        .halfLeading(false)
-        .includeFontPadding(false)
-        .fontColor(this.getTextColor())
-        .letterSpacing(this.getReaderAdaptiveLetterSpacing())
-        .textAlign(this.readerTextAlignValue())
-        .wordBreak(WordBreak.BREAK_WORD)
-        .lineBreakStrategy(LineBreakStrategy.GREEDY)
-        .copyOption(CopyOptions.LocalDevice)
-        .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
-        .editMenuOptions(this.readerTextEditMenuOptions(() => paragraph.text))
-        .onCopy(() => this.scheduleReaderTextSelectionClear())
-        .width('100%')
-        .onAreaChange((_oldValue: Area, newValue: Area) => {
-          this.rememberReaderSelectableText(
-            this.readerSelectableTextKey('plain', pageRenderIdentity, contentRenderVersion, ttsRenderVersion,
-              paragraph),
-            paragraph.text,
-            newValue
-          );
-        })
-        .id(`reader_plain_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, chapterIndex,
-          contentRenderVersion, ttsRenderVersion, paragraph.text)}_${paragraph.key}`)
-    }
-  }
-
-  @Builder
-  readerEpubImage(marker: string, surfaceKey: string) {
-    ReaderPagedImage({
-      uri: this.getReaderEpubImageUri(marker),
-      widthPx: this.toMeasurePx(this.getReaderPageColumnWidth()),
-      heightPx: this.toMeasurePx(this.getReaderEpubImageHeight()),
-      heightVp: this.getReaderEpubImageHeight(),
-      hintColor: this.getTextColor(),
-      onSettled: () => {
-        this.readerPagedImageSettled.add(`${surfaceKey}\n${this.getReaderEpubImageUri(marker)}`);
-        while (this.readerPagedImageSettled.size > 192) {
-          const oldest = this.readerPagedImageSettled.values().next().value as string;
-          this.readerPagedImageSettled.delete(oldest);
-        }
-      }
-    })
-  }
-
-  readerPageImageUris(text: string): string[] {
-    const markers = (text || '').match(/\[\[LEGADO_EPUB_IMAGE:[^\]]+\]\]/g) || [];
-    const uris: string[] = [];
-    for (const marker of markers) {
-      const uri = this.getReaderEpubImageUri(marker);
-      if (uri && !uris.includes(uri)) uris.push(uri);
-    }
-    return uris;
-  }
-
-  acquireReaderPageImages(text: string): ReaderPagedImageLease[] {
-    return this.readerPageImageUris(text).map((uri: string): ReaderPagedImageLease =>
-      ReaderPagedImageCache.acquire(uri, this.toMeasurePx(this.getReaderPageColumnWidth()),
-        this.toMeasurePx(this.getReaderEpubImageHeight())));
-  }
-
-  prefetchNearbyReaderImages(): void {
-    if (this.isReaderContinuousScrollSurfaceActive()) return;
-    // Prepare only the adjacent spread. Do not download/decode every illustration in the chapter.
-    const step = this.getReaderPageTurnStep();
-    for (const index of [this.currentPageIndex + step, this.currentPageIndex - step]) {
-      if (index < 0 || index >= this.contentPages.length) continue;
-      const text = this.getPageText(index) + this.getSecondaryPageText(index);
-      for (const uri of this.readerPageImageUris(text)) {
-        ReaderPagedImageCache.prefetch(uri, this.toMeasurePx(this.getReaderPageColumnWidth()),
-          this.toMeasurePx(this.getReaderEpubImageHeight()));
-      }
-    }
-  }
-
-  async waitForReaderPageImages(leases: ReaderPagedImageLease[], timeoutMs: number): Promise<void> {
-    if (leases.length === 0) return;
-    let timer: number = -1;
-    await Promise.race([Promise.all(leases.map((lease: ReaderPagedImageLease) => lease.ready)),
-      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); })]);
-    if (timer >= 0) clearTimeout(timer);
-  }
-
-  async waitForReaderImageSurface(surfaceKey: string, text: string, timeoutMs: number): Promise<void> {
-    const uris = this.readerPageImageUris(text);
-    const deadline = Date.now() + timeoutMs;
-    while (uris.length > 0 && Date.now() < deadline && this.readerPageVisible) {
-      const ready = uris.every((uri: string): boolean => Array.from(this.readerPagedImageSettled)
-        .some((key: string): boolean => key.startsWith(surfaceKey) && key.endsWith(`\n${uri}`)));
-      if (ready) break;
-      await this.delay(16);
-    }
-  }
-
-  @Builder
-  readerSourceAction(marker: string) {
-    Row({ space: 5 }) {
-      SymbolGlyph($r('sys.symbol.arrow_right_up_and_square'))
-        .fontSize(13)
-        .fontColor([this.getTextColor()])
-      Text(ReaderActionMarker.parse(marker)?.label || '打开')
-        .fontSize(Math.max(11, this.readerFontSize - 3))
-        .fontColor(this.getTextColor())
-        .maxLines(1)
-    }
-    .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-    .border({ width: 1, color: this.getTextColor() })
-    .borderRadius(14)
-    .opacity(0.72)
-    .hitTestBehavior(HitTestMode.Block)
-    .onAreaChange((_oldValue: Area, newValue: Area) => {
-      this.rememberReaderSourceActionArea(marker, newValue);
-    })
-    .onTouch((event: TouchEvent) => {
-      if (event.type === TouchType.Down || event.type === TouchType.Move || event.type === TouchType.Up) {
-        this.beginReaderInteractiveAction();
-      }
-    })
-    .onClick(() => {
-      this.beginReaderInteractiveAction();
-      this.openReaderSourceAction(marker);
-    })
-    .priorityGesture(
-      TapGesture().onAction(() => {
-        this.beginReaderInteractiveAction();
-        this.openReaderSourceAction(marker);
-      }),
-      GestureMask.IgnoreInternal
-    )
-    .monopolizeEvents(true)
-  }
-
   hasInlineReaderSourceAction(text: string): boolean {
     const match = this.readerInlineSourceActionMatch(text);
     return !!match && (match.start > 0 || match.end < (text || '').length);
@@ -17724,86 +12301,6 @@ struct ReadBookPage {
     return match;
   }
 
-  @Builder
-  readerInlineSourceActionParagraph(paragraph: ReaderTextParagraph, chapterIndex: number = this.currentChapterIndex,
-    ttsHighlightActive: boolean = true, ttsRenderVersion: number = this.ttsHighlightRenderVersion,
-    contentRenderVersion: number = this.pageRenderVersion, pageRenderIdentity: string = '', pageStart: number = -1,
-    documentSource: string = this.pagedContentText, pageLineHeight: number = this.getEffectiveReaderLineHeight()) {
-    Text('', { controller: this.readerInlineActionTextController(paragraph.text) }) {
-      if (this.shouldUseTitleStyle(paragraph.text, chapterIndex)) {
-        ForEach(this.getTitleTextSlices(this.readerInlineSourceActionParagraphData(paragraph), chapterIndex,
-          ttsHighlightActive), (slice: ReadTextSlice) => {
-          Span(slice.text)
-            .fontSize(this.readerTitleFontSize)
-            .fontFamily(this.getTitleReaderFontFamily())
-            .fontColor(slice.ttsHighlighted ? this.getTtsHighlightTextColor() : this.getTextColor())
-            .textBackgroundStyle(slice.ttsHighlighted ? {
-              color: this.getTtsHighlightColor(),
-              radius: 4
-            } : {})
-        }, (slice: ReadTextSlice) =>
-          `inline_title_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, chapterIndex,
-            contentRenderVersion, ttsRenderVersion, paragraph.text)}_${paragraph.key}_${slice.key}`)
-      } else {
-        ForEach(this.getStyledParagraphTextSlices(this.readerInlineSourceActionParagraphData(paragraph),
-          ttsHighlightActive, pageStart, documentSource), (slice: ReadTextSlice) => {
-          this.styledRegexSlice(slice)
-        }, (slice: ReadTextSlice) =>
-          `inline_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, chapterIndex, contentRenderVersion,
-            ttsRenderVersion, paragraph.text)}_${paragraph.key}_${slice.key}`)
-      }
-      Span(this.readerInlineSourceActionLabel(paragraph.text))
-        .fontSize(this.readerInlineSourceActionFontSize(paragraph.text))
-        .fontFamily(this.readerInlineSourceActionFontFamily())
-        .fontColor(this.readerInlineSourceActionFontColor(paragraph.text))
-        .textBackgroundStyle({
-          color: this.readerInlineSourceActionBackgroundColor(paragraph.text),
-          radius: this.readerInlineSourceActionRadius(paragraph.text)
-        })
-        .textShadow(this.readerInlineSourceActionTextShadow(paragraph.text))
-        .onClick(() => {
-          const match = this.readerInlineSourceActionMatch(paragraph.text);
-          if (match) {
-            this.beginReaderInteractiveAction();
-            this.openReaderSourceAction(match.marker);
-          }
-        })
-    }
-    .lineSpacing(LengthMetrics.vp(this.getReaderPageLineSpacing(pageLineHeight)), { onlyBetweenLines: true })
-    .halfLeading(false)
-    .includeFontPadding(false)
-    .fontColor(this.getTextColor())
-    .letterSpacing(this.getReaderAdaptiveLetterSpacing())
-    .textAlign(this.readerTextAlignValue())
-    .wordBreak(WordBreak.BREAK_WORD)
-    .lineBreakStrategy(LineBreakStrategy.GREEDY)
-    .copyOption(CopyOptions.LocalDevice)
-    .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
-    .editMenuOptions(this.readerTextEditMenuOptions(() => paragraph.text))
-    .onCopy(() => this.scheduleReaderTextSelectionClear())
-    .width('100%')
-    .onAreaChange((_oldValue: Area, newValue: Area) => {
-      this.rememberReaderInlineSourceActionArea(paragraph.text, pageRenderIdentity, newValue);
-      this.rememberReaderSelectableText(
-        this.readerSelectableTextKey('inline', pageRenderIdentity, contentRenderVersion, ttsRenderVersion,
-          paragraph),
-        paragraph.text,
-        newValue,
-        this.readerInlineActionTextController(paragraph.text)
-      );
-    })
-    .onClick((event: ClickEvent) => {
-      const match = this.readerInlineSourceActionMatch(paragraph.text);
-      if (match && this.isReaderInlineActionTextPoint(paragraph.text, event.x, event.y)) {
-        this.beginReaderInteractiveAction();
-        this.openReaderSourceAction(match.marker);
-      }
-    })
-    .onTouch((event: TouchEvent) => this.handleReaderInlineActionTextTouch(paragraph.text, event))
-    .id(`reader_inline_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, chapterIndex,
-      contentRenderVersion, ttsRenderVersion, paragraph.text)}_${paragraph.key}`)
-  }
-
   readerInlineActionTextController(text: string): TextController {
     const match = this.readerInlineSourceActionMatch(text);
     const key = match ? match.marker : text;
@@ -17818,56 +12315,6 @@ struct ReadBookPage {
       }
     }
     return controller;
-  }
-
-  handleReaderInlineActionTextTouch(text: string, event: TouchEvent): void {
-    const match = this.readerInlineSourceActionMatch(text);
-    if (!match) return;
-    const point = event.changedTouches && event.changedTouches.length > 0 ? event.changedTouches[0] :
-      (event.touches && event.touches.length > 0 ? event.touches[0] : null);
-    if (!point) return;
-    const hit = this.isReaderInlineActionTextPoint(text, Number(point.x), Number(point.y));
-    if (event.type === TouchType.Down) {
-      this.readerInlineTouchActionMarker = hit ? match.marker : '';
-      if (hit) this.beginReaderInteractiveAction();
-      return;
-    }
-    if (event.type === TouchType.Up) {
-      const marker = this.readerInlineTouchActionMarker;
-      this.readerInlineTouchActionMarker = '';
-      if (hit && marker === match.marker) {
-        this.beginReaderInteractiveAction();
-        this.openReaderSourceAction(marker);
-      }
-      return;
-    }
-    if (event.type === TouchType.Cancel) this.readerInlineTouchActionMarker = '';
-  }
-
-  isReaderInlineActionTextPoint(text: string, x: number, y: number): boolean {
-    const match = this.readerInlineSourceActionMatch(text);
-    if (!match) return false;
-    const bounds = this.readerInlineActionLocalBounds(text, this.readerInlineActionExpectedWidth(),
-      this.pageViewHeight);
-    for (let index = 0; index + 3 < bounds.length; index += 4) {
-      if (x >= bounds[index] - this.readerSourceActionHitSlopX &&
-        x <= bounds[index + 2] + this.readerSourceActionHitSlopX &&
-        y >= bounds[index + 1] - this.readerSourceActionHitSlopY &&
-        y <= bounds[index + 3] + this.readerSourceActionHitSlopY) {
-        return true;
-      }
-    }
-    try {
-      const manager = this.readerInlineActionTextController(text).getLayoutManager();
-      const lineCount = manager.getLineCount();
-      if (lineCount <= 0) return false;
-      const layoutEnd = manager.getLineMetrics(lineCount - 1).endIndex;
-      const labelLength = this.readerInlineSourceActionLabel(text).length;
-      const position = manager.getGlyphPositionAtCoordinate(x, y).position;
-      return position >= Math.max(0, layoutEnd - labelLength - 1) && position <= layoutEnd;
-    } catch (_) {
-      return false;
-    }
   }
 
   readerInlineActionExpectedWidth(): number {
@@ -17922,27 +12369,6 @@ struct ReadBookPage {
     } catch (_) {
       return [];
     }
-  }
-
-  rememberReaderInlineSourceActionArea(text: string, pageIdentity: string, area: Area): void {
-    const match = this.readerInlineSourceActionMatch(text);
-    if (!match) return;
-    const left = Number(area.globalPosition.x);
-    const top = Number(area.globalPosition.y);
-    const width = this.parseAreaDimension(area.width);
-    const height = this.parseAreaDimension(area.height);
-    if (!Number.isFinite(left) || !Number.isFinite(top) || width <= 0 || height <= 0) return;
-    this.readerPendingInlineActionBounds.set(match.marker, {
-      text: text,
-      marker: match.marker,
-      left: left,
-      top: top,
-      width: width,
-      height: height,
-      pageIdentity: pageIdentity,
-      attempts: 0
-    });
-    this.scheduleReaderSourceActionBoundsFlush();
   }
 
   clearPendingReaderSourceActionBounds(): void {
@@ -18023,18 +12449,6 @@ struct ReadBookPage {
     return true;
   }
 
-  readerInlineSourceActionParagraphData(paragraph: ReaderTextParagraph): ReaderTextParagraph {
-    const text = this.readerInlineSourceActionText(paragraph.text);
-    return {
-      text: text,
-      start: paragraph.start,
-      end: paragraph.start + text.length,
-      index: paragraph.index,
-      isLast: paragraph.isLast,
-      key: `${paragraph.key}_inline_${this.buildTextSliceKey(text)}`
-    };
-  }
-
   readerInlineSourceActionText(text: string): string {
     const match: ReaderActionMatch | null = this.readerInlineSourceActionMatch(text);
     if (!match) return text || '';
@@ -18064,40 +12478,6 @@ struct ReadBookPage {
     if (!this.readerUsesConfiguredCommentBubble(text)) return Math.max(10, this.readerFontSize - 5);
     return this.readerSourceSettingEnabled('气泡增大') ? Math.max(12, this.readerFontSize - 2) :
       Math.max(10, this.readerFontSize - 5);
-  }
-
-  readerInlineSourceActionFontColor(text: string): string {
-    if (!this.readerUsesConfiguredCommentBubble(text)) {
-      return this.isReaderThemeDark() ? '#B8D6FF' : '#2A6FCC';
-    }
-    return this.readerSourceColorSetting('段评字体颜色', '#A7A7A7');
-  }
-
-  readerInlineSourceActionBackgroundColor(text: string): string {
-    if (!this.readerUsesConfiguredCommentBubble(text)) {
-      return this.isReaderThemeDark() ? '#263A5066' : '#142A6FCC';
-    }
-    return this.readerSourceColorSetting('段评填充颜色', '#00000000');
-  }
-
-  readerInlineSourceActionRadius(text: string): number {
-    if (!this.readerUsesConfiguredCommentBubble(text)) return 9;
-    const style = this.readerSourceSettingValue('段评样式') || '0';
-    if (style === '3' || style === '4') return 3;
-    if (style === '0' || style === '2') return 6;
-    return 12;
-  }
-
-  readerInlineSourceActionTextShadow(text: string): ShadowOptions {
-    if (!this.readerUsesConfiguredCommentBubble(text)) {
-      return { radius: 0, color: '#00000000', offsetX: 0, offsetY: 0 };
-    }
-    return {
-      radius: 0.8,
-      color: this.readerSourceColorSetting('段评边框颜色', '#A7A7A7'),
-      offsetX: 0,
-      offsetY: 0
-    };
   }
 
   readerUsesConfiguredCommentBubble(text: string): boolean {
@@ -18236,12 +12616,6 @@ struct ReadBookPage {
     return Date.now() < this.readerInteractiveActionUntil;
   }
 
-  rememberReaderSourceActionArea(marker: string, area: Area): void {
-    const position = area.globalPosition;
-    this.rememberReaderSourceActionBounds(marker, Number(position.x), Number(position.y),
-      Number(position.x) + Number(area.width), Number(position.y) + Number(area.height));
-  }
-
   rememberReaderSourceActionBounds(marker: string, left: number, top: number, right: number, bottom: number): void {
     if (!marker || !Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) ||
       !Number.isFinite(bottom) || right <= left || bottom <= top) return;
@@ -18274,8 +12648,6 @@ struct ReadBookPage {
     this.readerTapLayerGlobalX = Number(area.globalPosition.x);
     this.readerTapLayerGlobalY = Number(area.globalPosition.y);
   }
-
-
 
   currentContinuousReaderScrollOffset(): number {
     if (!this.isReaderNovelContinuousScrollModeActive()) return 0;
@@ -18389,29 +12761,9 @@ struct ReadBookPage {
     return [];
   }
 
+  // Source action under a window point of the scrolling list. The paged reader hit-tests its own layout.
   readerSourceActionAtPoint(globalX: number, globalY: number): string {
-    const visibleText = this.isReaderNovelContinuousScrollModeActive() ?
-      (this.pagedContentText || this.content) : this.visibleCurrentPageText();
-    for (const entry of this.readerSourceActionAreas.entries()) {
-      const marker = entry[0];
-      const bounds = entry[1];
-      const scrollOffsets = this.readerSourceActionScrollOffsets.get(marker) || [];
-      const currentScrollOffset = this.currentContinuousReaderScrollOffset();
-      if (!visibleText.includes(marker) || bounds.length < 4) continue;
-      for (let index = 0; index + 3 < bounds.length; index += 4) {
-        const registeredScrollOffset = scrollOffsets[Math.floor(index / 4)] || 0;
-        const scrollDelta = currentScrollOffset - registeredScrollOffset;
-        const top = bounds[index + 1] - scrollDelta;
-        const bottom = bounds[index + 3] - scrollDelta;
-        if (globalX >= bounds[index] - this.readerSourceActionHitSlopX &&
-          globalX <= bounds[index + 2] + this.readerSourceActionHitSlopX &&
-          globalY >= top - this.readerSourceActionHitSlopY &&
-          globalY <= bottom + this.readerSourceActionHitSlopY) {
-          return marker;
-        }
-      }
-    }
-    return '';
+    return this.usesReaderContinuousV2() ? this.readerContinuousV2ActionAtPoint(globalX, globalY) : '';
   }
 
   openReaderSourceAction(marker: string): void {
@@ -18421,6 +12773,16 @@ struct ReadBookPage {
     const source = this.currentReaderSource();
     if (action && source) {
       action.url = ReaderInteractionProviderRegistry.expandAction(source, action.url);
+    }
+    if (action && source && NativeSourceService.isReaderAction(action.url)) {
+      // 原生书源正文里的请求按钮：发出书源声明的请求，把结果提示出来。
+      this.readerSourceActionOpenedAt = now;
+      NativeSourceService.runReaderAction(source, new HttpClient(10000), action.url).then((message: string): void => {
+        HdsFeedback.showToast(message);
+      }).catch((error: Error): void => {
+        HdsFeedback.showToast(`操作失败：${error.message || '未知错误'}`);
+      });
+      return;
     }
     if (action && source && ReaderActionMarker.sourceScript(action.url)) {
       this.openReaderSourceScriptAction(source, action, marker);
@@ -18456,12 +12818,6 @@ struct ReadBookPage {
       console.error('打开网页失败:', error);
       HdsFeedback.showToast(`打开失败：${error.message || '路由跳转异常'}`);
     });
-  }
-
-  readerInlineSourceActionFontFamily(): string {
-    // A monospace face makes every digit occupy exactly one cell. Together with the 1/2/3-character
-    // count classes this gives pagination and rendering the same three deterministic pill widths.
-    return 'monospace';
   }
 
   readerParagraphCommentSettingState(): number {
@@ -18636,9 +12992,18 @@ struct ReadBookPage {
       this.readerCommentPanelReadyTimerId = -1;
       if (!this.showReaderCommentPanel || serial !== this.readerCommentPanelLoadSerial) return;
       this.syncReaderCommentPanelWebTheme().finally(() => {
-        if (this.showReaderCommentPanel && serial === this.readerCommentPanelLoadSerial) {
+        if (!this.showReaderCommentPanel || serial !== this.readerCommentPanelLoadSerial) return;
+        // runJavaScript 返回时反色样式刚插入，网页还要两三帧才画出深色；立刻撤掉加载层会闪出原来的白底。
+        if (!this.appDarkMode) {
           this.readerCommentPanelLoading = false;
+          return;
         }
+        this.readerCommentPanelReadyTimerId = setTimeout(() => {
+          this.readerCommentPanelReadyTimerId = -1;
+          if (this.showReaderCommentPanel && serial === this.readerCommentPanelLoadSerial) {
+            this.readerCommentPanelLoading = false;
+          }
+        }, 160);
       });
     }, Math.max(0, delayMs));
   }
@@ -18669,18 +13034,38 @@ struct ReadBookPage {
     if (!this.showReaderCommentPanel || !this.readerCommentPanelUrl) return;
     const scheme = this.appDarkMode ? 'dark' : 'light';
     const dark = this.appDarkMode ? 'true' : 'false';
+    // 评论页多半是书源服务器的网页，未必写了深色样式。应用为深色而页面底色仍是浅色时，
+    // 注入整页反色（图片再反回来）；切回浅色或页面自己支持深色时移除。
     const script = `(function(){var scheme='${scheme}',dark=${dark};` +
       `var root=document.documentElement;if(root){root.style.colorScheme=scheme;` +
       `root.setAttribute('data-legado-color-scheme',scheme);}` +
       `var body=document.body,themeToggle=document.getElementById('themeToggle');` +
-      `if(body&&themeToggle&&typeof window.toggleCmtTheme==='function'){` +
+      `var ownToggle=!!(body&&themeToggle&&typeof window.toggleCmtTheme==='function');` +
+      `if(ownToggle){` +
       `var pageDark=body.classList.contains('dark');` +
       `if(pageDark!==dark){window.toggleCmtTheme();}` +
       `try{window.localStorage.setItem('cmt-theme',scheme);}catch(_){}` +
       `body.classList.toggle('dark',dark);}` +
       `window.__LEGADO_COLOR_SCHEME__=scheme;window.__LEGADO_DARK_MODE__=dark;` +
       `window.dispatchEvent(new CustomEvent('legado-color-scheme-change',` +
-      `{detail:{colorScheme:scheme,dark:dark}}));return scheme;})()`;
+      `{detail:{colorScheme:scheme,dark:dark}}));` +
+      `var fallbackId='legado-dark-fallback',fallback=document.getElementById(fallbackId);` +
+      `if(fallback&&fallback.parentNode){fallback.parentNode.removeChild(fallback);}` +
+      `if(dark&&!ownToggle&&root){` +
+      `var rgb=function(value){var m=/rgba?\\(([^)]+)\\)/.exec(value||'');if(!m)return null;` +
+      `var p=m[1].split(',').map(function(v){return parseFloat(v);});` +
+      `if(p.length>3&&p[3]<0.5)return null;return (0.2126*p[0]+0.7152*p[1]+0.0722*p[2])/255;};` +
+      `var bodyStyle=body?getComputedStyle(body):null,rootStyle=getComputedStyle(root);` +
+      `var bg=bodyStyle?rgb(bodyStyle.backgroundColor):null;if(bg===null)bg=rgb(rootStyle.backgroundColor);` +
+      `var light=bg!==null?bg>0.6:((rgb((bodyStyle||rootStyle).color)||0)<0.4);` +
+      `if(light){root.style.colorScheme='light';` +
+      `var css='html{filter:invert(.92) hue-rotate(180deg)!important;}' +` +
+      `'img,video,picture,canvas,iframe,embed,object,[style*="background-image"]' +` +
+      `'{filter:invert(1) hue-rotate(180deg)!important;}';` +
+      `if(rgb(rootStyle.backgroundColor)===null)css+='html{background-color:#fff!important;}';` +
+      `fallback=document.createElement('style');fallback.id=fallbackId;fallback.textContent=css;` +
+      `(document.head||root).appendChild(fallback);}}` +
+      `return scheme;})()`;
     try {
       await this.readerCommentPanelController.runJavaScript(script);
     } catch (error) {
@@ -18741,7 +13126,10 @@ struct ReadBookPage {
   }
 
   getReaderEpubImageUri(marker: string): string {
-    const path = LocalBookService.epubImagePathFromMarker(marker);
+    return this.readerImageUriForSource(LocalBookService.epubImagePathFromMarker(marker));
+  }
+
+  readerImageUriForSource(path: string): string {
     if (!path) return '';
     if (/^(?:https?:|data:|file:)/i.test(path)) return path;
     try {
@@ -18749,65 +13137,6 @@ struct ReadBookPage {
     } catch (_) {
       return path;
     }
-  }
-
-  getReaderEpubImageHeight(): number {
-    const availableHeight = this.getReaderPaginationViewportHeight() -
-      this.getReaderPaginationBottomInfoBarHeight();
-    return Math.max(120, availableHeight);
-  }
-
-  @Builder
-  readerParagraphGap(paragraph: ReaderTextParagraph,
-    pageLineHeight: number = this.getEffectiveReaderLineHeight()) {
-    if (!paragraph.isLast) {
-      Blank()
-        .height(this.getReaderParagraphBoundarySpacing(pageLineHeight))
-        .width('100%')
-    }
-  }
-
-  @Builder
-  regexReaderText(paragraph: ReaderTextParagraph, ttsHighlightActive: boolean = true,
-    ttsRenderVersion: number = this.ttsHighlightRenderVersion, contentRenderVersion: number = this.pageRenderVersion,
-    pageRenderIdentity: string = '', pageStart: number = -1,
-    documentSource: string = this.pagedContentText, pageLineHeight: number = this.getEffectiveReaderLineHeight()) {
-    Text('', { controller: this.readerSelectableTextController(
-      this.readerSelectableTextKey('regex', pageRenderIdentity, contentRenderVersion, ttsRenderVersion, paragraph)) }) {
-      ForEach(this.getStyledParagraphTextSlices(paragraph, ttsHighlightActive, pageStart, documentSource),
-        (slice: ReadTextSlice) => {
-        this.styledRegexSlice(slice)
-      }, (slice: ReadTextSlice) =>
-        `${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, this.currentChapterIndex, contentRenderVersion,
-          ttsRenderVersion, paragraph.text)}_${paragraph.key}_${slice.key}`)
-    }
-    .lineSpacing(LengthMetrics.vp(this.getReaderPageLineSpacing(pageLineHeight)), { onlyBetweenLines: true })
-    .halfLeading(false)
-    .includeFontPadding(false)
-    .fontColor(this.getTextColor())
-    .letterSpacing(this.getReaderAdaptiveLetterSpacing())
-    .textAlign(this.readerTextAlignValue())
-    .wordBreak(WordBreak.BREAK_WORD)
-    .lineBreakStrategy(LineBreakStrategy.GREEDY)
-    .copyOption(CopyOptions.LocalDevice)
-    .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
-    .editMenuOptions(this.readerTextEditMenuOptions(() => paragraph.text))
-    .onCopy(() => this.scheduleReaderTextSelectionClear())
-    .width('100%')
-    .onAreaChange((_oldValue: Area, newValue: Area) => {
-      this.rememberReaderSelectableText(
-        this.readerSelectableTextKey('regex', pageRenderIdentity, contentRenderVersion, ttsRenderVersion, paragraph),
-        paragraph.text,
-        newValue
-      );
-    })
-    .id(`reader_regex_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, this.currentChapterIndex,
-      contentRenderVersion, ttsRenderVersion, paragraph.text)}_${paragraph.key}`)
-  }
-
-  readerSelectableTextKey(kind: string, pageRenderIdentity: string, contentRenderVersion: number,
-    ttsRenderVersion: number, paragraph: ReaderTextParagraph): string {
-    return `${pageRenderIdentity}_${contentRenderVersion}_${ttsRenderVersion}_${kind}_${paragraph.key}`;
   }
 
   readerSelectableTextController(key: string): TextController {
@@ -18830,41 +13159,6 @@ struct ReadBookPage {
     return controller;
   }
 
-  rememberReaderSelectableText(key: string, text: string, area: Area,
-    controller: TextController | null = null): void {
-    const position = area.globalPosition;
-    const left = Number(position.x);
-    const top = Number(position.y);
-    const right = left + Number(area.width);
-    const bottom = top + Number(area.height);
-    if (!key || !text || !Number.isFinite(left) || !Number.isFinite(top) ||
-      !Number.isFinite(right) || !Number.isFinite(bottom) || right <= left || bottom <= top) return;
-    // 滚动停止后可能收到几何完全相同的重复 onAreaChange；保留原条目即可，
-    // 省掉三次 Map 写入和一次滚动偏移读取。
-    const previousRect = this.readerSelectableTextAreas.get(key);
-    if (previousRect && previousRect.length === 4 && previousRect[0] === left && previousRect[1] === top &&
-      previousRect[2] === right && previousRect[3] === bottom &&
-      this.readerSelectableTextValues.get(key) === text) {
-      return;
-    }
-    this.readerSelectableTextAreas.set(key, [left, top, right, bottom]);
-    this.readerSelectableTextValues.set(key, text);
-    this.readerSelectableTextScrollOffsets.set(key, this.currentContinuousReaderScrollOffset());
-    if (controller) {
-      // Area callbacks identify controllers that are attached to the current render tree.
-      // Refresh their insertion order so the bounded cache cannot evict a visible page.
-      this.readerSelectableTextControllers.delete(key);
-      this.readerSelectableTextControllers.set(key, controller);
-    }
-    while (this.readerSelectableTextAreas.size > 512) {
-      const oldest = this.readerSelectableTextAreas.keys().next().value as string | undefined;
-      if (!oldest) break;
-      this.readerSelectableTextAreas.delete(oldest);
-      this.readerSelectableTextValues.delete(oldest);
-      this.readerSelectableTextScrollOffsets.delete(oldest);
-    }
-  }
-
   selectReaderTextAtGlobalPoint(event: GestureEvent): void {
     const point = this.readerContinuousGesturePoint(event);
     if (point.length < 2) return;
@@ -18880,68 +13174,16 @@ struct ReadBookPage {
     this.readerPanActive = false;
     this.setReaderTextSelectionActive(this.isReaderNovelContinuousScrollModeActive());
     const serial = ++this.readerTextSelectionSerial;
-    // Continuous novel mode renders ordinary selectable ArkUI Text items, even when the same chapter would use
-    // the V2 canvas in paged mode. Routing its long press into the unmounted V2 transparent controller leaves no
-    // selection menu; address the Text controller that actually owns the visible list item instead.
     if (!this.isReaderNovelContinuousScrollModeActive() && this.shouldUseReaderLayoutV2(this.pagedContentText)) {
       this.selectReaderV2TextAtGlobalPoint(globalX, globalY, serial, 0);
       return;
     }
-    // 滚动模式与翻页模式同策略：直接命中最小的可见段落 Text，在其控制器上做原生选择，
-    // 手柄/高亮/取字与显示层共用同一份布局，不存在覆盖层排版的漂移。
-    this.selectLegacyReaderTextAtGlobalPoint(globalX, globalY, serial, 0);
-  }
-
-  selectLegacyReaderTextAtGlobalPoint(globalX: number, globalY: number, serial: number, attempt: number): void {
-    if (serial !== this.readerTextSelectionSerial) return;
-    const currentIdentity = this.currentReaderPageRenderIdentity(this.pageRenderVersion,
-      this.ttsHighlightRenderVersion);
-    const continuousNovel = this.isReaderNovelContinuousScrollModeActive();
-    const currentScrollOffset = continuousNovel ? this.currentContinuousReaderScrollOffset() : 0;
-    let selectedKey = '';
-    let selectedArea: number[] = [];
-    let selectedAreaSize = Number.POSITIVE_INFINITY;
-    for (const entry of this.readerSelectableTextAreas.entries()) {
-      const key = entry[0];
-      const area = entry[1];
-      if ((!continuousNovel && !key.startsWith(currentIdentity)) || area.length < 4) continue;
-      if (continuousNovel && !this.isVisibleContinuousSelectionKey(key)) continue;
-      const registeredScrollOffset = continuousNovel ? (this.readerSelectableTextScrollOffsets.get(key) || 0) : 0;
-      const scrollDelta = currentScrollOffset - registeredScrollOffset;
-      const adjustedTop = area[1] - scrollDelta;
-      const adjustedBottom = area[3] - scrollDelta;
-      if (globalX >= area[0] && globalX <= area[2] && globalY >= adjustedTop && globalY <= adjustedBottom) {
-        const areaSize = (area[2] - area[0]) * (adjustedBottom - adjustedTop);
-        if (areaSize < selectedAreaSize) {
-          selectedKey = key;
-          selectedArea = [area[0], adjustedTop, area[2], adjustedBottom];
-          selectedAreaSize = areaSize;
-        }
-      }
-    }
-    if (!selectedKey || selectedArea.length < 4) {
-      this.retryReaderTextSelection(serial, attempt,
-        (nextAttempt: number): void => this.selectLegacyReaderTextAtGlobalPoint(
-          globalX, globalY, serial, nextAttempt));
+    if (this.usesReaderContinuousV2()) {
+      this.selectReaderContinuousV2TextAtPoint(globalX, globalY, serial, 0);
       return;
     }
-    const text = this.readerSelectableTextValues.get(selectedKey) || '';
-    const localX = globalX - selectedArea[0];
-    if (!this.showReaderTextSelection(selectedKey, text,
-      Math.max(0, localX), globalY - selectedArea[1])) {
-      this.retryReaderTextSelection(serial, attempt,
-        (nextAttempt: number): void => this.selectLegacyReaderTextAtGlobalPoint(
-          globalX, globalY, serial, nextAttempt));
-    }
-  }
-
-  isVisibleContinuousSelectionKey(key: string): boolean {
-    const keepStart = Math.max(0, this.readerContinuousVisibleStart - 1);
-    const keepEnd = this.readerContinuousVisibleEnd + 1;
-    for (let pageIndex = keepStart; pageIndex <= keepEnd; pageIndex++) {
-      if (key.includes(`reader_vertical_scroll_${this.currentChapterIndex}_${pageIndex}`)) return true;
-    }
-    return false;
+    // Comics have no selectable text.
+    this.setReaderTextSelectionActive(false);
   }
 
   retryReaderTextSelection(serial: number, attempt: number, action: (attempt: number) => void): void {
@@ -18972,468 +13214,6 @@ struct ReadBookPage {
     return match ? Number(match[0]) : -1;
   }
 
-  showReaderTextSelection(key: string, text: string, localX: number, localY: number): boolean {
-    if (!text) return false;
-    try {
-      const controller = this.readerSelectableTextController(key);
-      const layout = controller.getLayoutManager();
-      // GestureEvent and Area coordinates are reported in vp, while the native text
-      // typography queried by LayoutManager uses physical pixels.
-      let position = 0;
-      if (layout) {
-        position = layout.getGlyphPositionAtCoordinate(vp2px(localX), vp2px(localY)).position;
-      } else if (this.isReaderNovelContinuousScrollModeActive()) {
-        // TextController.getLayoutManager() is undefined for selectable Text inside List on
-        // affected HarmonyOS builds. Use the same graphics paragraph engine as pagination to
-        // resolve the glyph, then select on the visible rich Text controller itself.
-        const widthVp = Math.max(1, this.getReaderPageColumnWidth() -
-          this.getEffectiveReaderMarginLeft() - this.getEffectiveReaderMarginRight());
-        position = ReaderV2Paginator.glyphPositionForPlainText(text,
-          this.readerV2ActiveSnapshot || this.buildReaderV2Snapshot(),
-          this.toMeasurePx(widthVp), vp2px(localX), vp2px(localY));
-      } else {
-        return false;
-      }
-      position = Math.max(0, Math.min(text.length - 1, position));
-      while (position < text.length - 1 && /\s/.test(text.charAt(position))) position++;
-      while (position > 0 && /\s/.test(text.charAt(position))) position--;
-      let start = position;
-      let end = Math.min(text.length, position + 1);
-      const wordPattern = /[A-Za-z0-9_]/;
-      if (wordPattern.test(text.charAt(position))) {
-        while (start > 0 && wordPattern.test(text.charAt(start - 1))) start--;
-        while (end < text.length && wordPattern.test(text.charAt(end))) end++;
-      } else {
-        const code = text.charCodeAt(position);
-        if (code >= 0xDC00 && code <= 0xDFFF && start > 0) start--;
-        if (code >= 0xD800 && code <= 0xDBFF && end < text.length) end++;
-      }
-      this.readerTextSelectionUntil = Date.now() + 900;
-      this.suppressReaderTapClick = true;
-      this.readerTouchActive = false;
-      this.readerPanActive = false;
-      controller.setTextSelection(start, end, { menuPolicy: MenuPolicy.SHOW });
-      return true;
-    } catch (error) {
-      console.info('正文长按选择布局尚未就绪，准备重试:', error);
-      return false;
-    }
-  }
-
-  @Builder
-  styledRegexSlice(slice: ReadTextSlice) {
-    if (this.shouldUseFullThemeRegexDecoration(slice)) {
-      ContainerSpan() {
-        ImageSpan(ThemeAssetRegistry.regexBubbleCap(this.getRegexSliceBubbleStyleId(slice)))
-          .width(this.getRegexBubbleCapSize(slice))
-          .height(this.getRegexBubbleCapSize(slice))
-          .objectFit(ImageFit.Contain)
-          .verticalAlign(ImageSpanAlignment.CENTER)
-        Span(slice.text)
-          .fontSize(this.getRegexSliceFontSize(slice))
-          .fontFamily(this.getRegexSliceFontFamily(slice))
-          .fontColor(this.getStyledSliceFontColor(slice))
-          .textBackgroundStyle(slice.ttsHighlighted ? {
-            color: this.getTtsHighlightColor(),
-            radius: 4
-          } : {})
-          .textShadow(this.getStyledSliceTextShadow(slice))
-          .decoration({ type: TextDecorationType.None })
-        ImageSpan(ThemeAssetRegistry.regexBubbleCap(this.getRegexSliceBubbleStyleId(slice)))
-          .width(this.getRegexBubbleCapSize(slice))
-          .height(this.getRegexBubbleCapSize(slice))
-          .objectFit(ImageFit.Contain)
-          .verticalAlign(ImageSpanAlignment.CENTER)
-          .rotate({ angle: 180 })
-      }
-      .textBackgroundStyle(this.getStyledSliceBackgroundStyle(slice))
-    } else {
-      Span(slice.text)
-        .fontSize(slice.highlighted ? this.getRegexSliceFontSize(slice) : this.readerFontSize)
-        .fontFamily(slice.highlighted ? this.getRegexSliceFontFamily(slice) : this.getBodyReaderFontFamily())
-        .fontColor(this.getStyledSliceFontColor(slice))
-        .textBackgroundStyle(this.getStyledSliceBackgroundStyle(slice))
-        .textShadow(this.getStyledSliceTextShadow(slice))
-        .decoration(this.getStyledSliceDecoration(slice))
-    }
-  }
-
-  shouldUseFullThemeRegexDecoration(slice: ReadTextSlice): boolean {
-    if (!slice.highlighted) return false;
-    const style = this.resolvedRegexEmphasis(this.getRegexRuleBySlice(slice));
-    return style.bubbleDecorationEnabled && ThemeAssetRegistry.hasRegexBubbleCap(style.bubbleStyleId);
-  }
-
-  getRegexSliceBubbleStyleId(slice: ReadTextSlice): string {
-    return this.resolvedRegexEmphasis(this.getRegexRuleBySlice(slice)).bubbleStyleId;
-  }
-
-  getRegexBubbleCapSize(slice: ReadTextSlice): number {
-    return Math.max(15, Math.min(22, this.getRegexSliceFontSize(slice) * 0.72));
-  }
-
-  @Builder
-  framedRegexReaderText(paragraph: ReaderTextParagraph, ttsHighlightActive: boolean = true,
-    ttsRenderVersion: number = this.ttsHighlightRenderVersion, contentRenderVersion: number = this.pageRenderVersion,
-    pageRenderIdentity: string = '', pageStart: number = -1,
-    documentSource: string = this.pagedContentText, pageLineHeight: number = this.getEffectiveReaderLineHeight()) {
-    Text('', { controller: this.readerSelectableTextController(
-      this.readerSelectableTextKey('frame', pageRenderIdentity, contentRenderVersion, ttsRenderVersion,
-        paragraph)) }) {
-      ForEach(this.getStyledParagraphTextSlices(paragraph, ttsHighlightActive, pageStart, documentSource),
-        (slice: ReadTextSlice) => {
-        Span(slice.text)
-          .fontSize(slice.highlighted ? this.getRegexSliceFontSize(slice) : this.readerFontSize)
-          .fontFamily(slice.highlighted ? this.getRegexSliceFontFamily(slice) : this.getBodyReaderFontFamily())
-          .fontColor(this.getStyledSliceFontColor(slice))
-          .textBackgroundStyle(slice.ttsHighlighted ? {
-            color: this.getTtsHighlightColor(),
-            radius: 4
-          } : {})
-          .textShadow(this.getStyledSliceTextShadow(slice))
-          .decoration({ type: TextDecorationType.None })
-      }, (slice: ReadTextSlice) =>
-        `framed_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, this.currentChapterIndex,
-          contentRenderVersion, ttsRenderVersion, paragraph.text)}_${paragraph.key}_${slice.key}`)
-    }
-    .lineSpacing(LengthMetrics.vp(this.getReaderPageLineSpacing(pageLineHeight)), { onlyBetweenLines: true })
-    .halfLeading(false)
-    .includeFontPadding(false)
-    .fontColor(this.getTextColor())
-    .letterSpacing(this.getReaderAdaptiveLetterSpacing())
-    .textAlign(this.readerTextAlignValue())
-    .wordBreak(WordBreak.BREAK_WORD)
-    .lineBreakStrategy(LineBreakStrategy.GREEDY)
-    .copyOption(CopyOptions.LocalDevice)
-    .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
-    .editMenuOptions(this.readerTextEditMenuOptions(() => paragraph.text))
-    .onCopy(() => this.scheduleReaderTextSelectionClear())
-    .width('100%')
-    .padding({
-      left: this.getRegexFrameHorizontalPadding(paragraph, pageStart),
-      right: this.getRegexFrameHorizontalPadding(paragraph, pageStart),
-      top: this.getRegexFrameVerticalPadding(paragraph, pageStart),
-      bottom: this.getRegexFrameVerticalPadding(paragraph, pageStart)
-    })
-    .backgroundColor(this.getRegexFrameBackgroundColor(paragraph, pageStart))
-    .border({
-      width: this.getRegexFrameBorderWidth(paragraph, pageStart),
-      color: this.getRegexFrameBorderColor(paragraph, pageStart),
-      style: this.getRegexFrameBorderStyle(paragraph, pageStart)
-    })
-    .borderRadius(this.getRegexFrameBorderRadius(paragraph, pageStart))
-    .onAreaChange((_oldValue: Area, newValue: Area) => {
-      this.rememberReaderSelectableText(
-        this.readerSelectableTextKey('frame', pageRenderIdentity, contentRenderVersion, ttsRenderVersion,
-          paragraph),
-        paragraph.text,
-        newValue
-      );
-    })
-    .overlay(() => {
-      Image(this.getRegexParagraphFrame(paragraph, pageStart))
-        .width('100%')
-        .height('100%')
-        .objectFit(ImageFit.Fill)
-        .resizable({
-          slice: {
-            left: this.getRegexFrameHorizontalSlice(paragraph, pageStart),
-            right: this.getRegexFrameHorizontalSlice(paragraph, pageStart),
-            top: this.getRegexFrameVerticalSlice(paragraph, pageStart),
-            bottom: this.getRegexFrameVerticalSlice(paragraph, pageStart)
-          }
-        })
-        .draggable(false)
-        .hitTestBehavior(HitTestMode.None)
-    }, { align: Alignment.Center })
-    .id(`reader_regex_frame_${this.effectiveReaderPageRenderIdentity(pageRenderIdentity, this.currentChapterIndex,
-      contentRenderVersion, ttsRenderVersion, paragraph.text)}_${paragraph.key}`)
-  }
-
-  shouldUseRegexParagraphFrame(paragraph: ReaderTextParagraph, pageStart: number = -1): boolean {
-    return !!this.getRegexParagraphFrameStyleId(paragraph, pageStart);
-  }
-
-  getRegexParagraphFrame(paragraph: ReaderTextParagraph, pageStart: number = -1): ResourceStr {
-    return ThemeAssetRegistry.regexBubbleFrame(this.getRegexParagraphFrameStyleId(paragraph, pageStart));
-  }
-
-  getRegexParagraphFrameStyleId(paragraph: ReaderTextParagraph, pageStart: number = -1): string {
-    this.getRegexRules();
-    const cacheKey = `${this.readerRegexFontEnabled ? '1' : '0'}_${this.cachedRegexRulesKey}_` +
-      `${this.pageRenderVersion}_${pageStart}_${paragraph.key}`;
-    if (this.regexFrameStyleCache.has(cacheKey)) {
-      return this.regexFrameStyleCache.get(cacheKey) || '';
-    }
-    let styleId = '';
-    if (this.readerRegexFontEnabled && paragraph.text.trim()) {
-      const absoluteStart = pageStart < 0 ? -1 : pageStart + paragraph.start;
-      styleId = this.getRegexFrameStyleIdFromSlices(this.getRegexTextSlicesAt(paragraph.text, absoluteStart));
-    }
-    if (this.regexFrameStyleCache.size >= 512) {
-      this.regexFrameStyleCache.clear();
-    }
-    this.regexFrameStyleCache.set(cacheKey, styleId);
-    return styleId;
-  }
-
-  getRegexParagraphFrameStyleIdForText(text: string): string {
-    if (!this.readerRegexFontEnabled || !text.trim()) {
-      return '';
-    }
-    return this.getRegexFrameStyleIdFromSlices(this.getRegexTextSlices(text));
-  }
-
-  getRegexFrameStyleIdFromSlices(slices: ReadTextSlice[]): string {
-    let ruleIndex = -1;
-    for (const slice of slices) {
-      if (slice.highlighted) {
-        if (ruleIndex < 0) {
-          ruleIndex = slice.ruleIndex;
-        } else if (ruleIndex !== slice.ruleIndex) {
-          return '';
-        }
-      } else if (slice.text.trim()) {
-        return '';
-      }
-    }
-    const rules = this.getRegexRules();
-    if (ruleIndex < 0 || ruleIndex >= rules.length) {
-      return '';
-    }
-    const style = this.resolvedRegexEmphasis(rules[ruleIndex]);
-    if (!style.bubbleDecorationEnabled) {
-      return '';
-    }
-    return ThemeAssetRegistry.hasRegexBubbleFrame(style.bubbleStyleId) ? style.bubbleStyleId : '';
-  }
-
-  getRegexFrameHorizontalPadding(paragraph: ReaderTextParagraph, pageStart: number = -1): number {
-    return this.getRegexFrameHorizontalPaddingForStyle(this.getRegexParagraphFrameStyleId(paragraph, pageStart));
-  }
-
-  getRegexFrameHorizontalPaddingForStyle(styleId: string): number {
-    if (styleId === 'rose-frame') return 18;
-    if (styleId === 'celadon-slip') return 16;
-    if (styleId === 'strawberry-ribbon' || styleId === 'moon-halo') return 16;
-    if (styleId === 'crimson-stamp' || styleId === 'warm-scroll') return 15;
-    if (styleId === 'sword-talisman') return 16;
-    if (styleId === 'qingluan-jade') return 18;
-    if (styleId === 'pipi-soft-paw') return 18;
-    return 14;
-  }
-
-  getRegexFrameVerticalPadding(paragraph: ReaderTextParagraph, pageStart: number = -1): number {
-    return this.getRegexFrameVerticalPaddingForStyle(this.getRegexParagraphFrameStyleId(paragraph, pageStart));
-  }
-
-  getRegexFrameVerticalPaddingForStyle(styleId: string): number {
-    if (styleId === 'rose-frame' || styleId === 'celadon-slip') return 7;
-    if (styleId === 'strawberry-ribbon' || styleId === 'moon-halo') return 6;
-    if (styleId === 'sword-talisman') return 6;
-    if (styleId === 'qingluan-jade') return 7;
-    if (styleId === 'pipi-soft-paw') return 7;
-    return 5;
-  }
-
-  getRegexFrameBackgroundColor(paragraph: ReaderTextParagraph, pageStart: number = -1): string {
-    const styleId = this.getRegexParagraphFrameStyleId(paragraph, pageStart);
-    if (styleId === 'classic-glass') return this.isReaderThemeDark() ? '#162D6EA3' : '#104B9DE1';
-    if (styleId === 'warm-scroll') return this.isReaderThemeDark() ? '#183C2B1E' : '#18E8CFA5';
-    if (styleId === 'forest-dew') return this.isReaderThemeDark() ? '#163C6750' : '#1478A98A';
-    if (styleId === 'ink-brush') return this.isReaderThemeDark() ? '#18283038' : '#105F6B74';
-    if (styleId === 'neon-pulse') return this.isReaderThemeDark() ? '#1811162A' : '#1000D5FF';
-    if (styleId === 'strawberry-ribbon') return this.isReaderThemeDark() ? '#18263544' : '#14F1B6BC';
-    if (styleId === 'crimson-stamp') return this.isReaderThemeDark() ? '#188D211C' : '#109A2923';
-    if (styleId === 'celadon-slip') return this.isReaderThemeDark() ? '#1828342D' : '#14E6EEE7';
-    if (styleId === 'rose-frame') return this.isReaderThemeDark() ? '#182B171C' : '#14F8E7E1';
-    if (styleId === 'moon-halo') return this.isReaderThemeDark() ? '#180A1627' : '#12DCEBFF';
-    if (styleId === 'sword-talisman') return this.isReaderThemeDark() ? '#1822302B' : '#16476963';
-    if (styleId === 'qingluan-jade') return this.isReaderThemeDark() ? '#1A263735' : '#18E3EBE7';
-    if (styleId === 'pipi-soft-paw') return this.isReaderThemeDark() ? '#1A332721' : '#18FFF4E8';
-    return '#00000000';
-  }
-
-  getRegexFrameBorderColor(paragraph: ReaderTextParagraph, pageStart: number = -1): string {
-    const styleId = this.getRegexParagraphFrameStyleId(paragraph, pageStart);
-    if (styleId === 'classic-glass') return '#804B9DE1';
-    if (styleId === 'warm-scroll') return '#8CA9753D';
-    if (styleId === 'forest-dew') return '#824F8063';
-    if (styleId === 'ink-brush') return this.isReaderThemeDark() ? '#995F6B74' : '#8A283038';
-    if (styleId === 'neon-pulse') return '#A000D5FF';
-    if (styleId === 'strawberry-ribbon') return '#8FE1767D';
-    if (styleId === 'crimson-stamp') return '#9A9A2923';
-    if (styleId === 'celadon-slip') return '#94A96B5C';
-    if (styleId === 'rose-frame') return '#A0A84550';
-    if (styleId === 'moon-halo') return '#9678B9F3';
-    if (styleId === 'sword-talisman') return '#9A6E817B';
-    if (styleId === 'qingluan-jade') return '#A2B4935C';
-    if (styleId === 'pipi-soft-paw') return this.isReaderThemeDark() ? '#9AE8A06F' : '#9AC46F45';
-    return '#00000000';
-  }
-
-  getRegexFrameBorderWidth(paragraph: ReaderTextParagraph, pageStart: number = -1): number {
-    const styleId = this.getRegexParagraphFrameStyleId(paragraph, pageStart);
-    return styleId === 'neon-pulse' || styleId === 'ink-brush' ? 1.5 : 1;
-  }
-
-  getRegexFrameBorderStyle(paragraph: ReaderTextParagraph, pageStart: number = -1): BorderStyle {
-    const styleId = this.getRegexParagraphFrameStyleId(paragraph, pageStart);
-    if (styleId === 'forest-dew' || styleId === 'strawberry-ribbon') return BorderStyle.Dotted;
-    if (styleId === 'ink-brush' || styleId === 'crimson-stamp') return BorderStyle.Dashed;
-    return BorderStyle.Solid;
-  }
-
-  getRegexFrameBorderRadius(paragraph: ReaderTextParagraph, pageStart: number = -1): number {
-    const styleId = this.getRegexParagraphFrameStyleId(paragraph, pageStart);
-    if (styleId === 'forest-dew') return 18;
-    if (styleId === 'classic-glass' || styleId === 'strawberry-ribbon') return 12;
-    if (styleId === 'rose-frame' || styleId === 'moon-halo') return 10;
-    if (styleId === 'sword-talisman') return 4;
-    if (styleId === 'qingluan-jade') return 12;
-    if (styleId === 'pipi-soft-paw') return 16;
-    if (styleId === 'neon-pulse') return 5;
-    return 1;
-  }
-
-  getRegexFrameHorizontalSlice(paragraph: ReaderTextParagraph, pageStart: number = -1): number {
-    const styleId = this.getRegexParagraphFrameStyleId(paragraph, pageStart);
-    if (styleId === 'rose-frame') return 46;
-    if (styleId === 'celadon-slip') return 32;
-    if (styleId === 'strawberry-ribbon' || styleId === 'crimson-stamp') return 40;
-    if (styleId === 'sword-talisman') return 38;
-    if (styleId === 'qingluan-jade') return 44;
-    if (styleId === 'pipi-soft-paw') return 44;
-    return 34;
-  }
-
-  getRegexFrameVerticalSlice(paragraph: ReaderTextParagraph, pageStart: number = -1): number {
-    const styleId = this.getRegexParagraphFrameStyleId(paragraph, pageStart);
-    if (styleId === 'rose-frame') return 28;
-    if (styleId === 'celadon-slip') return 24;
-    if (styleId === 'sword-talisman') return 24;
-    if (styleId === 'qingluan-jade') return 28;
-    if (styleId === 'pipi-soft-paw') return 28;
-    return 22;
-  }
-
-  getTitleTextSlices(paragraph: ReaderTextParagraph, chapterIndex: number,
-    ttsHighlightActive: boolean = true): ReadTextSlice[] {
-    const title = this.getChapterTitle(chapterIndex);
-    const titleText = paragraph.text.substring(0, Math.min(title.length, paragraph.text.length));
-    return this.splitSliceByTtsHighlight({
-      text: titleText,
-      start: 0,
-      end: titleText.length,
-      highlighted: false,
-      ruleIndex: -1,
-      key: `title_plain_${this.buildTextSliceKey(titleText)}`
-    }, paragraph.start, 0, ttsHighlightActive);
-  }
-
-  getTitleBodyTextSlices(paragraph: ReaderTextParagraph, chapterIndex: number,
-    ttsHighlightActive: boolean = true, pageStart: number = -1,
-    documentSource: string = this.pagedContentText): ReadTextSlice[] {
-    const titleLength = Math.min(this.getChapterTitle(chapterIndex).length, paragraph.text.length);
-    const bodyText = paragraph.text.substring(titleLength);
-    return this.splitSlicesByTtsHighlight(
-      this.getRegexTextSlicesAt(bodyText, pageStart < 0 ? -1 : pageStart + paragraph.start + titleLength,
-        documentSource),
-      paragraph.start, titleLength,
-      ttsHighlightActive);
-  }
-
-  handleTocCurrentPositionClick(): void {
-    if (this.tocQuickJumpArmed) {
-      this.tocQuickJumpDraft = '';
-      this.tocQuickJumpInputVisible = true;
-      this.tocQuickJumpArmed = false;
-      setTimeout(() => {
-        focusControl.requestFocus('tocQuickJumpChapterInput');
-      }, 50);
-      return;
-    }
-    this.scrollTocToCurrentChapter();
-    this.tocQuickJumpArmed = true;
-  }
-
-  submitTocQuickJump(): void {
-    if (this.chapters.length === 0) {
-      HdsFeedback.showToast('暂无可定位的章节');
-      return;
-    }
-    const chapterNumber = Number.parseInt(this.tocQuickJumpDraft, 10);
-    if (!Number.isFinite(chapterNumber) || chapterNumber < 1 || chapterNumber > this.chapters.length) {
-      HdsFeedback.showToast(`章节序号范围为 1～${this.chapters.length}，请重新输入`);
-      setTimeout(() => {
-        focusControl.requestFocus('tocQuickJumpChapterInput');
-      }, 50);
-      return;
-    }
-    this.tocQuickJumpInputVisible = false;
-    this.tocQuickJumpDraft = '';
-    this.tocQuickJumpArmed = false;
-    this.scrollTocToChapter(chapterNumber - 1, ScrollAlign.CENTER);
-  }
-
-  getStyledParagraphTextSlices(paragraph: ReaderTextParagraph, ttsHighlightActive: boolean = true,
-    pageStart: number = -1, documentSource: string = this.pagedContentText): ReadTextSlice[] {
-    return this.splitSlicesByTtsHighlight(
-      this.getRegexTextSlicesAt(paragraph.text, pageStart < 0 ? -1 : pageStart + paragraph.start, documentSource),
-      paragraph.start, 0,
-      ttsHighlightActive);
-  }
-
-  splitSlicesByTtsHighlight(slices: ReadTextSlice[], paragraphStart: number, segmentOffset: number,
-    ttsHighlightActive: boolean = true): ReadTextSlice[] {
-    const result: ReadTextSlice[] = [];
-    for (const slice of slices) {
-      result.push(...this.splitSliceByTtsHighlight(slice, paragraphStart, segmentOffset, ttsHighlightActive));
-    }
-    return result;
-  }
-
-  splitSliceByTtsHighlight(slice: ReadTextSlice, paragraphStart: number, segmentOffset: number,
-    ttsHighlightActive: boolean = true): ReadTextSlice[] {
-    const sliceStart = segmentOffset + slice.start;
-    const sliceEnd = segmentOffset + slice.end;
-    const localHighlightStart = this.ttsHighlightStart - paragraphStart;
-    const localHighlightEnd = this.ttsHighlightEnd - paragraphStart;
-    if (!ttsHighlightActive || !this.shouldRenderTtsFocus() || this.ttsHighlightStart < 0 ||
-      this.ttsHighlightEnd <= this.ttsHighlightStart || localHighlightEnd <= sliceStart ||
-      localHighlightStart >= sliceEnd) {
-      return [this.cloneStyledSlice(slice, sliceStart, sliceEnd, slice.text, false, 'plain')];
-    }
-
-    const overlapStart = Math.max(sliceStart, localHighlightStart);
-    const overlapEnd = Math.min(sliceEnd, localHighlightEnd);
-    const result: ReadTextSlice[] = [];
-    if (overlapStart > sliceStart) {
-      const beforeText = slice.text.substring(0, overlapStart - sliceStart);
-      result.push(this.cloneStyledSlice(slice, sliceStart, overlapStart, beforeText, false, 'before_tts'));
-    }
-    const highlightText = slice.text.substring(overlapStart - sliceStart, overlapEnd - sliceStart);
-    result.push(this.cloneStyledSlice(slice, overlapStart, overlapEnd, highlightText, true, 'tts'));
-    if (overlapEnd < sliceEnd) {
-      const afterText = slice.text.substring(overlapEnd - sliceStart);
-      result.push(this.cloneStyledSlice(slice, overlapEnd, sliceEnd, afterText, false, 'after_tts'));
-    }
-    return result;
-  }
-
-  cloneStyledSlice(source: ReadTextSlice, start: number, end: number, text: string, ttsHighlighted: boolean,
-    keyPrefix: string): ReadTextSlice {
-    return {
-      text: text,
-      start: start,
-      end: end,
-      highlighted: source.highlighted,
-      ruleIndex: source.ruleIndex,
-      ttsHighlighted: ttsHighlighted,
-      key: `${keyPrefix}_${start}_${end}_${source.ruleIndex}_${this.buildTextSliceKey(text)}`
-    };
-  }
-
   getStyledSliceFontColor(slice: ReadTextSlice): string {
     if (slice.ttsHighlighted) {
       return this.getTtsHighlightTextColor();
@@ -19442,72 +13222,6 @@ struct ReadBookPage {
       return this.resolvedRegexEmphasis(this.getRegexRuleBySlice(slice)).textColor;
     }
     return this.getTextColor();
-  }
-
-  getStyledSliceBackgroundStyle(slice: ReadTextSlice): TextBackgroundStyle {
-    if (slice.ttsHighlighted) {
-      return { color: this.getTtsHighlightColor(), radius: 4 };
-    }
-    if (!slice.highlighted) {
-      return {};
-    }
-    const style = this.resolvedRegexEmphasis(this.getRegexRuleBySlice(slice));
-    if (!style.backgroundEnabled) {
-      return {};
-    }
-    return {
-      color: style.backgroundColor,
-      radius: {
-        topLeft: style.radiusTopLeft,
-        topRight: style.radiusTopRight,
-        bottomLeft: style.radiusBottomLeft,
-        bottomRight: style.radiusBottomRight
-      }
-    };
-  }
-
-  getStyledSliceTextShadow(slice: ReadTextSlice): ShadowOptions | ShadowOptions[] {
-    if (slice.ttsHighlighted || !slice.highlighted) {
-      return { radius: 0, color: '#00000000', offsetX: 0, offsetY: 0 };
-    }
-    const style = this.resolvedRegexEmphasis(this.getRegexRuleBySlice(slice));
-    if (style.textShadows.length > 0) {
-      return style.textShadows;
-    }
-    return {
-      radius: style.textShadowRadius,
-      color: style.textShadowColor,
-      offsetX: style.textShadowOffsetX,
-      offsetY: style.textShadowOffsetY
-    };
-  }
-
-  shouldUseTitleStyle(text: string, chapterIndex: number = this.currentChapterIndex): boolean {
-    const title = this.getChapterTitle(chapterIndex).trim();
-    return !!title && (text || '').startsWith(title);
-  }
-
-  shouldUseRegexStyle(text: string): boolean {
-    return this.hasRegexMatch(text);
-  }
-
-  hasRegexMatch(text: string): boolean {
-    if (!this.readerRegexFontEnabled) {
-      return false;
-    }
-    const rules = this.getRegexRules();
-    for (const rule of rules) {
-      if (!rule.pattern.trim()) {
-        continue;
-      }
-      try {
-        if (new RegExp(rule.pattern).test(text || '')) {
-          return true;
-        }
-      } catch (e) {
-      }
-    }
-    return false;
   }
 
   getRegexRules(): ReaderRegexFontRule[] {
@@ -19554,6 +13268,31 @@ struct ReadBookPage {
 
   resolvedRegexEmphasis(rule: ReaderRegexFontRule | null): ReaderResolvedRegexEmphasis {
     return ReaderRegexBubbleStyleResolver.resolve(rule, this.readerRegexEmphasisContext());
+  }
+
+  /** The theme's emphasis bubble, always in bubble form even when the theme emphasises dialogue another way. */
+  readerCommentBubbleTheme(): ReaderResolvedRegexEmphasis {
+    const context = this.readerRegexEmphasisContext();
+    context.inheritedMode = ThemeRegexEmphasisModes.BUBBLE;
+    return ReaderRegexBubbleStyleResolver.resolve(null, context);
+  }
+
+  /**
+   * Comment / 本章说 bubbles take their shape, colours and ornament from the theme's emphasis-bubble style. Colours
+   * and the corner style a source sets explicitly still win.
+   */
+  readerCommentBubbleStyle(): ReaderCommentBubbleStyle {
+    const style = ReaderCommentBubbleStyles.resolve(this.readerCommentBubbleTheme().bubbleStyleId,
+      this.isReaderThemeDark());
+    const sourceTextColor = this.readerSourceColorSetting('段评字体颜色', '');
+    const sourceFillColor = this.readerSourceColorSetting('段评填充颜色', '');
+    if (sourceTextColor) style.text = ReaderV2Color.parse(sourceTextColor, style.text);
+    if (sourceFillColor) {
+      style.fill = ReaderV2Color.parse(sourceFillColor, style.fill);
+      style.stroke = 0;
+    }
+    if (this.readerSourceSettingValue('段评样式')) style.radiusPx = this.toMeasurePx(this.readerV2CommentRadius());
+    return style;
   }
 
   getRegexTextSlices(text: string): ReadTextSlice[] {
@@ -19671,69 +13410,6 @@ struct ReadBookPage {
     }
   }
 
-  /**
-   * 从整章的正则匹配结果中截取当前页面/段落。这样匹配范围即使跨过分页点，
-   * 两页上的可见部分也会保持同一条高亮规则。
-   */
-  getRegexTextSlicesAt(text: string, absoluteStart: number,
-    documentSource: string = this.pagedContentText): ReadTextSlice[] {
-    const displayText = text || '';
-    const source = documentSource || '';
-    if (absoluteStart < 0 || !source) {
-      return this.getRegexTextSlices(displayText);
-    }
-    return this.getRegexTextSlicesForDocumentRange(displayText, source, absoluteStart);
-  }
-
-  getRegexTextSlicesForDocumentRange(text: string, documentSource: string,
-    absoluteStart: number): ReadTextSlice[] {
-    const displayText = text || '';
-    const source = documentSource || displayText;
-    if (!displayText || absoluteStart < 0 || !source) {
-      return this.getRegexTextSlices(displayText);
-    }
-    this.getRegexRules();
-    const documentRulesKey = `${this.readerRegexFontEnabled ? '1' : '0'}_${this.cachedRegexRulesKey}`;
-    if (this.cachedDocumentRegexSource !== source ||
-      this.cachedDocumentRegexRulesKey !== documentRulesKey) {
-      this.cachedDocumentRegexSource = source;
-      this.cachedDocumentRegexRulesKey = documentRulesKey;
-      this.cachedDocumentRegexSlices = this.getRegexTextSlices(source);
-    }
-    const absoluteEnd = Math.min(source.length, absoluteStart + displayText.length);
-    const result: ReadTextSlice[] = [];
-    let low = 0;
-    let high = this.cachedDocumentRegexSlices.length;
-    while (low < high) {
-      const middle = Math.floor((low + high) / 2);
-      if (this.cachedDocumentRegexSlices[middle].end <= absoluteStart) {
-        low = middle + 1;
-      } else {
-        high = middle;
-      }
-    }
-    for (let index = low; index < this.cachedDocumentRegexSlices.length; index++) {
-      const slice = this.cachedDocumentRegexSlices[index];
-      if (slice.start >= absoluteEnd) break;
-      const overlapStart = Math.max(slice.start, absoluteStart);
-      const overlapEnd = Math.min(slice.end, absoluteEnd);
-      if (overlapEnd <= overlapStart) continue;
-      const localStart = overlapStart - absoluteStart;
-      const localEnd = overlapEnd - absoluteStart;
-      const sliceText = displayText.substring(localStart, localEnd);
-      result.push({
-        text: sliceText,
-        start: localStart,
-        end: localEnd,
-        highlighted: slice.highlighted,
-        ruleIndex: slice.ruleIndex,
-        key: `document_regex_${slice.ruleIndex}_${overlapStart}_${overlapEnd}_` +
-          `${this.buildTextSliceKey(sliceText)}`
-      });
-    }
-    return result.length > 0 ? result : this.getRegexTextSlices(displayText);
-  }
-
   hasOverlappedRegexSlice(slices: ReadTextSlice[], start: number, end: number): boolean {
     for (const slice of slices) {
       if (start < slice.end && end > slice.start) {
@@ -19761,128 +13437,6 @@ struct ReadBookPage {
     return rule ? this.resolveStyledReaderFontFamily(rule.fontMode, rule.fontFamily) : this.getRegexReaderFontFamily();
   }
 
-  getReadingTextSlices(text: string): ReadTextSlice[] {
-    const displayText = this.getReadingRenderText(text);
-    const start = this.ttsHighlightStart;
-    const end = this.ttsHighlightEnd;
-    if (!this.shouldRenderTtsFocus() || !this.ttsDisplayText || start < 0 || end <= start ||
-      displayText !== this.ttsDisplayText) {
-      return [{
-        text: displayText,
-        start: 0,
-        end: displayText.length,
-        highlighted: false,
-        ruleIndex: -1,
-        key: `plain_${this.buildTextSliceKey(displayText)}`
-      }];
-    }
-    const clampedStart = Math.max(0, Math.min(start, displayText.length));
-    const clampedEnd = Math.max(clampedStart, Math.min(end, displayText.length));
-    const slices: ReadTextSlice[] = [];
-    if (clampedStart > 0) {
-      slices.push({
-        text: displayText.substring(0, clampedStart),
-        start: 0,
-        end: clampedStart,
-        highlighted: false,
-        ruleIndex: -1,
-        key: `before_${clampedStart}_${this.buildTextSliceKey(displayText.substring(0, clampedStart))}`
-      });
-    }
-    const highlightedText = displayText.substring(clampedStart, clampedEnd);
-    slices.push({
-      text: highlightedText,
-      start: clampedStart,
-      end: clampedEnd,
-      highlighted: true,
-      ruleIndex: -1,
-      key: `highlight_${clampedStart}_${clampedEnd}_${this.buildTextSliceKey(highlightedText)}`
-    });
-    if (clampedEnd < displayText.length) {
-      const afterText = displayText.substring(clampedEnd);
-      slices.push({
-        text: afterText,
-        start: clampedEnd,
-        end: displayText.length,
-        highlighted: false,
-        ruleIndex: -1,
-        key: `after_${clampedEnd}_${this.buildTextSliceKey(afterText)}`
-      });
-    }
-    return slices;
-  }
-
-  getReadingTextSlicesInRange(text: string, start: number, end: number): ReadTextSlice[] {
-    const displayText = text || '';
-    if (!this.shouldRenderTtsFocus() || start < 0 || end <= start) {
-      return [{
-        text: displayText,
-        start: 0,
-        end: displayText.length,
-        highlighted: false,
-        ruleIndex: -1,
-        key: `plain_${this.buildTextSliceKey(displayText)}`
-      }];
-    }
-    const clampedStart = Math.max(0, Math.min(start, displayText.length));
-    const clampedEnd = Math.max(clampedStart, Math.min(end, displayText.length));
-    const slices: ReadTextSlice[] = [];
-    if (clampedStart > 0) {
-      const beforeText = displayText.substring(0, clampedStart);
-      slices.push({
-        text: beforeText,
-        start: 0,
-        end: clampedStart,
-        highlighted: false,
-        ruleIndex: -1,
-        key: `before_${clampedStart}_${this.buildTextSliceKey(beforeText)}`
-      });
-    }
-    const highlightedText = displayText.substring(clampedStart, clampedEnd);
-    slices.push({
-      text: highlightedText,
-      start: clampedStart,
-      end: clampedEnd,
-      highlighted: true,
-      ruleIndex: -1,
-      key: `highlight_${clampedStart}_${clampedEnd}_${this.buildTextSliceKey(highlightedText)}`
-    });
-    if (clampedEnd < displayText.length) {
-      const afterText = displayText.substring(clampedEnd);
-      slices.push({
-        text: afterText,
-        start: clampedEnd,
-        end: displayText.length,
-        highlighted: false,
-        ruleIndex: -1,
-        key: `after_${clampedEnd}_${this.buildTextSliceKey(afterText)}`
-      });
-    }
-    return slices;
-  }
-
-  hasActiveTtsHighlight(text: string): boolean {
-    // 先判断 TTS 焦点态再归一化正文：getReadingRenderText 会做两遍全文正则替换，
-    // 滚动模式下每个新渲染的文本块都会调用到这里，非朗读时必须零成本返回。
-    if (!this.shouldRenderTtsFocus() || !this.ttsDisplayText ||
-      this.ttsHighlightStart < 0 || this.ttsHighlightEnd <= this.ttsHighlightStart) {
-      return false;
-    }
-    const displayText = this.getReadingRenderText(text);
-    return displayText === this.ttsDisplayText;
-  }
-
-  getReadingRenderText(text: string): string {
-    const normalized = (text || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-    if (this.shouldRenderTtsFocus() && this.ttsDisplayText && normalized === this.ttsDisplayText) {
-      return this.ttsDisplayText;
-    }
-    return text || '';
-  }
-
   buildTextSliceKey(text: string): string {
     const value = text || '';
     const first = value.substring(0, Math.min(12, value.length));
@@ -19896,10 +13450,6 @@ struct ReadBookPage {
       hash = ((hash * 31) + text.charCodeAt(i)) & 0x7fffffff;
     }
     return hash;
-  }
-
-  getTtsHighlightColor(): string {
-    return this.isReaderThemeDark() ? '#5A4A24' : '#FFE58A';
   }
 
   getTtsHighlightTextColor(): string {
@@ -19947,10 +13497,8 @@ struct ReadBookPage {
     this.menuChapterSliderActive = false;
     this.menuChapterTooltipVisible = false;
     this.showReaderActionMenu = false;
-    if (!this.fullTextCaching && !this.readerCacheRangeCaching) {
-      this.showReaderCacheDialog = false;
-      this.showReaderChapterCacheDialog = false;
-    }
+    this.showReaderCacheDialog = false;
+    this.showReaderChapterCacheDialog = false;
     this.showLayoutElementSettings = false;
     if (!this.txtCharsetApplying) this.showTxtCharsetDialog = false;
     this.showMenu = false;
@@ -19961,12 +13509,38 @@ struct ReadBookPage {
     }
   }
 
+  // Every paged chapter is laid out by V2, with or without images. Comics and continuous scrolling keep
+  // their own list surface.
   shouldUseReaderLayoutV2(source: string = this.pagedContentText || this.content): boolean {
-    return !!source && !this.isReaderContinuousScrollSurfaceActive() &&
-      !LocalBookService.hasEpubImageMarkers(source) && !this.isReaderComicModeActive();
+    return !!source && !this.isReaderContinuousScrollSurfaceActive() && !this.isReaderComicModeActive();
   }
 
-  buildReaderV2Snapshot(): ReaderV2LayoutSnapshot {
+  // In-chapter headings recorded when the EPUB was imported, plus the volume heading that buildPagedSourceText
+  // puts before a volume's first chapter. V2 styles the matching paragraphs as headings.
+  readerV2HeadingHints(chapterIndex: number): ReaderV2HeadingHint[] {
+    if (!this.book || chapterIndex < 0 || chapterIndex >= this.chapters.length) {
+      return [];
+    }
+    const volumeTitle = this.readerVolumeTitle(chapterIndex);
+    const volumeHints = volumeTitle ? [new ReaderV2HeadingHint(1, volumeTitle)] : [];
+    if (this.book.origin !== LocalBookService.ORIGIN || this.book.type !== LocalBookService.TYPE_EPUB) {
+      return volumeHints;
+    }
+    return volumeHints.concat(EpubChapterPlanner.decodeHeadings(this.chapters[chapterIndex].variable)
+      .map((heading: EpubHeading): ReaderV2HeadingHint => new ReaderV2HeadingHint(heading.level, heading.text)));
+  }
+
+  /** 该章是某一卷第一章时的卷名（与章节名相同时不重复显示）。 */
+  readerVolumeTitle(chapterIndex: number): string {
+    if (chapterIndex < 0 || chapterIndex >= this.chapters.length) return '';
+    const volumeTitle = BookChapter.volumeTitleOf(this.chapters[chapterIndex]);
+    return volumeTitle && !ReaderTextNormalizer.sameTitle(volumeTitle, this.getChapterTitle(chapterIndex)) ?
+      volumeTitle : '';
+  }
+
+  // continuous: one unbounded column for scrolling. The list supplies the vertical margins as padding, and
+  // no footer guard applies, so the column starts at y=0.
+  buildReaderV2Snapshot(continuous: boolean = false): ReaderV2LayoutSnapshot {
     const input = new ReaderV2LayoutInput();
     input.viewportWidthPx = this.toMeasurePx(this.getReaderPageColumnWidth());
     input.viewportHeightPx = this.toMeasurePx(this.getReaderPaginationViewportHeight());
@@ -19977,11 +13551,11 @@ struct ReadBookPage {
     input.extendToStatusBar = this.readerExtendToStatusBar;
     input.marginLeftPx = this.toMeasurePx(this.getEffectiveReaderMarginLeft());
     input.marginRightPx = this.toMeasurePx(this.getEffectiveReaderMarginRight());
-    input.marginTopPx = this.toMeasurePx(this.getEffectiveReaderMarginTop());
-    input.marginBottomPx = this.toMeasurePx(this.getEffectiveReaderMarginBottom());
+    input.marginTopPx = continuous ? 0 : this.toMeasurePx(this.getEffectiveReaderMarginTop());
+    input.marginBottomPx = continuous ? 0 : this.toMeasurePx(this.getEffectiveReaderMarginBottom());
     // Footer metadata is an overlay, but it is lifted above the gesture indicator. Reserve the same deterministic
     // footprint in native Paragraph pagination so the final正文 line stays clear of the raised footer.
-    input.bottomGuardPx = this.toMeasurePx(this.getReaderV2BottomGuard());
+    input.bottomGuardPx = continuous ? 0 : this.toMeasurePx(this.getReaderV2BottomGuard());
     input.columnCount = 1;
     input.columnGapPx = 0;
     input.fontSizePx = this.toMeasureFontPx(this.readerFontSize);
@@ -19993,22 +13567,18 @@ struct ReadBookPage {
     input.bodyFontFamily = this.getBodyReaderFontFamily();
     input.titleFontFamily = this.getTitleReaderFontFamily();
     input.textColor = ReaderV2Color.parse(this.getTextColor(), 0xFF202124);
-    input.commentTextColor = ReaderV2Color.parse(
-      this.readerSourceColorSetting('段评字体颜色', this.isReaderThemeDark() ? '#B8D6FF' : '#2A6FCC'),
-      this.isReaderThemeDark() ? 0xFFB8D6FF : 0xFF2A6FCC);
-    input.commentBackgroundColor = ReaderV2Color.parse(
-      this.readerSourceColorSetting('段评填充颜色', this.isReaderThemeDark() ? '#263A5066' : '#142A6FCC'),
-      this.isReaderThemeDark() ? 0x66263A50 : 0x142A6FCC);
+    input.commentBubble = this.readerCommentBubbleStyle();
     const commentLarge = this.readerSourceSettingEnabled('气泡增大');
     input.commentFontSizePx = this.toMeasureFontPx(commentLarge ?
       Math.max(12, this.readerFontSize - 2) : Math.max(10, this.readerFontSize - 5));
-    input.commentRadiusPx = this.toMeasurePx(this.readerV2CommentRadius());
     input.commentHitSlopXPx = this.toMeasurePx(this.readerSourceActionHitSlopX);
     input.commentHitSlopYPx = this.toMeasurePx(this.readerSourceActionHitSlopY);
     input.commentsEnabled = true;
     input.regexEnabled = this.readerRegexFontEnabled;
+    input.imagePxPerVp = this.toMeasurePx(1);
+    input.imageMinHeightPx = this.getReaderMixedImageMinHeightPx();
     input.styleIdentity = `${this.readerTypographyCacheIdentity()}_${this.readerParagraphCommentPaginationIdentity()}_` +
-      `${this.getBackgroundColor()}_${this.getTextColor()}`;
+      `${this.getBackgroundColor()}_${this.getTextColor()}${continuous ? '_continuous' : ''}`;
     return ReaderV2LayoutSnapshot.create(input);
   }
 
@@ -20021,62 +13591,76 @@ struct ReadBookPage {
 
   buildReaderV2RegexStyles(document: ReaderV2Document): ReaderV2SpanStyleRange[] {
     if (!this.readerRegexFontEnabled || !document.displayText) return [];
+    const startedAt = Date.now();
     const slices = this.getRegexTextSlices(document.displayText);
     const result: ReaderV2SpanStyleRange[] = [];
+    // Every hit of one rule shares the same resolved style. Resolving the theme emphasis per hit cost
+    // about 1 ms each on the UI thread (300 ms for a dialogue-heavy chapter), so it is done once per rule.
+    const templates: Map<number, ReaderV2SpanStyleRange> = new Map<number, ReaderV2SpanStyleRange>();
     for (const slice of slices) {
       if (!slice.highlighted || slice.end <= slice.start) continue;
-      const resolved = this.resolvedRegexEmphasis(this.getRegexRuleBySlice(slice));
+      let template = templates.get(slice.ruleIndex);
+      if (!template) {
+        template = this.buildReaderV2RegexStyleTemplate(slice);
+        templates.set(slice.ruleIndex, template);
+      }
       const style = new ReaderV2SpanStyleRange(slice.start, slice.end);
-      style.fontSizePx = this.toMeasureFontPx(this.getRegexSliceFontSize(slice));
-      style.fontFamily = this.getRegexSliceFontFamily(slice);
-      style.color = ReaderV2Color.parse(this.getStyledSliceFontColor(slice),
-        ReaderV2Color.parse(this.getTextColor(), 0xFF202124));
-      style.backgroundEnabled = resolved.backgroundEnabled;
-      style.backgroundColor = ReaderV2Color.parse(resolved.backgroundColor, 0x00000000);
-      style.radiusTopLeftPx = this.toMeasurePx(resolved.radiusTopLeft);
-      style.radiusTopRightPx = this.toMeasurePx(resolved.radiusTopRight);
-      style.radiusBottomRightPx = this.toMeasurePx(resolved.radiusBottomRight);
-      style.radiusBottomLeftPx = this.toMeasurePx(resolved.radiusBottomLeft);
-      style.shadowEnabled = resolved.textShadowRadius > 0;
-      style.shadowColor = ReaderV2Color.parse(resolved.textShadowColor, 0x00000000);
-      style.shadowRadiusPx = this.toMeasurePx(Math.max(0, resolved.textShadowRadius));
-      style.shadowOffsetXPx = this.toMeasurePx(Math.max(0, resolved.textShadowOffsetX));
-      style.shadowOffsetYPx = this.toMeasurePx(Math.max(0, resolved.textShadowOffsetY));
-      style.decorationEnabled = resolved.bubbleDecorationEnabled &&
-        ThemeAssetRegistry.hasRegexBubbleCap(resolved.bubbleStyleId);
-      style.decorationStyleId = style.decorationEnabled ? resolved.bubbleStyleId : '';
-      style.decorationSizePx = style.decorationEnabled ?
-        this.toMeasurePx(Math.max(15, Math.min(22, this.getRegexSliceFontSize(slice) * 0.72))) : 0;
+      style.fontSizePx = template.fontSizePx;
+      style.fontFamily = template.fontFamily;
+      style.color = template.color;
+      style.backgroundEnabled = template.backgroundEnabled;
+      style.backgroundColor = template.backgroundColor;
+      style.radiusTopLeftPx = template.radiusTopLeftPx;
+      style.radiusTopRightPx = template.radiusTopRightPx;
+      style.radiusBottomRightPx = template.radiusBottomRightPx;
+      style.radiusBottomLeftPx = template.radiusBottomLeftPx;
+      style.shadowEnabled = template.shadowEnabled;
+      style.shadowColor = template.shadowColor;
+      style.shadowRadiusPx = template.shadowRadiusPx;
+      style.shadowOffsetXPx = template.shadowOffsetXPx;
+      style.shadowOffsetYPx = template.shadowOffsetYPx;
+      style.decorationEnabled = template.decorationEnabled;
+      style.decorationStyleId = template.decorationStyleId;
+      style.decorationSizePx = template.decorationSizePx;
       result.push(style);
     }
+    CooperativeScheduler.reportSynchronousOperation('reader/v2-regex-styles', Date.now() - startedAt,
+      `chapter=${document.chapterIndex},chars=${document.displayText.length},hits=${result.length}`);
     return result;
   }
 
-  buildReaderV2Pagination(source: string, chapterIndex: number): ReaderPaginationResult {
-    const snapshot = this.buildReaderV2Snapshot();
-    const document = ReaderV2DocumentParser.parse(source, chapterIndex, this.getChapterTitle(chapterIndex));
-    const session = ReaderV2Paginator.start(document, snapshot, this.buildReaderV2RegexStyles(document));
-    while (!session.pageSet.complete) {
-      if (ReaderV2Paginator.appendPages(session, 32) <= 0) break;
-    }
-    const result: ReaderPaginationResult = {
-      source: source,
-      pages: [],
-      starts: [],
-      ends: [],
-      cursor: 0,
-      complete: session.pageSet.complete,
-      v2Session: session
-    };
-    this.registerReaderV2PaginationSession(source, chapterIndex, session);
-    this.syncReaderV2PaginationResult(result);
-    return result;
+  // The style shared by every hit of the rule that produced `slice`; its range is left empty.
+  buildReaderV2RegexStyleTemplate(slice: ReadTextSlice): ReaderV2SpanStyleRange {
+    const resolved = this.resolvedRegexEmphasis(this.getRegexRuleBySlice(slice));
+    const style = new ReaderV2SpanStyleRange();
+    style.fontSizePx = this.toMeasureFontPx(this.getRegexSliceFontSize(slice));
+    style.fontFamily = this.getRegexSliceFontFamily(slice);
+    style.color = ReaderV2Color.parse(this.getStyledSliceFontColor(slice),
+      ReaderV2Color.parse(this.getTextColor(), 0xFF202124));
+    style.backgroundEnabled = resolved.backgroundEnabled;
+    style.backgroundColor = ReaderV2Color.parse(resolved.backgroundColor, 0x00000000);
+    style.radiusTopLeftPx = this.toMeasurePx(resolved.radiusTopLeft);
+    style.radiusTopRightPx = this.toMeasurePx(resolved.radiusTopRight);
+    style.radiusBottomRightPx = this.toMeasurePx(resolved.radiusBottomRight);
+    style.radiusBottomLeftPx = this.toMeasurePx(resolved.radiusBottomLeft);
+    style.shadowEnabled = resolved.textShadowRadius > 0;
+    style.shadowColor = ReaderV2Color.parse(resolved.textShadowColor, 0x00000000);
+    style.shadowRadiusPx = this.toMeasurePx(Math.max(0, resolved.textShadowRadius));
+    style.shadowOffsetXPx = this.toMeasurePx(Math.max(0, resolved.textShadowOffsetX));
+    style.shadowOffsetYPx = this.toMeasurePx(Math.max(0, resolved.textShadowOffsetY));
+    style.decorationEnabled = resolved.bubbleDecorationEnabled &&
+      ThemeAssetRegistry.hasRegexBubbleCap(resolved.bubbleStyleId);
+    style.decorationStyleId = style.decorationEnabled ? resolved.bubbleStyleId : '';
+    style.decorationSizePx = style.decorationEnabled ?
+      this.toMeasurePx(Math.max(15, Math.min(22, this.getRegexSliceFontSize(slice) * 0.72))) : 0;
+    return style;
   }
 
   createIncrementalReaderV2Pagination(source: string, chapterIndex: number,
     initialPageCount: number): ReaderPaginationResult {
     const snapshot = this.buildReaderV2Snapshot();
-    const document = ReaderV2DocumentParser.parse(source, chapterIndex, this.getChapterTitle(chapterIndex));
+    const document = ReaderV2DocumentParser.parse(source, chapterIndex, this.getChapterTitle(chapterIndex),
+      this.readerV2HeadingHints(chapterIndex));
     const session = ReaderV2Paginator.start(document, snapshot, this.buildReaderV2RegexStyles(document));
     const result: ReaderPaginationResult = {
       source: source,
@@ -20397,6 +13981,14 @@ struct ReadBookPage {
         .width('100%')
         .height('100%')
         .hitTestBehavior(HitTestMode.None)
+      // Image blocks are laid out by the V2 paginator but painted by ArkUI Image, which owns decoding,
+      // caching and downsampling. Their rects use the same page-local pixel coordinates as the glyphs.
+      ForEach(this.readerV2ImageFragments(chapterIndex, pageIndex, source), (fragment: ReaderV2PageFragment) => {
+        this.readerV2ImageFragmentView(fragment,
+          `${role}\n${chapterIndex}_${this.hashText(source)}\n${fragment.blockId}_${fragment.imageSource}`)
+      }, (fragment: ReaderV2PageFragment) => `reader_v2_image_${fragment.blockId}_` +
+        `${Math.round(fragment.imageRect.left)}_${Math.round(fragment.imageRect.top)}_` +
+        `${Math.round(fragment.imageRect.right)}_${Math.round(fragment.imageRect.bottom)}`)
       // The retained V2 node paints the bubble background and glyphs. Keep the theme cap artwork in a
       // lightweight ArkUI overlay so the actual reader uses the same ornaments as the font-settings preview.
       this.readerV2RegexBubbleCapsForPage(chapterIndex, pageIndex, source)
@@ -20612,47 +14204,175 @@ struct ReadBookPage {
   }
 
   @Builder
-  readerV2RegexBubbleSegment(segment: ReaderV2RegexBubbleSegment) {
-    Row({ space: 0 }) {
-      if (segment.leading && segment.leadingCapWidthPx > 0.5) {
-        Image(ThemeAssetRegistry.regexBubbleCap(segment.styleId))
-          .width(px2vp(segment.leadingCapWidthPx))
-          .height(px2vp(segment.capSizePx))
-          .objectFit(ImageFit.Contain)
-      }
-      Blank()
-        .layoutWeight(1)
-      if (segment.trailing && segment.trailingCapWidthPx > 0.5) {
-        Image(ThemeAssetRegistry.regexBubbleCap(segment.styleId))
-          .width(px2vp(segment.trailingCapWidthPx))
-          .height(px2vp(segment.capSizePx))
-          .objectFit(ImageFit.Contain)
-          .rotate({ angle: 180 })
-      }
+  readerV2ImageFragmentView(fragment: ReaderV2PageFragment, surfaceKey: string = '') {
+    // Only opacity is animated: the implicit animation covers attributes declared before it, so page relayouts
+    // (size/position) still apply instantly.
+    // 已解码的插图直接用 PixelMap 绘制：翻页和跨章会新建 Image 节点，用文件地址时新节点要重新异步解码，
+    // 解码完成前插图位置是空的。
+    if (this.readerV2ImageReadyToRender(fragment, this.readerV2ImageBitmapVersion)) {
+      Image(this.readerV2ImageContent(fragment, this.readerV2ImageBitmapVersion))
+        .syncLoad(this.readerV2ImageBitmapReady(fragment, this.readerV2ImageBitmapVersion))
+        .opacity(this.isReaderV2ImageShown(fragment, this.readerV2ImageBitmapVersion) ? 1 : 0)
+        .animation({ duration: 220, curve: Curve.EaseOut })
+        .width(px2vp(fragment.imageRect.width()))
+        .height(px2vp(fragment.imageRect.height()))
+        .position({ x: px2vp(fragment.imageRect.left), y: px2vp(fragment.imageRect.top) })
+        .objectFit(ImageFit.Contain)
+        .draggable(false)
+        .hitTestBehavior(HitTestMode.None)
+        .onComplete((event) => {
+          this.markReaderV2ImageLoaded(fragment.imageSource);
+          if (event?.loadingStatus === 1) this.markReaderV2ImageSurfaceSettled(surfaceKey);
+        })
+        .onError((error: ImageError) => {
+          console.error(`[Reader] 图片加载失败 path=${fragment.imageSource} message=${error?.message || ''}`);
+          this.markReaderV2ImageBroken(fragment.imageSource);
+          this.markReaderV2ImageSurfaceSettled(surfaceKey);
+        })
     }
-    .alignItems(VerticalAlign.Center)
-    .width(px2vp(Math.max(1, segment.rect.width())))
-    .height(px2vp(Math.max(1, segment.rect.height())))
-    .backgroundColor(segment.backgroundColor)
-    .borderRadius({
-      topLeft: px2vp(segment.radiusTopLeftPx),
-      topRight: px2vp(segment.radiusTopRightPx),
-      bottomRight: px2vp(segment.radiusBottomRightPx),
-      bottomLeft: px2vp(segment.radiusBottomLeftPx)
-    })
-    .shadow(this.readerV2RegexBubbleShadow(segment))
-    .position({ x: px2vp(segment.rect.left), y: px2vp(segment.rect.top) })
-    .hitTestBehavior(HitTestMode.None)
+    if (this.readerV2BrokenImageSources.includes(fragment.imageSource)) {
+      Text('图片加载失败')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.getSubTextColor())
+        .textAlign(TextAlign.Center)
+        .width(px2vp(fragment.imageRect.width()))
+        .height(px2vp(fragment.imageRect.height()))
+        .position({ x: px2vp(fragment.imageRect.left), y: px2vp(fragment.imageRect.top) })
+        .hitTestBehavior(HitTestMode.None)
+    } else if (!this.isReaderV2ImageShown(fragment, this.readerV2ImageBitmapVersion)) {
+      LoadingProgress()
+        .color(this.getSubTextColor())
+        .width(READER_V2_IMAGE_LOADING_SIZE)
+        .height(READER_V2_IMAGE_LOADING_SIZE)
+        .position({
+          x: px2vp(fragment.imageRect.left + fragment.imageRect.width() / 2) - READER_V2_IMAGE_LOADING_SIZE / 2,
+          y: px2vp(fragment.imageRect.top + fragment.imageRect.height() / 2) - READER_V2_IMAGE_LOADING_SIZE / 2
+        })
+        .hitTestBehavior(HitTestMode.None)
+    }
   }
 
-  readerV2RegexBubbleShadow(segment: ReaderV2RegexBubbleSegment): ShadowOptions {
-    if (!segment.shadowEnabled) return { radius: 0, color: Color.Transparent, offsetX: 0, offsetY: 0 };
-    return {
-      radius: px2vp(segment.shadowRadiusPx),
-      color: segment.shadowColor,
-      offsetX: px2vp(segment.shadowOffsetXPx),
-      offsetY: px2vp(segment.shadowOffsetYPx)
-    };
+  readerV2ImageContent(fragment: ReaderV2PageFragment, _bitmapVersion: number): string | image.PixelMap {
+    const bitmap = this.readerV2ImageBitmaps.get(fragment.imageSource, fragment.imageRect.width(),
+      fragment.imageRect.height());
+    if (bitmap) return bitmap;
+    this.prepareReaderV2ImageBitmap(fragment);
+    return this.readerImageUriForSource(fragment.imageSource);
+  }
+
+  readerV2ImageBitmapReady(fragment: ReaderV2PageFragment, _bitmapVersion: number): boolean {
+    return !!this.readerV2ImageBitmaps.get(fragment.imageSource, fragment.imageRect.width(),
+      fragment.imageRect.height());
+  }
+
+  readerV2ImageReadyToRender(fragment: ReaderV2PageFragment, bitmapVersion: number): boolean {
+    if (this.readerV2ImageBitmapReady(fragment, bitmapVersion) ||
+      this.readerV2ImageBitmaps.usesUriFallback(fragment.imageSource, fragment.imageRect.width(),
+        fragment.imageRect.height())) return true;
+    this.prepareReaderV2ImageBitmap(fragment);
+    return false;
+  }
+
+  isReaderV2ImageShown(fragment: ReaderV2PageFragment, bitmapVersion: number): boolean {
+    return this.readerV2LoadedImageSources.includes(fragment.imageSource) ||
+      this.readerV2ImageBitmapReady(fragment, bitmapVersion);
+  }
+
+  prepareReaderV2ImageBitmap(fragment: ReaderV2PageFragment): void {
+    if (!fragment.imageSource) return;
+    this.readerV2ImageBitmaps.prepare(fragment.imageSource, fragment.imageRect.width(),
+      fragment.imageRect.height(), () => {
+        this.readerV2ImageBitmapVersion++;
+      });
+  }
+
+  /** 提前解码当前页前后几页的插图，翻到时新建的 Image 已能直接用缓存。 */
+  prewarmReaderV2ImageBitmaps(chapterIndex: number, pageIndex: number, source: string): void {
+    const pageSet = this.readerV2PageSet(chapterIndex, source);
+    if (!pageSet) return;
+    const first = Math.max(0, pageIndex - READER_V2_IMAGE_PREWARM_PAGES);
+    const last = Math.min(pageSet.pages.length - 1, pageIndex + READER_V2_IMAGE_PREWARM_PAGES);
+    for (let index = first; index <= last; index++) {
+      for (const fragment of pageSet.pages[index].fragments) {
+        if (fragment.imageSource) this.prepareReaderV2ImageBitmap(fragment);
+      }
+    }
+  }
+
+  readerV2SpreadImageFragments(chapterIndex: number, pageIndex: number, source: string): ReaderV2PageFragment[] {
+    const fragments = this.readerV2PageFragments(chapterIndex, pageIndex, source)
+      .filter((fragment: ReaderV2PageFragment): boolean => !!fragment.imageSource);
+    if (this.isLandscapeDoublePageActive()) {
+      fragments.push(...this.readerV2PageFragments(chapterIndex, pageIndex + 1, source)
+        .filter((fragment: ReaderV2PageFragment): boolean => !!fragment.imageSource));
+    }
+    return fragments;
+  }
+
+  async waitForReaderPageImages(chapterIndex: number, pageIndex: number, source: string,
+    timeoutMs: number): Promise<ReaderV2PageFragment[]> {
+    const fragments = this.readerV2SpreadImageFragments(chapterIndex, pageIndex, source);
+    if (fragments.length === 0) return fragments;
+    let timer = -1;
+    try {
+      await Promise.race([
+        Promise.all(fragments.map((fragment: ReaderV2PageFragment): Promise<image.PixelMap | null> => {
+          this.prepareReaderV2ImageBitmap(fragment);
+          return this.readerV2ImageBitmaps.prepareAsync(fragment.imageSource, fragment.imageRect.width(),
+            fragment.imageRect.height());
+        })),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); })
+      ]);
+    } finally {
+      if (timer >= 0) clearTimeout(timer);
+    }
+    this.readerV2ImageBitmapVersion++;
+    return fragments;
+  }
+
+  markReaderV2ImageSurfaceSettled(surfaceKey: string): void {
+    if (!surfaceKey) return;
+    this.readerPagedImageSettled.add(surfaceKey);
+    while (this.readerPagedImageSettled.size > 192) {
+      const oldest = this.readerPagedImageSettled.values().next().value as string;
+      this.readerPagedImageSettled.delete(oldest);
+    }
+  }
+
+  async waitForReaderImageSurface(role: string, chapterIndex: number, source: string,
+    fragments: ReaderV2PageFragment[], timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const identity = `${chapterIndex}_${this.hashText(source)}`;
+    while (fragments.length > 0 && Date.now() < deadline && this.readerPageVisible) {
+      const ready = fragments.every((fragment: ReaderV2PageFragment): boolean =>
+        Array.from(this.readerPagedImageSettled).some((key: string): boolean =>
+          key.startsWith(role) && key.endsWith(`\n${identity}\n${fragment.blockId}_${fragment.imageSource}`)));
+      if (ready) return;
+      await sleepMs(16);
+    }
+  }
+
+  markReaderV2ImageLoaded(imageSource: string): void {
+    if (!imageSource || this.readerV2LoadedImageSources.includes(imageSource)) return;
+    this.readerV2LoadedImageSources = [...this.readerV2LoadedImageSources.slice(-127), imageSource];
+  }
+
+  markReaderV2ImageBroken(imageSource: string): void {
+    if (!imageSource || this.readerV2BrokenImageSources.includes(imageSource)) return;
+    this.readerV2BrokenImageSources = [...this.readerV2BrokenImageSources.slice(-63), imageSource];
+  }
+
+  readerV2ImageFragments(chapterIndex: number, pageIndex: number, source: string): ReaderV2PageFragment[] {
+    const page = this.readerV2Page(chapterIndex, pageIndex, source);
+    if (!page) return READER_V2_NO_FRAGMENTS;
+    this.prewarmReaderV2ImageBitmaps(chapterIndex, pageIndex, source);
+    let result: ReaderV2PageFragment[] = READER_V2_NO_FRAGMENTS;
+    for (const fragment of page.fragments) {
+      if (!fragment.imageSource) continue;
+      if (result === READER_V2_NO_FRAGMENTS) result = [];
+      result.push(fragment);
+    }
+    return result;
   }
 
   readerV2NativeSelectionKey(role: string, chapterIndex: number, pageIndex: number,
@@ -20663,14 +14383,20 @@ struct ReadBookPage {
       `${this.readerV2NativeSelectionHostVersion}`;
   }
 
-  readerV2SelectionStyledText(page: ReaderV2PageLayout): MutableStyledString {
-    const cacheKey = `${page.identity}_selection_page`;
+  // exactGaps: give every paragraph the gap the V2 layout actually left after it (plus extraGapPx) instead of
+  // the nominal paragraph spacing. A native Text pads only its own first and last line, while every V2 block
+  // is padded separately, so the nominal spacing lets the handles drift a little further with each paragraph.
+  readerV2SelectionStyledText(page: ReaderV2PageLayout, exactGaps: boolean = false,
+    extraGapPx: number = 0): MutableStyledString {
+    const cacheKey = `${page.identity}_selection_page${exactGaps ? `_gaps_${Math.round(extraGapPx * 100)}` : ''}`;
     const cached = this.readerV2SelectionStyledTextCache.get(cacheKey);
     if (cached) return cached;
     const styles: StyleOptions[] = [];
     const snapshot = this.readerV2ActiveSnapshot || this.buildReaderV2Snapshot();
     for (let fragmentIndex = 0; fragmentIndex < page.fragments.length; fragmentIndex++) {
       const fragment = page.fragments[fragmentIndex];
+      // Image fragments contribute nothing to the transparent selection text.
+      if (!fragment.paragraph) continue;
       let runStart = fragment.selectionPageStart;
       for (const run of fragment.selectionRuns) {
         styles.push({
@@ -20693,7 +14419,7 @@ struct ReadBookPage {
         runStart += run.text.length;
       }
       const paragraphLength = fragment.selectionPageEnd - fragment.selectionPageStart +
-        (fragmentIndex < page.fragments.length - 1 ? 1 : 0);
+        (fragment.selectionBreakAfter ? 1 : 0);
       if (paragraphLength > 0) {
         styles.push({
           start: fragment.selectionPageStart,
@@ -20702,7 +14428,8 @@ struct ReadBookPage {
           styledValue: new ParagraphStyle({
             textAlign: this.readerTextAlignValue(),
             wordBreak: WordBreak.BREAK_WORD,
-            paragraphSpacing: LengthMetrics.px(snapshot.paragraphSpacingPx)
+            paragraphSpacing: LengthMetrics.px(exactGaps ?
+              this.readerV2SelectionGapAfterPx(page, fragmentIndex, extraGapPx) : snapshot.paragraphSpacingPx)
           })
         });
       }
@@ -20720,7 +14447,8 @@ struct ReadBookPage {
   readerV2NativeSelectionController(key: string, page: ReaderV2PageLayout): TextController {
     const controller = this.readerSelectableTextController(key);
     try {
-      controller.setStyledString(this.readerV2SelectionStyledText(page));
+      controller.setStyledString(this.readerV2SelectionStyledText(page, true,
+        this.readerV2SelectionExtraGaps.get(page.identity) || 0));
     } catch (_) {
     }
     return controller;
@@ -20730,6 +14458,7 @@ struct ReadBookPage {
     const target = Math.max(0, Math.min(page.selectionText.length, selectionOffset));
     let previousDisplayEnd = page.displayStart;
     for (const fragment of page.fragments) {
+      if (!fragment.paragraph) continue;
       if (target < fragment.selectionPageStart) return previousDisplayEnd;
       if (target <= fragment.selectionPageEnd) {
         return fragment.displayStart + Math.max(0,
@@ -20817,51 +14546,84 @@ struct ReadBookPage {
     }
   }
 
+  onReaderV2NativeSelectionChanged(page: ReaderV2PageLayout, chapterIndex: number, pageIndex: number,
+    selectionStart: number, selectionEnd: number): void {
+    const textLength = page.selectionText.length;
+    this.readerTextSelectionUntil = Date.now() + 900;
+    this.suppressReaderTapClick = true;
+    this.readerTouchActive = false;
+    this.readerPanActive = false;
+    const safeStart = Math.max(0, Math.min(selectionStart, textLength));
+    const safeEnd = Math.max(safeStart, Math.min(selectionEnd, textLength));
+    if (safeEnd > safeStart) {
+      this.readerV2SelectionChapterIndex = chapterIndex;
+      this.readerV2SelectionPageIndex = pageIndex;
+      this.readerV2SelectionDisplayStart = this.readerV2DisplayOffsetForPageSelection(page, safeStart);
+      this.readerV2SelectionDisplayEnd = this.readerV2DisplayOffsetForPageSelection(page, safeEnd);
+      this.readerV2SelectionPaintVersion++;
+    }
+  }
+
+  // The transparent system Text that owns the selection handles and menu. It wraps its content at the top of
+  // its host, and its measured height calibrates the paragraph gaps (see calibrateReaderV2NativeSelection),
+  // so handles stay on the painted glyphs however many paragraphs the selection is dragged across.
   @Builder
   readerV2NativeSelectionText(role: string, chapterIndex: number, pageIndex: number,
     page: ReaderV2PageLayout, fragmentIndex: number, offsetX: number, offsetY: number) {
     Stack({ alignContent: Alignment.TopStart }) {
-      Text('', { controller: this.readerV2NativeSelectionController(
-        this.readerV2NativeSelectionKey(role, chapterIndex, pageIndex, page), page) })
-        .lineSpacing(LengthMetrics.vp(px2vp(
-          (this.readerV2ActiveSnapshot || this.buildReaderV2Snapshot()).lineSpacingPx)),
-        { onlyBetweenLines: true })
-        .halfLeading(false)
-        .includeFontPadding(true)
-        .textAlign(this.readerTextAlignValue())
-        .wordBreak(WordBreak.BREAK_WORD)
-        .lineBreakStrategy(LineBreakStrategy.GREEDY)
-        .copyOption(CopyOptions.LocalDevice)
-        .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
-        .editMenuOptions(this.readerTextEditMenuOptions(() => page.selectionText))
-        .onCopy(() => this.scheduleReaderTextSelectionClear())
-        .selectedBackgroundColor(Color.Transparent)
-        .width('100%')
-        .height('100%')
-        .hitTestBehavior(HitTestMode.None)
-        .onTextSelectionChange((selectionStart: number, selectionEnd: number) => {
-          const textLength = page.selectionText.length;
-          this.readerTextSelectionUntil = Date.now() + 900;
-          this.suppressReaderTapClick = true;
-          this.readerTouchActive = false;
-          this.readerPanActive = false;
-          const safeStart = Math.max(0, Math.min(selectionStart, textLength));
-          const safeEnd = Math.max(safeStart, Math.min(selectionEnd, textLength));
-          if (safeEnd > safeStart) {
-            this.readerV2SelectionChapterIndex = chapterIndex;
-            this.readerV2SelectionPageIndex = pageIndex;
-            this.readerV2SelectionDisplayStart = this.readerV2DisplayOffsetForPageSelection(page, safeStart);
-            this.readerV2SelectionDisplayEnd = this.readerV2DisplayOffsetForPageSelection(page, safeEnd);
-            this.readerV2SelectionPaintVersion++;
-          }
-        })
-        .id(`reader_v2_selection_${role}_${chapterIndex}_${pageIndex}`)
-        .onAppear(() => {
-          const key = this.readerV2NativeSelectionKey(role, chapterIndex, pageIndex, page);
-          const controller = this.readerV2NativeSelectionController(key, page);
-          const hostVersion = this.readerV2NativeSelectionHostVersion;
-          this.showReaderV2NativeSelectionAfterLayout(page, fragmentIndex, controller, hostVersion);
-        })
+      if (deviceInfo.sdkApiVersion >= 23) {
+        Text('', { controller: this.readerV2NativeSelectionController(
+          this.readerV2NativeSelectionKey(role, chapterIndex, pageIndex, page), page) })
+          .lineSpacing(LengthMetrics.vp(px2vp(this.toMeasureNonNegativePx(this.readerLineHeight))),
+            { onlyBetweenLines: true })
+          .halfLeading(false)
+          .includeFontPadding(true)
+          .textAlign(this.readerTextAlignValue())
+          .wordBreak(WordBreak.BREAK_WORD)
+          .lineBreakStrategy(LineBreakStrategy.GREEDY)
+          .copyOption(CopyOptions.LocalDevice)
+          .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
+          .editMenuOptions(this.readerTextEditMenuOptions(() => page.selectionText))
+          .onCopy(() => this.scheduleReaderTextSelectionClear())
+          .selectedBackgroundColor(Color.Transparent)
+          .width('100%')
+          .hitTestBehavior(HitTestMode.None)
+          .onTextSelectionChange((selectionStart: number, selectionEnd: number) => {
+            this.onReaderV2NativeSelectionChanged(page, chapterIndex, pageIndex, selectionStart, selectionEnd);
+          })
+          .id(`reader_v2_selection_${role}_${chapterIndex}_${pageIndex}`)
+          .onSizeChange((_oldValue: SizeOptions, newValue: SizeOptions) => {
+            this.calibrateReaderV2NativeSelection(page, fragmentIndex,
+              this.readerV2NativeSelectionKey(role, chapterIndex, pageIndex, page),
+              vp2px(Number(newValue.height)), this.readerV2NativeSelectionHostVersion);
+          })
+      } else {
+        // 选区文本层的 onlyBetweenLines 行距（API 20）、includeFontPadding（API 23）和透明选中底色（API 14）
+        // 在旧系统上不存在，调用会抛错。这里退回基础属性：手柄位置靠高度自校准兜底，
+        // 系统自带的选中底色会和绘制的高亮叠在一起。
+        Text('', { controller: this.readerV2NativeSelectionController(
+          this.readerV2NativeSelectionKey(role, chapterIndex, pageIndex, page), page) })
+          .lineSpacing(LengthMetrics.vp(px2vp(this.toMeasureNonNegativePx(this.readerLineHeight))))
+          .halfLeading(false)
+          .textAlign(this.readerTextAlignValue())
+          .wordBreak(WordBreak.BREAK_WORD)
+          .lineBreakStrategy(LineBreakStrategy.GREEDY)
+          .copyOption(CopyOptions.LocalDevice)
+          .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
+          .editMenuOptions(this.readerTextEditMenuOptions(() => page.selectionText))
+          .onCopy(() => this.scheduleReaderTextSelectionClear())
+          .width('100%')
+          .hitTestBehavior(HitTestMode.None)
+          .onTextSelectionChange((selectionStart: number, selectionEnd: number) => {
+            this.onReaderV2NativeSelectionChanged(page, chapterIndex, pageIndex, selectionStart, selectionEnd);
+          })
+          .id(`reader_v2_selection_${role}_${chapterIndex}_${pageIndex}`)
+          .onSizeChange((_oldValue: SizeOptions, newValue: SizeOptions) => {
+            this.calibrateReaderV2NativeSelection(page, fragmentIndex,
+              this.readerV2NativeSelectionKey(role, chapterIndex, pageIndex, page),
+              vp2px(Number(newValue.height)), this.readerV2NativeSelectionHostVersion);
+          })
+      }
     }
     .width(px2vp(page.selectionWidth))
     .height(px2vp(Math.max(1, page.selectionHeight)))
@@ -20947,11 +14709,25 @@ struct ReadBookPage {
           globalX, globalY, serial, nextAttempt));
       return;
     }
+    const selectionResult = this.beginReaderV2NativeSelection(page, pageIndex, role, located[1], located[2],
+      serial);
+    if (selectionResult === 1) return;
+    if (selectionResult === 0 && attempt >= 3) return;
+    this.retryReaderTextSelection(serial, attempt,
+      (nextAttempt: number): void => this.selectReaderV2TextAtGlobalPoint(
+        globalX, globalY, serial, nextAttempt));
+  }
+
+  // Starts a native selection on the fragment under (xPx, yPx) of a laid-out V2 page; the paged reader and
+  // continuous scrolling share it. Returns 1 when the selection host was requested, 0 when no fragment is
+  // under the point, and 2 when a fragment was hit but could not take a selection yet.
+  beginReaderV2NativeSelection(page: ReaderV2PageLayout, pageIndex: number, role: string, xPx: number,
+    yPx: number, serial: number): number {
     let matchedFragment = false;
     const selectionSlop = this.toMeasurePx(8);
     for (let fragmentIndex = 0; fragmentIndex < page.fragments.length; fragmentIndex++) {
       const fragment = page.fragments[fragmentIndex];
-      if (!fragment.clipRect.contains(located[1], located[2], selectionSlop, selectionSlop)) continue;
+      if (!fragment.clipRect.contains(xPx, yPx, selectionSlop, selectionSlop)) continue;
       matchedFragment = true;
       try {
         if (!fragment.paragraph) break;
@@ -20960,7 +14736,7 @@ struct ReadBookPage {
         // truth and always has the exact glyph coordinates, so derive the transparent selection
         // offset from it instead of depending on that optional manager.
         const fragmentPosition = fragment.paragraph.getGlyphPositionAtCoordinate(
-          located[1] - fragment.paragraphX, located[2] - fragment.paragraphY).position;
+          xPx - fragment.paragraphX, yPx - fragment.paragraphY).position;
         const text = page.selectionText;
         let position = fragment.selectionPageStart + Math.max(0,
           Math.min(fragment.selectionPageEnd - fragment.selectionPageStart - 1, fragmentPosition));
@@ -20999,15 +14775,422 @@ struct ReadBookPage {
         this.readerV2SelectionDisplayEnd = this.readerV2DisplayOffsetForPageSelection(page, end);
         this.readerV2SelectionPaintVersion++;
         this.readerV2NativeSelectionHostVersion++;
-        return;
+        return 1;
       } catch (error) {
         console.info('V2 正文选区布局尚未就绪，准备重试:', error);
       }
       break;
     }
-    if (!matchedFragment && attempt >= 3) return;
+    return matchedFragment ? 2 : 0;
+  }
+
+  // Vertical gap the layout left between this text fragment and the next one, images in between included.
+  readerV2SelectionGapAfterPx(page: ReaderV2PageLayout, fragmentIndex: number, extraGapPx: number): number {
+    const fragment = page.fragments[fragmentIndex];
+    for (let index = fragmentIndex + 1; index < page.fragments.length; index++) {
+      const next = page.fragments[index];
+      if (!next.paragraph) continue;
+      return Math.max(0, next.paragraphY - (fragment.paragraphY + fragment.paragraphHeight) + extraGapPx);
+    }
+    return 0;
+  }
+
+  // The transparent selection Text wraps its content, so its measured height is the native layout's height.
+  // The first measurement of a chunk spreads the difference to the V2 layout over the paragraph gaps; the
+  // selection is shown once the corrected text has been laid out.
+  calibrateReaderV2NativeSelection(page: ReaderV2PageLayout, fragmentIndex: number, key: string,
+    nativeHeightPx: number, hostVersion: number): void {
+    if (hostVersion !== this.readerV2NativeSelectionHostVersion ||
+      this.readerV2SelectionShownHostVersion === hostVersion || nativeHeightPx <= 0) return;
+    const controller = this.readerSelectableTextController(key);
+    let paragraphCount = 0;
+    for (const fragment of page.fragments) {
+      if (fragment.paragraph) paragraphCount++;
+    }
+    if (!this.readerV2SelectionExtraGaps.has(page.identity)) {
+      const extraGapPx = paragraphCount > 1 ? (page.selectionHeight - nativeHeightPx) / (paragraphCount - 1) : 0;
+      const usable = Number.isFinite(extraGapPx) && Math.abs(extraGapPx) <= this.toMeasureFontPx(this.readerFontSize) * 2;
+      this.readerV2SelectionExtraGaps.set(page.identity, usable ? extraGapPx : 0);
+      while (this.readerV2SelectionExtraGaps.size > 48) {
+        const oldest = this.readerV2SelectionExtraGaps.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        this.readerV2SelectionExtraGaps.delete(oldest);
+      }
+      console.info(`[ReaderSelection] calibration v2=${Math.round(page.selectionHeight)} ` +
+        `native=${Math.round(nativeHeightPx)} paragraphs=${paragraphCount} ` +
+        `extraGap=${Math.round(extraGapPx * 100) / 100}`);
+      if (usable && Math.abs(extraGapPx) > 0.5) {
+        try {
+          controller.setStyledString(this.readerV2SelectionStyledText(page, true, extraGapPx));
+        } catch (_) {
+        }
+        // The corrected text reports a new size and re-enters above. The timer only covers a build that
+        // swallows that callback.
+        setTimeout(() => {
+          this.showReaderV2NativeSelectionOnce(page, fragmentIndex, controller, hostVersion);
+        }, 120);
+        return;
+      }
+    }
+    this.showReaderV2NativeSelectionOnce(page, fragmentIndex, controller, hostVersion);
+  }
+
+  showReaderV2NativeSelectionOnce(page: ReaderV2PageLayout, fragmentIndex: number, controller: TextController,
+    hostVersion: number): void {
+    if (hostVersion !== this.readerV2NativeSelectionHostVersion ||
+      this.readerV2SelectionShownHostVersion === hostVersion) return;
+    this.readerV2SelectionShownHostVersion = hostVersion;
+    this.showReaderV2NativeSelectionAfterLayout(page, fragmentIndex, controller, hostVersion);
+  }
+
+  usesReaderContinuousV2(): boolean {
+    return this.isReaderNovelContinuousScrollModeActive();
+  }
+
+  // Chunk boundaries are trimmed for progress bookkeeping, which also strips the indent of the paragraph a
+  // chunk starts with. Take that indent back from the source so every paragraph is laid out alike.
+  readerContinuousV2ChunkText(index: number, text: string, chapterIndex: number = -1): string {
+    const start = this.readerContinuousV2ChunkStart(index, text, chapterIndex);
+    return start < 0 ? text :
+      this.readerContinuousSourceOf(chapterIndex).substring(start, this.readerContinuousEndsOf(chapterIndex)[index]);
+  }
+
+  /** 列表里某章的源文本与分块起止；-1 或当前章取当前分页，相邻章节取列表里保存的分页。 */
+  readerContinuousSourceOf(chapterIndex: number): string {
+    if (chapterIndex < 0 || chapterIndex === this.currentChapterIndex) return this.pagedContentText;
+    return this.readerComicPageDataSource.segment(chapterIndex)?.source || '';
+  }
+
+  readerContinuousStartsOf(chapterIndex: number): number[] {
+    if (chapterIndex < 0 || chapterIndex === this.currentChapterIndex) return this.contentPageStarts;
+    return this.readerComicPageDataSource.segment(chapterIndex)?.starts || [];
+  }
+
+  readerContinuousEndsOf(chapterIndex: number): number[] {
+    if (chapterIndex < 0 || chapterIndex === this.currentChapterIndex) return this.contentPageEnds;
+    return this.readerComicPageDataSource.segment(chapterIndex)?.ends || [];
+  }
+
+  readerContinuousChapterOf(chapterIndex: number): number {
+    return chapterIndex < 0 ? this.currentChapterIndex : chapterIndex;
+  }
+
+  // Start of the chunk text in the chapter source, indent included; -1 when the chunk is not a slice of it.
+  readerContinuousV2ChunkStart(index: number, text: string, chapterIndex: number = -1): number {
+    const source = this.readerContinuousSourceOf(chapterIndex);
+    const starts = this.readerContinuousStartsOf(chapterIndex);
+    const ends = this.readerContinuousEndsOf(chapterIndex);
+    if (!source || index < 0 || index >= starts.length || index >= ends.length) {
+      return -1;
+    }
+    const start = starts[index];
+    if (source.substring(start, ends[index]) !== text) return -1;
+    let indentStart = start;
+    while (indentStart > 0 &&
+      (source.charAt(indentStart - 1) === '\u3000' || source.charAt(indentStart - 1) === ' ')) {
+      indentStart--;
+    }
+    return indentStart === start || (indentStart > 0 && source.charAt(indentStart - 1) !== '\n') ? start :
+      indentStart;
+  }
+
+  // One scrolling chunk laid out by the V2 paragraph engine. Called from list item builders, so the result
+  // is cached by content and layout identity; a typography or theme change simply misses the cache.
+  readerContinuousV2Layout(index: number, text: string, chapterIndexHint: number = -1): ReaderV2PageLayout | null {
+    if (!text || this.pageViewWidth <= 0) return null;
+    const snapshot = this.buildReaderV2Snapshot(true);
+    const chapterIndex = this.readerContinuousChapterOf(chapterIndexHint);
+    const chunk = this.readerContinuousV2ChunkText(index, text, chapterIndex);
+    const key = `${chapterIndex}_${index}_${chunk.length}_${this.hashText(chunk)}_${snapshot.identity}`;
+    const cached = this.readerContinuousV2Layouts.get(key);
+    if (cached) return cached;
+    const startedAt = Date.now();
+    let layout: ReaderV2PageLayout | null = null;
+    try {
+      const document = ReaderV2DocumentParser.parse(chunk, chapterIndex,
+        index === 0 ? this.getChapterTitle(chapterIndex) : '', this.readerV2HeadingHints(chapterIndex));
+      layout = ReaderV2Paginator.layoutContinuous(document, snapshot, this.buildReaderV2RegexStyles(document));
+      if (layout) {
+        this.readerContinuousV2Documents.set(layout.identity, document);
+        this.readerContinuousV2Sources.set(layout.identity, this.readerContinuousV2ChunkStart(index, text, chapterIndex));
+      }
+    } catch (error) {
+      console.error(`[ReaderContinuous] 正文块排版失败 chapter=${chapterIndex} chunk=${index}:`, error);
+    }
+    if (!layout) return null;
+    this.readerContinuousV2Layouts.set(key, layout);
+    while (this.readerContinuousV2Layouts.size > 24) {
+      const oldest = this.readerContinuousV2Layouts.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      const evicted = this.readerContinuousV2Layouts.get(oldest);
+      if (evicted) {
+        this.readerContinuousV2Documents.delete(evicted.identity);
+        this.readerContinuousV2Sources.delete(evicted.identity);
+      }
+      this.readerContinuousV2Layouts.delete(oldest);
+    }
+    CooperativeScheduler.reportSynchronousOperation('reader/v2-continuous-chunk', Date.now() - startedAt,
+      `chapter=${chapterIndex},chunk=${index},chars=${chunk.length}`);
+    return layout;
+  }
+
+  readerContinuousV2ItemHeight(index: number, text: string, chapterIndex: number = -1): number {
+    const layout = this.readerContinuousV2Layout(index, text, chapterIndex);
+    if (!layout) return 1;
+    // Blocks inside a chunk are separated by the paragraph spacing; the same gap separates two chunks.
+    const chunkCount = this.readerContinuousEndsOf(chapterIndex).length;
+    const gapPx = index < chunkCount - 1 ? this.toMeasureNonNegativePx(this.readerParagraphSpacing) : 0;
+    return Math.max(1, px2vp(Math.ceil(layout.contentBottomPx + gapPx)));
+  }
+
+  readerContinuousV2Controller(index: number, text: string, chapterIndex: number = -1): ReaderV2PageNodeController {
+    const key = `${this.readerContinuousChapterOf(chapterIndex)}_${index}`;
+    let controller = this.readerContinuousV2Controllers.get(key);
+    if (!controller) {
+      controller = new ReaderV2PageNodeController();
+      this.readerContinuousV2Controllers.set(key, controller);
+    }
+    controller.updatePage(this.readerContinuousV2Layout(index, text, chapterIndex));
+    return controller;
+  }
+
+  /** 只保留列表可见区附近（列表序号）各项的原生排版节点，不论属于哪一章。 */
+  pruneReaderContinuousV2Controllers(listFirst: number, listLast: number): void {
+    if (this.readerContinuousV2Controllers.size === 0) return;
+    const keep: Set<string> = new Set();
+    for (let index = Math.max(0, listFirst); index <= listLast; index++) {
+      const item = this.readerComicPageDataSource.itemAt(index);
+      if (item && item.isPage()) keep.add(`${item.chapterIndex}_${item.pageIndex}`);
+    }
+    for (const key of Array.from(this.readerContinuousV2Controllers.keys())) {
+      if (!keep.has(key)) this.readerContinuousV2Controllers.delete(key);
+    }
+  }
+
+  readerContinuousV2ItemId(index: number, chapterIndex: number = -1): string {
+    return `reader_continuous_v2_${this.readerContinuousChapterOf(chapterIndex)}_${index}`;
+  }
+
+  readerContinuousV2Fragments(index: number, text: string, imagesOnly: boolean,
+    _renderVersion: number, chapterIndex: number = -1): ReaderV2PageFragment[] {
+    const layout = this.readerContinuousV2Layout(index, text, chapterIndex);
+    if (!layout) return READER_V2_NO_FRAGMENTS;
+    let result: ReaderV2PageFragment[] = READER_V2_NO_FRAGMENTS;
+    for (const fragment of layout.fragments) {
+      if (imagesOnly ? !fragment.imageSource : fragment.regexBubbleSegments.length === 0) continue;
+      if (result === READER_V2_NO_FRAGMENTS) result = [];
+      result.push(fragment);
+    }
+    return result;
+  }
+
+  readerContinuousV2SelectionRects(index: number, text: string,
+    _paintVersion: number): ReaderV2HighlightRect[] {
+    if (this.readerV2SelectionChapterIndex !== this.currentChapterIndex ||
+      this.readerV2SelectionPageIndex !== index || this.readerV2SelectionDisplayStart < 0 ||
+      this.readerV2SelectionDisplayEnd <= this.readerV2SelectionDisplayStart) return [];
+    const layout = this.readerContinuousV2Layout(index, text);
+    if (!layout) return [];
+    return this.readerV2DisplayHighlightRects(layout, this.readerV2SelectionDisplayStart,
+      this.readerV2SelectionDisplayEnd, 'selection');
+  }
+
+  // Rectangles of the spoken sentence inside this chunk, in chunk-local pixels.
+  readerContinuousV2TtsRects(index: number, text: string, _paintVersion: number): ReaderV2HighlightRect[] {
+    if (!this.shouldRenderTtsFocus() || this.readerV2TtsSourceStart < 0 ||
+      this.readerV2TtsSourceEnd <= this.readerV2TtsSourceStart || index >= this.contentPageEnds.length ||
+      this.readerV2TtsSourceStart >= this.contentPageEnds[index] ||
+      this.readerV2TtsSourceEnd <= this.contentPageStarts[index]) return [];
+    const layout = this.readerContinuousV2Layout(index, text);
+    if (!layout) return [];
+    const document = this.readerContinuousV2Documents.get(layout.identity);
+    const chunkStart = this.readerContinuousV2Sources.get(layout.identity);
+    if (!document || chunkStart === undefined || chunkStart < 0) return [];
+    return this.readerV2DisplayHighlightRects(layout,
+      document.displayOffsetForSource(Math.max(0, this.readerV2TtsSourceStart - chunkStart)),
+      document.displayOffsetForSource(Math.max(0, this.readerV2TtsSourceEnd - chunkStart)), 'tts');
+  }
+
+  // Window rectangle [top, bottom] in pixels of the list's text area, or an empty array before it is laid out.
+  readerContinuousV2ViewportPx(): number[] {
+    try {
+      const rect = this.getUIContext().getComponentUtils().getRectangleById(READER_CONTINUOUS_LIST_ID);
+      if (rect.size.height <= 0) return [];
+      return [rect.windowOffset.y + this.toMeasureNonNegativePx(this.getEffectiveReaderMarginTop()),
+        rect.windowOffset.y + rect.size.height -
+          this.toMeasureNonNegativePx(this.getReaderContinuousScrollBottomPadding())];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // Chapter source offset of the first line that is fully on screen, or -1 when it cannot be resolved.
+  readerContinuousV2FirstVisibleSourceOffset(): number {
+    const viewport = this.readerContinuousV2ViewportPx();
+    if (viewport.length < 2 || this.contentPages.length === 0) return -1;
+    const first = Math.max(0, this.readerContinuousVisibleStart);
+    const last = Math.min(this.contentPages.length - 1, this.readerContinuousVisibleEnd);
+    for (let index = first; index <= last; index++) {
+      try {
+        const rect = this.getUIContext().getComponentUtils().getRectangleById(this.readerContinuousV2ItemId(index));
+        if (rect.size.height <= 0 || rect.windowOffset.y + rect.size.height <= viewport[0]) continue;
+        const layout = this.readerContinuousV2Layout(index, this.contentPages[index] || '');
+        if (!layout) continue;
+        const document = this.readerContinuousV2Documents.get(layout.identity);
+        const chunkStart = this.readerContinuousV2Sources.get(layout.identity);
+        if (!document || chunkStart === undefined || chunkStart < 0) continue;
+        const localTop = viewport[0] - rect.windowOffset.y;
+        for (const fragment of layout.fragments) {
+          if (!fragment.paragraph) continue;
+          for (const line of fragment.paragraph.getLineMetrics()) {
+            if (fragment.paragraphY + line.topHeight < localTop - 1) continue;
+            return chunkStart + document.sourceOffsetForDisplay(fragment.displayStart + line.startIndex);
+          }
+        }
+      } catch (_) {
+      }
+    }
+    return -1;
+  }
+
+  // Keeps the spoken sentence on screen in the scrolling list. A manual scroll is respected for a moment, so
+  // the reader can look ahead without the list snapping back at the next sentence; force skips that grace.
+  followReaderContinuousTtsFocus(force: boolean): void {
+    if (!this.usesReaderContinuousV2() || this.readerV2TtsSourceStart < 0 || this.contentPages.length === 0 ||
+      this.readerTextSelectionActive || this.readerComicScrollRestoring || this.pendingRestorePageIndex >= 0 ||
+      this.readerComicChapterSwitching) return;
+    if (!force && Date.now() - this.readerContinuousPointerAt < READER_CONTINUOUS_TTS_FOLLOW_GRACE_MS) return;
+    const index = this.findPageIndexByOffset(this.readerV2TtsSourceStart);
+    if (index < 0 || index >= this.contentPages.length) return;
+    const rects = this.readerContinuousV2TtsRects(index, this.contentPages[index] || '', 0);
+    const viewport = this.readerContinuousV2ViewportPx();
+    if (viewport.length < 2) return;
+    const viewportHeightPx = viewport[1] - viewport[0];
+    let focusTopPx = 0;
+    if (rects.length > 0) {
+      focusTopPx = rects[0].topPx;
+      const focusBottomPx = rects[rects.length - 1].topPx + rects[rects.length - 1].heightPx;
+      try {
+        const rect = this.getUIContext().getComponentUtils().getRectangleById(this.readerContinuousV2ItemId(index));
+        if (rect.size.height > 0) {
+          const top = rect.windowOffset.y + focusTopPx;
+          const bottom = rect.windowOffset.y + focusBottomPx;
+          // Leave the lowest part of the screen out: a sentence there is about to scroll off anyway.
+          if (top >= viewport[0] && bottom <= viewport[1] - viewportHeightPx * 0.18) return;
+        }
+      } catch (_) {
+      }
+    }
+    try {
+      this.readerComicScroller.scrollToIndex(this.readerContinuousListIndex(index), true, ScrollAlign.START,
+        { extraOffset: LengthMetrics.vp(px2vp(focusTopPx - viewportHeightPx * 0.22)) });
+    } catch (error) {
+      console.warn('[ReaderContinuous] 跟随朗读焦点滚动失败:', error);
+    }
+  }
+
+  // Whether the native selection host belongs to this chunk. hostVersion is the reactive trigger: the
+  // owning fields are plain members.
+  readerContinuousV2OwnsSelection(index: number, text: string, _hostVersion: number): boolean {
+    if (this.readerV2NativeSelectionRole !== READER_V2_CONTINUOUS_ROLE ||
+      this.readerV2NativeSelectionChapterIndex !== this.currentChapterIndex ||
+      this.readerV2NativeSelectionPageIndex !== index || this.readerV2NativeSelectionFragmentIndex < 0) return false;
+    const layout = this.readerContinuousV2Layout(index, text);
+    return !!layout && !!layout.selectionText &&
+      this.readerV2NativeSelectionFragmentIndex < layout.fragments.length;
+  }
+
+  @Builder
+  readerContinuousV2Item(chapterIndex: number, index: number, text: string, renderVersion: number) {
+    Stack({ alignContent: Alignment.TopStart }) {
+      NodeContainer(this.readerContinuousV2Controller(index, text, chapterIndex))
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.None)
+      ForEach(this.readerContinuousV2Fragments(index, text, true, renderVersion, chapterIndex),
+        (fragment: ReaderV2PageFragment) => {
+        this.readerV2ImageFragmentView(fragment)
+      }, (fragment: ReaderV2PageFragment) => `reader_continuous_v2_image_${fragment.blockId}_` +
+        `${Math.round(fragment.imageRect.top)}_${Math.round(fragment.imageRect.bottom)}`)
+      ForEach(this.readerContinuousV2Fragments(index, text, false, renderVersion, chapterIndex),
+        (fragment: ReaderV2PageFragment) => {
+        ForEach(fragment.regexBubbleSegments, (segment: ReaderV2RegexBubbleSegment) => {
+          this.readerV2RegexBubbleCaps(segment)
+        }, (segment: ReaderV2RegexBubbleSegment) =>
+          `reader_continuous_v2_caps_${segment.styleId}_${segment.rect.left}_${segment.rect.top}_` +
+          `${segment.rect.right}_${segment.rect.bottom}_${segment.leading ? 'l' : ''}${segment.trailing ? 'r' : ''}`)
+      }, (fragment: ReaderV2PageFragment) => `reader_continuous_v2_bubble_${fragment.blockId}_` +
+        `${fragment.displayStart}_${fragment.displayEnd}`)
+      // 朗读焦点、选区只属于当前章；相邻章节的块只读显示，滚进视口顶部成为当前章后再挂上。
+      if (chapterIndex === this.currentChapterIndex) {
+        ForEach(this.readerContinuousV2TtsRects(index, text, this.readerV2TtsPaintVersion),
+          (rect: ReaderV2HighlightRect) => {
+          this.readerV2TtsHighlightRect(rect)
+        }, (rect: ReaderV2HighlightRect) => rect.key)
+        ForEach(this.readerContinuousV2SelectionRects(index, text, this.readerV2SelectionPaintVersion),
+          (rect: ReaderV2HighlightRect) => {
+          this.readerV2SelectionHighlightRect(rect)
+        }, (rect: ReaderV2HighlightRect) => rect.key)
+        if (this.readerContinuousV2OwnsSelection(index, text, this.readerV2NativeSelectionHostVersion)) {
+          this.readerV2NativeSelectionText(READER_V2_CONTINUOUS_ROLE, this.currentChapterIndex, index,
+            this.readerContinuousV2Layout(index, text) as ReaderV2PageLayout,
+            this.readerV2NativeSelectionFragmentIndex, this.readerV2NativeSelectionOffsetX,
+            this.readerV2NativeSelectionOffsetY)
+        }
+      }
+    }
+    .id(this.readerContinuousV2ItemId(index, chapterIndex))
+    .width('100%')
+    .height(this.readerContinuousV2ItemHeight(index, text, chapterIndex))
+  }
+
+  // [chunk index, xPx, yPx] of a window point inside a mounted chunk, or an empty array. The item rectangle
+  // is read on demand, so no per-frame area callback runs while the list scrolls.
+  readerContinuousV2Locate(globalX: number, globalY: number): number[] {
+    if (this.contentPages.length === 0) return [];
+    const pointX = vp2px(globalX);
+    const pointY = vp2px(globalY);
+    const first = Math.max(0, this.readerContinuousVisibleStart - 1);
+    const last = Math.min(this.contentPages.length - 1, this.readerContinuousVisibleEnd + 1);
+    for (let index = first; index <= last; index++) {
+      try {
+        const rect = this.getUIContext().getComponentUtils().getRectangleById(this.readerContinuousV2ItemId(index));
+        if (rect.size.width <= 0 || rect.size.height <= 0) continue;
+        const x = pointX - rect.windowOffset.x;
+        const y = pointY - rect.windowOffset.y;
+        if (x >= 0 && x <= rect.size.width && y >= 0 && y <= rect.size.height) return [index, x, y];
+      } catch (_) {
+      }
+    }
+    return [];
+  }
+
+  readerContinuousV2ActionAtPoint(globalX: number, globalY: number): string {
+    const located = this.readerContinuousV2Locate(globalX, globalY);
+    if (located.length < 3) return '';
+    const layout = this.readerContinuousV2Layout(located[0], this.contentPages[located[0]] || '');
+    if (!layout) return '';
+    const action = layout.actionAt(located[1], located[2], this.toMeasurePx(this.readerSourceActionHitSlopX),
+      this.toMeasurePx(this.readerSourceActionHitSlopY));
+    return action ? action.marker : '';
+  }
+
+  selectReaderContinuousV2TextAtPoint(globalX: number, globalY: number, serial: number, attempt: number): void {
+    if (serial !== this.readerTextSelectionSerial) return;
+    const located = this.readerContinuousV2Locate(globalX, globalY);
+    const layout = located.length >= 3 ?
+      this.readerContinuousV2Layout(located[0], this.contentPages[located[0]] || '') : null;
+    if (layout && layout.selectionText) {
+      const result = this.beginReaderV2NativeSelection(layout, located[0], READER_V2_CONTINUOUS_ROLE,
+        located[1], located[2], serial);
+      if (result === 1) return;
+      if (result === 0 && attempt >= 3) {
+        this.setReaderTextSelectionActive(false);
+        return;
+      }
+    }
     this.retryReaderTextSelection(serial, attempt,
-      (nextAttempt: number): void => this.selectReaderV2TextAtGlobalPoint(
+      (nextAttempt: number): void => this.selectReaderContinuousV2TextAtPoint(
         globalX, globalY, serial, nextAttempt));
   }
 
@@ -21067,121 +15250,8 @@ struct ReadBookPage {
     router.back();
   }
 
-  paginateReaderSourceText(source: string, chapterIndex: number = this.currentChapterIndex): ReaderPaginationResult {
-    const text = source || '';
-    if (!text || this.pageViewWidth <= 0 || this.pageViewHeight <= 0) {
-      return {
-        source: text,
-        pages: text ? [text] : [],
-        starts: text ? [0] : [],
-        ends: text ? [text.length] : []
-      };
-    }
-    if (LocalBookService.hasEpubImageMarkers(text)) {
-      return this.paginateReaderImageSourceText(text, chapterIndex);
-    }
-    if (this.shouldUseReaderLayoutV2(text)) {
-      return this.buildReaderV2Pagination(text, chapterIndex);
-    }
-
-    const horizontalPadding = this.getEffectiveReaderMarginLeft() + this.getEffectiveReaderMarginRight();
-    const verticalPadding = this.getEffectiveReaderMarginTop() + this.getReaderContentBottomPadding() +
-      this.getReaderPaginationBottomInfoBarHeight() + this.getReaderPaginationRenderGuardHeight();
-    const columnWidth = this.getReaderPageColumnWidth();
-    const availableWidth = Math.max(1, columnWidth - horizontalPadding);
-    const availableHeight = Math.max(1, this.getReaderPaginationViewportHeight() - verticalPadding);
-    const measuredAvailableHeight = this.toMeasurePx(availableHeight) + this.getReaderPaginationHeightTolerancePx();
-    const pages: string[] = [];
-    const starts: number[] = [];
-    const ends: number[] = [];
-    let cursor = 0;
-
-    while (cursor < text.length) {
-      const measuredEnd = this.findMeasuredPageEnd(text, cursor, availableWidth, measuredAvailableHeight, chapterIndex);
-      const end = this.fitReaderActionMarkerPageEnd(text, cursor, measuredEnd, availableWidth,
-        measuredAvailableHeight, chapterIndex);
-      if (end <= cursor) {
-        break;
-      }
-      this.pushReaderPage(text, cursor, end, pages, starts, ends);
-      cursor = end;
-    }
-
-    return {
-      source: text,
-      pages: pages.length > 0 ? pages : [text],
-      starts: starts.length > 0 ? starts : [0],
-      ends: ends.length > 0 ? ends : [text.length]
-    };
-  }
-
-  getStyledSliceDecoration(slice: ReadTextSlice): DecorationStyleInterface {
-    if (slice.ttsHighlighted || !slice.highlighted) {
-      return { type: TextDecorationType.None };
-    }
-    const style = this.resolvedRegexEmphasis(this.getRegexRuleBySlice(slice));
-    if (!style.decorationEnabled) {
-      return { type: TextDecorationType.None };
-    }
-    return {
-      type: TextDecorationType.Underline,
-      color: style.decorationColor,
-      style: this.regexDecorationStyle(style.decorationStyleId)
-    };
-  }
-
-  regexDecorationStyle(styleId: string): TextDecorationStyle {
-    if (styleId === 'double') return TextDecorationStyle.DOUBLE;
-    if (styleId === 'dotted') return TextDecorationStyle.DOTTED;
-    if (styleId === 'dashed') return TextDecorationStyle.DASHED;
-    if (styleId === 'wavy') return TextDecorationStyle.WAVY;
-    return TextDecorationStyle.SOLID;
-  }
-
-  paginateReaderImageSourceText(source: string,
-    chapterIndex: number = this.currentChapterIndex): ReaderPaginationResult {
-    const pages: string[] = [];
-    const starts: number[] = [];
-    const ends: number[] = [];
-    let cursor = 0;
-    while (cursor < source.length) {
-      const markerStart = source.indexOf(LocalBookService.EPUB_IMAGE_MARKER_PREFIX, cursor);
-      if (markerStart < 0) {
-        this.appendReaderTextSegmentPages(source, cursor, source.length, chapterIndex, pages, starts, ends);
-        break;
-      }
-      this.appendReaderTextSegmentPages(source, cursor, markerStart, chapterIndex, pages, starts, ends);
-      const suffix = source.indexOf(LocalBookService.EPUB_IMAGE_MARKER_SUFFIX,
-        markerStart + LocalBookService.EPUB_IMAGE_MARKER_PREFIX.length);
-      if (suffix < 0) {
-        this.appendReaderTextSegmentPages(source, markerStart, source.length, chapterIndex, pages, starts, ends);
-        break;
-      }
-      const markerEnd = suffix + LocalBookService.EPUB_IMAGE_MARKER_SUFFIX.length;
-      pages.push(source.substring(markerStart, markerEnd));
-      starts.push(markerStart);
-      ends.push(markerEnd);
-      cursor = markerEnd;
-    }
-    return {
-      source: source,
-      pages: pages.length > 0 ? pages : [source],
-      starts: starts.length > 0 ? starts : [0],
-      ends: ends.length > 0 ? ends : [source.length]
-    };
-  }
-
-  appendReaderTextSegmentPages(source: string, start: number, end: number, chapterIndex: number,
-    pages: string[], starts: number[], ends: number[]): void {
-    if (end <= start) return;
-    const segment = source.substring(start, end);
-    if (!segment.trim()) return;
-    const result = this.paginateReaderSourceText(segment, chapterIndex);
-    for (let i = 0; i < result.pages.length; i++) {
-      pages.push(result.pages[i]);
-      starts.push(start + (result.starts[i] || 0));
-      ends.push(start + (result.ends[i] || segment.length));
-    }
+  getReaderMixedImageMinHeightPx(): number {
+    return this.toMeasurePx(120);
   }
 
   buildReaderPaginationCacheKey(chapterIndex: number, source: string): string {
@@ -21193,21 +15263,27 @@ struct ReadBookPage {
     const layoutMode = this.isReaderComicModeActive() ? 'comic' :
       (this.isReaderNovelContinuousScrollModeActive() ? 'continuous' : 'paged');
     const headerReserve = Math.round(this.getReaderHeaderContentReserve() * 100) / 100;
-    return `reader_page_v80_${layoutMode}_${chapterIndex}_${this.pageViewWidth}_` +
+    return `reader_page_v84_${layoutMode}_${chapterIndex}_${this.pageViewWidth}_` +
       `${this.getReaderPaginationViewportHeight()}_` +
-      `${headerReserve}_${footerHeight}_${this.readerHeaderEnabled}_${this.readerHeaderContentMode}_` +
-      `${this.readerFooterEnabled}_${this.readerFooterLeftMode}_${this.readerFooterProgressMode}_` +
-      `${this.readerFooterShowProgressBar}_` +
+      `${headerReserve}_${footerHeight}_` +
+      `${this.readerFooterEnabled ? 0 : Math.round(this.getReaderNavigationBottomReserve() * 100) / 100}_` +
+      `${this.readerHeaderEnabled}_${this.readerFooterEnabled}_` +
       `${this.readerExtendToStatusBar}_${this.isLandscapeDoublePageActive()}_${this.readerTypographyCacheIdentity()}_` +
       `${this.readerParagraphCommentPaginationIdentity()}_` +
       `${source.length}_${this.hashText(source)}`;
+  }
+
+  // 预排版去重键用的视口部分。完成的预排版会一直占着去重标记，键里不带视口的话，进出小窗/分屏后
+  // 相邻章节永远不会按新视口重新预排，跨章时只能现排，页数从 1/1 开始一路跳。
+  readerPaginationViewportIdentity(): string {
+    return `${this.pageViewWidth}_${this.getReaderPaginationViewportHeight()}_${this.isLandscapeDoublePageActive()}`;
   }
 
   readerTypographyCacheIdentity(): string {
     const regexIdentity = `${this.readerRegexFontEnabled}_${this.readerRegexFontRulesRaw}_` +
       `${this.readerRegexFontPattern}_${this.readerRegexFontMode}_${this.readerRegexFontFamily}_` +
       `${this.readerRegexFontSize}_${this.readerRegexShadowColor}_${this.themeRevision}_` +
-      `${this.themeRegexEmphasisMode()}_${this.themeRegexBubbleStyleId()}_reader_action_layout_v5`;
+      `${this.themeRegexEmphasisMode()}_${this.themeRegexBubbleStyleId()}_reader_action_layout_v7`;
     return `${this.readerFontSize}_${this.readerLetterSpacing}_${this.readerTextAlign}_${this.readerLineHeight}_${this.readerParagraphSpacing}_` +
       `${this.keepParagraphIndent}_` +
       `${this.readerMarginLeft}_${this.readerMarginRight}_${this.readerMarginTop}_${this.readerMarginBottom}_` +
@@ -21235,9 +15311,18 @@ struct ReadBookPage {
       result = this.createIncrementalReaderPagination(source, chapterIndex, desiredPageCount);
       this.readerPaginationCache.set(key, result);
       while (this.readerPaginationCache.size > 3) {
-        const oldestKey = this.readerPaginationCache.keys().next().value as string | undefined;
-        if (!oldestKey) break;
-        this.readerPaginationCache.delete(oldestKey);
+        // Never evict the entry the active completion chain is still appending to: the chain's
+        // liveness guard compares against this exact instance and would silently die mid-chapter,
+        // leaving the reader stuck on the restore overlay.
+        let evictableKey: string | undefined = undefined;
+        for (const cacheKey of this.readerPaginationCache.keys()) {
+          if (cacheKey !== key) {
+            evictableKey = cacheKey;
+            break;
+          }
+        }
+        if (!evictableKey) break;
+        this.readerPaginationCache.delete(evictableKey);
       }
     } else if (!result.complete && result.pages.length < desiredPageCount) {
       const missingPageCount = desiredPageCount - result.pages.length;
@@ -21260,40 +15345,10 @@ struct ReadBookPage {
   createIncrementalReaderPagination(source: string, chapterIndex: number,
     initialPageCount: number): ReaderPaginationResult {
     const text = source || '';
-    if (text && this.isReaderNovelContinuousScrollModeActive()) {
-      return this.createContinuousReaderPagination(text);
-    }
     if (text && this.shouldUseReaderLayoutV2(text)) {
       return this.createIncrementalReaderV2Pagination(text, chapterIndex, initialPageCount);
     }
-    if (!text || this.pageViewWidth <= 0 || this.pageViewHeight <= 0) {
-      const completeResult = this.paginateReaderSourceText(text, chapterIndex);
-      completeResult.cursor = text.length;
-      completeResult.complete = true;
-      return completeResult;
-    }
-    const result: ReaderPaginationResult = {
-      source: text,
-      pages: [],
-      starts: [],
-      ends: [],
-      cursor: 0,
-      complete: false
-    };
-    // Publish only the first visible spread synchronously. Restoring a later page and preparing adjacent
-    // chapters continue through the cooperative scheduler instead of measuring many pages in one ArkUI turn.
-    const visibleSpreadSize = this.isLandscapeDoublePageActive() ? 2 : 1;
-    const initialBatchSize = Math.min(visibleSpreadSize, Math.max(1, initialPageCount));
-    // appendReaderPaginationBatch yields after its time budget once it has produced at least one page.
-    // On a slower first layout that can leave a double-page spread with only its left page until the
-    // next interaction publishes more pagination. Complete the small visible spread here; background
-    // pagination remains cooperative and incremental for everything after it.
-    while (!result.complete && result.pages.length < initialBatchSize) {
-      const previousPageCount = result.pages.length;
-      this.appendReaderPaginationBatch(result, chapterIndex, initialBatchSize - previousPageCount);
-      if (result.pages.length <= previousPageCount) break;
-    }
-    return result;
+    return this.createChunkReaderPagination(text);
   }
 
   appendReaderPaginationBatch(result: ReaderPaginationResult, chapterIndex: number, maxPages: number,
@@ -21313,60 +15368,9 @@ struct ReadBookPage {
       this.appendReaderV2PaginationBatch(result, chapterIndex, Math.min(1, maxPages));
       return;
     }
-    const horizontalPadding = this.getEffectiveReaderMarginLeft() + this.getEffectiveReaderMarginRight();
-    const verticalPadding = this.getEffectiveReaderMarginTop() + this.getReaderContentBottomPadding() +
-      this.getReaderPaginationBottomInfoBarHeight() + this.getReaderPaginationRenderGuardHeight();
-    const columnWidth = this.getReaderPageColumnWidth();
-    const availableWidth = Math.max(1, columnWidth - horizontalPadding);
-    const availableHeight = Math.max(1, this.getReaderPaginationViewportHeight() - verticalPadding);
-    const measuredHeight = this.toMeasurePx(availableHeight) + this.getReaderPaginationHeightTolerancePx();
-    let cursor = Math.max(0, Math.min(result.cursor || 0, text.length));
-    let appended = 0;
-    while (cursor < text.length && appended < maxPages) {
-      while (cursor < text.length && this.isReaderTrimChar(text.charAt(cursor))) cursor++;
-      if (cursor >= text.length) break;
-
-      // Remote sources also use the EPUB image marker for inline illustrations,
-      // paragraph-comment SVG bubbles and author cards. Keep those markers intact
-      // but paginate them incrementally; completing the whole mixed chapter inside
-      // one vSync can block ArkUI long enough for the system watchdog to kill us.
-      const imageMarkerStart = text.indexOf(LocalBookService.EPUB_IMAGE_MARKER_PREFIX, cursor);
-      let imageMarkerEnd = -1;
-      if (imageMarkerStart >= 0) {
-        const suffix = text.indexOf(LocalBookService.EPUB_IMAGE_MARKER_SUFFIX,
-          imageMarkerStart + LocalBookService.EPUB_IMAGE_MARKER_PREFIX.length);
-        if (suffix >= 0) imageMarkerEnd = suffix + LocalBookService.EPUB_IMAGE_MARKER_SUFFIX.length;
-      }
-      if (imageMarkerStart === cursor && imageMarkerEnd > cursor) {
-        this.pushReaderPage(text, cursor, imageMarkerEnd, result.pages, result.starts, result.ends);
-        cursor = imageMarkerEnd;
-        appended++;
-        if (Date.now() - batchStartedAt >= Math.max(1, timeBudgetMs)) break;
-        continue;
-      }
-
-      const beforeCount = result.pages.length;
-      let measuredEnd = 0;
-      if (imageMarkerStart > cursor && imageMarkerEnd > imageMarkerStart) {
-        const textSegment = text.substring(cursor, imageMarkerStart);
-        const segmentEnd = this.findMeasuredPageEnd(textSegment, 0, availableWidth, measuredHeight, chapterIndex);
-        measuredEnd = cursor + segmentEnd;
-      } else {
-        measuredEnd = this.findMeasuredPageEnd(text, cursor, availableWidth, measuredHeight, chapterIndex);
-      }
-      const end = this.fitReaderActionMarkerPageEnd(text, cursor, measuredEnd, availableWidth,
-        measuredHeight, chapterIndex);
-      if (end <= cursor) break;
-      this.pushReaderPage(text, cursor, end, result.pages, result.starts, result.ends);
-      cursor = end;
-      if (result.pages.length > beforeCount) appended++;
-      if (appended > 0 && Date.now() - batchStartedAt >= Math.max(1, timeBudgetMs)) break;
-    }
-    while (cursor < text.length && this.isReaderTrimChar(text.charAt(cursor))) cursor++;
-    result.cursor = cursor;
-    result.complete = cursor >= text.length;
-    CooperativeScheduler.reportSynchronousOperation('reader/pagination-batch', Date.now() - batchStartedAt,
-      `pages=${appended},cursor=${cursor}/${text.length}`);
+    // Chunked list results (comics, continuous scrolling) are produced whole.
+    result.cursor = text.length;
+    result.complete = true;
   }
 
   scheduleReaderPaginationCompletion(chapterIndex: number, key: string,
@@ -21375,6 +15379,7 @@ struct ReadBookPage {
     const imageOnlyPagination = this.isReaderImageOnlySource(result.source);
     const batchDelay = ReaderActionMarker.has(result.source) ?
       READER_INTERACTIVE_PAGINATION_BATCH_DELAY_MS : READER_PAGINATION_BATCH_DELAY_MS;
+    let failureCount = 0;
     const runBatch = (): void => {
       if (!this.readerPageVisible || serial !== this.readerPaginationWorkSerial ||
         chapterIndex !== this.currentChapterIndex ||
@@ -21388,37 +15393,158 @@ struct ReadBookPage {
         setTimeout(runBatch, READER_PAGINATION_BUSY_RETRY_DELAY_MS);
         return;
       }
-      // Text measurement and paragraph layout both run on the UI thread. Keep each idle batch small and do not
-      // publish every intermediate array: repeated @State replacements rebuild the reader while a page is moving.
-      const batchStartedAt = Date.now();
-      // A pure comic page is already delimited by an image marker and requires no text measurement. Parse a small
-      // group per idle slice so large comics finish promptly without turning the whole chapter into one UI task.
-      this.appendReaderPaginationBatch(result, chapterIndex, imageOnlyPagination ? 8 : 1);
-      const batchElapsedMs = Math.max(0, Date.now() - batchStartedAt);
-      if (!this.readerInitialPageReady) {
-        // Publish cooperative snapshots only while a saved page/offset is waiting to become available.
-        // Normal background pagination remains private and is published once at completion.
-        this.publishCurrentReaderPagination(result);
-      }
-      if (result.complete) {
-        this.publishCurrentReaderPagination(result);
-        this.persistReaderPagination(chapterIndex, key, result);
+      try {
+        const batchStartedAt = Date.now();
+        if (!this.readerInitialPageReady) {
+          // A saved page/offset is still waiting: measure in bursts instead of the idle cadence, so deep
+          // restores finish within a few frames instead of one page every 64 ms. The batch helper yields
+          // through its time budget; stop as soon as the saved page exists (or the burst budget is spent).
+          const burstBudgetMs = 160;
+          while (!result.complete && Date.now() - batchStartedAt < burstBudgetMs &&
+            (this.pendingRestorePageIndex < 0 || result.pages.length <= this.pendingRestorePageIndex)) {
+            const beforePageCount = result.pages.length;
+            this.appendReaderPaginationBatch(result, chapterIndex, imageOnlyPagination ? 8 : 4, 24);
+            if (result.pages.length <= beforePageCount) break;
+          }
+          // Publish cooperative snapshots only while a saved page/offset is waiting to become available.
+          // Normal background pagination remains private and is published once at completion.
+          this.publishCurrentReaderPagination(result);
+        } else {
+          // Text measurement and paragraph layout both run on the UI thread. Keep each idle batch small and do not
+          // publish every intermediate array: repeated @State replacements rebuild the reader while a page is moving.
+          // A pure comic page is already delimited by an image marker and requires no text measurement. Parse a small
+          // group per idle slice so large comics finish promptly without turning the whole chapter into one UI task.
+          this.appendReaderPaginationBatch(result, chapterIndex, imageOnlyPagination ? 8 : 1);
+          // 重新排版后不必等整章排完：阅读位置所在的页和它的下一页（双页时的右页）一排出来就发布，
+          // 让正文尽快从纯文本兜底换回正式排版。其余页面照旧在后台排完后一次发布。
+          if (!result.complete && this.readerRelayoutRepaintPending && this.readerTypographyRestoreOffset >= 0 &&
+            result.ends.length >= 2 &&
+            this.readerTypographyRestoreOffset < result.ends[result.ends.length - 2]) {
+            this.publishCurrentReaderPagination(result);
+          }
+        }
+        const batchElapsedMs = Math.max(0, Date.now() - batchStartedAt);
+        failureCount = 0;
+        if (result.complete) {
+          this.publishCurrentReaderPagination(result);
+          this.persistReaderPagination(chapterIndex, key, result);
+          this.updateReaderComicPaginationProgress(chapterIndex, result);
+          if (!this.isPageTurning && this.pageTurnQueue.hasPendingForward()) {
+            // 章末等排版的那次向后翻页（见 runPageTurnAnimation）。
+            setTimeout(() => this.runQueuedPageTurnLater(), 0);
+          }
+          return;
+        }
         this.updateReaderComicPaginationProgress(chapterIndex, result);
-        return;
+        const stillRestoring = !this.readerInitialPageReady;
+        const adaptiveDelay = stillRestoring ? 16 :
+          (batchElapsedMs >= CooperativeScheduler.SLOW_OPERATION_MS ?
+            Math.min(240, Math.max(batchDelay, batchElapsedMs * 2)) : batchDelay);
+        setTimeout(runBatch, adaptiveDelay);
+      } catch (error) {
+        // A native measurement failure must not kill the self-scheduling chain: without a catch the
+        // exception leaves the reader on the "restoring progress" overlay forever. Retry a few times,
+        // then land on the deepest published page and release the restore flags.
+        console.error(`[ReaderPagination] 分页批次异常 chapter=${chapterIndex} pages=${result.pages.length} ` +
+          `cursor=${result.cursor}:`, error);
+        failureCount++;
+        if (failureCount <= 3) {
+          setTimeout(runBatch, batchDelay * failureCount * 4);
+          return;
+        }
+        this.recoverReaderPaginationStall(chapterIndex, key, result, serial);
       }
-      this.updateReaderComicPaginationProgress(chapterIndex, result);
-      const adaptiveDelay = batchElapsedMs >= CooperativeScheduler.SLOW_OPERATION_MS ?
-        Math.min(240, Math.max(batchDelay, batchElapsedMs * 2)) : batchDelay;
-      setTimeout(runBatch, adaptiveDelay);
     };
     setTimeout(runBatch, batchDelay);
+    this.armReaderRestoreWatchdog();
+  }
+
+  // Bounded watchdog for every path that leaves pendingRestorePageIndex / typography restore pending:
+  // if no pagination chain manages to resolve them (hung DB await, dead timer chain, lost race), land
+  // on the deepest page published so far instead of freezing input and progress saving forever.
+  armReaderRestoreWatchdog(timeoutMs: number = 15000): void {
+    if (this.readerRestoreWatchdogRunning) {
+      return;
+    }
+    if (this.pendingRestorePageIndex < 0 && this.readerTypographyRestoreOffset < 0) {
+      return;
+    }
+    this.readerRestoreWatchdogRunning = true;
+    this.runReaderRestoreWatchdog(timeoutMs).finally(() => {
+      this.readerRestoreWatchdogRunning = false;
+    });
+  }
+
+  async runReaderRestoreWatchdog(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + Math.max(1000, timeoutMs);
+    // A restore paused while the page is hidden must not be clobbered; wait for visibility first.
+    while (Date.now() < deadline && !this.readerPageVisible) {
+      await sleepMs(200);
+    }
+    while (Date.now() < deadline && this.readerPageVisible &&
+      (this.pendingRestorePageIndex >= 0 || this.readerTypographyRestoreOffset >= 0)) {
+      await sleepMs(100);
+    }
+    if (this.pendingRestorePageIndex < 0 && this.readerTypographyRestoreOffset < 0) {
+      return;
+    }
+    if (!this.readerPageVisible) {
+      // Still hidden: the pagination chain resumes on its own once the page shows again.
+      return;
+    }
+    console.warn(`[ReaderPagination] 恢复进度看门狗兜底落地 chapter=${this.currentChapterIndex} ` +
+      `pages=${this.contentPages.length} pending=${this.pendingRestorePageIndex}`);
+    if (this.contentPages.length === 0) {
+      // Nothing has been published yet: show the raw chapter text as a single readable page
+      // instead of settling on a permanently blank screen.
+      const fallback = this.content || this.pagedContentText;
+      if (fallback) {
+        this.pagedContentText = fallback;
+        this.contentPages = [fallback];
+        this.contentPageStarts = [0];
+        this.contentPageEnds = [fallback.length];
+        this.setCurrentPageText(fallback);
+      }
+    }
+    this.currentPageIndex = Math.max(0, this.contentPages.length - 1);
+    this.pendingRestorePageIndex = -1;
+    this.readerTypographyRestoreOffset = -1;
+    this.readerInitialPageReady = true;
+    this.finishReaderInitialOpening();
+  }
+
+  // Last-resort settlement for a pagination chain that kept throwing: publish whatever pages exist and
+  // release every restore flag so the reader never stays on the loading overlay.
+  recoverReaderPaginationStall(chapterIndex: number, key: string, result: ReaderPaginationResult,
+    serial: number): void {
+    if (serial !== this.readerPaginationWorkSerial || chapterIndex !== this.currentChapterIndex ||
+      this.readerPaginationCache.get(key) !== result) {
+      return;
+    }
+    if (result.pages.length > 0) {
+      this.publishCurrentReaderPagination(result);
+    }
+    if (this.contentPages.length === 0) {
+      // Pagination kept failing before a single page was produced: fall back to one readable page
+      // with the raw chapter text instead of leaving the reader on a blank screen.
+      this.applyReaderPaginationResult(result, this.content || result.source);
+    }
+    if (this.pendingRestorePageIndex >= 0 || this.readerTypographyRestoreOffset >= 0) {
+      this.currentPageIndex = Math.max(0, this.contentPages.length - 1);
+      this.pendingRestorePageIndex = -1;
+      this.readerTypographyRestoreOffset = -1;
+    }
+    this.readerInitialPageReady = true;
+    this.finishReaderInitialOpening();
   }
 
   isReaderPaginationInteractionBusy(): boolean {
-    const deferredPreviousTurn = this.queuedPageTurnDirection < 0 && this.queuedPageTurnCount > 0 &&
+    const deferredPreviousTurn = this.pageTurnQueue.hasPendingBackward() &&
       this.currentPageIndex <= 0 && !this.isPreviousChapterTurnReady();
-    const queuedTurnBusy = !deferredPreviousTurn && this.pendingRestorePageIndex < 0 &&
-      (this.queuedPageTurnCount > 0 || this.queuedPageTurnDirection !== 0);
+    // 章末等本章排完的向后翻页同理：排队中的翻页正是在等这条补排链，不能反过来把它卡住。
+    const deferredNextTurn = this.pageTurnQueue.hasPendingForward() && this.isForwardChapterTurnWaitingForPagination();
+    const queuedTurnBusy = !deferredPreviousTurn && !deferredNextTurn && this.pendingRestorePageIndex < 0 &&
+      this.pageTurnQueue.hasPending();
     return this.showReaderCommentPanel || this.isPageTurning || this.readerPanActive || this.readerTouchActive ||
       this.readerComicPanMoved || this.readerComicBoundaryDirection !== 0 || this.readerComicChapterSwitching ||
       this.pageSlideDirection !== 0 || this.pageTurnAnimating || queuedTurnBusy ||
@@ -21460,8 +15586,21 @@ struct ReadBookPage {
       if (restoredPendingPosition || restoredTypographyPosition) this.scheduleReaderComicScrollRestore();
     }
     this.scheduleTtsFocusSyncAfterPagination();
-    if (restoredPendingPosition && !this.isPageTurning && this.queuedPageTurnCount > 0 &&
-      this.queuedPageTurnDirection !== 0) {
+    if (this.readerRelayoutRepaintPending && (result.complete || restoredTypographyPosition)) {
+      this.readerRelayoutRepaintPending = false;
+      // 页面宿主在重新排版的那一刻就按新版式重新挂载了，但新的分页会话当时往往还没排到当前页，
+      // 挂上去的是纯文本兜底：只按旧分页的文字量铺开（字号变小时只占半屏），也没有强调气泡。
+      // "有没有原生页面"这个判断读的是普通缓存，不会随缓存填充自动重算；宿主的 key 只含章节、页码
+      // 和代数，页码没变就一直停在兜底上，直到下一次翻页。当前页排出来后换一个代数，重新挂载一次。
+      // 翻页动画进行中不处理，动画落定时页码变化本来就会重新挂载。
+      if (!this.isReaderContinuousScrollSurfaceActive() && !this.isPageTurning && !this.pageTurnAnimating &&
+        this.pageSlideDirection === 0) {
+        this.readerV2SurfaceGeneration++;
+        this.forceCurrentReaderPageRender();
+        this.refreshCurrentReaderV2RetainedPages(true);
+      }
+    }
+    if (restoredPendingPosition && !this.isPageTurning && this.pageTurnQueue.pendingCount() > 0) {
       // A queued physical tap may have arrived while the previous chapter's authoritative tail was rebuilding.
       // Resume it only after the pending index has resolved, so one tap remains one page turn.
       setTimeout(() => this.runQueuedPageTurnLater(), 0);
@@ -21492,83 +15631,6 @@ struct ReadBookPage {
     return true;
   }
 
-  async restorePersistedReaderPagination(content: string, chapterIndex: number): Promise<boolean> {
-    if (!content || !this.bookUrl || !this.hasPagedReaderArea()) return false;
-    const source = this.buildPagedSourceText(chapterIndex, content);
-    const key = this.buildReaderPaginationCacheKey(chapterIndex, source);
-    const v2Layout = this.shouldUseReaderLayoutV2(source);
-    // On affected HarmonyOS builds relationalStore.query() performs a substantial synchronous prefix before its
-    // Promise is returned. Waiting for an optional V2 boundary cache therefore stalls the opening frame for about
-    // two seconds and cannot be bounded by Promise.race. V2 already owns a retained incremental paginator and a
-    // durable character offset, so rebuild its small visible window directly; adjacent tails are prepared later.
-    if (v2Layout) return false;
-    const record = await AppDatabase.getInstance().getReaderPaginationCache(this.bookUrl, chapterIndex, key);
-    if (!record || record.starts.length !== record.ends.length) return false;
-    let previousEnd = 0;
-    for (let i = 0; i < record.starts.length; i++) {
-      const start = record.starts[i];
-      const end = record.ends[i];
-      if (start < 0 || end <= start || end > source.length || start < previousEnd) return false;
-      previousEnd = end;
-    }
-    if (record.starts.length === 0) return false;
-    if (v2Layout) {
-      // Native Paragraph objects cannot be serialized. Reuse the durable boundaries to locate the saved offset,
-      // rebuild only through that visible window, and let the retained V2 session finish the remaining pages later.
-      let targetPageIndex = Math.max(0, this.pendingRestorePageIndex);
-      if (this.readerTypographyRestoreOffset >= 0) {
-        const targetOffset = Math.min(source.length, this.readerTypographyRestoreOffset);
-        targetPageIndex = record.ends.length - 1;
-        for (let index = 0; index < record.ends.length; index++) {
-          if (targetOffset < record.ends[index]) {
-            targetPageIndex = index;
-            break;
-          }
-        }
-      }
-      targetPageIndex = Math.max(0, Math.min(targetPageIndex, record.ends.length - 1));
-      this.pendingRestorePageIndex = targetPageIndex;
-      const visibleSpreadSize = this.isLandscapeDoublePageActive() ? 2 : 1;
-      const result = this.getOrCreateReaderPagination(chapterIndex, source,
-        targetPageIndex + visibleSpreadSize);
-      // A backward chapter switch needs the real tail, not an incremental first-page placeholder. Rebuilding a
-      // very deep saved position synchronously can still trip the UI watchdog, but ordinary chapters on phones
-      // are only a few pages. Finish that small durable window now so "previous chapter" lands immediately on
-      // its last page; longer chapters continue through the existing cooperative paginator.
-      const immediateTailPageLimit = 8;
-      const requestedPageCount = Math.min(record.ends.length, targetPageIndex + visibleSpreadSize);
-      if (targetPageIndex < immediateTailPageLimit && result.v2Session && !result.complete &&
-        result.pages.length < requestedPageCount) {
-        while (!result.complete && result.pages.length < requestedPageCount) {
-          const before = result.pages.length;
-          this.appendReaderV2PaginationBatch(result, chapterIndex,
-            Math.min(2, requestedPageCount - result.pages.length));
-          if (result.pages.length <= before) break;
-        }
-      }
-      this.applyReaderPaginationResult(result, content);
-      ReaderOpenTrace.mark(this.bookUrl, 'v2-boundary-cache-hit',
-        `pages=${record.ends.length} target=${targetPageIndex}`);
-      return true;
-    }
-    const pages: string[] = [];
-    for (let index = 0; index < record.starts.length; index++) {
-      pages.push(source.substring(record.starts[index], record.ends[index]));
-    }
-    const result: ReaderPaginationResult = {
-      source: source,
-      pages: pages,
-      starts: record.starts,
-      ends: record.ends,
-      cursor: source.length,
-      complete: true
-    };
-    this.readerPaginationCache.set(key, result);
-    this.updateReaderComicPaginationProgress(chapterIndex, result);
-    this.applyReaderPaginationResult(result, content);
-    return true;
-  }
-
   preloadNextChapterPaginationLater(delayMs: number = 520): void {
     if (!this.readerPageVisible || !this.readerPreloadEnabled || !this.hasPagedReaderArea() ||
       this.currentChapterIndex >= this.chapters.length - 1) {
@@ -21578,6 +15640,7 @@ struct ReadBookPage {
     const targetChapterIndex = sourceChapterIndex + 1;
     const sessionBookUrl = this.book?.bookUrl || this.bookUrl;
     const activeKey = `${sessionBookUrl}_${sourceChapterIndex}_${targetChapterIndex}_` +
+      `${this.readerPaginationViewportIdentity()}_` +
       `${this.readerTypographyCacheIdentity()}_${this.readerParagraphCommentPaginationIdentity()}`;
     if (this.adjacentPaginationPreloadActiveSerial === this.adjacentPaginationPreloadSerial &&
       this.adjacentPaginationPreloadActiveKey === activeKey) return;
@@ -21590,7 +15653,7 @@ struct ReadBookPage {
         (this.currentChapterIndex !== sourceChapterIndex && this.currentChapterIndex !== targetChapterIndex)) {
         return;
       }
-      ReadBookEngine.get().peekContent(targetChapterIndex)
+      this.readerEngine().peekContent(targetChapterIndex)
         .then(async (body: string): Promise<void> => {
           if (!body || !this.readerPageVisible || serial !== this.adjacentPaginationPreloadSerial ||
             !this.isCurrentReaderEngineBook(sessionBookUrl) ||
@@ -21650,18 +15713,29 @@ struct ReadBookPage {
         setTimeout(runBatch, READER_PAGINATION_BUSY_RETRY_DELAY_MS);
         return;
       }
-      const startedAt = Date.now();
-      this.appendReaderPaginationBatch(result, targetChapterIndex, 1);
-      if (result.complete) {
-        this.persistReaderPagination(targetChapterIndex, key, result);
-        console.info(`[ReaderPreload] next chapter=${targetChapterIndex} pages=${result.pages.length} ` +
-          `lastBatch=${Date.now() - startedAt}ms`);
-        return;
+      try {
+        const startedAt = Date.now();
+        this.appendReaderPaginationBatch(result, targetChapterIndex, 1);
+        if (result.complete) {
+          this.persistReaderPagination(targetChapterIndex, key, result);
+          console.info(`[ReaderPreload] next chapter=${targetChapterIndex} pages=${result.pages.length} ` +
+            `lastBatch=${Date.now() - startedAt}ms`);
+          return;
+        }
+        const elapsedMs = Math.max(0, Date.now() - startedAt);
+        const nextDelay = elapsedMs >= CooperativeScheduler.SLOW_OPERATION_MS ?
+          Math.min(240, Math.max(batchDelay, elapsedMs * 2)) : batchDelay;
+        setTimeout(runBatch, nextDelay);
+      } catch (error) {
+        // Same protection as the previous-chapter session: a throwing batch must release the active-session
+        // marker, otherwise the dedupe treats the dead session as alive and the next chapter is never prepared.
+        console.error(`[ReaderPreload] 下一章预排版批次异常 chapter=${targetChapterIndex} ` +
+          `pages=${result.pages.length} cursor=${result.cursor}:`, error);
+        if (serial === this.adjacentPaginationPreloadSerial &&
+          this.adjacentPaginationPreloadActiveSerial === serial) {
+          this.adjacentPaginationPreloadActiveSerial = -1;
+        }
       }
-      const elapsedMs = Math.max(0, Date.now() - startedAt);
-      const nextDelay = elapsedMs >= CooperativeScheduler.SLOW_OPERATION_MS ?
-        Math.min(240, Math.max(batchDelay, elapsedMs * 2)) : batchDelay;
-      setTimeout(runBatch, nextDelay);
     };
     setTimeout(runBatch, 0);
   }
@@ -21672,9 +15746,10 @@ struct ReadBookPage {
     const targetChapterIndex = sourceChapterIndex - 1;
     // "Preload" off disables speculative network requests, but a chapter the user just left is already cached.
     // Its tail pagination is required for a correct instant backward turn and is safe to prepare locally.
-    if (!this.readerPreloadEnabled && !ReadBookEngine.get().hasCachedContent(targetChapterIndex)) return;
+    if (!this.readerPreloadEnabled && !this.readerEngine().hasCachedContent(targetChapterIndex)) return;
     const sessionBookUrl = this.book?.bookUrl || this.bookUrl;
     const activeKey = `${sessionBookUrl}_${sourceChapterIndex}_${targetChapterIndex}_` +
+      `${this.readerPaginationViewportIdentity()}_` +
       `${this.readerTypographyCacheIdentity()}_${this.readerParagraphCommentPaginationIdentity()}`;
     // Page 2/3 hooks can request the same previous chapter repeatedly. Restarting the retained V2 session on
     // every local turn prevented it from ever reaching the real last page before the user swiped backwards.
@@ -21687,7 +15762,7 @@ struct ReadBookPage {
       if (!this.readerPageVisible || serial !== this.previousPaginationPreloadSerial ||
         !this.isCurrentReaderEngineBook(sessionBookUrl) ||
         this.currentChapterIndex !== sourceChapterIndex) return;
-      ReadBookEngine.get().peekContent(targetChapterIndex)
+      this.readerEngine().peekContent(targetChapterIndex)
         .then(async (body: string): Promise<void> => {
           if (!body || !this.readerPageVisible || serial !== this.previousPaginationPreloadSerial ||
             !this.isCurrentReaderEngineBook(sessionBookUrl) ||
@@ -21751,42 +15826,61 @@ struct ReadBookPage {
         setTimeout(runBatch, READER_PAGINATION_BUSY_RETRY_DELAY_MS);
         return;
       }
-      const startedAt = Date.now();
-      // appendReaderPaginationBatch limits Reader V2 to one native Paragraph page per callback. The larger count
-      // remains useful for the legacy text measurer, whose explicit time budget yields inside the loop.
-      this.appendReaderPaginationBatch(result, targetChapterIndex, 3, 10);
-      if (result.complete) {
-        this.persistReaderPagination(targetChapterIndex, key, result);
-        console.info(`[ReaderPreload] previous chapter=${targetChapterIndex} pages=${result.pages.length} ` +
-          `lastBatch=${Date.now() - startedAt}ms`);
-        // A slow drag may already be exposing the temporary incoming leaf. Replace it with the
-        // confirmed tail before the curl snapshot is captured/released; never leave the provisional
-        // first spread on the back of a backward cross-chapter turn.
-        if (this.pageSlideDirection < 0 && this.pageTurnCrossChapterHandoff &&
-          this.pageTurnIncomingChapterIndex === targetChapterIndex) {
-          const preview = this.buildAdjacentPageTurnPreview(-1, targetChapterIndex, result.source);
-          if (preview.text) this.applyPageTurnPreview(preview);
+      try {
+        const startedAt = Date.now();
+        // appendReaderPaginationBatch limits Reader V2 to one native Paragraph page per callback. The larger count
+        // remains useful for the legacy text measurer, whose explicit time budget yields inside the loop.
+        this.appendReaderPaginationBatch(result, targetChapterIndex, 3, 10);
+        if (result.complete) {
+          this.persistReaderPagination(targetChapterIndex, key, result);
+          console.info(`[ReaderPreload] previous chapter=${targetChapterIndex} pages=${result.pages.length} ` +
+            `lastBatch=${Date.now() - startedAt}ms`);
+          // A slow drag may already be exposing the temporary incoming leaf. Replace it with the
+          // confirmed tail before the curl snapshot is captured/released; never leave the provisional
+          // first spread on the back of a backward cross-chapter turn.
+          if (this.pageSlideDirection < 0 && this.pageTurnCrossChapterHandoff &&
+            this.pageTurnIncomingChapterIndex === targetChapterIndex) {
+            const preview = this.buildAdjacentPageTurnPreview(-1, targetChapterIndex, result.source);
+            if (preview.text) this.applyPageTurnPreview(preview);
+          }
+          this.resumeDeferredPreviousChapterTurn(sourceChapterIndex);
+          return;
         }
-        this.resumeDeferredPreviousChapterTurn(sourceChapterIndex);
-        return;
+        const elapsedMs = Math.max(0, Date.now() - startedAt);
+        const nextDelay = elapsedMs >= CooperativeScheduler.SLOW_OPERATION_MS ?
+          Math.min(160, Math.max(32, elapsedMs * 2)) : Math.min(batchDelay, 24);
+        setTimeout(runBatch, nextDelay);
+      } catch (error) {
+        // Same protection as the main completion chain: an unhandled batch exception would kill the
+        // retained session and strand the previous-chapter tail (and the deferred turn) forever.
+        console.error(`[ReaderPreload] 上一章预排版批次异常 chapter=${targetChapterIndex} ` +
+          `pages=${result.pages.length} cursor=${result.cursor}:`, error);
+        if (serial === this.previousPaginationPreloadSerial &&
+          this.previousPaginationPreloadActiveSerial === serial) {
+          this.previousPaginationPreloadActiveSerial = -1;
+        }
       }
-      const elapsedMs = Math.max(0, Date.now() - startedAt);
-      const nextDelay = elapsedMs >= CooperativeScheduler.SLOW_OPERATION_MS ?
-        Math.min(160, Math.max(32, elapsedMs * 2)) : Math.min(batchDelay, 24);
-      setTimeout(runBatch, nextDelay);
     };
     setTimeout(runBatch, 0);
   }
 
   paginateContent(sourceContent?: string, chapterIndex: number = this.currentChapterIndex) {
     const content = sourceContent !== undefined ? sourceContent : this.content;
-    if (!content) {
+    if (!content || !content.trim()) {
+      // Never leave the reader on zero pages: a blank screen with a footer. Show an explicit page
+      // so pending restores can settle and the user gets an actionable state.
       this.clearReaderComicPaginationProgress();
-      this.contentPages = [];
-      this.pagedContentText = '';
-      this.contentPageStarts = [];
-      this.contentPageEnds = [];
-      this.setCurrentPageText('');
+      const emptyChapterIndex = this.clampChapterIndex(chapterIndex);
+      const emptyTitle = this.getChapterTitle(emptyChapterIndex).trim();
+      const emptyPage = emptyTitle ? `${emptyTitle}\n\n本章暂无正文内容。` : '本章暂无正文内容。';
+      this.pagedContentText = emptyPage;
+      this.contentPages = [emptyPage];
+      this.contentPageStarts = [0];
+      this.contentPageEnds = [emptyPage.length];
+      this.setCurrentPageText(emptyPage);
+      this.restorePendingPageIndex(true);
+      this.readerInitialPageReady = this.pendingRestorePageIndex < 0 && this.readerTypographyRestoreOffset < 0;
+      if (this.readerInitialPageReady) this.finishReaderInitialOpening();
       return;
     }
 
@@ -21804,6 +15898,8 @@ struct ReadBookPage {
     const pagedSource = this.buildPagedSourceText(safeChapterIndex, content);
     const result = this.getOrCreateReaderPagination(safeChapterIndex, pagedSource);
     this.applyReaderPaginationResult(result, content);
+    // 同步分页完成时会立即复位；只有恢复标志仍未落地（持久分页缓存 await、竞态）时才需要看门狗。
+    this.armReaderRestoreWatchdog();
   }
 
   applyReaderPaginationResult(result: ReaderPaginationResult, fallbackContent: string): void {
@@ -21814,6 +15910,8 @@ struct ReadBookPage {
       // Do not replace a completed on-screen page set with the first one/two pages of a new incremental session.
       // That transient snapshot made a foreground resume visibly jump from e.g. 3-4/8 to 1-2/2 before returning.
       // scheduleReaderPaginationCompletion() still owns the private result and publishes it once complete.
+      // 这期间新会话可能还没有当前页，可见页面挂载的是纯文本兜底，见 publishCurrentReaderPagination。
+      this.readerRelayoutRepaintPending = true;
       return;
     }
     const pages: string[] = result.pages.length > 0 ? result.pages : [fallbackContent];
@@ -21876,6 +15974,10 @@ struct ReadBookPage {
   }
 
   scrollReaderComicByPage(direction: number): void {
+    if (this.isReaderComicModeActive()) {
+      this.scrollReaderComicByScreen(direction);
+      return;
+    }
     if (!this.isReaderContinuousScrollSurfaceActive() || this.contentPages.length === 0) return;
     let targetIndex = this.currentPageIndex + (direction > 0 ? 1 : -1);
     if (direction > 0 && targetIndex >= this.contentPages.length) {
@@ -21883,7 +15985,16 @@ struct ReadBookPage {
       targetIndex = this.currentPageIndex + 1;
     }
     if (targetIndex >= 0 && targetIndex < this.contentPages.length) {
-      this.readerComicScroller.scrollToIndex(targetIndex, true, ScrollAlign.START);
+      this.readerComicScroller.scrollToIndex(this.readerContinuousListIndex(targetIndex), true, ScrollAlign.START);
+      return;
+    }
+    // 相邻章节已经接在列表里：直接滚过去，滚进视口顶部后自动成为当前章。
+    const window = this.readerComicPageDataSource;
+    const neighbour = this.currentChapterIndex + (direction > 0 ? 1 : -1);
+    const neighbourSegment = window.segment(neighbour);
+    if (neighbourSegment && neighbourSegment.pages.length > 0) {
+      const neighbourIndex = window.offsetOf(neighbour) + (direction > 0 ? 0 : neighbourSegment.pages.length - 1);
+      this.readerComicScroller.scrollToIndex(neighbourIndex, true, ScrollAlign.START);
       return;
     }
     if (direction > 0) {
@@ -21902,20 +16013,35 @@ struct ReadBookPage {
   }
 
   preloadReaderContent(): void {
-    if (!this.readerPageVisible || this.chapters.length === 0 || !this.readerPreloadEnabled) {
+    if (this.chapters.length === 0) return;
+    if (!this.readerPageVisible) {
+      this.preloadReaderContentForHiddenTts();
       return;
     }
+    if (!this.readerPreloadEnabled) return;
     // Current-page recovery is user-visible work. Do not let speculative adjacent Paragraph sessions compete
     // with it; retry once the authoritative current page has been published.
     if (!this.readerInitialPageReady) {
       this.preloadReaderContentLater(240);
       return;
     }
-    const engine = ReadBookEngine.get();
+    const engine = this.readerEngine();
     if (!this.isCurrentReaderEngineBook()) return;
     engine.preloadAround(this.currentChapterIndex, this.normalizePreloadChapterCount(this.readerPreloadChapterCount), 0);
     this.preloadNextChapterPaginationLater();
     this.preloadPreviousChapterPaginationLater();
+  }
+
+  // Lock-screen reading has no visible page, but the next chapter body must still be fetched while the current
+  // chapter is audible. Fetching it only at the chapter boundary leaves a silent gap in which the system can
+  // suspend the process mid-request, so reading stalls until the app returns to the foreground. Only the
+  // network/database body is prefetched here; adjacent pagination stays a visible-page job. At least one
+  // chapter is fetched even with preloading switched off, because the handoff needs it moments later anyway.
+  preloadReaderContentForHiddenTts(): void {
+    if (!this.isTtsSpeaking || !this.ttsAutoContinue || !this.isCurrentReaderEngineBook()) return;
+    const forwardCount = this.readerPreloadEnabled ?
+      this.normalizePreloadChapterCount(this.readerPreloadChapterCount) : 1;
+    this.readerEngine().preloadAround(this.currentChapterIndex, forwardCount, 0);
   }
 
   normalizePreloadChapterCount(count: number): number {
@@ -21950,14 +16076,21 @@ struct ReadBookPage {
     return true;
   }
 
+  // 已在本章已知的最后一页，下一章存在，但本章分页还没排完（进出小窗、分屏等视口变化后要整章重排）。
+  // 只读状态，不像 canTurnPage 那样顺手补排。
+  isForwardChapterTurnWaitingForPagination(): boolean {
+    return this.currentPageIndex + this.getReaderPageTurnStep() >= this.contentPages.length &&
+      this.currentChapterIndex < this.chapters.length - 1 && !this.isCurrentReaderPaginationComplete();
+  }
+
   isPreviousChapterTurnReady(): boolean {
     if (!this.hasPagedReaderArea() || this.currentChapterIndex <= 0) return true;
     if (!this.isCurrentReaderEngineBook()) return false;
     const targetChapterIndex = this.currentChapterIndex - 1;
-    const body = ReadBookEngine.get().getCachedContent(targetChapterIndex);
+    const body = this.readerEngine().getCachedContent(targetChapterIndex);
     if (!body) return false;
     const prepared = this.getPreparedReaderContent(body, targetChapterIndex);
-    if (!prepared && ReaderContentPreprocessor.hasActiveContentRules(this.readerReplaceRules)) return false;
+    if (!prepared && this.readerContentNeedsPreparation(body)) return false;
     const source = this.buildPagedSourceText(targetChapterIndex, prepared || body);
     return this.getCachedReaderPagination(targetChapterIndex, source)?.complete === true;
   }
@@ -21969,7 +16102,7 @@ struct ReadBookPage {
       this.loadPrevChapter(true, false, true);
       return;
     }
-    if (!this.isPageTurning && this.queuedPageTurnDirection < 0 && this.queuedPageTurnCount > 0) {
+    if (!this.isPageTurning && this.pageTurnQueue.hasPendingBackward()) {
       this.runQueuedPageTurnLater();
     }
   }
@@ -21985,7 +16118,7 @@ struct ReadBookPage {
       if (this.currentChapterIndex !== startedAtChapterIndex) return;
       // 加载失败/需要网页验证的提示正文只有一页，不会再排版出尾页，立即落地展示。
       if (this.content.includes('章节正文加载失败') || this.content.includes('完成网页验证')) break;
-      await this.delay(16);
+      await sleepMs(16);
     }
     if (this.pendingRestorePageIndex < 0 && this.readerTypographyRestoreOffset < 0) return;
     console.warn(`[ReaderTurn] previous-chapter tail not ready (timedOut=${Date.now() >= deadline}), ` +
@@ -22005,7 +16138,7 @@ struct ReadBookPage {
     if (this.pageTurnIncomingChapterIndex !== targetChapterIndex) return;
     if (this.pageTurnIncomingText !== this.getPageTurnLoadingText(targetChapterIndex)) return;
     const title = this.getChapterTitle(targetChapterIndex).trim();
-    const waiting = ReadBookEngine.get().getCachedContent(targetChapterIndex) ?
+    const waiting = this.readerEngine().getCachedContent(targetChapterIndex) ?
       '上一章排版中，请稍候...' : '正在加载上一章...';
     this.setPageTurnIncomingState(this.pageTurnIncomingPageIndex,
       title ? `${title}\n\n${waiting}` : waiting, true, targetChapterIndex);
@@ -22013,8 +16146,15 @@ struct ReadBookPage {
 
   ensureCurrentReaderPaginationAhead(requiredPageCount: number): void {
     if (!this.pagedContentText) return;
-    const result = this.currentReaderPaginationResult();
-    if (!result) return;
+    let result = this.currentReaderPaginationResult();
+    if (!result) {
+      if (!this.hasPagedReaderArea()) return;
+      // 当前键下没有本章的分页会话（被相邻章节挤出缓存，或分页键在页面不可见时变了却没重排）。
+      // 不补建的话本章永远不算排完，章末向后翻页会被一直静默拒绝。新会话在后台排完后才替换可见页面。
+      console.warn(`[ReaderPagination] 本章分页会话缺失，重建 chapter=${this.currentChapterIndex} ` +
+        `page=${this.currentPageIndex}/${this.contentPages.length}`);
+      result = this.getOrCreateReaderPagination(this.currentChapterIndex, this.pagedContentText);
+    }
     if (!result.complete && result.pages.length < requiredPageCount) {
       // Normally the idle worker stays well ahead. This is only a boundary fallback for exceptionally fast input.
       this.appendReaderPaginationBatch(result, this.currentChapterIndex,
@@ -22040,41 +16180,19 @@ struct ReadBookPage {
     return result;
   }
 
-  createContinuousReaderPagination(source: string): ReaderPaginationResult {
-    const pages: string[] = [];
-    const starts: number[] = [];
-    const ends: number[] = [];
-    // A continuous List does not need screen-exact page heights. Splitting by a bounded source window keeps each
-    // lazy Text surface cheap while preserving paragraph/action boundaries and exact source offsets for progress,
-    // selection and TTS. This avoids native Paragraph measurement entirely during open and adjacent preloading.
-    const targetLength = 1800;
-    const minimumBreakLength = Math.round(targetLength * 0.55);
-    const maximumForwardBreak = Math.round(targetLength * 0.35);
-    let cursor = 0;
-    while (cursor < source.length) {
-      while (cursor < source.length && this.trimPageStartChar(source.charAt(cursor))) cursor++;
-      if (cursor >= source.length) break;
-      let end = Math.min(source.length, cursor + targetLength);
-      if (end < source.length) {
-        const backwardBreak = source.lastIndexOf('\n', end);
-        if (backwardBreak >= cursor + minimumBreakLength) {
-          end = backwardBreak;
-        } else {
-          const forwardBreak = source.indexOf('\n', end);
-          if (forwardBreak > end && forwardBreak <= end + maximumForwardBreak) end = forwardBreak;
-        }
-        // Comment/action payloads are atomic. If the target falls inside or immediately before a marker, carry the
-        // whole marker into the same chunk so raw payload text can never leak into rendering or speech.
-        end = this.adjustReaderActionMarkerPageEnd(source, cursor, end);
-      }
-      if (end <= cursor) end = Math.min(source.length, cursor + targetLength);
-      this.pushReaderPage(source, cursor, end, pages, starts, ends);
-      cursor = Math.max(cursor + 1, end);
-    }
-    if (pages.length === 0 && source) {
-      pages.push(source);
-      starts.push(0);
-      ends.push(source.length);
+  // Comics and continuous scrolling render a list of chunks, not screen-sized pages: no text is measured
+  // and the result is complete at once. Anything else without a usable viewport is a single page.
+  createChunkReaderPagination(source: string): ReaderPaginationResult {
+    let pages: string[] = source ? [source] : [];
+    let starts: number[] = source ? [0] : [];
+    let ends: number[] = source ? [source.length] : [];
+    if (source && this.isReaderContinuousScrollSurfaceActive()) {
+      const chunks: ReaderChunkResult = this.isReaderComicModeActive() ?
+        ReaderChunkPagination.splitComic(source, this.keepParagraphIndent) :
+        ReaderChunkPagination.splitContinuous(source, this.keepParagraphIndent);
+      pages = chunks.pages;
+      starts = chunks.starts;
+      ends = chunks.ends;
     }
     return {
       source: source,
@@ -22218,36 +16336,25 @@ struct ReadBookPage {
       // commitReaderMove already de-duplicates them, so one subsequent physical swipe can safely be queued.
       // Keep a tiny bounded queue so rapid input flows into the next animation instead of being swallowed.
       // Two slots cover animation/chapter handoff jitter without letting a long input backlog run away.
-      if (this.queuedPageTurnDirection === direction && this.queuedPageTurnStyle === style) {
-        this.queuedPageTurnCount = Math.min(2, this.queuedPageTurnCount + 1);
-        this.queuedPageTurnVelocity = Math.max(this.queuedPageTurnVelocity, releaseVelocity);
-      } else {
-        this.queuedPageTurnDirection = direction;
-        this.queuedPageTurnStyle = style;
-        this.queuedPageTurnCount = 1;
-        this.queuedPageTurnVelocity = releaseVelocity;
-      }
+      this.enqueueReaderPageTurn(direction, style, releaseVelocity);
       return;
     }
     if (this.pendingRestorePageIndex >= 0) {
       // Loading the previous chapter can publish a small V2 window before its real tail is rebuilt. Keep input
       // queued until restorePendingPageIndex resolves; accepting a new turn here skips the still-hidden pages.
-      if (this.queuedPageTurnDirection === direction && this.queuedPageTurnStyle === style) {
-        this.queuedPageTurnCount = Math.min(2, this.queuedPageTurnCount + 1);
-        this.queuedPageTurnVelocity = Math.max(this.queuedPageTurnVelocity, releaseVelocity);
-      } else {
-        this.queuedPageTurnDirection = direction;
-        this.queuedPageTurnStyle = style;
-        this.queuedPageTurnCount = 1;
-        this.queuedPageTurnVelocity = releaseVelocity;
-      }
+      this.enqueueReaderPageTurn(direction, style, releaseVelocity);
       return;
     }
     if (!this.canTurnPage(direction)) {
-      this.queuedPageTurnDirection = 0;
-      this.queuedPageTurnStyle = '';
-      this.queuedPageTurnCount = 0;
-      this.queuedPageTurnVelocity = 0;
+      if (direction > 0 && this.isForwardChapterTurnWaitingForPagination()) {
+        // 章末向后翻页要等本章排完才知道是不是真的最后一页。先记下这次翻页，确保后台补排链在跑，
+        // 排完时 scheduleReaderPaginationCompletion 会接着执行；以前这里直接丢弃，章末怎么点都没反应。
+        this.resetSlidePageEffect();
+        this.enqueueReaderPageTurn(direction, style, releaseVelocity);
+        this.resumeCurrentReaderPaginationCompletion();
+        return;
+      }
+      this.pageTurnQueue.reset();
       this.resetSlidePageEffect();
       if (direction > 0 && this.chapters.length > 0 &&
         this.currentChapterIndex >= this.chapters.length - 1 &&
@@ -22255,6 +16362,10 @@ struct ReadBookPage {
         HdsFeedback.showToast('本书已阅读完成');
       }
       return;
+    }
+    if (direction < 0 && this.pageTurnQueue.hasPendingForward()) {
+      // 用户已经往回翻了，章末那次等排版的向后翻页作废，免得排完后突然自己翻一页。
+      this.pageTurnQueue.reset();
     }
     const turnRequestStartedAt = Date.now();
     const resumeMirroredTtsAfterTurn = this.isMirroringActiveTtsForCurrentBook();
@@ -22293,7 +16404,7 @@ struct ReadBookPage {
       console.info(`[TTS-Turn] visual ${turnCompleted ? 'completed' : 'cancelled'} in ` +
         `${Math.max(0, Date.now() - visualStartedAt)}ms,request=${Math.max(0, Date.now() - turnRequestStartedAt)}ms,` +
         `prepare=${ttsPrepareElapsed}ms,chapter=${this.currentChapterIndex},` +
-        `page=${this.currentPageIndex},queued=${this.queuedPageTurnCount}`);
+        `page=${this.currentPageIndex},queued=${this.pageTurnQueue.pendingCount()}`);
     }
     this.runQueuedPageTurnLater();
     if (resumeMirroredTtsAfterTurn) {
@@ -22321,7 +16432,7 @@ struct ReadBookPage {
     this.mirroredTtsManualTurnTimerId = setTimeout(() => {
       this.mirroredTtsManualTurnTimerId = -1;
       if (serial !== this.mirroredTtsManualTurnSerial || !this.mirroredTtsManualTurnPending) return;
-      if (this.isPageTurning || this.queuedPageTurnCount > 0 || this.queuedPageTurnDirection !== 0 ||
+      if (this.isPageTurning || this.pageTurnQueue.hasPending() ||
         !this.isReaderPageTurnPositionReadyForTts()) {
         this.scheduleMirroredTtsResumeAfterManualPageTurn();
         return;
@@ -22359,33 +16470,23 @@ struct ReadBookPage {
     }
   }
 
+  enqueueReaderPageTurn(direction: number, style: string, releaseVelocity: number): void {
+    this.pageTurnQueue.enqueue(direction, style, releaseVelocity);
+  }
+
   runQueuedPageTurnLater(): void {
-    const direction = this.queuedPageTurnDirection;
-    const style = this.queuedPageTurnStyle;
-    const releaseVelocity = this.queuedPageTurnVelocity;
-    if (direction === 0 || this.queuedPageTurnCount <= 0) return;
     if (this.pendingRestorePageIndex >= 0) return;
-    const generation = this.queuedPageTurnGeneration;
-    this.queuedPageTurnCount--;
-    if (this.queuedPageTurnCount <= 0) {
-      this.queuedPageTurnDirection = 0;
-      this.queuedPageTurnStyle = '';
-      this.queuedPageTurnVelocity = 0;
-    }
+    const turn = this.pageTurnQueue.take();
+    if (!turn) return;
     setTimeout(() => {
-      if (generation !== this.queuedPageTurnGeneration) return;
-      this.runPageTurnAnimation(direction, style, true, releaseVelocity);
+      if (!this.pageTurnQueue.isCurrent(turn)) return;
+      this.runPageTurnAnimation(turn.direction, turn.style, true, turn.velocity);
     }, 0);
   }
 
   clearQueuedReaderPageTurns(): void {
-    this.queuedPageTurnGeneration++;
-    this.queuedPageTurnDirection = 0;
-    this.queuedPageTurnStyle = '';
-    this.queuedPageTurnCount = 0;
-    this.queuedPageTurnVelocity = 0;
+    this.pageTurnQueue.cancel();
     this.pendingScrollPreviousChapterTurn = false;
-    this.queuedPageTurnGeneration++;
   }
 
   async runNoAnimationPageTurn(direction: number): Promise<void> {
@@ -22396,16 +16497,11 @@ struct ReadBookPage {
     if (localPageIndex >= 0) {
       const targetText = this.getPageText(localPageIndex);
       const chapterIndex = this.currentChapterIndex;
-      const leases = this.acquireReaderPageImages(targetText + this.getSecondaryPageText(localPageIndex));
-      try {
-        await this.waitForReaderPageImages(leases, 1000);
-        if (chapterIndex !== this.currentChapterIndex || !this.readerPageVisible) return;
-        this.currentPageIndex = localPageIndex;
-        this.commitVisibleCurrentPageText(targetText);
-        if (leases.length > 0) await this.delay(48);
-      } finally {
-        for (const lease of leases) lease.release();
-      }
+      const images = await this.waitForReaderPageImages(chapterIndex, localPageIndex, this.pagedContentText, 1000);
+      if (chapterIndex !== this.currentChapterIndex || !this.readerPageVisible) return;
+      this.currentPageIndex = localPageIndex;
+      this.commitVisibleCurrentPageText(targetText);
+      if (images.length > 0) await sleepMs(48);
       this.finishPageTurnAnimation(false);
       if (direction > 0 && this.contentPages.length - this.currentPageIndex <= 3) {
         this.preloadReaderContentLater();
@@ -22452,11 +16548,7 @@ struct ReadBookPage {
     // that retained node painting the previous page until another frame happens to rebuild the surrounding tree,
     // which is especially visible at a cross-chapter handoff. Publish the exact settled page immediately.
     this.refreshCurrentReaderV2RetainedPages();
-    this.prefetchNearbyReaderImages();
-  }
-
-  commitVisibleCurrentPageTextLater(chapterIndex: number, pageIndex: number): void {
-    this.commitCurrentPageTextLater(chapterIndex, pageIndex, '');
+    this.prewarmReaderV2ImageBitmaps(this.currentChapterIndex, this.currentPageIndex, this.pagedContentText);
   }
 
   commitCurrentPageTextLater(chapterIndex: number, pageIndex: number, expectedText: string): void {
@@ -22473,22 +16565,6 @@ struct ReadBookPage {
     }, delayMs);
   }
 
-  async runLegacyPageTurn(direction: number): Promise<void> {
-    const targetPreview = this.capturePageTurnCommitTarget(direction);
-    const subtleOffset = direction > 0 ? -10 : 10;
-    this.pageSlideDirection = 0;
-    this.pageTransitionOpacity = 1;
-    this.pageTurnIncomingOpacity = 1;
-    this.setPageTurnIncomingState(this.currentPageIndex, '', false);
-    this.clearPageTurnPreviewState();
-    animateTo({ duration: 120, curve: Curve.EaseOut }, () => {
-      this.setPageSlideAxisOffset(subtleOffset);
-    });
-    await this.delay(130);
-    await this.applyPageTurn(direction, targetPreview, false);
-    await this.finishAnimatedPageTurn();
-  }
-
   async runTapPageTurn(direction: number): Promise<void> {
     const distance = this.getPageTurnDistance();
     this.prepareSlidePageTurn(direction, 0);
@@ -22497,11 +16573,10 @@ struct ReadBookPage {
       await this.completeSimulationPageTurnMotion(direction);
     } else {
       const duration = 220;
-      animateTo({ duration: duration, curve: this.pageTurnAnimationCurve() }, () => {
+      await this.runReaderAnimation(duration, this.pageTurnAnimationCurve(), () => {
         this.setPageSlideAxisOffset(direction > 0 ? -distance : distance);
         this.pageTransitionOpacity = 1;
       });
-      await this.delay(duration + 10);
     }
     await this.applyPageTurn(direction, targetPreview, false);
     await this.finishAnimatedPageTurn();
@@ -22536,11 +16611,10 @@ struct ReadBookPage {
       await this.completeSimulationPageTurnMotion(direction);
     } else {
       const duration = this.readerSlideCompletionDuration(remaining, distance, releaseVelocity, queuedGesture);
-      animateTo({ duration: duration, curve: this.pageTurnAnimationCurve() }, () => {
+      await this.runReaderAnimation(duration, this.pageTurnAnimationCurve(), () => {
         this.setPageSlideAxisOffset(targetOffset);
         this.pageTransitionOpacity = 1;
       });
-      await this.delay(duration + 10);
     }
     await this.applyPageTurn(direction, targetPreview, false);
     await this.finishAnimatedPageTurn();
@@ -22553,26 +16627,18 @@ struct ReadBookPage {
     // The incoming surface is already at the viewport origin. Commit and lay out the new current surface behind it,
     // then remove the incoming surface on the next frame. Removing it first caused an intermittent background flash.
     const keepIncomingVisible = this.pageSlideDirection !== 0 && !!this.pageTurnIncomingText;
-    const imageText = targetText + this.getSecondaryPageText();
-    const leases = this.acquireReaderPageImages(imageText);
-    try {
-      // Hold the decoded pixels through the declarative remount. Preview and current share the same lease cache.
-      await this.waitForReaderPageImages(leases, 1000);
+    const source = this.pagedContentText;
+    const images = await this.waitForReaderPageImages(chapterIndex, pageIndex, source, 1000);
+    if (chapterIndex !== this.currentChapterIndex || pageIndex !== this.currentPageIndex) return;
+    this.commitVisibleCurrentPageText(targetText);
+    if (keepIncomingVisible) {
+      await this.waitForReaderImageSurface('current_', chapterIndex, source, images, 500);
+      // 解码完成不代表 RenderService 已提交当前页，保留预览直到新页面完成一次绘制。
+      await sleepMs(images.length > 0 || this.pageTurnCrossChapterHandoff ? 48 : 16);
       if (chapterIndex !== this.currentChapterIndex || pageIndex !== this.currentPageIndex) return;
-      this.commitVisibleCurrentPageText(targetText);
-      if (keepIncomingVisible) {
-        if (leases.length > 0) {
-          await this.waitForReaderImageSurface(this.currentReaderPageRenderIdentity(), imageText, 500);
-        }
-        // Decoding callbacks are not a RenderService frame fence. Give the mounted page a draw/layout pass too.
-        await this.delay(leases.length > 0 || this.pageTurnCrossChapterHandoff ? 48 : 16);
-        if (chapterIndex !== this.currentChapterIndex || pageIndex !== this.currentPageIndex) return;
-      }
-      this.finishPageTurnAnimation(false);
-      this.commitCurrentPageTextLater(chapterIndex, pageIndex, targetText);
-    } finally {
-      for (const lease of leases) lease.release();
     }
+    this.finishPageTurnAnimation(false);
+    this.commitCurrentPageTextLater(chapterIndex, pageIndex, targetText);
   }
 
   prepareIncomingPageTurn(direction: number): void {
@@ -22593,7 +16659,7 @@ struct ReadBookPage {
   }
 
   finishPageTurnAnimation(releaseTurnLock: boolean = true): void {
-    this.readerCurlStartRegion = ReaderEmulationFlipRegion.MIDDLE;
+    this.readerCurlStartRegion = READER_CURL_REGION_UNSET;
     this.resetReaderPageCurl();
     this.pageTransitionX = 0;
     this.pageTransitionOpacity = 1;
@@ -22605,16 +16671,6 @@ struct ReadBookPage {
     this.setPageTurnIncomingState(this.currentPageIndex, '', false);
     this.clearPageTurnPreviewState();
     if (releaseTurnLock) this.isPageTurning = false;
-  }
-
-  finishPageTurnAnimationLater(): void {
-    const serial = ++this.slideResetSerial;
-    setTimeout(() => {
-      if (serial === this.slideResetSerial) {
-        this.finishPageTurnAnimation();
-        this.refreshReaderTextRender();
-      }
-    }, 0);
   }
 
   setPageTurnIncomingState(pageIndex: number, text: string, animating: boolean = true,
@@ -22653,14 +16709,6 @@ struct ReadBookPage {
       return preview.text || this.getPageTurnLoadingText(targetChapterIndex);
     }
     return '';
-  }
-
-  getPageTurnTargetPageIndex(direction: number = 0): number {
-    const localPageIndex = this.getLocalPageTurnTargetPageIndex(direction);
-    if (localPageIndex >= 0) {
-      return localPageIndex;
-    }
-    return direction === 0 ? this.currentPageIndex : this.pageTurnIncomingPageIndex;
   }
 
   getLocalPageTurnTargetPageIndex(direction: number): number {
@@ -22738,12 +16786,12 @@ struct ReadBookPage {
     if (!this.isCurrentReaderEngineBook()) {
       return { text: '', pageIndex: 0, chapterIndex: chapterIndex };
     }
-    const body = ReadBookEngine.get().getCachedContent(chapterIndex);
+    const body = this.readerEngine().getCachedContent(chapterIndex);
     if (!body) {
       return { text: '', pageIndex: 0, chapterIndex: chapterIndex };
     }
     const prepared = this.getPreparedReaderContent(body, chapterIndex);
-    if (!prepared && ReaderContentPreprocessor.hasActiveContentRules(this.readerReplaceRules)) {
+    if (!prepared && this.readerContentNeedsPreparation(body)) {
       return { text: '', pageIndex: 0, chapterIndex: chapterIndex };
     }
     return this.buildAdjacentPageTurnPreview(direction, chapterIndex, prepared || body);
@@ -22794,7 +16842,7 @@ struct ReadBookPage {
     const sessionBookUrl = this.book?.bookUrl || this.bookUrl;
     if (!this.isCurrentReaderEngineBook(sessionBookUrl)) return;
     this.pageTurnPreviewLoadingKey = key;
-    ReadBookEngine.get().peekContent(chapterIndex)
+    this.readerEngine().peekContent(chapterIndex)
       .then(async (body: string): Promise<void> => {
         if (!this.isCurrentReaderEngineBook(sessionBookUrl) || this.pageTurnPreviewKey !== key ||
           this.pageSlideDirection !== direction) {
@@ -22819,7 +16867,7 @@ struct ReadBookPage {
   }
 
   isCurrentReaderEngineBook(expectedBookUrl: string = this.book?.bookUrl || this.bookUrl): boolean {
-    return !!expectedBookUrl && ReadBookEngine.get().book?.bookUrl === expectedBookUrl;
+    return !!expectedBookUrl && this.readerEngine().book?.bookUrl === expectedBookUrl;
   }
 
   updateSlidePageEffect(offset: number): void {
@@ -22849,27 +16897,6 @@ struct ReadBookPage {
     this.requestReaderPageCurlCapture();
   }
 
-  updateLegacySlidePageEffect(offset: number): void {
-    const distance = this.getPageTurnDistance();
-    const clamped = Math.max(-distance, Math.min(distance, offset));
-    if (Math.abs(clamped) < 1) {
-      this.resetSlidePageState();
-      return;
-    }
-    const direction = clamped < 0 ? 1 : -1;
-    if (!this.canTurnPage(direction)) {
-      this.resetSlidePageState();
-      return;
-    }
-    const subtleOffset = Math.min(10, Math.max(2, Math.abs(clamped) * 0.08));
-    this.pageSlideDirection = 0;
-    this.setPageSlideAxisOffset(direction > 0 ? -subtleOffset : subtleOffset);
-    this.pageTransitionOpacity = 1;
-    this.pageTurnIncomingOpacity = 1;
-    this.setPageTurnIncomingState(this.currentPageIndex, '', false);
-    this.clearPageTurnPreviewState();
-  }
-
   rollbackSlidePageEffect(): void {
     const offset = Math.abs(this.getPageSlideAxisOffset());
     if (offset < 0.5) {
@@ -22886,16 +16913,15 @@ struct ReadBookPage {
       });
       return;
     }
-    animateTo({ duration: duration, curve: Curve.EaseOut }, () => {
+    this.runReaderAnimation(duration, Curve.EaseOut, () => {
       this.setPageSlideAxisOffset(0);
       this.pageTransitionOpacity = 1;
       this.pageTurnIncomingOpacity = 1;
-    });
-    setTimeout(() => {
+    }).then(() => {
       if (this.slideResetSerial === serial && !this.isPageTurning) {
         this.resetSlidePageState();
       }
-    }, duration + 20);
+    });
   }
 
   async rollbackReaderPageCurl(duration: number, serial: number): Promise<void> {
@@ -22945,10 +16971,12 @@ struct ReadBookPage {
 
   getPageTurnHeight(): number {
     const contentHeight = this.pageViewHeight > 0 ? this.pageViewHeight : 640;
-    // The declarative page-turn surface expands through the bottom system safe area. pageViewHeight is measured
-    // before that expansion, so omitting the navigation inset scales a full-height snapshot into a shorter canvas
-    // and makes the entire page visibly squeeze upward while it is turning.
-    return Math.max(1, contentHeight + this.getReaderPageContentTopPadding() + Math.max(0, this.navBarHeight));
+    // The declarative page-turn surface expands through the bottom system safe area. When pageViewHeight is
+    // measured before that expansion, omitting the inset scales a full-height snapshot into a shorter canvas
+    // and makes the entire page visibly squeeze upward while it is turning. The inset is the measured gap below
+    // the paged area, which is zero when the area already reaches the window bottom.
+    return Math.max(1, contentHeight + this.getReaderPageContentTopPadding() +
+      this.getReaderBottomSystemExtension());
   }
 
   isVerticalPageTurnAnimation(): boolean {
@@ -22987,6 +17015,16 @@ struct ReadBookPage {
     return color.length >= 9 && color.toUpperCase().endsWith('00') ? '#FFFFFF' : color;
   }
 
+  // 3D 仿真单页拖动时把手指位置交给绘制器，页角点跟随手指。手势层与卷曲画布都铺满阅读页，
+  // 手指的组件内坐标可以直接当作画布坐标。
+  updateReaderCurlFinger(event: GestureEvent): void {
+    if (!this.is3DPageTurnAnimation() || this.isLandscapeDoublePageActive() || !event || !event.fingerList ||
+      event.fingerList.length === 0) {
+      return;
+    }
+    this.readerEmulationFlipPainter.dragCorner(event.fingerList[0].localX, event.fingerList[0].localY);
+  }
+
   captureReaderCurlStartRegion(event: GestureEvent): void {
     this.readerCurlStartRegion = ReaderEmulationFlipRegion.MIDDLE;
     if (!this.is3DPageTurnAnimation() || !event || !event.fingerList || event.fingerList.length === 0) {
@@ -23009,6 +17047,15 @@ struct ReadBookPage {
       Curve.EaseInOut : Curve.EaseOut;
   }
 
+  readerPageCurlSnapshotScale(): number {
+    return this.is3DPageTurnAnimation() ? READER_PAGE_3D_SNAPSHOT_SCALE : READER_PAGE_CURL_SNAPSHOT_SCALE;
+  }
+
+  // 3D 仿真单页不绘制背页位图，省掉这次截图可以让卷曲更快起步。
+  readerPageCurlNeedsBackSnapshot(): boolean {
+    return !this.is3DPageTurnAnimation() || this.isLandscapeDoublePageActive();
+  }
+
   getReaderPageCurlCanvasHeight(): number {
     // Prefer the actual captured component height. It stays correct for gesture-navigation variants, split-screen
     // windows and devices whose bottom avoid area differs from the globally cached navigation height.
@@ -23029,13 +17076,16 @@ struct ReadBookPage {
       return;
     }
     if (this.is3DPageTurnAnimation()) {
-      // 3D 仿真只卷曲当前页，目标页由底层声明式页面呈现，因此不需要背页位图。
+      // 3D 仿真单页时只卷曲当前页，目标页由底层声明式页面呈现；只有双页才需要背页位图。
+      // 点击翻页没有手指落点，统一从下角卷起。
+      const region = this.readerCurlStartRegion === READER_CURL_REGION_UNSET ?
+        ReaderEmulationFlipRegion.BOTTOM : this.readerCurlStartRegion;
       this.readerEmulationFlipPainter.draw(this.readerPageCurlContext, this.readerPageCurlFront,
         this.readerPageCurlBack, this.getPageTurnWidth(), this.getReaderPageCurlCanvasHeight(),
-        this.getPageTurnProgress(), this.pageSlideDirection, this.readerCurlStartRegion,
+        this.getPageTurnProgress(), this.pageSlideDirection, region,
         this.isLandscapeDoublePageActive(), this.getReaderPageColumnWidth(),
         this.getReaderDoublePageRightOrigin(), 1 / this.getUIContext().vp2px(1),
-        this.readerFlapPaperColor());
+        this.readerFlapPaperColor(), this.isReaderThemeDark());
       return;
     }
     if (!this.readerPageCurlBack) {
@@ -23076,30 +17126,27 @@ struct ReadBookPage {
   async captureReaderPageCurlSnapshots(serial: number, key: string): Promise<void> {
     for (let attempt = 0; attempt < 30 && this.pageTurnPreviewLoadingKey; attempt++) {
       if (serial !== this.readerPageCurlCaptureSerial || key !== this.readerPageCurlCaptureKey) return;
-      await this.delay(20);
+      await sleepMs(20);
     }
-    const imageLeases = this.acquireReaderPageImages(this.pageTurnIncomingText + this.pageTurnIncomingSecondaryText);
-    try {
-      await this.waitForReaderPageImages(imageLeases, 1000);
-      if (imageLeases.length > 0) {
-        await this.waitForReaderImageSurface(
-          this.incomingReaderPageRenderIdentity(this.pageTurnIncomingRenderVersion, this.pageTurnIncomingText),
-          this.pageTurnIncomingText + this.pageTurnIncomingSecondaryText, 500);
-      }
-    } finally {
-      for (const lease of imageLeases) lease.release();
-    }
+    const imageChapterIndex = this.pageTurnIncomingChapterIndex;
+    const imageSource = this.pageTurnIncomingDocumentSource;
+    const images = await this.waitForReaderPageImages(imageChapterIndex, this.pageTurnIncomingPageIndex,
+      imageSource, 1000);
+    await this.waitForReaderImageSurface(this.isLandscapeDoublePageActive() ?
+      'simulation_incoming_overlay_' : 'overlay_simulation_back_', imageChapterIndex, imageSource, images, 500);
     // Let the incoming cross-chapter preview and its ImageSpans finish one layout pass before rasterizing.
-    await this.delay(this.pageTurnCrossChapterHandoff ? 32 : 0);
+    await sleepMs(this.pageTurnCrossChapterHandoff ? 32 : 0);
     // The retained V2 current component keeps a stable id across pages. Unlike the old temporary capture node,
     // that id already exists in the same task that commits a queued turn, so snapshot.get() could succeed before
     // its controller has painted the newly-settled page. Wait one render frame and capture the page the user
     // actually sees, not the previous texture still owned by RenderService.
-    await this.delay(16);
+    await sleepMs(16);
     if (serial !== this.readerPageCurlCaptureSerial || key !== this.readerPageCurlCaptureKey ||
       this.pageSlideDirection === 0) return;
     const snapshot = this.getUIContext().getComponentSnapshot();
     const suffix = this.isLandscapeDoublePageActive() ? 'double' : 'single';
+    const snapshotScale = this.readerPageCurlSnapshotScale();
+    const needsBack = this.readerPageCurlNeedsBackSnapshot();
     let front: image.PixelMap | null = null;
     let back: image.PixelMap | null = null;
     // A tap can request the snapshot in the same task that publishes the simulation subtree.
@@ -23111,13 +17158,15 @@ struct ReadBookPage {
         // native Paragraph solely for capture can resolve to a neighbouring physical-pixel origin and produces
         // a small but repeatable vertical jump at the start of every rapid turn.
         front = await snapshot.get(this.currentReaderSnapshotComponentId(), {
-          scale: READER_PAGE_CURL_SNAPSHOT_SCALE,
+          scale: snapshotScale,
           waitUntilRenderFinished: false
         });
-        back = await snapshot.get(`reader_page_curl_back_${suffix}`, {
-          scale: READER_PAGE_CURL_SNAPSHOT_SCALE,
-          waitUntilRenderFinished: false
-        });
+        if (needsBack) {
+          back = await snapshot.get(`reader_page_curl_back_${suffix}`, {
+            scale: snapshotScale,
+            waitUntilRenderFinished: false
+          });
+        }
         if (this.isLandscapeDoublePageActive()) {
           await this.cropReaderPageCurlFrontToTurningLeaf(front);
         }
@@ -23130,22 +17179,22 @@ struct ReadBookPage {
         if (serial !== this.readerPageCurlCaptureSerial || key !== this.readerPageCurlCaptureKey ||
           this.pageSlideDirection === 0) return;
         if (attempt >= 23) throw new Error(`获取仿真翻页快照失败: ${error}`);
-        await this.delay(16);
+        await sleepMs(16);
       }
     }
-    if (!front || !back) return;
+    if (!front || (needsBack && !back)) return;
     let snapshotHeight = this.getPageTurnHeight();
     try {
       const frontInfo = await front.getImageInfo();
       snapshotHeight = px2vp(Math.max(1,
-        frontInfo.size.height / READER_PAGE_CURL_SNAPSHOT_SCALE));
+        frontInfo.size.height / snapshotScale));
     } catch (error) {
       console.warn('读取仿真翻页快照尺寸失败，使用页面布局高度:', error);
     }
     if (serial !== this.readerPageCurlCaptureSerial || key !== this.readerPageCurlCaptureKey ||
       this.pageSlideDirection === 0) {
       front.release().catch(() => {});
-      back.release().catch(() => {});
+      if (back) back.release().catch(() => {});
       return;
     }
     const oldFront = this.readerPageCurlFront;
@@ -23212,7 +17261,7 @@ struct ReadBookPage {
       // While an adjacent preview is still loading, a completed placeholder capture is not a terminal result:
       // applyPageTurnPreview will publish the real leaf and start the authoritative replacement capture.
       if (!this.readerPageCurlCapturePending && !crossChapterPreviewLoading) return false;
-      await this.delay(16);
+      await sleepMs(16);
     }
     return false;
   }
@@ -23224,11 +17273,10 @@ struct ReadBookPage {
       // Preserve a visible, bounded transition instead of committing an apparently animation-less page.
       console.warn('仿真翻页快照未就绪，使用轻量过渡完成本次翻页');
       const fallbackOffset = direction > 0 ? -18 : 18;
-      animateTo({ duration: 130, curve: Curve.EaseOut }, () => {
+      await this.runReaderAnimation(130, Curve.EaseOut, () => {
         this.pageTransitionX = fallbackOffset;
         this.pageTransitionOpacity = 0.18;
       });
-      await this.delay(140);
       return;
     }
     const distance = this.getPageTurnDistance();
@@ -23236,11 +17284,15 @@ struct ReadBookPage {
     const remaining = Math.abs(targetOffset - this.getPageSlideAxisOffset());
     // A long symmetric EaseInOut made the last part of the sheet appear to stop before the
     // incoming page was committed. Finish with a shorter, momentum-preserving edge motion.
-    const duration = Math.max(110, Math.min(340, Math.round(340 * remaining / distance)));
+    // 3D 仿真的纸角行程比位移长，同样的时长会显得一闪而过，给它更宽裕的补完时间。
+    const fullDuration = this.is3DPageTurnAnimation() ? 460 : 340;
+    const duration = Math.max(this.is3DPageTurnAnimation() ? 150 : 110,
+      Math.min(fullDuration, Math.round(fullDuration * remaining / distance)));
     await this.animateReaderPageCurlOffset(targetOffset, duration, true);
   }
 
   resetReaderPageCurl(): void {
+    this.readerEmulationFlipPainter.clearCorner();
     this.readerPageCurlCaptureSerial++;
     this.readerPageCurlCapturePending = false;
     this.readerPageCurlCaptureKey = '';
@@ -23544,12 +17596,12 @@ struct ReadBookPage {
     const shouldResumeTts = this.isTtsSpeaking || this.ttsReader.isSpeaking();
     if (shouldResumeTts) {
       this.stopTtsReaderForChapterSwitch();
-      await this.updateTtsAvSessionPlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
+      await this.ttsMediaSession().updatePlaybackState(avSession.PlaybackState.PLAYBACK_STATE_BUFFERING);
     }
     this.finishPageTurnAnimation();
     this.isLoading = true;
     this.loadStatus = '正在切换章节...';
-    await this.delay(0);
+    await sleepMs(0);
     try {
       this.currentPageIndex = 0;
       this.pendingRestorePageIndex = 0;
@@ -23564,7 +17616,7 @@ struct ReadBookPage {
       this.setCurrentPageText(targetPageText);
       this.finishPageTurnAnimation();
       this.refreshReaderTextRender();
-      await this.delay(16);
+      await sleepMs(16);
     } finally {
       this.isLoading = false;
       this.loadStatus = '';
@@ -23583,9 +17635,19 @@ struct ReadBookPage {
       return;
     }
     const targetChapterIndex = this.currentChapterIndex + 1;
+    const previousPageIndex = this.currentPageIndex;
     this.currentPageIndex = 0;
     this.pendingRestorePageIndex = 0;
-    await this.loadContent(!showLoading, targetChapterIndex, true);
+    const loaded = await this.loadContent(!showLoading, targetChapterIndex, true);
+    if (!loaded) {
+      // 章节提交前加载失败（或序列竞争）：不能把用户留在永不落地的“恢复进度”遮罩上，
+      // 回退到原章节原页并释放恢复标志。
+      if (this.currentChapterIndex !== targetChapterIndex) {
+        this.currentPageIndex = previousPageIndex;
+      }
+      this.pendingRestorePageIndex = -1;
+      return;
+    }
     this.saveReadingProgress();
   }
 
@@ -23598,9 +17660,17 @@ struct ReadBookPage {
       return;
     }
     const targetChapterIndex = this.currentChapterIndex - 1;
+    const previousPageIndex = this.currentPageIndex;
     this.currentPageIndex = 0;
     this.pendingRestorePageIndex = toLastPage ? Number.MAX_SAFE_INTEGER : 0;
-    await this.loadContent(!showLoading, targetChapterIndex);
+    const loaded = await this.loadContent(!showLoading, targetChapterIndex);
+    if (!loaded) {
+      if (this.currentChapterIndex !== targetChapterIndex) {
+        this.currentPageIndex = previousPageIndex;
+      }
+      this.pendingRestorePageIndex = -1;
+      return;
+    }
     this.saveReadingProgress();
   }
 }

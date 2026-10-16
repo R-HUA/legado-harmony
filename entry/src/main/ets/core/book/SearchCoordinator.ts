@@ -1,27 +1,8 @@
-import { BookSource, SearchBook } from '../../model/data/Book';
+import { NativeSourceService, BookSource, SearchBook, HttpClient, HttpResponse, AnalyzeUrl, AnalyzeRule, RuleContext, ScriptCompatibility, JsRuntime, VerificationSupport, EncodedSourceUrl, BookUrlResolver, PageCandidateUrl, BookFieldSanitizer, BookTypeSupport, BookSourceRuntimeRouter, SourceRuntimeStage, BookSourceStageWebRuntime, StageWebRuntimeRequest, RuleExecutionService, RuleBatchExecutionRequest, RuleFieldRequest, CooperativeScheduler, QuickJsObservationContext, RuleExecutionTarget, RuleValue, BookSourceDebugContext, LogText, NetworkErrorText } from '@legado/sourceengine';
 import { appDb } from '../../model/data/AppDatabase';
-import { HttpClient, HttpResponse } from '../http/HttpClient';
-import { AnalyzeUrl } from '../rule/AnalyzeUrl';
-import { AnalyzeRule } from '../rule/AnalyzeRule';
-import { RuleContext } from '../rule/RuleContext';
-import { ScriptCompatibility } from '../rule/ScriptCompatibility';
-import { JsRuntime } from '../rule/JsRuntime';
-import { VerificationSupport } from '../http/VerificationSupport';
-import { EncodedSourceUrl } from './EncodedSourceUrl';
 import { BookSourceDataUrlSupport } from './BookSourceDataUrlSupport';
-import { BookUrlResolver } from './BookUrlResolver';
-import { BookFieldSanitizer } from '../../utils/BookFieldSanitizer';
 import { BookSourceMetadataSupport } from './BookSourceMetadataSupport';
-import { BookTypeSupport } from './BookTypeSupport';
-import { BookSourceRuntimeRouter, SourceRuntimeStage } from './BookSourceRuntimeRouter';
-import { BookSourceStageWebRuntime, StageWebRuntimeRequest } from './BookSourceStageWebRuntime';
 import { BookSourceStageRuleSupport } from './BookSourceStageRuleSupport';
-import { RuleExecutionService } from '../rule/RuleExecutionService';
-import { RuleBatchExecutionRequest, RuleFieldRequest } from '../rule/RuleExecutionModels';
-import { CooperativeScheduler } from '../concurrency/CooperativeScheduler';
-import { QuickJsObservationContext } from '../script/QuickJsRuntimeStatus';
-import { RuleExecutionTarget, RuleValue } from '../rule/RuleValue';
-import { BookSourceDebugContext } from './BookSourceDebugModels';
 
 export interface SearchProgress {
   done: number;
@@ -46,6 +27,16 @@ export interface SearchSourceResult {
 }
 
 const MAX_SEARCH_CONCURRENCY = 12;
+// A search does not queue longer than this behind one source's own rate limit; the source is reported as
+// rate-limited and the worker moves on.
+const SEARCH_RATE_LIMIT_MAX_WAIT_MS = 60000;
+// Overall budget for one source: request, scripts and result parsing together.
+const SEARCH_SOURCE_TIMEOUT_MS = 60000;
+
+/** Tells an abandoned source run that its result is no longer wanted. */
+class SearchSourceAbort {
+  timedOut: boolean = false;
+}
 const MAX_VALIDATION_CONCURRENCY = 1;
 // Batch source results so background searching does not continuously interrupt list gestures.
 const SEARCH_PROGRESS_EMIT_INTERVAL_MS = 500;
@@ -62,6 +53,7 @@ const MAX_VALIDATION_CONFIG_CHARS = 512 * 1024;
 const ENABLE_SEARCH_DEBUG_LOG = false;
 
 export interface SearchOptions {
+  page?: number;
   exactMatch?: boolean;
   exactMatchAuthor?: boolean;
   sourceGroups?: string[];
@@ -72,6 +64,12 @@ export interface SearchOptions {
   excludeSourceUrls?: string[];
   maxResultsPerSource?: number;
   maxTotalResults?: number;
+  /**
+   * Caps each media type (novel, comic, audio, video) separately instead of sharing maxTotalResults, so the many
+   * fast novel sources cannot use up the budget before a comic or audio source answers.
+   * stopAfterResults is ignored in this mode: the search ends early only once every type is full.
+   */
+  maxResultsPerCategory?: number;
   stopAfterResults?: number;
   maxCandidatesPerSource?: number;
   debugContext?: BookSourceDebugContext;
@@ -97,6 +95,10 @@ export class SearchCoordinator {
   private http: HttpClient;
   private concurrency: number;
   private cancelled: boolean = false;
+  // Distinguishes one search run from the next: `cancelled` is cleared when a new search starts, which must not
+  // revive requests of the previous run that are still queued behind a source's rate limit.
+  private searchSerial: number = 0;
+  private currentPage: number = 1;
   private stageRuntimeOwnerId: string = '';
   private lastFailureReason: string = '';
 
@@ -119,6 +121,8 @@ export class SearchCoordinator {
 
   async search(keyword: string, callback: SearchCallback, options: SearchOptions = {}): Promise<SearchBook[]> {
     this.cancelled = false;
+    this.searchSerial++;
+    this.currentPage = Math.max(1, Math.floor(options.page || 1));
     this.lastFailureReason = '';
     VerificationSupport.clearVerification();
     const safeCallback = (progress: SearchProgress): void => {
@@ -162,6 +166,17 @@ export class SearchCoordinator {
       MAX_TOTAL_SEARCH_RESULTS, 1, MAX_TOTAL_SEARCH_RESULTS);
     const stopAfterResults = validationOnly ? 0 : this.normalizedLimit(options.stopAfterResults,
       totalResultLimit, 1, totalResultLimit);
+    const categoryLimit = validationOnly || options.maxResultsPerCategory === undefined ? 0 :
+      this.normalizedLimit(options.maxResultsPerCategory, MAX_TOTAL_SEARCH_RESULTS, 1, MAX_TOTAL_SEARCH_RESULTS);
+    const categoryCounts = new Map<string, number>();
+    const resultBudgetSpent = (): boolean => {
+      if (validationOnly) return false;
+      if (categoryLimit > 0) {
+        return BookTypeSupport.MEDIA_CATEGORIES.every((category: string): boolean =>
+          (categoryCounts.get(category) || 0) >= categoryLimit);
+      }
+      return stopAfterResults > 0 && all.length >= stopAfterResults;
+    };
     const effectiveConcurrency = validationOnly ? Math.min(this.concurrency, MAX_VALIDATION_CONCURRENCY) : this.concurrency;
     const workerCount = Math.min(effectiveConcurrency, sources.length);
 
@@ -194,7 +209,7 @@ export class SearchCoordinator {
 
     const runWorker = async (): Promise<void> => {
       while (!this.cancelled) {
-        if (!validationOnly && stopAfterResults > 0 && all.length >= stopAfterResults) break;
+        if (resultBudgetSpent()) break;
         const sourceIndex = nextIndex;
         nextIndex++;
         if (sourceIndex >= sources.length) break;
@@ -202,7 +217,7 @@ export class SearchCoordinator {
         currentSourceLabel = sources[sourceIndex].bookSourceName || `书源 ${sourceIndex + 1}`;
         AppStorage.setOrCreate('searchLastSource', currentSourceLabel);
         AppStorage.setOrCreate('searchLastSourceIndex', sourceIndex + 1);
-        const sourceResult = await this.searchOne(sources[sourceIndex], keyword, options);
+        const sourceResult = await this.searchOneWithDeadline(sources[sourceIndex], keyword, options);
         if (sourceResult.books.length === 0 && sourceResult.reason && sourceResult.reason !== '未搜索到结果') {
           this.lastFailureReason = `${sources[sourceIndex].bookSourceName || '书源'}：${sourceResult.reason}`;
         }
@@ -216,8 +231,10 @@ export class SearchCoordinator {
           }
         }
         const remainingCapacity = Math.max(0, totalResultLimit - all.length);
-        const displayBooks = validationOnly ? [] :
-          this.filterSearchResults(books, keyword, options).slice(0, remainingCapacity);
+        const matchedBooks = validationOnly ? [] : this.filterSearchResults(books, keyword, options);
+        const displayBooks = categoryLimit > 0 ?
+          this.takeWithinCategoryLimit(matchedBooks, categoryLimit, categoryCounts) :
+          matchedBooks.slice(0, remainingCapacity);
 
         done++;
         if (!validationOnly) {
@@ -242,16 +259,47 @@ export class SearchCoordinator {
     }
   }
 
-  private async searchOne(source: BookSource, keyword: string, options: SearchOptions): Promise<SearchSourceResult> {
+  /**
+   * Runs one source under an overall deadline. A dead or very slow source would otherwise keep its worker for as
+   * long as the source cares to stall, and enough of them bring the whole search to a standstill.
+   *
+   * On timeout the worker moves on and the abandoned run stops at its next checkpoint; a request already on the
+   * wire ends through the HTTP client's own timeout.
+   */
+  private async searchOneWithDeadline(source: BookSource, keyword: string,
+    options: SearchOptions): Promise<SearchSourceResult> {
+    const abort = new SearchSourceAbort();
+    // Time spent queueing behind the source's own rate limit is capped separately and comes on top.
+    const deadlineMs = SEARCH_SOURCE_TIMEOUT_MS + (source.concurrentRate ? SEARCH_RATE_LIMIT_MAX_WAIT_MS : 0);
+    let timerId = -1;
+    const timeout = new Promise<SearchSourceResult>((resolve: (result: SearchSourceResult) => void): void => {
+      timerId = setTimeout((): void => {
+        timerId = -1;
+        abort.timedOut = true;
+        console.warn(`[SC] source timed out after ${deadlineMs}ms:`, source.bookSourceName);
+        resolve(this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR,
+          `书源响应超时（超过 ${Math.round(deadlineMs / 1000)} 秒）`));
+      }, deadlineMs);
+    });
+    try {
+      return await Promise.race([this.searchOne(source, keyword, options, abort), timeout]);
+    } finally {
+      if (timerId >= 0) clearTimeout(timerId);
+    }
+  }
+
+  private async searchOne(source: BookSource, keyword: string, options: SearchOptions,
+    abort: SearchSourceAbort): Promise<SearchSourceResult> {
+    const stopped = (): boolean => this.cancelled || abort.timedOut;
     const debugContext = options.debugContext;
     if (debugContext) debugContext.beginStep(SourceRuntimeStage.SEARCH, `搜索：${keyword}`);
     let debugPassed = false;
     let debugError = '';
     try {
-      if (this.cancelled) {
+      if (stopped()) {
         return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
       }
-      if (options.validationOnly === true) {
+      if (options.validationOnly === true && !NativeSourceService.isNative(source)) {
         const compatibilityIssue = this.validationCompatibilityIssue(source);
         if (compatibilityIssue) {
           AppStorage.setOrCreate('searchLastSourceError',
@@ -264,8 +312,14 @@ export class SearchCoordinator {
         MAX_VALIDATION_RESPONSE_BYTES : MAX_SEARCH_RESPONSE_BYTES;
       const resultLimit = options.validationOnly === true ? 1 : this.normalizedLimit(options.maxResultsPerSource,
         MAX_RESULTS_PER_SOURCE, 1, MAX_RESULTS_PER_SOURCE);
-      if (this.cancelled) {
+      if (stopped()) {
         return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
+      }
+      if (NativeSourceService.isNative(source)) {
+        const nativeResult = await this.searchNative(source, keyword, options, responseLimit, resultLimit, stopped);
+        debugPassed = nativeResult.books.length > 0;
+        debugError = debugPassed ? '' : nativeResult.reason;
+        return nativeResult;
       }
       if (!source.searchUrl || !source.searchRule?.bookList || !source.searchRule?.name || !source.searchRule?.bookUrl) {
         if (ENABLE_SEARCH_DEBUG_LOG) {
@@ -284,14 +338,19 @@ export class SearchCoordinator {
       js.setVar('searchKey', encodeURIComponent(keyword));
       js.setVar('keyword', encodeURIComponent(keyword));
       js.setVar('searchKeyRaw', keyword);
-      js.setVar('page', '1');
+      js.setVar('page', String(this.currentPage));
 
-      const au = new AnalyzeUrl(source, this.http);
+      const searchSerial = this.searchSerial;
+      const au = new AnalyzeUrl(source, this.http)
+        .setCancelCheck((): boolean => stopped() || searchSerial !== this.searchSerial,
+          SEARCH_RATE_LIMIT_MAX_WAIT_MS);
       let urlTemplate = await this.evalAndBuild(js, source, keyword, responseLimit,
         options.validationOnly === true, debugContext || null);
       if (!urlTemplate) {
         return this.sourceResult([], BookSource.VALIDATION_FAILED, '搜索地址无法解析');
       }
+      // Search requests the first page, so `<first,following>` resolves to its first candidate.
+      urlTemplate = PageCandidateUrl.apply(urlTemplate, this.currentPage);
       if (ENABLE_SEARCH_DEBUG_LOG) {
         console.log('[SC] search source:', source.bookSourceName);
       }
@@ -299,7 +358,7 @@ export class SearchCoordinator {
         await this.fetchEncodedDataUrl(urlTemplate, source, responseLimit) :
           await au.fetch(urlTemplate, responseLimit, debugContext || null);
       if (debugContext) debugContext.setOutput('searchUrl', urlTemplate);
-      if (this.cancelled) {
+      if (stopped()) {
         return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
       }
 
@@ -314,7 +373,8 @@ export class SearchCoordinator {
       if (ENABLE_SEARCH_DEBUG_LOG) {
         console.log('[SC] response:', source.bookSourceName, resp.statusCode, 'len:', resp.body?.length || 0);
       }
-      if (VerificationSupport.shouldRequestBrowserVerification(source, resp.body, resp.statusCode, source.searchUrl)) {
+      if (VerificationSupport.shouldRequestBrowserVerification(source, resp.body, resp.statusCode, source.searchUrl,
+        resp.error)) {
         const verifyUrl = VerificationSupport.pickVerificationUrl(source, resp.url || urlTemplate,
           source.searchUrl, resp.body, resp.statusCode);
         VerificationSupport.requestVerification(verifyUrl, `${source.bookSourceName} 验证`, source);
@@ -322,7 +382,7 @@ export class SearchCoordinator {
         if (debugContext) debugContext.setOutput('verificationUrl', verifyUrl);
         console.warn('[SC] browser verification:', source.bookSourceName, 'HTTP', resp.statusCode);
         if (ENABLE_SEARCH_DEBUG_LOG) {
-          console.warn('[SC] source needs browser verification:', source.bookSourceName, verifyUrl);
+          console.warn('[SC] source needs browser verification:', source.bookSourceName, LogText.url(verifyUrl));
         }
         return this.sourceResult([], BookSource.VALIDATION_NEEDS_VERIFICATION, '需要登录或网页验证');
       }
@@ -341,14 +401,14 @@ export class SearchCoordinator {
       rule.setJsVar('key', encodeURIComponent(keyword));
       rule.setJsVar('searchKey', encodeURIComponent(keyword));
       rule.setJsVar('keyword', encodeURIComponent(keyword));
-      rule.setJsVar('page', '1');
+      rule.setJsVar('page', String(this.currentPage));
       const searchRule = source.searchRule;
       const stageItems = await BookSourceStageRuleSupport.getElements(source, resp.body, baseUrl,
         searchRule.bookList || '', SourceRuntimeStage.SEARCH, this.stageRuntimeOwnerId,
         options.validationOnly === true ? MAX_VALIDATION_STAGE_RESPONSE_BYTES : 8 * 1024 * 1024,
         options.validationOnly === true ? MAX_VALIDATION_STAGE_TOTAL_RESPONSE_BYTES : 16 * 1024 * 1024,
         encodedVariables);
-      if (this.cancelled) {
+      if (stopped()) {
         return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
       }
       const allTypedItems = stageItems === null ?
@@ -359,7 +419,7 @@ export class SearchCoordinator {
       const typedItems = allTypedItems.length > candidateLimit ?
         allTypedItems.slice(0, candidateLimit) : allTypedItems;
       const items = typedItems.map((item: RuleValue): string => item.asString());
-      if (this.cancelled) {
+      if (stopped()) {
         return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
       }
       if (ENABLE_SEARCH_DEBUG_LOG) {
@@ -403,7 +463,7 @@ export class SearchCoordinator {
       fieldRequest.timeoutMs = options.validationOnly === true ? 15000 : 30000;
       fieldRequest.debugContext = debugContext || null;
       const fieldBatch = await RuleExecutionService.get().executeBatch(fieldRequest);
-      if (fieldBatch.cancelled || this.cancelled) {
+      if (fieldBatch.cancelled || stopped()) {
         return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
       }
       if (fieldBatch.errors.length > 0) {
@@ -415,7 +475,7 @@ export class SearchCoordinator {
         // fast selectors could then accumulate past HarmonyOS' 3-second foreground freeze threshold.
         if (itemIndex > 0) await parsingSlice.checkpoint();
         const item = items[itemIndex];
-        if (this.cancelled) {
+        if (stopped()) {
           return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
         }
         const ir = new AnalyzeRule(item, baseUrl);
@@ -512,6 +572,7 @@ export class SearchCoordinator {
 
         if (options.leanResult) this.stripLeanFieldValues(book);
         this.sanitizeSearchBook(book);
+        book.mediaCategory = BookTypeSupport.mediaCategoryOf(book);
         const bookKey = `${book.origin || ''}::${book.bookUrl || ''}`;
         if (book.name && book.bookUrl && !seenBookKeys.has(bookKey)) {
           seenBookKeys.add(bookKey);
@@ -555,6 +616,43 @@ export class SearchCoordinator {
     }
   }
 
+  /** 原生书源的搜索：不经过脚本引擎，结果仍走统一的精确匹配、去重与字段清洗。 */
+  private async searchNative(source: BookSource, keyword: string, options: SearchOptions,
+    responseLimit: number, resultLimit: number, stopped: () => boolean): Promise<SearchSourceResult> {
+    if (!source.searchUrl) return this.sourceResult([], BookSource.VALIDATION_FAILED, '该书源没有配置搜索');
+    let found: SearchBook[] = [];
+    try {
+      found = await NativeSourceService.search(source, this.http, keyword, stopped, responseLimit,
+        options.debugContext || null, this.currentPage);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      if (reason.indexOf(NativeSourceService.VERIFICATION_REASON) >= 0) {
+        return this.sourceResult([], BookSource.VALIDATION_NEEDS_VERIFICATION, NativeSourceService.VERIFICATION_REASON);
+      }
+      return this.sourceResult([], /请求失败|空响应|已取消/.test(reason) ?
+        BookSource.VALIDATION_TEMPORARY_ERROR : BookSource.VALIDATION_FAILED, reason || '搜索过程中发生异常');
+    }
+    if (stopped()) return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
+    const normalizedKeyword = this.normalizeSearchText(keyword);
+    const books: SearchBook[] = [];
+    const seen = new Set<string>();
+    for (const book of found) {
+      if (options.exactMatch && !this.matchesExactSearch(this.normalizeSearchText(book.name),
+        this.normalizeSearchText(book.author), normalizedKeyword, options)) {
+        continue;
+      }
+      if (seen.has(book.bookUrl)) continue;
+      seen.add(book.bookUrl);
+      if (options.leanResult) this.stripLeanFieldValues(book);
+      this.sanitizeSearchBook(book);
+      book.mediaCategory = BookTypeSupport.mediaCategoryOf(book);
+      books.push(book);
+      if (books.length >= resultLimit) break;
+    }
+    return books.length > 0 ? this.sourceResult(books, BookSource.VALIDATION_PASSED, '') :
+      this.sourceResult([], BookSource.VALIDATION_NO_RESULTS, '未搜索到结果');
+  }
+
   private sourceResult(books: SearchBook[], validationStatus: number, reason: string): SearchSourceResult {
     return {
       books: books,
@@ -572,7 +670,7 @@ export class SearchCoordinator {
     if (statusCode === 408 || statusCode === 425 || statusCode === 429 || statusCode >= 500 ||
       statusCode === 0 || (response.error || '').includes('response too large')) {
       const reason = statusCode > 0 ? `服务器暂时异常（HTTP ${statusCode}）` :
-        (response.error || '网络请求失败');
+        (NetworkErrorText.describe(response.error || '', response.url || '') || response.error || '网络请求失败');
       return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, reason);
     }
     if ((statusCode >= 300 && statusCode < 400) || (statusCode >= 400 && statusCode < 500)) {
@@ -693,6 +791,19 @@ export class SearchCoordinator {
     book.wordCount = '';
     book.updateTime = '';
     book.bookSourceComment = '';
+  }
+
+  /** Keeps the books whose media type still has room and counts them against that type. */
+  private takeWithinCategoryLimit(books: SearchBook[], limit: number, counts: Map<string, number>): SearchBook[] {
+    const kept: SearchBook[] = [];
+    for (const book of books) {
+      const category = BookTypeSupport.mediaCategoryOf(book);
+      const count = counts.get(category) || 0;
+      if (count >= limit) continue;
+      counts.set(category, count + 1);
+      kept.push(book);
+    }
+    return kept;
   }
 
   private normalizedLimit(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
@@ -1055,7 +1166,8 @@ export class SearchCoordinator {
     if (stageUrl) return stageUrl;
     const scriptedFormUrl = await this.tryBuildScriptedFormSearchUrl(source, keyword, maxResponseBytes);
     if (scriptedFormUrl) return scriptedFormUrl;
-    const buildRequestUrl = BookSourceDataUrlSupport.buildRequestUrl(source, searchUrl, '1', keyword);
+    const buildRequestUrl = BookSourceDataUrlSupport.buildRequestUrl(source, searchUrl, String(this.currentPage),
+      keyword);
     if (buildRequestUrl) return buildRequestUrl;
     // Complete or complex JavaScript URLs are never retried in the synchronous compatibility
     // interpreter. A failed ArkWeb execution should fail this source, not freeze the UI thread.
@@ -1113,8 +1225,8 @@ export class SearchCoordinator {
       searchKey: isFullJsUrl ? keyword : encodeURIComponent(keyword),
       keyword: isFullJsUrl ? keyword : encodeURIComponent(keyword),
       searchKeyRaw: keyword,
-      page: '1',
-      pageIndex: '1'
+      page: String(this.currentPage),
+      pageIndex: String(this.currentPage)
     };
     if (isFullJsUrl) {
       // A full-JS URL must run as code. Treating it as a template returns the literal "@js:..."

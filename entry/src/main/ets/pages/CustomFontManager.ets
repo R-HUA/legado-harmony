@@ -1,14 +1,15 @@
-import { router } from '@kit.ArkUI';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ReaderSettingsStore } from '../utils/ReaderSettingsStore';
 import { ReaderFontHelper, ReaderFontItem } from '../utils/ReaderFontHelper';
 import { ReaderSystemFontHelper } from '../utils/ReaderSystemFontHelper';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
 
 class ReaderCustomFontItem {
   familyName: string = '';
@@ -35,8 +36,6 @@ struct CustomFontManagerPage {
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appLightButtonColor') appLightButtonColor: string = '#007DFF';
   @StorageLink('appDarkButtonColor') appDarkButtonColor: string = '#3F8CFF';
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
 
   @State customFonts: ReaderCustomFontItem[] = [];
 
@@ -60,36 +59,32 @@ struct CustomFontManagerPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
-        Column() {
-          this.uploadPanel()
-
-          this.sectionTitle('已上传字体')
-          if (this.customFonts.length > 0) {
-            Column({ space: 1 }) {
-              ForEach(this.customFonts, (item: ReaderCustomFontItem) => {
-                this.fontItem(item)
-              })
-            }
-            .width('100%')
-            .backgroundColor(this.cardColor())
-          } else {
-            this.emptyPanel()
-          }
-        }
-        .width('100%')
-        .padding({ top: 56 + this.statusBarHeight, bottom: 32 + this.navBarHeight })
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-
-      this.titleBar()
+      PageScaffold({ title: '自定义字体', content: () => {
+        this.pageContent()
+      } })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  pageContent() {
+    this.uploadPanel()
+
+    this.sectionTitle('已上传字体')
+    if (this.customFonts.length > 0) {
+      Column({ space: 1 }) {
+        ForEach(this.customFonts, (item: ReaderCustomFontItem) => {
+          this.fontItem(item)
+        })
+      }
+      .width('100%')
+      .backgroundColor(this.cardColor())
+    } else {
+      this.emptyPanel()
+    }
   }
 
   async reloadCustomFonts(): Promise<void> {
@@ -549,33 +544,12 @@ struct CustomFontManagerPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-
-      Text('自定义字体')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
-  }
-
-  @Builder
   sectionTitle(title: string) {
     Text(title)
-      .fontSize(13)
+      .fontSize(AppFontSize.BODY)
       .fontColor(this.subTextColor())
       .width('100%')
-      .padding({ left: 16, right: 16, top: 20, bottom: 8 })
+      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXL, bottom: AppSpacing.MD })
   }
 
   @Builder
@@ -583,19 +557,19 @@ struct CustomFontManagerPage {
     Row() {
       Column() {
         Text('上传字体')
-          .fontSize(16)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontColor(this.primaryTextColor())
         Text('支持 ttf / otf / ttc，上传后会出现在阅读设置的字体下拉框中')
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
-          .margin({ top: 4 })
+          .margin({ top: AppSpacing.XS })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
       Text('+')
-        .fontSize(24)
-        .fontColor('#FFFFFF')
+        .fontSize(AppFontSize.HEADLINE)
+        .fontColor(ThemeRuntime.onAccentColor())
         .textAlign(TextAlign.Center)
         .width(40)
         .height(40)
@@ -604,7 +578,7 @@ struct CustomFontManagerPage {
     }
     .width('100%')
     .constraintSize({ minHeight: 72 })
-    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
     .backgroundColor(this.cardColor())
     .alignItems(VerticalAlign.Center)
     .onClick(() => {
@@ -616,12 +590,12 @@ struct CustomFontManagerPage {
   emptyPanel() {
     Column() {
       Text('还没有上传字体')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.subTextColor())
       Text('点击上方上传按钮添加字体文件')
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
-        .margin({ top: 6 })
+        .margin({ top: AppSpacing.SM })
     }
     .width('100%')
     .padding({ top: 28, bottom: 28 })
@@ -633,36 +607,36 @@ struct CustomFontManagerPage {
     Row() {
       Column() {
         Text(item.sourceName || item.familyName)
-          .fontSize(16)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontFamily(this.previewFontFamily(item))
           .fontColor(this.primaryTextColor())
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(item.filePath)
-          .fontSize(11)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .margin({ top: 4 })
+          .margin({ top: AppSpacing.XS })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
       Text('删除')
-        .fontSize(13)
-        .fontColor('#FFFFFF')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(ThemeRuntime.onAccentColor())
         .textAlign(TextAlign.Center)
         .width(54)
         .height(32)
         .borderRadius(16)
-        .backgroundColor('#E53935')
+        .backgroundColor(ThemeRuntime.dangerColor(this.appDarkMode))
         .onClick(() => {
           this.deleteCustomFont(item);
         })
     }
     .width('100%')
     .constraintSize({ minHeight: 68 })
-    .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.MD, bottom: AppSpacing.MD })
     .backgroundColor(this.cardColor())
     .alignItems(VerticalAlign.Center)
   }

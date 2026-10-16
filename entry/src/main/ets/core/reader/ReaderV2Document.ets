@@ -1,4 +1,5 @@
-import { ReaderActionData, ReaderActionMarker, ReaderActionMatch } from '../book/ReaderActionMarker';
+import { ReaderActionData, ReaderActionMarker, ReaderActionMatch } from '@legado/sourceengine';
+import { ReaderImageMarker } from '../book/ReaderImageMarker';
 
 /**
  * V2 阅读文档只保存语义和稳定偏移，不保存任何 ArkUI 组件状态。
@@ -19,6 +20,10 @@ export class ReaderV2OffsetSegment {
 }
 
 export class ReaderV2InlineAction {
+  /** Word joiner plus the gap that separates the bubble from the preceding text; it is not part of the bubble. */
+  static readonly LABEL_GAP: string = '\u2060\u00A0\u00A0';
+  /** Inner padding on each side of the bubble text. */
+  static readonly LABEL_PAD: string = '\u00A0';
   id: string = '';
   marker: string = '';
   label: string = '';
@@ -28,18 +33,43 @@ export class ReaderV2InlineAction {
   displayEnd: number = 0;
   sourceStart: number = 0;
   sourceEnd: number = 0;
+  /** Display offset where the drawn bubble starts, after the leading gap. */
+  bubbleStart: number = 0;
 
   constructor(id: string, marker: string, label: string, data: ReaderActionData,
     displayStart: number, displayEnd: number, sourceStart: number, sourceEnd: number) {
     this.id = id;
     this.marker = marker;
     this.label = label;
+    this.bubbleStart = label.startsWith(ReaderV2InlineAction.LABEL_GAP) ?
+      displayStart + ReaderV2InlineAction.LABEL_GAP.length : displayStart;
     this.title = data.title || '';
     this.url = data.url || '';
     this.displayStart = displayStart;
     this.displayEnd = displayEnd;
     this.sourceStart = sourceStart;
     this.sourceEnd = sourceEnd;
+  }
+}
+
+/** 独立成块的图片。原始宽高未知时为 0。 */
+export class ReaderV2ImageRef {
+  source: string = '';
+  width: number = 0;
+  height: number = 0;
+  displayStart: number = 0;
+  sourceStart: number = 0;
+  sourceEnd: number = 0;
+}
+
+/** 章内小标题：正文里与 text 相同的段落按标题样式排版。 */
+export class ReaderV2HeadingHint {
+  level: number = 0;
+  text: string = '';
+
+  constructor(level: number, text: string) {
+    this.level = level;
+    this.text = text;
   }
 }
 
@@ -51,6 +81,9 @@ export class ReaderV2Block {
   sourceStart: number = 0;
   sourceEnd: number = 0;
   title: boolean = false;
+  /** 1-6 表示章内小标题，0 表示普通段落。 */
+  headingLevel: number = 0;
+  image: ReaderV2ImageRef | null = null;
 
   constructor(id: string, text: string, displayStart: number, displayEnd: number,
     sourceStart: number, sourceEnd: number, title: boolean) {
@@ -82,6 +115,7 @@ export class ReaderV2Document {
   sourceText: string = '';
   displayText: string = '';
   blocks: ReaderV2Block[] = [];
+  images: ReaderV2ImageRef[] = [];
   actions: ReaderV2InlineAction[] = [];
   offsets: ReaderV2OffsetSegment[] = [];
   regexRanges: ReaderV2RegexRange[] = [];
@@ -129,7 +163,7 @@ export class ReaderV2Document {
       cursor = Math.max(cursor, Math.min(safeEnd, action.displayEnd));
     }
     if (cursor < safeEnd) result += this.displayText.substring(cursor, safeEnd);
-    return result.replace(/\u200B/g, '').trim();
+    return result.replace(/[\u200B\uFFFC]/g, '').trim();
   }
 }
 
@@ -195,18 +229,35 @@ export class ReaderV2SpeechText {
     }
     let speechCursor = 0;
     let text = '';
+    const containingImage = ReaderV2DocumentParser.imageRangeContaining(document, sourceCursor);
+    if (containingImage.length >= 2) {
+      sourceCursor = containingImage[1];
+      result.sourceStart = sourceCursor;
+    }
+    let imageIndex = 0;
     while (sourceCursor < document.sourceText.length) {
-      const bounds = ReaderActionMarker.findFirstRawRange(document.sourceText, sourceCursor);
-      const actionStart = bounds.length >= 2 ? bounds[0] : document.sourceText.length;
-      if (actionStart > sourceCursor) {
-        const plain = document.sourceText.substring(sourceCursor, actionStart);
+      const actionBounds = ReaderActionMarker.findFirstRawRange(document.sourceText, sourceCursor);
+      while (imageIndex < document.images.length && document.images[imageIndex].sourceEnd <= sourceCursor) {
+        imageIndex++;
+      }
+      // Image markers carry a file path, never prose. They are skipped exactly like hidden action markers.
+      let hiddenStart = actionBounds.length >= 2 ? actionBounds[0] : document.sourceText.length;
+      let hiddenEnd = actionBounds.length >= 2 ? actionBounds[1] : document.sourceText.length;
+      let hasHidden = actionBounds.length >= 2;
+      if (imageIndex < document.images.length && document.images[imageIndex].sourceStart < hiddenStart) {
+        hiddenStart = Math.max(sourceCursor, document.images[imageIndex].sourceStart);
+        hiddenEnd = document.images[imageIndex].sourceEnd;
+        hasHidden = true;
+      }
+      if (hiddenStart > sourceCursor) {
+        const plain = document.sourceText.substring(sourceCursor, hiddenStart);
         text += plain;
         result.segments.push(new ReaderV2SpeechSegment(speechCursor, speechCursor + plain.length,
-          sourceCursor, actionStart));
+          sourceCursor, hiddenStart));
         speechCursor += plain.length;
       }
-      if (bounds.length < 2) break;
-      sourceCursor = bounds[1];
+      if (!hasHidden) break;
+      sourceCursor = hiddenEnd;
     }
     result.text = text;
     return result;
@@ -216,7 +267,11 @@ export class ReaderV2SpeechText {
 export class ReaderV2DocumentParser {
   private static readonly MAX_ACTIONS_PER_CHAPTER: number = 320;
 
-  static parse(source: string, chapterIndex: number, chapterTitle: string): ReaderV2Document {
+  /** Occupies one display character for an image block so display/source offsets stay monotonic. */
+  static readonly IMAGE_PLACEHOLDER: string = '\uFFFC';
+
+  static parse(source: string, chapterIndex: number, chapterTitle: string,
+    headings: ReaderV2HeadingHint[] = []): ReaderV2Document {
     const document = new ReaderV2Document();
     document.chapterIndex = chapterIndex;
     document.chapterTitle = (chapterTitle || '').trim();
@@ -226,10 +281,49 @@ export class ReaderV2DocumentParser {
     let displayCursor = 0;
     let actionIndex = 0;
     let display = '';
+    // -2: not searched yet, -1: no further image marker. The marker search is repeated only after the cursor
+    // has passed the previous hit, so comment-heavy chapters do not rescan the chapter for every action.
+    let nextImageStart = -2;
     while (sourceCursor < document.sourceText.length) {
       // Search the original chapter with an absolute cursor. Repeatedly slicing the entire remaining chapter
       // made a comment-heavy source allocate O(actions * chapterLength) temporary strings while opening.
       const rawBounds = ReaderActionMarker.findFirstRawRange(document.sourceText, sourceCursor);
+      if (nextImageStart === -2 || (nextImageStart >= 0 && nextImageStart < sourceCursor)) {
+        nextImageStart = document.sourceText.indexOf(ReaderImageMarker.PREFIX, sourceCursor);
+      }
+      const imageSuffix = nextImageStart >= 0 ?
+        document.sourceText.indexOf(ReaderImageMarker.SUFFIX, nextImageStart + ReaderImageMarker.PREFIX.length) : -1;
+      if (nextImageStart >= 0 && imageSuffix >= 0 && (rawBounds.length < 2 || nextImageStart < rawBounds[0])) {
+        const imageEnd = imageSuffix + ReaderImageMarker.SUFFIX.length;
+        if (nextImageStart > sourceCursor) {
+          const before = document.sourceText.substring(sourceCursor, nextImageStart);
+          display += before;
+          document.offsets.push(new ReaderV2OffsetSegment(sourceCursor, nextImageStart,
+            displayCursor, displayCursor + before.length));
+          displayCursor += before.length;
+        }
+        const info = ReaderImageMarker.parse(document.sourceText.substring(nextImageStart, imageEnd));
+        const standalone = (nextImageStart === 0 || document.sourceText.charAt(nextImageStart - 1) === '\n') &&
+          (imageEnd >= document.sourceText.length || document.sourceText.charAt(imageEnd) === '\n');
+        if (standalone && info.source) {
+          const image = new ReaderV2ImageRef();
+          image.source = info.source;
+          image.width = info.width;
+          image.height = info.height;
+          image.displayStart = displayCursor;
+          image.sourceStart = nextImageStart;
+          image.sourceEnd = imageEnd;
+          document.images.push(image);
+          display += ReaderV2DocumentParser.IMAGE_PLACEHOLDER;
+          document.offsets.push(new ReaderV2OffsetSegment(nextImageStart, imageEnd, displayCursor, displayCursor + 1));
+          displayCursor++;
+        } else {
+          // A marker inside a line of prose cannot become a block. Hide its payload with a zero-width mapping.
+          document.offsets.push(new ReaderV2OffsetSegment(nextImageStart, imageEnd, displayCursor, displayCursor));
+        }
+        sourceCursor = imageEnd;
+        continue;
+      }
       if (rawBounds.length < 2) {
         const tail = document.sourceText.substring(sourceCursor);
         display += tail;
@@ -272,7 +366,7 @@ export class ReaderV2DocumentParser {
     }
 
     document.displayText = display;
-    ReaderV2DocumentParser.buildBlocks(document);
+    ReaderV2DocumentParser.buildBlocks(document, headings);
     document.identity = ReaderV2DocumentParser.hashIdentity(document.sourceText, chapterIndex);
     return document;
   }
@@ -288,17 +382,51 @@ export class ReaderV2DocumentParser {
       const raw = count[1];
       const value = raw === '99+' ? 100 : Number.parseInt(raw, 10);
       const displayCount = !Number.isFinite(value) || value <= 0 ? '0' : (value > 99 ? '99+' : `${value}`);
-      return `\u2060  ◌ ${displayCount}  `;
+      return ReaderV2DocumentParser.bubbleLabel(displayCount);
     }
-    if (/本章说/.test(configured)) return '\u2060  ◌ 本章说  ';
-    if (/段评|评论|神评论/.test(configured)) return '\u2060  ◌ 段评  ';
-    return `\u2060  ${configured || '打开'}  `;
+    if (/本章说/.test(configured)) return ReaderV2DocumentParser.bubbleLabel('本章说');
+    if (/段评|评论|神评论/.test(configured)) return ReaderV2DocumentParser.bubbleLabel('段评');
+    return ReaderV2DocumentParser.bubbleLabel(configured || '打开');
   }
 
-  private static buildBlocks(document: ReaderV2Document): void {
+  // Non-breaking padding keeps the gap and the bubble with the sentence instead of wrapping on their own.
+  private static bubbleLabel(text: string): string {
+    return `${ReaderV2InlineAction.LABEL_GAP}${ReaderV2InlineAction.LABEL_PAD}${text}${ReaderV2InlineAction.LABEL_PAD}`;
+  }
+
+  /** Source range of the image marker containing `sourceOffset`, or an empty array. */
+  static imageRangeContaining(document: ReaderV2Document, sourceOffset: number): number[] {
+    for (const image of document.images) {
+      if (image.sourceStart >= sourceOffset) break;
+      if (sourceOffset < image.sourceEnd) return [image.sourceStart, image.sourceEnd];
+    }
+    return [];
+  }
+
+  private static decorateBlock(block: ReaderV2Block, images: Map<number, ReaderV2ImageRef>,
+    headingLevels: Map<string, number>): void {
+    if (block.text === ReaderV2DocumentParser.IMAGE_PLACEHOLDER) {
+      block.image = images.get(block.displayStart) || null;
+      return;
+    }
+    if (block.title || headingLevels.size === 0) return;
+    block.headingLevel = headingLevels.get(block.text.replace(/^[\s\u3000]+|[\s\u3000]+$/g, '')) || 0;
+  }
+
+  private static buildBlocks(document: ReaderV2Document, headings: ReaderV2HeadingHint[]): void {
     const text = document.displayText;
+    const images = new Map<number, ReaderV2ImageRef>();
+    for (const image of document.images) images.set(image.displayStart, image);
+    const headingLevels = new Map<string, number>();
+    for (const heading of headings) {
+      const key = (heading.text || '').replace(/^[\s\u3000]+|[\s\u3000]+$/g, '');
+      if (key && heading.level > 0 && !headingLevels.has(key)) headingLevels.set(key, heading.level);
+    }
     let cursor = 0;
     let blockIndex = 0;
+    // The chapter title is normally block 0. A volume heading and its cover images (both recognised from the
+    // heading hints / image placeholders) may precede it; any other block ends the search.
+    let titleOpen = !!document.chapterTitle;
     const separator = /\n+/g;
     let match = separator.exec(text);
     while (match) {
@@ -310,9 +438,12 @@ export class ReaderV2DocumentParser {
       if (blockText.length > 0) {
         const sourceStart = document.sourceOffsetForDisplay(cursor);
         const sourceEnd = document.sourceOffsetForDisplay(end);
-        const title = blockIndex === 0 && !!document.chapterTitle && blockText.startsWith(document.chapterTitle);
-        document.blocks.push(new ReaderV2Block(`block_${document.chapterIndex}_${blockIndex++}`, blockText,
-          cursor, end, sourceStart, sourceEnd, title));
+        const title = titleOpen && blockText.startsWith(document.chapterTitle);
+        const block = new ReaderV2Block(`block_${document.chapterIndex}_${blockIndex++}`, blockText,
+          cursor, end, sourceStart, sourceEnd, title);
+        ReaderV2DocumentParser.decorateBlock(block, images, headingLevels);
+        titleOpen = titleOpen && !title && (!!block.image || block.headingLevel > 0);
+        document.blocks.push(block);
       }
       cursor = match.index + match[0].length;
       match = separator.exec(text);
@@ -321,9 +452,11 @@ export class ReaderV2DocumentParser {
       const blockText = text.substring(cursor);
       const sourceStart = document.sourceOffsetForDisplay(cursor);
       const sourceEnd = document.sourceOffsetForDisplay(text.length);
-      const title = blockIndex === 0 && !!document.chapterTitle && blockText.startsWith(document.chapterTitle);
-      document.blocks.push(new ReaderV2Block(`block_${document.chapterIndex}_${blockIndex}`, blockText,
-        cursor, text.length, sourceStart, sourceEnd, title));
+      const title = titleOpen && blockText.startsWith(document.chapterTitle);
+      const block = new ReaderV2Block(`block_${document.chapterIndex}_${blockIndex}`, blockText,
+        cursor, text.length, sourceStart, sourceEnd, title);
+      ReaderV2DocumentParser.decorateBlock(block, images, headingLevels);
+      document.blocks.push(block);
     }
   }
 

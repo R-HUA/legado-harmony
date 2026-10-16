@@ -1,5 +1,6 @@
 import { webview } from '@kit.ArkWeb';
-import { WebBookFetchRuntime } from '../core/book/WebBookFetchRuntime';
+import { WebRuntimeAvailability } from '../utils/WebRuntimeAvailability';
+import { WebBookFetchRuntime } from '@legado/sourceengine';
 
 /** Invisible ArkWeb transport for source rules that explicitly opt into `webView: true`. */
 @Component
@@ -48,25 +49,25 @@ export struct WebBookFetchRuntimeHost {
     // 因此这里铺满父容器，但保持不可见、不参与交互、不覆盖界面：
     // 1% 不透明度（父页面自身背景在其之上）、hitTestBehavior(None) 让触摸/滑动继续落到界面、
     // zIndex(-1) 保证任何情况下都不会盖住 UI。position 固定在左上角，避免继承父 Stack 的对齐方式。
-    Web({ src: 'about:blank', controller: this.controller })
-      .width('100%')
-      .height('100%')
-      .position({ x: 0, y: 0 })
-      .zIndex(-1)
-      .opacity(0.01)
-      .hitTestBehavior(HitTestMode.None)
-      .javaScriptAccess(true)
-      .domStorageAccess(true)
-      .mixedMode(MixedMode.All)
-      .onlineImageAccess(true)
-      .onControllerAttached((): void => { this.attachRuntime(); })
-      // 从其它页面返回时本页的 Web 组件不会再次触发 onControllerAttached，但抓取环境必须切回
-      // 当前可见的这个宿主，否则共享运行时会继续停留在已经隐藏的旧宿主上（旧宿主退出后更会
-      // 直接变成“未挂载”）。可见性变化是最可靠的“这个页面又回到前台”信号。
-      .onVisibleAreaChange([0.0, 1.0], (isVisible: boolean, _ratio: number): void => {
-        if (isVisible) this.attachRuntime();
-      })
-      .onPageBegin((): void => { WebBookFetchRuntime.get().onPageBegin(this.controller); })
-      .onPageEnd((): void => { WebBookFetchRuntime.get().onPageEnd(this.controller); })
+    if (WebRuntimeAvailability.isAvailable()) {
+      Web({ src: 'about:blank', controller: this.controller })
+        .width('100%')
+        .height('100%')
+        .position({ x: 0, y: 0 })
+        .zIndex(-1)
+        .opacity(0.01)
+        .hitTestBehavior(HitTestMode.None)
+        .javaScriptAccess(true)
+        .domStorageAccess(true)
+        .mixedMode(MixedMode.All)
+        .onlineImageAccess(true)
+        .onControllerAttached((): void => { this.attachRuntime(); })
+        // 页面重新可见时切回当前宿主，避免继续使用已经隐藏或退出的宿主。
+        .onVisibleAreaChange([0.0, 1.0], (isVisible: boolean, _ratio: number): void => {
+          if (isVisible) this.attachRuntime();
+        })
+        .onPageBegin((): void => { WebBookFetchRuntime.get().onPageBegin(this.controller); })
+        .onPageEnd((): void => { WebBookFetchRuntime.get().onPageEnd(this.controller); })
+    }
   }
 }

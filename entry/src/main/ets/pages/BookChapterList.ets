@@ -1,12 +1,9 @@
 import { router } from '@kit.ArkUI';
-import { Book, BookChapter } from '../model/data/Book';
+import { Book, BookChapter, BookUrlResolver, BookTypeSupport, BookFieldSanitizer } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { WebBookService } from '../core/book/WebBookService';
-import { BookUrlResolver } from '../core/book/BookUrlResolver';
-import { BookTypeSupport } from '../core/book/BookTypeSupport';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
-import { BookFieldSanitizer } from '../utils/BookFieldSanitizer';
 import { CoverUrlNormalizer } from '../utils/CoverUrlNormalizer';
 import { BookIdentity } from '../utils/BookIdentity';
 import { SearchBookShelfHelper } from '../utils/SearchBookShelfHelper';
@@ -15,6 +12,9 @@ import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { BookSourceStageRuntimeHost } from '../components/BookSourceStageRuntimeHost';
 import { WebBookFetchRuntimeHost } from '../components/WebBookFetchRuntimeHost';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { VideoBookPlayer } from '../utils/VideoBookPlayer';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
 
 /** 未分组书架条目的分组 ID，必须与 SearchBookShelfHelper 里临时阅读书的写入值一致。 */
 const TEMP_SHELF_GROUP: number = -2147483645;
@@ -162,7 +162,7 @@ struct BookChapterListPage {
 
       Column() {
         Text(this.name || '目录')
-          .fontSize(18)
+          .fontSize(AppFontSize.SUBTITLE)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.primaryTextColor())
           .maxLines(1)
@@ -170,19 +170,19 @@ struct BookChapterListPage {
           .width('100%')
 
         Text(this.subtitleText())
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
-          .margin({ top: 2 })
+          .margin({ top: AppSpacing.XXS })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
     .height(56 + this.statusBarHeight)
-    .padding({ right: 16, top: this.statusBarHeight })
+    .padding({ right: AppSpacing.XL, top: this.statusBarHeight })
     .alignItems(VerticalAlign.Center)
     .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
     .backdropBlur(ThemeRuntime.topBarBlur())
@@ -191,27 +191,27 @@ struct BookChapterListPage {
 
   @Builder
   catalogToolbar() {
-    Row({ space: 10 }) {
+    Row({ space: AppSpacing.MD }) {
       TextInput({ placeholder: '搜索章节名', text: this.keyword })
         .layoutWeight(1)
         .height(38)
-        .borderRadius(8)
+        .borderRadius(ThemeRuntime.mediumRadius())
         .backgroundColor(this.inputColor())
         .fontColor(this.primaryTextColor())
         .placeholderColor(this.subTextColor())
-        .fontSize(14)
-        .padding({ left: 14, right: 14 })
+        .fontSize(AppFontSize.BODY)
+        .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
         .onChange((value: string): void => {
           this.keyword = value;
           this.rebuildDisplayList();
         })
 
       Text(this.reverseOrder ? '倒序' : '正序')
-        .fontSize(14)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.accentColor())
-        .padding({ left: 13, right: 13, top: 10, bottom: 10 })
+        .padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.MD, bottom: AppSpacing.MD })
         .backgroundColor(this.inputColor())
-        .borderRadius(8)
+        .borderRadius(ThemeRuntime.mediumRadius())
         .onClick((): void => {
           this.reverseOrder = !this.reverseOrder;
           this.rebuildDisplayList();
@@ -219,12 +219,12 @@ struct BookChapterListPage {
         })
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 66 + this.statusBarHeight, bottom: 10 })
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: 66 + this.statusBarHeight, bottom: AppSpacing.MD })
   }
 
   @Builder
   statusView(message: string, action: string) {
-    Column({ space: 14 }) {
+    Column({ space: AppSpacing.LG }) {
       if (!action) {
         LoadingProgress()
           .width(34)
@@ -233,7 +233,7 @@ struct BookChapterListPage {
       }
 
       Text(message)
-        .fontSize(14)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.secondaryTextColor())
         .textAlign(TextAlign.Center)
         .lineHeight(22)
@@ -243,7 +243,7 @@ struct BookChapterListPage {
         Button(action)
           .height(38)
           .backgroundColor(this.buttonColor())
-          .fontColor('#FFFFFF')
+          .fontColor(ThemeRuntime.onAccentColor())
           .onClick((): void => {
             this.loadChapters();
           })
@@ -261,7 +261,7 @@ struct BookChapterListPage {
     if (this.displayedCount === 0) {
       Column() {
         Text('没有匹配的章节')
-          .fontSize(14)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.subTextColor())
       }
       .width('100%')
@@ -273,15 +273,26 @@ struct BookChapterListPage {
       List({ scroller: this.scroller }) {
         LazyForEach(this.dataSource, (chapter: BookChapter) => {
           ListItem() {
-            Row({ space: 10 }) {
+            Column() {
+            if (BookChapter.volumeTitleOf(chapter)) {
+              Text(BookChapter.volumeTitleOf(chapter))
+                .fontSize(AppFontSize.BODY)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.subTextColor())
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%')
+                .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.SM })
+            }
+            Row({ space: AppSpacing.MD }) {
               Text(`${chapter.index + 1}`)
-                .fontSize(12)
+                .fontSize(AppFontSize.CAPTION)
                 .fontColor(this.subTextColor())
                 .width(40)
                 .textAlign(TextAlign.End)
 
               Text(chapter.title || `第${chapter.index + 1}章`)
-                .fontSize(15)
+                .fontSize(AppFontSize.BODY_LARGE)
                 .fontWeight(chapter.index === this.currentIndex ? FontWeight.Medium : FontWeight.Regular)
                 .fontColor(chapter.index === this.currentIndex ? this.accentColor() : this.primaryTextColor())
                 .maxLines(2)
@@ -290,20 +301,21 @@ struct BookChapterListPage {
 
               if (chapter.cacheDate > 0) {
                 Text('已缓存')
-                  .fontSize(10)
-                  .fontColor(this.appDarkMode ? '#7CC7A0' : '#1F8F55')
-                  .padding({ left: 7, right: 7, top: 3, bottom: 3 })
-                  .backgroundColor(this.appDarkMode ? '#24382F' : '#E6F4EC')
-                  .borderRadius(10)
+                  .fontSize(AppFontSize.MICRO)
+                  .fontColor(ThemeRuntime.successColor(this.appDarkMode))
+                  .padding({ left: AppSpacing.SM, right: AppSpacing.SM, top: AppSpacing.XXS, bottom: AppSpacing.XXS })
+                  .backgroundColor(ThemeRuntime.successSurfaceColor(this.appDarkMode))
+                  .borderRadius(ThemeRuntime.mediumRadius())
               }
             }
             .width('100%')
-            .padding({ left: 14, right: 16, top: 14, bottom: 14 })
+            .padding({ left: AppSpacing.LG, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
             .backgroundColor(chapter.index === this.currentIndex ? this.inputColor() : Color.Transparent)
             .border({ width: { bottom: 0.5 }, color: this.dividerColor() })
             .onClick((): void => {
               this.openChapter(chapter);
             })
+            }
           }
         }, (chapter: BookChapter): string => `${chapter.index}_${chapter.url || chapter.title}`)
       }
@@ -455,6 +467,12 @@ struct BookChapterListPage {
       book.durChapterPos = 0;
       book.durChapterTitle = chapter.title;
       await db.updateBook(book, true, 'open_chapter_from_chapter_list');
+      if (BookTypeSupport.isVideo(book)) {
+        // 视频类书籍没有阅读形态，点哪一集就直接播放哪一集。
+        this.currentIndex = chapter.index;
+        await VideoBookPlayer.open(book.bookUrl, chapter.index);
+        return;
+      }
       await router.pushUrl({
         url: 'pages/ReadBook',
         params: { bookUrl: book.bookUrl }
@@ -507,7 +525,7 @@ struct BookChapterListPage {
   }
 
   private dividerColor(): string {
-    return this.appDarkMode ? '#1FFFFFFF' : '#0D000000';
+    return ThemeRuntime.softFillColor(this.appDarkMode);
   }
 
   private pageColor(): string {

@@ -1,4 +1,5 @@
 import { ThemeAccessPolicy } from '../../account/ThemeAccessPolicy';
+import { HexColor } from '../../utils/HexColor';
 
 export class ReaderRegexFontRule {
   id: string = '';
@@ -154,7 +155,8 @@ export class ReaderRegexFontCodec {
       value === 'forest-dew' || value === 'ink-brush' || value === 'neon-pulse' || value === 'strawberry-ribbon' ||
       value === 'crimson-stamp' || value === 'celadon-slip' || value === 'rose-frame' ||
       value === 'moon-halo' || value === 'sword-talisman' || value === 'qingluan-jade' ||
-      value === 'pipi-soft-paw') {
+      value === 'pipi-soft-paw' || value === 'mecha-comm' || value === 'starwish-ribbon' ||
+      value === 'pencil-mark') {
       return value;
     }
     // Compatibility with early theme drafts.
@@ -490,6 +492,40 @@ export class ReaderRegexBubbleStyleResolver {
       ReaderRegexBubbleStyleResolver.addShadow(result, 0.5, '#88B4935C', -0.5, 0.5);
       return;
     }
+    if (result.bubbleStyleId === 'pencil-mark') {
+      // A highlighter stroke over print: flat colour, square ends, no glow.
+      const paper = context.darkMode ? '#1B2320' : '#FBF8F1';
+      result.backgroundColor = ReaderRegexBubbleStyleResolver.mix(paper, base,
+        context.darkMode ? 0.46 : 0.62);
+      result.textColor = context.darkMode ? '#FFF3CF' : '#2B2620';
+      ReaderRegexBubbleStyleResolver.setUniformRadius(result, 2);
+      return;
+    }
+    if (result.bubbleStyleId === 'mecha-comm') {
+      const plate = context.darkMode ? '#132231' : '#EAF2FA';
+      result.backgroundColor = ReaderRegexBubbleStyleResolver.mix(plate, base,
+        context.darkMode ? 0.30 : 0.22);
+      result.textColor = context.darkMode ? '#E4F8FC' : '#17324F';
+      ReaderRegexBubbleStyleResolver.setUniformRadius(result, 3);
+      ReaderRegexBubbleStyleResolver.addShadow(result, 0.5,
+        context.darkMode ? '#663FD3E6' : '#A8FFFFFF', 0, -0.5);
+      ReaderRegexBubbleStyleResolver.addShadow(result, 1.2,
+        ReaderRegexBubbleStyleResolver.withAlpha(base, 110), 0.5, 1);
+      return;
+    }
+    if (result.bubbleStyleId === 'starwish-ribbon') {
+      const veil = context.darkMode ? '#2A2140' : '#FBF5FF';
+      result.backgroundColor = ReaderRegexBubbleStyleResolver.mix(veil, base,
+        context.darkMode ? 0.30 : 0.24);
+      result.textColor = context.darkMode ? '#F6EEFF' : '#4A3570';
+      ReaderRegexBubbleStyleResolver.setUniformRadius(result, 16);
+      ReaderRegexBubbleStyleResolver.addShadow(result, 0.6,
+        context.darkMode ? '#665A4290' : '#B8FFFFFF', 0, -0.5);
+      ReaderRegexBubbleStyleResolver.addShadow(result, 1.6,
+        ReaderRegexBubbleStyleResolver.withAlpha(base, 96), 0.5, 1.2);
+      ReaderRegexBubbleStyleResolver.addShadow(result, 0.5, '#88D9B24C', -0.5, 0.5);
+      return;
+    }
     if (result.bubbleStyleId === 'pipi-soft-paw') {
       const cream = context.darkMode ? '#332721' : '#FFF4E8';
       result.backgroundColor = ReaderRegexBubbleStyleResolver.mix(cream, base,
@@ -564,18 +600,7 @@ export class ReaderRegexBubbleStyleResolver {
   }
 
   static normalizeColor(value: string, fallback: string): string {
-    const text = (value || '').trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(text)) {
-      return text.toUpperCase();
-    }
-    if (/^[0-9a-fA-F]{6}$/.test(text)) {
-      return `#${text.toUpperCase()}`;
-    }
-    const fallbackText = (fallback || '').trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(fallbackText)) {
-      return fallbackText.toUpperCase();
-    }
-    return '#007DFF';
+    return HexColor.normalize(value, fallback, '#007DFF');
   }
 
   static withAlpha(color: string, alpha: number): string {

@@ -2,9 +2,7 @@ import { router } from '@kit.ArkUI';
 import { util } from '@kit.ArkTS';
 import http from '@ohos.net.http';
 import fs from '@ohos.file.fs';
-import { HttpTTS } from '../model/data/Book';
-import { CookieStore } from '../core/http/CookieStore';
-import { JsRuntime } from '../core/rule/JsRuntime';
+import { HttpTTS, CookieStore, JsRuntime, sleepMs } from '@legado/sourceengine';
 import { TtsAvAudioPlayer } from './TtsAvAudioPlayer';
 import { PcmPlaybackCue, TtsPcmAudioPlayer } from './TtsPcmAudioPlayer';
 import { HdsFeedback } from './HdsFeedback';
@@ -786,8 +784,9 @@ export class HttpTtsReader {
     const dir = this.cacheDir();
     if (!dir) return;
     try {
-      const files = fs.listFileSync(dir).filter((name: string) => !!name);
-      if (files.length <= HttpTtsReader.MAX_CACHE_FILES) return;
+      const listed = fs.listFileSync(dir).filter((name: string) => !!name);
+      if (listed.length <= HttpTtsReader.MAX_CACHE_FILES) return;
+      const files = this.oldestFirst(dir, listed);
       const removeCount = files.length - HttpTtsReader.MAX_CACHE_FILES;
       let removed = 0;
       for (let i = 0; i < files.length && removed < removeCount; i++) {
@@ -801,6 +800,19 @@ export class HttpTtsReader {
       }
     } catch (_) {
     }
+  }
+
+  /** Cache files of a directory, least recently written first, so pruning removes the stalest audio. */
+  private oldestFirst(dir: string, names: string[]): string[] {
+    const times = new Map<string, number>();
+    for (const name of names) {
+      try {
+        times.set(name, fs.statSync(`${dir}/${name}`).mtime);
+      } catch (_) {
+        times.set(name, 0);
+      }
+    }
+    return [...names].sort((left: string, right: string): number => (times.get(left) || 0) - (times.get(right) || 0));
   }
 
   private cacheDir(): string {
@@ -1076,11 +1088,7 @@ export class HttpTtsReader {
   }
 
   private async delayCancelable(ms: number, generation: number): Promise<void> {
-    await this.delay(ms);
+    await sleepMs(ms);
     this.assertGeneration(generation);
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

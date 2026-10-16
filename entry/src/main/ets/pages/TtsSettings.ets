@@ -1,4 +1,3 @@
-import { SettingsPageLayout } from '../components/SettingsPageLayout';
 import { router, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import picker from '@ohos.file.picker';
@@ -12,15 +11,18 @@ import {
   TtsVoiceInfo,
   TtsWalletSnapshot
 } from '../account/AccountCommerceModels';
-import { HttpTTS } from '../model/data/Book';
-import { HttpClient } from '../core/http/HttpClient';
+import { HttpTTS, HttpClient } from '@legado/sourceengine';
 import { syncSystemBars } from '../utils/SystemBars';
 import { SystemTtsReader, TtsVoiceOption } from '../utils/SystemTtsReader';
+import { TtsVoiceCatalog } from '../utils/TtsVoiceCatalog';
 import { AdaptiveIconButton } from '../components/AdaptiveIconButton';
 import { TtsSettings, TtsSettingsStore } from '../utils/TtsSettingsStore';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
 
 const TTS_CUSTOM_VOICE_IMPORT_LIMIT_BYTES: number = 2 * 1024 * 1024;
 
@@ -46,7 +48,6 @@ struct TtsSettingsPage {
   @StorageLink('appLightButtonColor') appLightButtonColor: string = '#007DFF';
   @StorageLink('appDarkButtonColor') appDarkButtonColor: string = '#3F8CFF';
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
 
   @State voices: TtsVoiceOption[] = [TtsSettingsPage.defaultVoice()];
   @State cloudVoices: TtsVoiceInfo[] = [];
@@ -94,197 +95,15 @@ struct TtsSettingsPage {
     this.loadSettingsAndVoices();
   }
 
-  onPageHide(): void {
-    this.deactivatePage();
-  }
-
   aboutToDisappear(): void {
     this.deactivatePage();
   }
 
-  activatePage(): void {
-    if (!this.pageActive) {
-      this.pageActive = true;
-      this.pageSessionSerial++;
-    }
-  }
-
-  deactivatePage(): void {
-    this.flushPendingSpeedSettings();
-    this.pageActive = false;
-    this.pageSessionSerial++;
-    this.voiceLoadSerial++;
-    this.downloadSessionSerial++;
-    this.previewSessionSerial++;
-    this.isLoadingSettings = false;
-    this.isLoadingVoices = false;
-    this.downloadingVoiceKey = '';
-    this.downloadProgressText = '';
-    this.showVoiceDropdown = false;
-    this.previewReader.shutdown();
-    this.isPreviewing = false;
-  }
-
-  isPageSessionCurrent(session: number): boolean {
-    return this.pageActive && this.pageSessionSerial === session;
-  }
-
-  private pageScroller: Scroller = new Scroller();
-
-  @Builder
-  settingsContent() {
-    Stack({ alignContent: Alignment.TopStart }) {
-        Scroll(this.pageScroller) {
-          Column() {
-            this.sectionTitle('朗读音色')
-            this.voiceDropdownSelector()
-            Column({ space: 6 }) {
-              Text('系统音色首次使用可能需要联网下载，下载后可离线朗读。')
-                .fontSize(12)
-                .fontColor(this.subTextColor())
-                .width('100%')
-              Row() {
-                Text(this.voiceLoadError || (this.isLoadingVoices ? '正在加载系统音色…' : ''))
-                  .fontSize(12)
-                  .fontColor(this.voiceLoadError ? '#E5484D' : this.subTextColor())
-                  .layoutWeight(1)
-                Text('刷新音色')
-                  .fontSize(12)
-                  .fontColor(this.accentColor())
-                  .padding({ left: 12, top: 6, bottom: 6 })
-                  .enabled(!this.isLoadingVoices && !this.downloadingVoiceKey)
-                  .onClick(() => {
-                    this.loadVoices();
-                  })
-              }
-              .width('100%')
-            }
-            .width('calc(100% - 32vp)')
-            .margin({ left: 16, right: 16, top: 6 })
-
-          this.sectionTitle('自定义音色')
-          Row() {
-            Column() {
-              Text(this.customVoiceSummary())
-                .fontSize(16)
-                .fontColor(this.primaryTextColor())
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-              Text('导入、启用、禁用、删除自定义音色')
-                .fontSize(12)
-                .fontColor(this.subTextColor())
-                .margin({ top: 4 })
-            }
-            .layoutWeight(1)
-            .alignItems(HorizontalAlign.Start)
-
-            Text('管理')
-              .fontSize(14)
-              .fontColor(this.accentColor())
-              .width(52)
-              .textAlign(TextAlign.Center)
-          }
-          .width('calc(100% - 24vp)')
-          .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-          .margin({ left: 12, right: 12 })
-          .borderRadius(16)
-          .clip(true)
-          .backgroundColor(this.cardColor())
-          .border({ width: { bottom: 0.5 }, color: this.appDarkMode ? '#24FFFFFF' : '#14000000' })
-          .onClick(() => {
-            router.pushUrl({ url: 'pages/CustomTtsVoiceManager' });
-          })
-
-          this.sectionTitle('朗读倍速')
-          Column() {
-            Row() {
-              Text('倍速')
-                .fontSize(16)
-                .fontColor(this.primaryTextColor())
-                .layoutWeight(1)
-              Text(`${this.ttsSpeed.toFixed(1)}x`)
-                .fontSize(14)
-                .fontColor(this.subTextColor())
-            }
-            .width('100%')
-
-            Row({ space: 10 }) {
-              this.speedStepButton($r('sys.symbol.minus'), '降低朗读倍速', this.ttsSpeed > 0.5, () => {
-                this.applySpeed(this.ttsSpeed - 0.1);
-              })
-              Slider({ value: this.ttsSpeed, min: 0.5, max: 2, step: 0.1 })
-                .layoutWeight(1)
-                .showTips(true)
-                .selectedColor(this.accentColor())
-                .sliderInteractionMode(ImmersiveMaterialRuntime.supportsHds() ? SliderInteraction.SLIDE_AND_CLICK_UP : SliderInteraction.SLIDE_ONLY)
-                .onChange((value: number) => {
-                  this.applySpeed(value);
-                })
-              this.speedStepButton($r('sys.symbol.plus'), '提高朗读倍速', this.ttsSpeed !== 2, () => {
-                this.applySpeed(this.ttsSpeed + 0.1);
-              })
-            }
-            .width('100%')
-            .margin({ top: 10 })
-
-            Row({ space: 8 }) {
-              this.speedChip(0.8)
-              this.speedChip(1.0)
-              this.speedChip(1.2)
-              this.speedChip(1.5)
-              this.speedChip(2.0)
-            }
-            .width('100%')
-            .margin({ top: 10 })
-          }
-          .width('calc(100% - 24vp)')
-          .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-          .margin({ left: 12, right: 12 })
-          .borderRadius(16)
-          .clip(true)
-          .backgroundColor(this.cardColor())
-
-          this.sectionTitle('预览')
-          Column({ space: 12 }) {
-            Text(this.previewText)
-              .fontSize(14)
-              .lineHeight(22)
-              .fontColor(this.subTextColor())
-              .width('100%')
-
-            Button(this.isPreviewing ? '停止试听' : '试听')
-              .width('100%')
-              .height(42)
-              .backgroundColor(this.isPreviewing ? '#E53935' : this.buttonColor())
-              .fontColor('#FFFFFF')
-              .onClick(() => {
-                this.togglePreview();
-              })
-          }
-          .width('calc(100% - 24vp)')
-          .padding(16)
-          .margin({ left: 12, right: 12 })
-          .borderRadius(16)
-          .clip(true)
-          .backgroundColor(this.cardColor())
-
-          }
-          .width('100%')
-          .padding({ top: 56 + this.statusBarHeight, bottom: this.navBarHeight + 32 })
-        }
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        .width('100%')
-        .height('100%')
-        .align(Alignment.TopStart)
-    }
-    .width('100%')
-    .height('100%')
-  }
-
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      SettingsPageLayout({ pageTitle: '朗读设置', darkMode: this.appDarkMode,
-        scroller: this.pageScroller, pageContent: (): void => this.settingsContent() })
+      PageScaffold({ title: '朗读设置', content: () => {
+        this.pageContent()
+      } })
 
       if (this.showVoiceDropdown) {
         this.voiceDropdownMenu()
@@ -294,6 +113,143 @@ struct TtsSettingsPage {
     .height('100%')
     .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  pageContent() {
+    this.sectionTitle('朗读音色')
+    this.voiceDropdownSelector()
+
+    Column({ space: AppSpacing.SM }) {
+      Text('系统音色首次使用可能需要联网下载，下载后可离线朗读。')
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.subTextColor())
+        .width('100%')
+      Row() {
+        Text(this.voiceLoadError || (this.isLoadingVoices ? '正在加载系统音色…' : ''))
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.voiceLoadError ? ThemeRuntime.dangerColor(this.appDarkMode) : this.subTextColor())
+          .layoutWeight(1)
+        Text('刷新音色')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.accentColor())
+          .padding({ left: AppSpacing.LG, top: AppSpacing.SM, bottom: AppSpacing.SM })
+          .enabled(!this.isLoadingVoices && !this.downloadingVoiceKey)
+          .onClick(() => {
+            this.loadVoices();
+          })
+      }
+      .width('100%')
+    }
+    .width('calc(100% - 32vp)')
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.SM })
+
+    this.sectionTitle('自定义音色')
+    Row() {
+      Column() {
+        Text(this.customVoiceSummary())
+          .fontSize(AppFontSize.BODY_LARGE)
+          .fontColor(this.primaryTextColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text('导入、启用、禁用、删除自定义音色')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.subTextColor())
+          .margin({ top: AppSpacing.XS })
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      Text('管理')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.accentColor())
+        .width(52)
+        .textAlign(TextAlign.Center)
+    }
+    .width('calc(100% - 24vp)')
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+    .border({ width: { bottom: 0.5 }, color: ThemeRuntime.hairlineColor(this.appDarkMode) })
+    .onClick(() => {
+      router.pushUrl({ url: 'pages/CustomTtsVoiceManager' });
+    })
+
+    this.sectionTitle('朗读倍速')
+    Column() {
+      Row() {
+        Text('倍速')
+          .fontSize(AppFontSize.BODY_LARGE)
+          .fontColor(this.primaryTextColor())
+          .layoutWeight(1)
+        Text(`${this.ttsSpeed.toFixed(1)}x`)
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.subTextColor())
+      }
+      .width('100%')
+
+      Row({ space: AppSpacing.MD }) {
+        this.speedStepButton($r('sys.symbol.minus'), '降低朗读倍速', this.ttsSpeed > 0.5, () => {
+          this.applySpeed(this.ttsSpeed - 0.1);
+        })
+        Slider({ value: this.ttsSpeed, min: 0.5, max: 2, step: 0.1 })
+          .layoutWeight(1)
+          .showTips(true)
+          .selectedColor(this.accentColor())
+          .sliderInteractionMode(ImmersiveMaterialRuntime.supportsHds() ? SliderInteraction.SLIDE_AND_CLICK_UP : SliderInteraction.SLIDE_ONLY)
+          .onChange((value: number) => {
+            this.applySpeed(value);
+          })
+        this.speedStepButton($r('sys.symbol.plus'), '提高朗读倍速', this.ttsSpeed !== 2, () => {
+          this.applySpeed(this.ttsSpeed + 0.1);
+        })
+      }
+      .width('100%')
+      .margin({ top: AppSpacing.MD })
+
+      Row({ space: AppSpacing.MD }) {
+        this.speedChip(0.8)
+        this.speedChip(1.0)
+        this.speedChip(1.2)
+        this.speedChip(1.5)
+        this.speedChip(2.0)
+      }
+      .width('100%')
+      .margin({ top: AppSpacing.MD })
+    }
+    .width('calc(100% - 24vp)')
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    this.sectionTitle('预览')
+    Column({ space: AppSpacing.LG }) {
+      Text(this.previewText)
+        .fontSize(AppFontSize.BODY)
+        .lineHeight(22)
+        .fontColor(this.subTextColor())
+        .width('100%')
+
+      Button(this.isPreviewing ? '停止试听' : '试听')
+        .width('100%')
+        .height(42)
+        .backgroundColor(this.isPreviewing ? ThemeRuntime.dangerColor(this.appDarkMode) : this.buttonColor())
+        .fontColor(ThemeRuntime.onAccentColor())
+        .onClick(() => {
+          this.togglePreview();
+        })
+    }
+    .width('calc(100% - 24vp)')
+    .padding(AppSpacing.XL)
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
   }
 
   pageColor(): string {
@@ -349,11 +305,11 @@ struct TtsSettingsPage {
   selectedVoiceTitle(): string {
     const cloudVoice = this.findCurrentCloudVoice();
     if (cloudVoice) {
-      return this.cloudVoiceTitle(cloudVoice);
+      return TtsVoiceCatalog.cloudVoiceTitle(cloudVoice);
     }
     const customVoice = this.findCurrentCustomVoice();
     if (customVoice) {
-      return this.customVoiceTitle(customVoice);
+      return TtsVoiceCatalog.customVoiceTitle(customVoice);
     }
     if (this.ttsCustomVoiceId) {
       return '自定义音色 · 暂不可用';
@@ -373,7 +329,7 @@ struct TtsSettingsPage {
   voiceDropdownSelector() {
     Row() {
       Text(this.selectedVoiceTitle())
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
         .maxLines(1)
@@ -386,9 +342,9 @@ struct TtsSettingsPage {
     }
     .width('calc(100% - 24vp)')
     .height(54)
-    .padding({ left: 16, right: 16 })
-    .margin({ left: 12, right: 12 })
-    .borderRadius(14)
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
     .onClick(() => {
       this.showVoiceDropdown = !this.showVoiceDropdown;
@@ -412,7 +368,7 @@ struct TtsSettingsPage {
               this.voiceDropdownSectionTitle('自定义音色')
               ForEach(this.enabledCustomVoices(), (voice: HttpTTS) => {
                 this.customVoiceDropdownOption(voice, false)
-              }, (voice: HttpTTS) => `${this.customVoiceKey(voice)}_enabled`)
+              }, (voice: HttpTTS) => `${TtsVoiceCatalog.customVoiceKey(voice)}_enabled`)
             }
 
             this.voiceDropdownSectionTitle('系统音色')
@@ -424,7 +380,7 @@ struct TtsSettingsPage {
               this.voiceDropdownSectionTitle('已禁用')
               ForEach(this.disabledCustomVoices(), (voice: HttpTTS) => {
                 this.customVoiceDropdownOption(voice, true)
-              }, (voice: HttpTTS) => `${this.customVoiceKey(voice)}_disabled`)
+              }, (voice: HttpTTS) => `${TtsVoiceCatalog.customVoiceKey(voice)}_disabled`)
             }
           }
           .width('100%')
@@ -435,7 +391,7 @@ struct TtsSettingsPage {
       }
       .width('calc(100% - 24vp)')
       .constraintSize({ maxWidth: 560 })
-      .padding({ top: 6, bottom: 6 })
+      .padding({ top: AppSpacing.SM, bottom: AppSpacing.SM })
       // API 6 changed how backdropBlur composites for custom overlays, so the
       // translucent glass tint let page content bleed through the voice list.
       // Use the opaque card surface instead, matching the other settings
@@ -453,17 +409,17 @@ struct TtsSettingsPage {
   @Builder
   voiceDropdownSectionTitle(title: string) {
     Text(title)
-      .fontSize(12)
+      .fontSize(AppFontSize.CAPTION)
       .fontColor(this.subTextColor())
       .width('100%')
-      .padding({ left: 14, right: 14, top: 8, bottom: 5 })
+      .padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.MD, bottom: AppSpacing.XS })
   }
 
   @Builder
   customVoiceDropdownOption(voice: HttpTTS, disabled: boolean) {
     Row() {
-      Text(this.customVoiceTitle(voice))
-        .fontSize(15)
+      Text(TtsVoiceCatalog.customVoiceTitle(voice))
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(disabled ? this.subTextColor() : this.primaryTextColor())
         .layoutWeight(1)
         .maxLines(1)
@@ -477,7 +433,7 @@ struct TtsSettingsPage {
     }
     .width('100%')
     .height(46)
-    .padding({ left: 14, right: 14 })
+    .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
     .opacity(disabled ? 0.5 : 1)
     .onClick(() => {
       if (disabled) {
@@ -492,7 +448,7 @@ struct TtsSettingsPage {
   systemVoiceDropdownOption(voice: TtsVoiceOption) {
     Row() {
       Text(this.voiceTitle(voice))
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor((voice.available || voice.downloadable) ? this.primaryTextColor() : this.subTextColor())
         .layoutWeight(1)
         .maxLines(1)
@@ -500,7 +456,7 @@ struct TtsSettingsPage {
 
       if (this.isVoiceDownloading(voice)) {
         Text(this.downloadProgressText || '下载中')
-          .fontSize(11)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.accentColor())
       } else if (this.isVoiceSelected(voice)) {
         SymbolGlyph($r('sys.symbol.checkmark'))
@@ -508,13 +464,13 @@ struct TtsSettingsPage {
           .fontColor([this.accentColor()])
       } else if (!voice.available && voice.downloadable) {
         Text('下载')
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.accentColor())
       }
     }
     .width('100%')
     .height(46)
-    .padding({ left: 14, right: 14 })
+    .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
     .opacity((voice.available || voice.downloadable) ? 1 : 0.5)
     .onClick(() => {
       if (!voice.available && !voice.downloadable) {
@@ -685,16 +641,6 @@ struct TtsSettingsPage {
     });
   }
 
-  static defaultVoice(): TtsVoiceOption {
-    const option = new TtsVoiceOption();
-    option.id = 13;
-    option.name = '聆小珊';
-    option.online = 1;
-    option.language = 'zh-CN';
-    option.gender = 'female';
-    return option;
-  }
-
   async loadVoices(): Promise<void> {
     if (!this.pageActive || this.isLoadingVoices) {
       return;
@@ -723,62 +669,6 @@ struct TtsSettingsPage {
         this.isLoadingVoices = false;
       }
     }
-  }
-
-  mergeWithDefaultVoice(voices: TtsVoiceOption[]): TtsVoiceOption[] {
-    const options: TtsVoiceOption[] = [];
-    for (const voice of voices) {
-      if (voice.online !== 1) {
-        continue;
-      }
-      const existingIndex = options.findIndex((item: TtsVoiceOption) =>
-        this.isSameVoiceOption(item, voice));
-      if (existingIndex < 0) {
-        options.push(voice);
-      } else if (this.shouldPreferVoiceOption(voice, options[existingIndex])) {
-        options[existingIndex] = voice;
-      }
-    }
-    if (!options.some((voice: TtsVoiceOption) => this.normalizeVoiceId(voice.id) === 13 &&
-      this.sameLanguage(voice.language || 'zh-CN', 'zh-CN'))) {
-      options.unshift(TtsSettingsPage.defaultVoice());
-    }
-    return options;
-  }
-
-  isSameVoiceOption(left: TtsVoiceOption, right: TtsVoiceOption): boolean {
-    if (this.normalizeVoiceId(left.id) !== this.normalizeVoiceId(right.id) || left.online !== right.online ||
-      !this.sameLanguage(left.language || 'zh-CN', right.language || 'zh-CN')) {
-      return false;
-    }
-    if (this.isKnownVoiceId(left.id)) {
-      return true;
-    }
-    return (left.style || '') === (right.style || '');
-  }
-
-  shouldPreferVoiceOption(candidate: TtsVoiceOption, current: TtsVoiceOption): boolean {
-    if (!!candidate.systemStatus !== !!current.systemStatus) {
-      return !!candidate.systemStatus;
-    }
-    if (candidate.available !== current.available) {
-      return candidate.available;
-    }
-    if (this.isKnownVoiceId(candidate.id) !== this.isKnownVoiceId(current.id)) {
-      return this.isKnownVoiceId(candidate.id);
-    }
-    if (candidate.downloadable !== current.downloadable) {
-      return candidate.downloadable;
-    }
-    return candidate.id === 13 && current.id === 0;
-  }
-
-  isKnownVoiceId(id: number): boolean {
-    return id === 0 || id === 8 || id === 13 || id === 21;
-  }
-
-  normalizeVoiceId(id: number): number {
-    return id === 0 ? 13 : id;
   }
 
   async selectVoice(voice: TtsVoiceOption): Promise<void> {
@@ -826,7 +716,7 @@ struct TtsSettingsPage {
     this.previewSessionSerial++;
     this.ttsCustomVoiceId = String(voice.id);
     this.ttsCloudVoiceId = '';
-    this.selectedVoiceKey = this.customVoiceKey(voice);
+    this.selectedVoiceKey = TtsVoiceCatalog.customVoiceKey(voice);
     this.saveSettings();
     HdsFeedback.showToast(`已启用 ${voice.name}`);
   }
@@ -837,14 +727,6 @@ struct TtsSettingsPage {
     return this.cloudVoices.find((voice: TtsVoiceInfo) => voice.id === id);
   }
 
-  cloudVoiceTitle(voice: TtsVoiceInfo): string {
-    const tier = voice.tier === 'PREMIUM' ? '精品' : '标准';
-    const description = (voice.description || '').trim();
-    return description
-      ? `${voice.name} · ${description} · 云端${tier}`
-      : `${voice.name} · 云端${tier}`;
-  }
-
   async downloadAndSelectVoice(voice: TtsVoiceOption): Promise<void> {
     if (!this.pageActive) {
       return;
@@ -852,10 +734,6 @@ struct TtsSettingsPage {
     const downloadable = this.findMatchingVoice(voice, false);
     if (voice.online !== 1 || !downloadable || !downloadable.downloadable) {
       HdsFeedback.showToast('该系统音色当前无法下载，请刷新后重试');
-      return;
-    }
-    if (!SystemTtsReader.supportsVoiceDownload()) {
-      HdsFeedback.showToast('当前系统版本不支持下载系统音色，请升级系统后重试');
       return;
     }
     if (this.downloadingVoiceKey) {
@@ -953,44 +831,17 @@ struct TtsSettingsPage {
     return `${name} · 离线${gender}${state}`;
   }
 
-  voiceName(voice: TtsVoiceOption): string {
-    const id = this.normalizeVoiceId(voice.id);
-    if (id === 13) return '聆小珊';
-    if (id === 21) return '凌飞哲';
-    if (id === 8 && this.sameLanguage(voice.language || 'zh-CN', 'en-US')) return '美国英语 Laura';
-    return voice.name || '系统音色';
-  }
-
-  voiceGenderText(voice: TtsVoiceOption): string {
-    const id = this.normalizeVoiceId(voice.id);
-    if (id === 21) return ' · 男声';
-    if (id === 13 || (id === 8 && this.sameLanguage(voice.language || 'zh-CN', 'en-US'))) return ' · 女声';
-    const value = (voice.gender || '').toLowerCase();
-    if (value === 'male' || value === '男' || value === '男声') {
-      return ' · 男声';
-    }
-    if (value === 'female' || value === '女' || value === '女声') {
-      return ' · 女声';
-    }
-    return '';
-  }
-
-  voiceKey(voice: TtsVoiceOption): string {
-    const style = this.isKnownVoiceId(voice.id) ? '' : (voice.style || '');
-    return `${this.normalizeVoiceId(voice.id)}_${voice.online}_${this.normalizeLanguage(voice.language || 'zh-CN')}_${style}`;
-  }
-
   currentVoiceKey(): string {
     if (this.ttsCloudVoiceId) {
       return `cloud_${this.ttsCloudVoiceId}`;
     }
     if (this.ttsCustomVoiceId) {
       const customVoice = this.findCurrentCustomVoice();
-      return customVoice ? this.customVoiceKey(customVoice) : `custom_${this.ttsCustomVoiceId}`;
+      return customVoice ? TtsVoiceCatalog.customVoiceKey(customVoice) : `custom_${this.ttsCustomVoiceId}`;
     }
     const matched = this.findCurrentVoice();
     return matched ? this.voiceKey(matched) :
-      `${this.normalizeVoiceId(this.ttsPerson)}_1_${this.normalizeLanguage(this.ttsLanguage || 'zh-CN')}_${this.isKnownVoiceId(this.ttsPerson) ? '' : (this.ttsStyle || '')}`;
+      `${this.normalizeVoiceId(this.ttsPerson)}_1_${TtsVoiceCatalog.normalizeLanguage(this.ttsLanguage || 'zh-CN')}_${TtsVoiceCatalog.isKnownVoiceId(this.ttsPerson) ? '' : (this.ttsStyle || '')}`;
   }
 
   findCurrentVoice(): TtsVoiceOption | undefined {
@@ -1002,8 +853,8 @@ struct TtsSettingsPage {
       return false;
     }
     return this.normalizeVoiceId(voice.id) === this.normalizeVoiceId(this.ttsPerson) && voice.online === 1 &&
-      (this.isKnownVoiceId(voice.id) || (voice.style || '') === (this.ttsStyle || '')) &&
-      this.sameLanguage(voice.language || 'zh-CN', this.ttsLanguage || 'zh-CN');
+      (TtsVoiceCatalog.isKnownVoiceId(voice.id) || (voice.style || '') === (this.ttsStyle || '')) &&
+      TtsVoiceCatalog.sameLanguage(voice.language || 'zh-CN', this.ttsLanguage || 'zh-CN');
   }
 
   findCurrentCustomVoice(): HttpTTS | undefined {
@@ -1012,15 +863,6 @@ struct TtsSettingsPage {
       return undefined;
     }
     return this.customVoices.find((voice: HttpTTS) => String(voice.id) === selectedId);
-  }
-
-  customVoiceKey(voice: HttpTTS): string {
-    return `custom_${voice.id}_${voice.name || ''}`;
-  }
-
-  customVoiceTitle(voice: HttpTTS): string {
-    const state = voice.enabled === false ? ' · 已禁用' : '';
-    return `${voice.name || '未命名音色'} · 自定义${state}`;
   }
 
   isCustomVoiceSelected(voice: HttpTTS): boolean {
@@ -1104,7 +946,7 @@ struct TtsSettingsPage {
     this.ttsCustomVoices = SystemTtsReader.serializeCustomVoices(merged);
     if (!this.ttsCustomVoiceId && incoming.length > 0) {
       this.ttsCustomVoiceId = String(incoming[0].id);
-      this.selectedVoiceKey = this.customVoiceKey(incoming[0]);
+      this.selectedVoiceKey = TtsVoiceCatalog.customVoiceKey(incoming[0]);
     }
     this.saveSettings();
     HdsFeedback.showToast(`已导入 ${changed} 个自定义音色`);
@@ -1148,21 +990,6 @@ struct TtsSettingsPage {
       (!availableOnly || voice.available));
   }
 
-  sameLanguage(left: string, right: string): boolean {
-    return this.normalizeLanguage(left) === this.normalizeLanguage(right);
-  }
-
-  normalizeLanguage(language: string): string {
-    const value = (language || 'zh-CN').trim().replace(/_/g, '-').toLowerCase();
-    if (value === 'zh' || value === 'zh-cn' || value.startsWith('zh-hans')) {
-      return 'zh-CN';
-    }
-    if (value === 'en' || value === 'en-us') {
-      return 'en-US';
-    }
-    return value || 'zh-CN';
-  }
-
   isVoiceDownloading(voice: TtsVoiceOption): boolean {
     return this.downloadingVoiceKey === this.voiceKey(voice);
   }
@@ -1190,23 +1017,21 @@ struct TtsSettingsPage {
     return String(error);
   }
 
-
-
   @Builder
   sectionTitle(title: string) {
     Text(title)
-      .fontSize(13)
+      .fontSize(AppFontSize.BODY)
       .fontColor(this.subTextColor())
       .width('100%')
-      .padding({ left: 16, right: 16, top: 20, bottom: 8 })
+      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXL, bottom: AppSpacing.MD })
   }
 
   @Builder
   ttsCommerceSection() {
-    Column({ space: 12 }) {
+    Column({ space: AppSpacing.LG }) {
       Row() {
         Text(this.accountLoggedIn ? '当前额度' : '登录后可查看额度并兑换')
-          .fontSize(15)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor())
           .layoutWeight(1)
@@ -1217,17 +1042,18 @@ struct TtsSettingsPage {
             .color(this.accentColor())
         } else {
           Text('刷新')
-            .fontSize(13)
+            .fontSize(AppFontSize.BODY)
             .fontColor(this.accentColor())
-            .padding({ left: 10, right: 2, top: 6, bottom: 6 })
+            .padding({ left: AppSpacing.MD, right: AppSpacing.XXS, top: AppSpacing.SM, bottom: AppSpacing.SM })
             .onClick(() => {
-                      })
+              this.loadTtsCommerce();
+            })
         }
       }
       .width('100%')
 
       if (this.accountLoggedIn) {
-        Row({ space: 10 }) {
+        Row({ space: AppSpacing.MD }) {
           this.ttsBalanceCard('标准音色', false)
           this.ttsBalanceCard('精品音色', true)
         }
@@ -1235,32 +1061,32 @@ struct TtsSettingsPage {
 
         if (this.ttsWalletError) {
           Text(`${this.ttsWalletError}，请点击刷新`)
-            .fontSize(11)
-            .fontColor('#E5484D')
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(ThemeRuntime.dangerColor(this.appDarkMode))
             .width('100%')
         }
 
         Text(`可用于兑换：${this.paidPoints} 充值点 · 赠送点 ${this.promoPoints} 仅可兑换主题`)
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
           .width('100%')
       } else {
         Text('请先在“我的-账号与点数”登录华为账号，再返回这里兑换在线朗读字数。')
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .lineHeight(18)
           .fontColor(this.subTextColor())
           .width('100%')
       }
 
       ForEach(this.ttsCatalog.packages, (item: TtsPackageInfo) => {
-        Row({ space: 10 }) {
-          Column({ space: 4 }) {
+        Row({ space: AppSpacing.MD }) {
+          Column({ space: AppSpacing.XS }) {
             Text(`${item.tier === 'PREMIUM' ? '精品' : '标准'} · ${this.formatTtsChars(item.chars)}`)
-              .fontSize(15)
+              .fontSize(AppFontSize.BODY_LARGE)
               .fontWeight(FontWeight.Medium)
               .fontColor(this.primaryTextColor())
             Text(`${item.validDays} 天有效`)
-              .fontSize(11)
+              .fontSize(AppFontSize.CAPTION)
               .fontColor(this.subTextColor())
           }
           .alignItems(HorizontalAlign.Start)
@@ -1268,43 +1094,43 @@ struct TtsSettingsPage {
 
           Button(this.redeemingTtsSku === item.sku ? '兑换中' : `${item.points} 点`)
             .height(34)
-            .fontSize(13)
+            .fontSize(AppFontSize.BODY)
             .enabled(!this.redeemingTtsSku && this.accountLoggedIn && this.paidPoints >= item.points)
-            .fontColor('#FFFFFF')
+            .fontColor(ThemeRuntime.onAccentColor())
             .backgroundColor(this.accentColor())
             .onClick(() => {
               this.redeemTtsPackage(item);
             })
         }
         .width('100%')
-        .padding({ left: 12, right: 10, top: 10, bottom: 10 })
-        .borderRadius(12)
+        .padding({ left: AppSpacing.LG, right: AppSpacing.MD, top: AppSpacing.MD, bottom: AppSpacing.MD })
+        .borderRadius(ThemeRuntime.mediumRadius())
         .backgroundColor(this.inputColor())
       }, (item: TtsPackageInfo) => item.sku)
 
       Text('标准音色每次按 100 字向上取整，精品音色每次按 50 字向上取整；相同音色、文字和倍速会优先使用本地缓存。')
-        .fontSize(11)
+        .fontSize(AppFontSize.CAPTION)
         .lineHeight(17)
         .fontColor(this.subTextColor())
         .width('100%')
     }
     .width('calc(100% - 24vp)')
-    .padding(16)
-    .margin({ left: 12, right: 12, bottom: 24 })
-    .borderRadius(16)
+    .padding(AppSpacing.XL)
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG, bottom: AppSpacing.XXXL })
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
 
   @Builder
   ttsBalanceCard(title: string, premium: boolean) {
-    Column({ space: 4 }) {
+    Column({ space: AppSpacing.XS }) {
       Text(title)
-        .fontSize(12)
+        .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor())
       Text(this.ttsWalletLoaded
         ? this.formatTtsChars(premium ? this.ttsPremiumChars : this.ttsStandardChars)
         : '--')
-        .fontSize(19)
+        .fontSize(AppFontSize.TITLE)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor())
       Text(this.ttsWalletLoaded
@@ -1313,13 +1139,13 @@ struct TtsSettingsPage {
             .toLocaleDateString()} 到期`
           : '暂无额度')
         : (this.ttsWalletError ? '同步失败' : '正在同步'))
-        .fontSize(10)
+        .fontSize(AppFontSize.MICRO)
         .fontColor(this.subTextColor())
     }
     .alignItems(HorizontalAlign.Start)
     .layoutWeight(1)
-    .padding(12)
-    .borderRadius(12)
+    .padding(AppSpacing.LG)
+    .borderRadius(ThemeRuntime.mediumRadius())
     .backgroundColor(this.inputColor())
   }
 
@@ -1392,7 +1218,7 @@ struct TtsSettingsPage {
   speedChip(value: number) {
     Stack({ alignContent: Alignment.Center }) {
       Text(`${value.toFixed(1)}x`)
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontColor(Math.abs(this.ttsSpeed - value) < 0.01 ? '#FFFFFF' : this.primaryTextColor())
     }
         .layoutWeight(1)
@@ -1450,4 +1276,123 @@ struct TtsSettingsPage {
     }
   }
 
+  onPageHide(): void {
+    this.deactivatePage();
+  }
+
+  activatePage(): void {
+    if (!this.pageActive) {
+      this.pageActive = true;
+      this.pageSessionSerial++;
+    }
+  }
+
+  deactivatePage(): void {
+    this.flushPendingSpeedSettings();
+    this.pageActive = false;
+    this.pageSessionSerial++;
+    this.voiceLoadSerial++;
+    this.downloadSessionSerial++;
+    this.previewSessionSerial++;
+    this.isLoadingSettings = false;
+    this.isLoadingVoices = false;
+    this.downloadingVoiceKey = '';
+    this.downloadProgressText = '';
+    this.showVoiceDropdown = false;
+    this.previewReader.shutdown();
+    this.isPreviewing = false;
+  }
+
+  isPageSessionCurrent(session: number): boolean {
+    return this.pageActive && this.pageSessionSerial === session;
+  }
+
+  static defaultVoice(): TtsVoiceOption {
+    const option = new TtsVoiceOption();
+    option.id = 13;
+    option.name = '聆小珊';
+    option.online = 1;
+    option.language = 'zh-CN';
+    option.gender = 'female';
+    return option;
+  }
+
+  mergeWithDefaultVoice(voices: TtsVoiceOption[]): TtsVoiceOption[] {
+    const options: TtsVoiceOption[] = [];
+    for (const voice of voices) {
+      if (voice.online !== 1) {
+        continue;
+      }
+      const existingIndex = options.findIndex((item: TtsVoiceOption) =>
+        this.isSameVoiceOption(item, voice));
+      if (existingIndex < 0) {
+        options.push(voice);
+      } else if (this.shouldPreferVoiceOption(voice, options[existingIndex])) {
+        options[existingIndex] = voice;
+      }
+    }
+    if (!options.some((voice: TtsVoiceOption) => this.normalizeVoiceId(voice.id) === 13 &&
+      TtsVoiceCatalog.sameLanguage(voice.language || 'zh-CN', 'zh-CN'))) {
+      options.unshift(TtsSettingsPage.defaultVoice());
+    }
+    return options;
+  }
+
+  isSameVoiceOption(left: TtsVoiceOption, right: TtsVoiceOption): boolean {
+    if (this.normalizeVoiceId(left.id) !== this.normalizeVoiceId(right.id) || left.online !== right.online ||
+      !TtsVoiceCatalog.sameLanguage(left.language || 'zh-CN', right.language || 'zh-CN')) {
+      return false;
+    }
+    if (TtsVoiceCatalog.isKnownVoiceId(left.id)) {
+      return true;
+    }
+    return (left.style || '') === (right.style || '');
+  }
+
+  shouldPreferVoiceOption(candidate: TtsVoiceOption, current: TtsVoiceOption): boolean {
+    if (!!candidate.systemStatus !== !!current.systemStatus) {
+      return !!candidate.systemStatus;
+    }
+    if (candidate.available !== current.available) {
+      return candidate.available;
+    }
+    if (TtsVoiceCatalog.isKnownVoiceId(candidate.id) !== TtsVoiceCatalog.isKnownVoiceId(current.id)) {
+      return TtsVoiceCatalog.isKnownVoiceId(candidate.id);
+    }
+    if (candidate.downloadable !== current.downloadable) {
+      return candidate.downloadable;
+    }
+    return candidate.id === 13 && current.id === 0;
+  }
+
+  normalizeVoiceId(id: number): number {
+    return id === 0 ? 13 : id;
+  }
+
+  voiceName(voice: TtsVoiceOption): string {
+    const id = this.normalizeVoiceId(voice.id);
+    if (id === 13) return '聆小珊';
+    if (id === 21) return '凌飞哲';
+    if (id === 8 && TtsVoiceCatalog.sameLanguage(voice.language || 'zh-CN', 'en-US')) return '美国英语 Laura';
+    return voice.name || '系统音色';
+  }
+
+  voiceGenderText(voice: TtsVoiceOption): string {
+    const id = this.normalizeVoiceId(voice.id);
+    if (id === 21) return ' · 男声';
+    if (id === 13 || (id === 8 && TtsVoiceCatalog.sameLanguage(voice.language || 'zh-CN', 'en-US'))) return ' · 女声';
+    const value = (voice.gender || '').toLowerCase();
+    if (value === 'male' || value === '男' || value === '男声') {
+      return ' · 男声';
+    }
+    if (value === 'female' || value === '女' || value === '女声') {
+      return ' · 女声';
+    }
+    return '';
+  }
+
+  voiceKey(voice: TtsVoiceOption): string {
+    const style = TtsVoiceCatalog.isKnownVoiceId(voice.id) ? '' : (voice.style || '');
+    return `${this.normalizeVoiceId(voice.id)}_${voice.online}_${TtsVoiceCatalog.normalizeLanguage(voice.language || 'zh-CN')}_${style}`;
+  }
 }

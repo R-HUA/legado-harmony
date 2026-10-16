@@ -14,6 +14,8 @@ export class RemoteAudioPlayback {
   private player: media.AVPlayer | null = null;
   private listener: RemoteAudioPlaybackListener | null = null;
   private generation: number = 0;
+  /** play() 已开始但还没出声的代次；切章时据此丢弃半途的播放器，避免旧章节随后响起。 */
+  private loadingGeneration: number = -1;
   private interruptPaused: boolean = false;
   private sleepTimerId: number = -1;
   private sleepEndAt: number = 0;
@@ -21,6 +23,7 @@ export class RemoteAudioPlayback {
   bookUrl: string = '';
   chapterIndex: number = -1;
   mediaUrl: string = '';
+  private mediaHeaders: Record<string, string> = {};
   state: string = 'idle';
   positionMs: number = 0;
   durationMs: number = 0;
@@ -46,19 +49,23 @@ export class RemoteAudioPlayback {
   }
 
   async play(bookUrl: string, chapterIndex: number, url: string, headers: Record<string, string>,
-    startPositionMs: number, speed: number): Promise<void> {
+    startPositionMs: number, speed: number, startTiming: AudioStartTiming | null = null): Promise<void> {
     const generation = ++this.generation;
+    this.loadingGeneration = generation;
+    const timing = startTiming || new AudioStartTiming(chapterIndex);
     this.interruptPaused = false;
     await this.releasePlayer();
     this.bookUrl = bookUrl;
     this.chapterIndex = chapterIndex;
     this.mediaUrl = url;
+    this.mediaHeaders = headers;
     this.positionMs = Math.max(0, startPositionMs || 0);
     this.durationMs = 0;
     this.speed = this.normalizeSpeed(speed);
     this.setState('loading');
 
     const player = await media.createAVPlayer();
+    timing.mark('create-player');
     if (generation !== this.generation) {
       await player.release();
       return;
@@ -96,11 +103,13 @@ export class RemoteAudioPlayback {
     try {
       const mediaSource = media.createMediaSourceWithUrl(url, headers);
       await player.setMediaSource(mediaSource);
+      timing.mark('set-media-source');
       if (generation !== this.generation) return;
       // setMediaSource() completing does not guarantee that AVPlayer has emitted initialized yet.
       // prepare() is only legal after that transition; calling it while still idle produces
       // "Prepare operation only supports stopped/initialized" on real devices.
       await this.waitForInitialized(player, generation);
+      timing.mark('initialized');
       if (generation !== this.generation) return;
       player.audioRendererInfo = {
         content: audio.ContentType.CONTENT_TYPE_SPEECH,
@@ -109,19 +118,42 @@ export class RemoteAudioPlayback {
       };
       await player.prepare();
       if (generation !== this.generation) return;
+      // 与 setMediaSource 同理：prepare() 返回不保证已经进入 prepared。网络流缓冲较慢时直接 play() 会报
+      // "The current state is initialized. Play operation only supports prepared/paused/completed"。
+      await this.waitForPrepared(player, generation);
+      timing.mark('prepared');
+      if (generation !== this.generation) return;
       this.durationMs = Math.max(0, player.duration || this.durationMs);
       this.applySpeed(player, this.speed);
       if (this.positionMs > 0 && (this.durationMs <= 0 || this.positionMs < this.durationMs - 1000)) {
         player.seek(this.positionMs, media.SeekMode.SEEK_CLOSEST);
       }
       await player.play();
-      if (generation === this.generation && player === this.player) this.setState('playing');
+      timing.mark('play');
+      if (generation === this.generation && player === this.player) {
+        this.setState('playing');
+        timing.finish('playing');
+      }
     } catch (error) {
       if (generation !== this.generation) return;
+      timing.finish('failed');
       const message = error instanceof Error ? error.message : String(error);
       this.setState('error');
       throw new Error(message);
+    } finally {
+      if (this.loadingGeneration === generation) this.loadingGeneration = -1;
     }
+  }
+
+  /**
+   * 切章时调用：若上一章的 play() 还没出声，立即作废并释放那个播放器，状态保持 loading。
+   * 已经在播的旧章节不受影响，等新章节地址就绪后由 play() 正常替换，媒体会话和后台任务不会中断。
+   */
+  async abortPendingLoad(): Promise<void> {
+    if (this.loadingGeneration < 0 || this.loadingGeneration !== this.generation) return;
+    this.generation++;
+    this.loadingGeneration = -1;
+    await this.releasePlayer();
   }
 
   async pause(): Promise<void> {
@@ -132,13 +164,30 @@ export class RemoteAudioPlayback {
   }
 
   async resume(): Promise<void> {
+    if (this.state === 'loading') return;
     const player = this.player;
-    if (!player) return;
-    if (player.state === 'paused' || player.state === 'prepared' || player.state === 'completed') {
-      if (player.state === 'completed') player.seek(0, media.SeekMode.SEEK_CLOSEST);
-      await player.play();
-      if (player === this.player) this.setState('playing');
+    const playerState = player?.state || '';
+    if (player && playerState === 'playing') {
+      this.setState('playing');
+      return;
     }
+    if (player && (playerState === 'paused' || playerState === 'prepared' || playerState === 'completed')) {
+      try {
+        if (playerState === 'completed') player.seek(0, media.SeekMode.SEEK_CLOSEST);
+        await player.play();
+        if (player === this.player) this.setState('playing');
+        return;
+      } catch (error) {
+        if (player !== this.player) return;
+        console.warn('[AudioBook] resume failed, rebuilding player:', error);
+      }
+    }
+    // Another app taking audio focus permanently (forced STOP interrupt) leaves AVPlayer in
+    // stopped/error, where play() is illegal. Without a rebuild every play button, including
+    // the system media capsule, stays dead until the process restarts.
+    if (!this.mediaUrl) return;
+    await this.play(this.bookUrl, this.chapterIndex, this.mediaUrl, this.mediaHeaders, this.positionMs,
+      this.speed);
   }
 
   seek(positionMs: number): void {
@@ -181,6 +230,7 @@ export class RemoteAudioPlayback {
     this.bookUrl = '';
     this.chapterIndex = -1;
     this.mediaUrl = '';
+    this.mediaHeaders = {};
     this.positionMs = 0;
     this.durationMs = 0;
     this.setState('idle');
@@ -237,21 +287,32 @@ export class RemoteAudioPlayback {
       if (event.forceType === audio.InterruptForceType.INTERRUPT_SHARE && player.state === 'playing') {
         player.pause().catch(() => {});
       }
+      this.syncStateAfterInterrupt(player, generation);
       return;
     }
     if (hint === audio.InterruptHint.INTERRUPT_HINT_STOP) {
       this.interruptPaused = false;
+      this.syncStateAfterInterrupt(player, generation);
       return;
     }
     if (hint === audio.InterruptHint.INTERRUPT_HINT_RESUME) {
       try { player.setVolume(1); } catch (_) {}
-      if (this.interruptPaused && (player.state === 'paused' || player.state === 'prepared')) {
+      if (this.interruptPaused && player.state !== 'playing') {
         this.interruptPaused = false;
-        player.play().catch(() => {});
+        this.resume().catch((error: Error) => {
+          this.listener?.onPlaybackError(error.message || String(error));
+        });
       } else {
         this.interruptPaused = false;
       }
     }
+  }
+
+  /** A forced interrupt stops timeUpdate, so the stateChange fallback there never runs. */
+  private syncStateAfterInterrupt(player: media.AVPlayer, generation: number): void {
+    setTimeout((): void => {
+      if (player.state !== 'playing') this.syncPlayerState(player, generation);
+    }, 300);
   }
 
   private async releasePlayer(): Promise<void> {
@@ -265,6 +326,29 @@ export class RemoteAudioPlayback {
     try {
       await player.release();
     } catch (_) {}
+  }
+
+  private waitForPrepared(player: media.AVPlayer, generation: number): Promise<void> {
+    const ready = (state: string): boolean => state === 'prepared' || state === 'playing' || state === 'paused' ||
+      state === 'completed';
+    if (generation !== this.generation || ready(player.state || '')) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const startedAt = Date.now();
+      // 和 waitForInitialized 一样用轮询，不另外注册 stateChange 回调。
+      const pollId = setInterval((): void => {
+        const state = player.state || '';
+        if (generation !== this.generation || player !== this.player || ready(state)) {
+          clearInterval(pollId);
+          resolve();
+        } else if (state === 'released' || state === 'error') {
+          clearInterval(pollId);
+          reject(new Error('音频加载失败'));
+        } else if (Date.now() - startedAt > 20000) {
+          clearInterval(pollId);
+          reject(new Error('音频加载超时'));
+        }
+      }, 50);
+    });
   }
 
   private waitForInitialized(player: media.AVPlayer, generation: number): Promise<void> {
@@ -308,5 +392,33 @@ export class RemoteAudioPlayback {
     if (this.sleepTimerId >= 0) clearInterval(this.sleepTimerId);
     this.sleepTimerId = -1;
     this.sleepEndAt = 0;
+  }
+}
+
+/** 记录听书起播各阶段耗时，便于在日志中定位慢在地址解析、缓冲还是播放器本身。不记录音频地址。 */
+export class AudioStartTiming {
+  private readonly chapterIndex: number;
+  private readonly startedAt: number;
+  private lastAt: number;
+  private readonly stages: string[] = [];
+  private finished: boolean = false;
+
+  constructor(chapterIndex: number) {
+    this.chapterIndex = chapterIndex;
+    this.startedAt = Date.now();
+    this.lastAt = this.startedAt;
+  }
+
+  mark(stage: string): void {
+    const now = Date.now();
+    this.stages.push(`${stage}=${now - this.lastAt}ms`);
+    this.lastAt = now;
+  }
+
+  finish(result: string): void {
+    if (this.finished) return;
+    this.finished = true;
+    console.info(`[AudioBook] start chapter=${this.chapterIndex} ${result} total=${Date.now() - this.startedAt}ms ` +
+      this.stages.join(' '));
   }
 }

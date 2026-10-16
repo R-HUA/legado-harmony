@@ -1,6 +1,7 @@
 import { audio } from '@kit.AudioKit';
 import deviceInfo from '@ohos.deviceInfo';
 import { TtsAudioSession } from './TtsAudioSession';
+import { sleepMs } from '@legado/sourceengine';
 
 interface PcmPlaybackMark {
   frame: number;
@@ -181,7 +182,7 @@ export class TtsPcmAudioPlayer {
         // Older devices lack a rendered-frame timestamp. The final writeData
         // block is already zero-padded, so only a short route-latency guard is
         // needed here; a longer fixed grace becomes audible at every chapter.
-        await this.delay(TtsPcmAudioPlayer.CLOCK_FALLBACK_DRAIN_GRACE_MS);
+        await sleepMs(TtsPcmAudioPlayer.CLOCK_FALLBACK_DRAIN_GRACE_MS);
       }
       if (generation !== this.playGeneration || this.renderer !== renderer) {
         return;
@@ -212,7 +213,7 @@ export class TtsPcmAudioPlayer {
       if (generation !== this.playGeneration || this.renderer !== renderer) {
         return;
       }
-      await this.delay(waitStepMs);
+      await sleepMs(waitStepMs);
     }
     if (drainError) {
       console.warn('[TTS] renderer drain failed after playback reached its final frame:', drainError);
@@ -262,15 +263,9 @@ export class TtsPcmAudioPlayer {
         this.dispatchDuePlaybackMarks(generation);
         return true;
       }
-      await this.delay(40);
+      await sleepMs(40);
     }
     return false;
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise<void>((resolve: () => void) => {
-      setTimeout(resolve, ms);
-    });
   }
 
   async pause(): Promise<void> {
@@ -518,8 +513,7 @@ export class TtsPcmAudioPlayer {
       this.pausePlaybackTimelineAt(this.lastReachedFrame);
       return;
     }
-    if (deviceInfo.sdkApiVersion >= 19 && renderer &&
-      renderer.state === audio.AudioState.STATE_RUNNING) {
+    if (renderer && renderer.state === audio.AudioState.STATE_RUNNING) {
       try {
         const timestamp = renderer.getAudioTimestampInfoSync();
         const rendererFrame = Math.max(0, Math.round(timestamp.framePos));

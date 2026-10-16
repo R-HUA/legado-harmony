@@ -3,10 +3,9 @@ import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
 import http from '@ohos.net.http';
 import { CoverUrlNormalizer } from './CoverUrlNormalizer';
-import { BookSource } from '../model/data/Book';
+import { BookSource, CookieStore } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { ComicImagePipeline } from '../core/book/ComicImagePipeline';
-import { CookieStore } from '../core/http/CookieStore';
 
 /**
  * 封面本地缓存。
@@ -169,6 +168,22 @@ export class BookCoverCache {
     BookCoverCache.deletePath(localPath);
   }
 
+  // 调用方自行取回的封面（如需要登录凭据的书库）落到同一份缓存里。
+  static async storeCover(context: Context, raw: string, data: Uint8Array): Promise<string> {
+    if (!raw || data.byteLength === 0) return '';
+    await BookCoverCache.ensureDirAsync(`${context.cacheDir}/book_covers`);
+    const path = BookCoverCache.cachedCoverPath(context.cacheDir, raw);
+    const file = await fs.open(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    try {
+      await fs.write(file.fd, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    } finally {
+      await fs.close(file);
+    }
+    const resolved = fileUri.getUriFromPath(path);
+    BookCoverCache.resolvedCoverUris.set(raw, resolved);
+    return resolved;
+  }
+
   private static async downloadCover(root: string, url: string, origin: string,
     pageUrl: string): Promise<string> {
     if (!root) return '';
@@ -245,7 +260,7 @@ export class BookCoverCache {
     const language = BookCoverCache.headerValue(declared, 'accept-language');
     if (language) headers['Accept-Language'] = language;
     if (!siteReferer) headers['Origin'] = BookCoverCache.originFromUrl(url);
-    const cookie = CookieStore.getCookie(url);
+    const cookie = CookieStore.forSource(origin).getCookie(url);
     if (cookie) headers['Cookie'] = cookie;
     return headers;
   }

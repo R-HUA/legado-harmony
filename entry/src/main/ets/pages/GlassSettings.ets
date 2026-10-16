@@ -1,17 +1,18 @@
-import { router } from '@kit.ArkUI';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { AdaptiveIconButton } from '../components/AdaptiveIconButton';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { GlassPresetIds, GlassSettings, GlassSettingsStore } from '../utils/GlassSettingsStore';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
+import { AdaptiveSwitch } from '../components/AdaptiveSwitch';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
 
 @Entry
 @Component
 struct GlassSettingsPage {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State settings: GlassSettings = new GlassSettings();
   @State selectedPresetId: string = GlassPresetIds.STANDARD;
@@ -34,48 +35,54 @@ struct GlassSettingsPage {
   }
 
   build() {
-    Column() {
-      this.titleBar()
-      this.floatingPreview()
-      Scroll() {
-        Column({ space: 12 }) {
-          this.glassEnabledSwitch()
-          Column({ space: 12 }) {
-            this.sectionTitle('效果预设')
-            this.presets()
-            this.sectionTitle('模糊强度')
-            this.sliderCard('全局模糊强度', 'blur', 0, 40, 1)
-            this.sectionTitle('颜色与边框')
-            this.sliderCard('透明度', 'tintOpacity', 0, 100, 1)
-            this.sliderCard('边框透明度', 'borderOpacity', 0, 100, 1)
-            this.sliderCard('边框宽度', 'borderWidth', 0, 2, 0.5)
-            this.sliderCard('组件圆角', 'cornerRadius', 0, 32, 1)
-            this.sectionTitle('阴影')
-            this.shadowSwitch()
-            if (this.settings.shadowEnabled) {
-              this.sliderCard('阴影模糊', 'shadowRadius', 0, 30, 1)
-              this.sliderCard(this.appDarkMode ? '深色阴影' : '浅色阴影',
-                this.appDarkMode ? 'darkShadowOpacity' : 'lightShadowOpacity', 0, 100, 1)
-              this.sliderCard('水平偏移', 'shadowOffsetX', -12, 12, 1)
-              this.sliderCard('垂直偏移', 'shadowOffsetY', -12, 12, 1)
-            }
-            this.performanceCard()
-          }
-          .width('100%')
-          .enabled(this.settings.enabled)
-          .opacity(this.settings.enabled ? 1 : 0.42)
-        }
-        .width('100%')
-        .padding({ left: 14, right: 14, top: 6, bottom: 32 + this.navBarHeight })
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .layoutWeight(1)
-      .align(Alignment.TopStart)
+    Stack() {
+      PageScaffold({ title: '磨砂玻璃', scrollable: false, content: () => {
+        this.pageContent()
+      } })
     }
     .width('100%')
-    .height('100%').justifyContent(FlexAlign.Start)
+    .height('100%')
     .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  pageContent() {
+    this.floatingPreview()
+    Scroll() {
+      Column({ space: AppSpacing.LG }) {
+        this.glassEnabledSwitch()
+        Column({ space: AppSpacing.LG }) {
+          this.sectionTitle('效果预设')
+          this.presets()
+          this.sectionTitle('模糊强度')
+          this.sliderCard('全局模糊强度', 'blur', 0, 40, 1)
+          this.sectionTitle('颜色与边框')
+          this.sliderCard('透明度', 'tintOpacity', 0, 100, 1)
+          this.sliderCard('边框透明度', 'borderOpacity', 0, 100, 1)
+          this.sliderCard('边框宽度', 'borderWidth', 0, 2, 0.5)
+          this.sliderCard('组件圆角', 'cornerRadius', 0, 32, 1)
+          this.sectionTitle('阴影')
+          this.shadowSwitch()
+          if (this.settings.shadowEnabled) {
+            this.sliderCard('阴影模糊', 'shadowRadius', 0, 30, 1)
+            this.sliderCard(this.appDarkMode ? '深色阴影' : '浅色阴影',
+              this.appDarkMode ? 'darkShadowOpacity' : 'lightShadowOpacity', 0, 100, 1)
+            this.sliderCard('水平偏移', 'shadowOffsetX', -12, 12, 1)
+            this.sliderCard('垂直偏移', 'shadowOffsetY', -12, 12, 1)
+          }
+          this.performanceCard()
+        }
+        .width('100%')
+        .enabled(this.settings.enabled)
+        .opacity(this.settings.enabled ? 1 : 0.42)
+      }
+      .width('100%')
+      .padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.SM, bottom: 32 + this.navBarHeight })
+    }
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+    .layoutWeight(1)
+    .align(Alignment.TopStart)
   }
 
   async loadSettings(): Promise<void> {
@@ -220,31 +227,12 @@ struct GlassSettingsPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-      Text('磨砂玻璃')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ right: 12, top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-  }
-
-  @Builder
   floatingPreview() {
     Column() {
       this.preview()
     }
     .width('100%')
-    .padding({ left: 14, right: 14, top: 10, bottom: 6 })
+    .padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.MD, bottom: AppSpacing.SM })
     .zIndex(2)
   }
 
@@ -270,14 +258,14 @@ struct GlassSettingsPage {
 
       Row() {
         Text(this.previewTitle())
-          .fontSize(11)
+          .fontSize(AppFontSize.CAPTION)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor())
-          .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-          .borderRadius(10)
+          .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XXS, bottom: AppSpacing.XXS })
+          .borderRadius(ThemeRuntime.mediumRadius())
           .backgroundColor(this.previewGlassColor())
         Blank().layoutWeight(1)
-        Row({ space: 5 }) {
+        Row({ space: AppSpacing.XS }) {
           ForEach([0, 1, 2, 3, 4], (index: number) => {
             Circle()
               .width(this.previewIndex === index ? 12 : 5)
@@ -288,7 +276,7 @@ struct GlassSettingsPage {
         }
       }
       .width('100%')
-      .padding({ left: 10, right: 10, bottom: 7 })
+      .padding({ left: AppSpacing.MD, right: AppSpacing.MD, bottom: AppSpacing.SM })
       .alignItems(VerticalAlign.Center)
       .position({ x: 0, y: '100%' })
       .translate({ y: -27 })
@@ -306,7 +294,7 @@ struct GlassSettingsPage {
 
   @Builder
   previewBackdrop() {
-    Row({ space: 18 }) {
+    Row({ space: AppSpacing.XL }) {
       Circle().width(72).height(72).fill(this.accentColor())
       Circle().width(62).height(62).fill(ThemeRuntime.dangerColor(this.appDarkMode))
     }
@@ -320,12 +308,12 @@ struct GlassSettingsPage {
   panelPreview() {
     Stack({ alignContent: Alignment.Center }) {
       this.previewBackdrop()
-      Column({ space: 4 }) {
-        Text('内容面板').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.primaryTextColor())
-        Text('承载主要内容').fontSize(11).fontColor(this.subTextColor())
+      Column({ space: AppSpacing.XS }) {
+        Text('内容面板').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Bold).fontColor(this.primaryTextColor())
+        Text('承载主要内容').fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
       }
       .width('78%')
-      .padding(14)
+      .padding(AppSpacing.LG)
       .borderRadius(this.settings.cornerRadius)
       .backgroundColor(this.previewGlassColor())
       .backdropBlur(this.previewBlur())
@@ -339,11 +327,11 @@ struct GlassSettingsPage {
   popoverPreview() {
     Stack({ alignContent: Alignment.Center }) {
       this.previewBackdrop()
-      Column({ space: 5 }) {
-        Text('弹出提示').fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.primaryTextColor())
-        Text('这是浮在内容上方的弹出层').fontSize(10).fontColor(this.subTextColor())
+      Column({ space: AppSpacing.XS }) {
+        Text('弹出提示').fontSize(AppFontSize.BODY).fontWeight(FontWeight.Bold).fontColor(this.primaryTextColor())
+        Text('这是浮在内容上方的弹出层').fontSize(AppFontSize.MICRO).fontColor(this.subTextColor())
       }
-      .width('64%').padding(12).borderRadius(this.settings.cornerRadius)
+      .width('64%').padding(AppSpacing.LG).borderRadius(this.settings.cornerRadius)
       .backgroundColor(this.previewGlassColor(true))
       .backdropBlur(this.previewBlur())
       .border({ width: this.settings.borderWidth, color: this.previewBorderColor() })
@@ -356,8 +344,8 @@ struct GlassSettingsPage {
   buttonPreview() {
     Stack({ alignContent: Alignment.Center }) {
       this.previewBackdrop()
-      Row({ space: 12 }) {
-        Button('Aa').width(48).height(48).fontSize(16)
+      Row({ space: AppSpacing.LG }) {
+        Button('Aa').width(48).height(48).fontSize(AppFontSize.BODY_LARGE)
           .fontColor(this.primaryTextColor())
           .backgroundColor(this.previewGlassColor())
           .backdropBlur(this.previewBlur())
@@ -365,7 +353,7 @@ struct GlassSettingsPage {
           .border({ width: this.settings.borderWidth, color: this.previewBorderColor() })
           .shadow({ color: this.previewShadowColor(), radius: this.previewShadowRadius(),
             offsetX: this.settings.shadowOffsetX, offsetY: this.settings.shadowOffsetY })
-        Button('操作').height(42).fontSize(13).fontColor(this.primaryTextColor())
+        Button('操作').height(42).fontSize(AppFontSize.BODY).fontColor(this.primaryTextColor())
           .backgroundColor(this.previewGlassColor())
           .backdropBlur(this.previewBlur())
           .borderRadius(this.settings.cornerRadius)
@@ -381,7 +369,7 @@ struct GlassSettingsPage {
     Stack({ alignContent: Alignment.Center }) {
       this.previewBackdrop()
       Column() {
-        Text('背景遮罩').fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.primaryTextColor())
+        Text('背景遮罩').fontSize(AppFontSize.BODY).fontWeight(FontWeight.Bold).fontColor(this.primaryTextColor())
       }
       .width('88%').height('76%').justifyContent(FlexAlign.Center)
       .borderRadius(this.settings.cornerRadius)
@@ -402,7 +390,7 @@ struct GlassSettingsPage {
         this.previewMenuItem('分享')
         this.previewMenuItem('删除')
       }
-      .width(126).padding({ top: 4, bottom: 4 })
+      .width(126).padding({ top: AppSpacing.XS, bottom: AppSpacing.XS })
       .borderRadius(this.settings.cornerRadius)
       .backgroundColor(this.previewGlassColor())
       .backdropBlur(this.previewBlur())
@@ -414,18 +402,18 @@ struct GlassSettingsPage {
 
   @Builder
   previewMenuItem(title: string) {
-    Text(title).width('100%').height(28).fontSize(11).fontColor(this.primaryTextColor())
+    Text(title).width('100%').height(28).fontSize(AppFontSize.CAPTION).fontColor(this.primaryTextColor())
       .textAlign(TextAlign.Center)
   }
 
   @Builder
   sectionTitle(title: string) {
-    Text(title).fontSize(13).fontColor(this.subTextColor()).width('100%').padding({ left: 2, top: 6 })
+    Text(title).fontSize(AppFontSize.BODY).fontColor(this.subTextColor()).width('100%').padding({ left: AppSpacing.XXS, top: AppSpacing.SM })
   }
 
   @Builder
   presets() {
-    Row({ space: 8 }) {
+    Row({ space: AppSpacing.MD }) {
       this.presetButton('轻盈', GlassPresetIds.LIGHT)
       this.presetButton('标准', GlassPresetIds.STANDARD)
       this.presetButton('强烈', GlassPresetIds.STRONG)
@@ -438,7 +426,7 @@ struct GlassSettingsPage {
   presetButton(title: string, id: string) {
     Stack({ alignContent: Alignment.Center }) {
       Text(title)
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.selectedPresetId === id ? '#FFFFFF' : this.primaryTextColor())
     }
       .layoutWeight(1)
@@ -451,20 +439,21 @@ struct GlassSettingsPage {
   @Builder
   glassEnabledSwitch() {
     Row() {
-      Column({ space: 3 }) {
-        Text('启用磨砂玻璃').fontSize(16).fontColor(this.primaryTextColor())
+      Column({ space: AppSpacing.XXS }) {
+        Text('启用磨砂玻璃').fontSize(AppFontSize.BODY_LARGE).fontColor(this.primaryTextColor())
         Text(this.settings.enabled ? '已启用，可选择预设或调整参数' : '已关闭，下方参数暂不可调整')
-          .fontSize(12).fontColor(this.subTextColor())
+          .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Toggle({ type: ToggleType.Switch, isOn: this.settings.enabled })
-        .selectedColor(this.accentColor())
-        .onChange((value: boolean) => this.setGlassEnabled(value))
+      AdaptiveSwitch({
+        isOn: this.settings.enabled,
+        onChange: (value: boolean) => this.setGlassEnabled(value)
+      })
     }
     .width('100%')
-    .padding(14)
+    .padding(AppSpacing.LG)
     .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
@@ -472,36 +461,38 @@ struct GlassSettingsPage {
   @Builder
   shadowSwitch() {
     Row() {
-      Text('显示悬浮阴影').fontSize(16).fontColor(this.primaryTextColor()).layoutWeight(1)
-      Toggle({ type: ToggleType.Switch, isOn: this.settings.shadowEnabled })
-        .selectedColor(this.accentColor())
-        .onChange((value: boolean) => { this.settings.shadowEnabled = value; this.changed(); })
+      Text('显示悬浮阴影').fontSize(AppFontSize.BODY_LARGE).fontColor(this.primaryTextColor()).layoutWeight(1)
+      AdaptiveSwitch({
+        isOn: this.settings.shadowEnabled,
+        onChange: (value: boolean) => { this.settings.shadowEnabled = value; this.changed(); }
+      })
     }
-    .width('100%').padding(14).borderRadius(ThemeRuntime.cardRadius()).backgroundColor(this.cardColor())
+    .width('100%').padding(AppSpacing.LG).borderRadius(ThemeRuntime.cardRadius()).backgroundColor(this.cardColor())
   }
 
   @Builder
   performanceCard() {
     Row() {
-      Column({ space: 3 }) {
-        Text('低性能模式').fontSize(16).fontColor(this.primaryTextColor())
-        Text('禁用实时模糊和阴影，列表较多时更流畅').fontSize(12).fontColor(this.subTextColor())
+      Column({ space: AppSpacing.XXS }) {
+        Text('低性能模式').fontSize(AppFontSize.BODY_LARGE).fontColor(this.primaryTextColor())
+        Text('禁用实时模糊和阴影，列表较多时更流畅').fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Toggle({ type: ToggleType.Switch, isOn: this.settings.lowPerformance })
-        .selectedColor(this.accentColor())
-        .onChange((value: boolean) => { this.settings.lowPerformance = value; this.changed(); })
+      AdaptiveSwitch({
+        isOn: this.settings.lowPerformance,
+        onChange: (value: boolean) => { this.settings.lowPerformance = value; this.changed(); }
+      })
     }
-    .width('100%').padding(14).borderRadius(ThemeRuntime.cardRadius()).backgroundColor(this.cardColor())
+    .width('100%').padding(AppSpacing.LG).borderRadius(ThemeRuntime.cardRadius()).backgroundColor(this.cardColor())
   }
 
   @Builder
   sliderCard(title: string, key: string, min: number, max: number, step: number) {
-    Column({ space: 4 }) {
+    Column({ space: AppSpacing.XS }) {
       Row() {
-        Text(title).fontSize(15).fontColor(this.primaryTextColor()).layoutWeight(1)
-        Text(this.sliderDisplayValue(key)).fontSize(13).fontColor(this.accentColor())
+        Text(title).fontSize(AppFontSize.BODY_LARGE).fontColor(this.primaryTextColor()).layoutWeight(1)
+        Text(this.sliderDisplayValue(key)).fontSize(AppFontSize.BODY).fontColor(this.accentColor())
       }.width('100%')
-      Row({ space: 10 }) {
+      Row({ space: AppSpacing.MD }) {
         this.sliderStepButton($r('sys.symbol.minus'), '减小', this.sliderValue(key) > min, () => {
           this.stepSliderValue(key, min, max, -step);
         })
@@ -518,7 +509,7 @@ struct GlassSettingsPage {
       }
       .width('100%')
     }
-    .width('100%').padding({ left: 14, right: 14, top: 10, bottom: 8 })
+    .width('100%').padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.MD, bottom: AppSpacing.MD })
     .borderRadius(ThemeRuntime.cardRadius()).backgroundColor(this.cardColor())
   }
 

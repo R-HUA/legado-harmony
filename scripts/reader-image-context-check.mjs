@@ -11,12 +11,12 @@
 // 平台模块（文件系统/网络/ArkWeb）在此脚本中以替身出现；不解析真实图片、不访问网络、不执行站点脚本。
 
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import vm from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
+import { readEtsModule } from './lib/ets-module-staging.mjs';
 
 function loadSource(relativePath) {
-  return fs.readFileSync(new URL('../entry/src/main/ets/' + relativePath, import.meta.url), 'utf8')
+  return readEtsModule(relativePath)
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
 }
 
@@ -208,12 +208,14 @@ function fakeController(name) {
     }
   };
 }
+const { WebJsAwaitScript } = evaluate('core/book/WebJsAwaitScript.ts', ['WebJsAwaitScript'], {});
 const { WebBookFetchRuntime } = evaluate('core/book/WebBookFetchRuntime.ts', ['WebBookFetchRuntime'], {
   console: logs,
   setTimeout, clearTimeout,
   webview: { WebviewController: class {} },
   util: { TextEncoder: class { encodeInto(value) { return new Uint8Array(Array.from(value || '', c => c.charCodeAt(0))); } } },
-  CookieStore: { getCookie: () => '', setCookies() {}, saveAsync() {} }
+  WebJsAwaitScript,
+  CookieStore: { forSource: () => ({ getCookie: () => '', setCookies() {}, saveAsync() {} }) }
 });
 const runtime = WebBookFetchRuntime.get();
 const front = fakeController('front');
@@ -361,7 +363,12 @@ const coverBindings = {
     })
   },
   ComicImagePipeline: { presentationHeaders: (source) => ComicImagePipeline.presentationHeaders(source) },
-  CookieStore: { getCookie: (url) => url.includes('img3.readpai.com') ? 'cf_clearance=session' : '' },
+  CookieStore: {
+    forSource(origin) {
+      assert.equal(origin, coverSource.bookSourceUrl, '封面必须使用所属书源的 CookieJar');
+      return { getCookie: (url) => url.includes('img3.readpai.com') ? 'cf_clearance=session' : '' };
+    }
+  },
   AppStorage: appStorage,
   setTimeout: (fn) => { timers.push(fn); return timers.length; }
 };

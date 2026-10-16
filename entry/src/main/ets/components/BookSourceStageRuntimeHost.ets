@@ -1,5 +1,6 @@
 import { webview } from '@kit.ArkWeb';
-import { BookSourceStageWebRuntime } from '../core/book/BookSourceStageWebRuntime';
+import { WebRuntimeAvailability } from '../utils/WebRuntimeAvailability';
+import { BookSourceStageWebRuntime } from '@legado/sourceengine';
 
 /** Keeps the shared full-JavaScript source runtime available on routed book pages. */
 @Component
@@ -68,7 +69,7 @@ export struct BookSourceStageRuntimeHost {
   }
 
   build() {
-    if (this.mounted) {
+    if (this.mounted && WebRuntimeAvailability.isAvailable()) {
       Web({ src: 'about:blank', controller: this.controller })
         .width(1)
         .height(1)

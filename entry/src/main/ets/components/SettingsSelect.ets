@@ -13,6 +13,8 @@ export struct SettingsSelect {
   @Prop darkMode: boolean = false;
   @Prop textSize: number = 14;
   @Prop textColor: ResourceColor = $r('sys.color.font_secondary');
+  @Prop arrowPosition: ArrowPosition = ArrowPosition.END;
+  @Prop controlId: string = '';
   onSelected: (index: number) => void = () => {};
 
   build() {
@@ -20,13 +22,14 @@ export struct SettingsSelect {
       // 新属性直接走声明式 Select 入口；设备的 AttributeModifier 代理未提供这些方法。
       if (deviceInfo.sdkApiVersion >= 26) {
         Select(this.options)
+          .id(this.controlId)
           .selected(this.selectedIndex)
           .value(this.selectedLabel)
           .font({ size: this.textSize })
           .fontColor(this.textColor)
           .backgroundColor(Color.Transparent)
           .padding({ left: 0, right: 0 })
-          .arrowPosition(ArrowPosition.END)
+          .arrowPosition(this.arrowPosition)
           .optionBgColor(Color.Transparent)
           .optionFontColor(ThemeRuntime.primaryTextColor(this.darkMode))
           .selectedOptionFontColor(ThemeRuntime.primaryTextColor(this.darkMode))
@@ -36,13 +39,14 @@ export struct SettingsSelect {
           .onSelect((index: number) => this.onSelected(index))
       } else if (deviceInfo.sdkApiVersion >= 20) {
         Select(this.options)
+          .id(this.controlId)
           .selected(this.selectedIndex)
           .value(this.selectedLabel)
           .font({ size: this.textSize })
           .fontColor(this.textColor)
           .backgroundColor(Color.Transparent)
           .padding({ left: 0, right: 0 })
-          .arrowPosition(ArrowPosition.END)
+          .arrowPosition(this.arrowPosition)
           .optionBgColor(Color.Transparent)
           .optionFontColor(ThemeRuntime.primaryTextColor(this.darkMode))
           .selectedOptionFontColor(ThemeRuntime.primaryTextColor(this.darkMode))
@@ -51,13 +55,14 @@ export struct SettingsSelect {
           .onSelect((index: number) => this.onSelected(index))
       } else {
         Select(this.options)
+          .id(this.controlId)
           .selected(this.selectedIndex)
           .value(this.selectedLabel)
           .font({ size: this.textSize })
           .fontColor(this.textColor)
           .backgroundColor(Color.Transparent)
           .padding({ left: 0, right: 0 })
-          .arrowPosition(ArrowPosition.END)
+          .arrowPosition(this.arrowPosition)
           .optionBgColor(Color.Transparent)
           .optionFontColor(ThemeRuntime.primaryTextColor(this.darkMode))
           .selectedOptionFontColor(ThemeRuntime.accentColor(this.darkMode))

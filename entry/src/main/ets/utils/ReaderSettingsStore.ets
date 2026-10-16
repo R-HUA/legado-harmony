@@ -2,6 +2,8 @@ import { Context } from '@kit.AbilityKit';
 import preferences from '@ohos.data.preferences';
 import { ReaderThemeHelper } from './ReaderThemeHelper';
 import { CloudSyncChangeTracker } from '../account/CloudSyncChangeTracker';
+import { HexColor } from './HexColor';
+import { ReaderInfoBarConfig } from '../core/reader/ReaderInfoBarModel';
 
 export class ReaderSettings {
   fontSize: number = 20;
@@ -55,6 +57,8 @@ export class ReaderSettings {
   readerFooterLeftMode: string = 'chapter';
   readerFooterProgressMode: string = 'page';
   readerFooterShowProgressBar: boolean = false;
+  // 页眉页脚的槽位与外观（ReaderInfoBarConfig 的 JSON）。为空表示尚未迁移，按上面三个旧内容选项推导。
+  readerInfoBarConfig: string = '';
   fontFamily: string = '';
   fontFilePath: string = '';
   fontSourceName: string = '系统默认';
@@ -136,6 +140,7 @@ export class ReaderSettingsStore {
   static readonly KEY_FOOTER_LEFT_MODE: string = 'readerFooterLeftMode';
   static readonly KEY_FOOTER_PROGRESS_MODE: string = 'readerFooterProgressMode';
   static readonly KEY_FOOTER_SHOW_PROGRESS_BAR: string = 'readerFooterShowProgressBar';
+  static readonly KEY_INFO_BAR_CONFIG: string = 'readerInfoBarConfig';
   static readonly KEY_FONT_FAMILY: string = 'readerFontFamily';
   static readonly KEY_FONT_FILE_PATH: string = 'readerFontFilePath';
   static readonly KEY_FONT_SOURCE_NAME: string = 'readerFontSourceName';
@@ -406,6 +411,8 @@ export class ReaderSettingsStore {
       await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_FOOTER_PROGRESS_MODE, 'page'));
     settings.readerFooterShowProgressBar = await ReaderSettingsStore.getBoolean(
       store, ReaderSettingsStore.KEY_FOOTER_SHOW_PROGRESS_BAR, false);
+    settings.readerInfoBarConfig = ReaderSettingsStore.resolveInfoBarConfig(
+      await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_INFO_BAR_CONFIG, ''), settings);
     settings.fontFamily = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_FONT_FAMILY, '');
     settings.fontFilePath = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_FONT_FILE_PATH, '');
     settings.fontSourceName = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_FONT_SOURCE_NAME, '系统默认');
@@ -813,16 +820,16 @@ export class ReaderSettingsStore {
     }
   }
 
-  static saveReaderChromeSettings(context: Context, headerEnabled: boolean,
-    headerContentMode: string, footerEnabled: boolean, footerLeftMode: string,
-    footerProgressMode: string, footerShowProgressBar: boolean): Promise<void> {
+  /**
+   * 保存页眉页脚设置。旧版的三个内容选项和进度条开关不再修改，原样保留在设置里，
+   * 供尚未升级的设备通过云同步继续读取。
+   */
+  static saveReaderChromeSettings(context: Context, headerEnabled: boolean, footerEnabled: boolean,
+    infoBarConfig: string): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
     settings.readerHeaderEnabled = headerEnabled === true;
-    settings.readerHeaderContentMode = ReaderSettingsStore.normalizeHeaderContentMode(headerContentMode);
     settings.readerFooterEnabled = footerEnabled !== false;
-    settings.readerFooterLeftMode = ReaderSettingsStore.normalizeFooterLeftMode(footerLeftMode);
-    settings.readerFooterProgressMode = ReaderSettingsStore.normalizeFooterProgressMode(footerProgressMode);
-    settings.readerFooterShowProgressBar = footerShowProgressBar === true;
+    settings.readerInfoBarConfig = ReaderSettingsStore.resolveInfoBarConfig(infoBarConfig, settings);
     const snapshot = ReaderSettingsStore.clone(settings);
     ReaderSettingsStore.cachedSettings = snapshot;
     ReaderSettingsStore.applyReaderChromeToStorage(snapshot);
@@ -832,11 +839,8 @@ export class ReaderSettingsStore {
     const next = previous.then(async () => {
       const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
       await store.put(ReaderSettingsStore.KEY_HEADER_ENABLED, snapshot.readerHeaderEnabled);
-      await store.put(ReaderSettingsStore.KEY_HEADER_CONTENT_MODE, snapshot.readerHeaderContentMode);
       await store.put(ReaderSettingsStore.KEY_FOOTER_ENABLED, snapshot.readerFooterEnabled);
-      await store.put(ReaderSettingsStore.KEY_FOOTER_LEFT_MODE, snapshot.readerFooterLeftMode);
-      await store.put(ReaderSettingsStore.KEY_FOOTER_PROGRESS_MODE, snapshot.readerFooterProgressMode);
-      await store.put(ReaderSettingsStore.KEY_FOOTER_SHOW_PROGRESS_BAR, snapshot.readerFooterShowProgressBar);
+      await store.put(ReaderSettingsStore.KEY_INFO_BAR_CONFIG, snapshot.readerInfoBarConfig);
       await ReaderSettingsStore.persistThemeProfile(store, themeId, snapshot);
       await store.flush();
     });
@@ -954,11 +958,8 @@ export class ReaderSettingsStore {
     await ReaderSettingsStore.saveReaderChromeSettings(
       context,
       settings.readerHeaderEnabled,
-      settings.readerHeaderContentMode,
       settings.readerFooterEnabled,
-      settings.readerFooterLeftMode,
-      settings.readerFooterProgressMode,
-      settings.readerFooterShowProgressBar
+      settings.readerInfoBarConfig
     );
     ReaderSettingsStore.applyToStorage(settings);
   }
@@ -1026,6 +1027,7 @@ export class ReaderSettingsStore {
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_FOOTER_LEFT_MODE, settings.readerFooterLeftMode);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_FOOTER_PROGRESS_MODE, settings.readerFooterProgressMode);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_FOOTER_SHOW_PROGRESS_BAR, settings.readerFooterShowProgressBar);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_INFO_BAR_CONFIG, settings.readerInfoBarConfig);
   }
 
   private static applyEyeTurnToStorage(settings: ReaderSettings): void {
@@ -1269,14 +1271,7 @@ export class ReaderSettingsStore {
   }
 
   private static normalizeColor(color: string, fallback: string): string {
-    const trimmed = (color || '').trim();
-    const normalized = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
-    if (/^#[0-9a-fA-F]{6}$/.test(normalized)) {
-      return normalized.toUpperCase();
-    }
-    const fallbackTrimmed = (fallback || '').trim();
-    const normalizedFallback = fallbackTrimmed.startsWith('#') ? fallbackTrimmed : `#${fallbackTrimmed}`;
-    return /^#[0-9a-fA-F]{6}$/.test(normalizedFallback) ? normalizedFallback.toUpperCase() : '#333333';
+    return HexColor.normalize(color, fallback, '#333333');
   }
 
   private static normalizePageTurnMode(mode: number): number {
@@ -1375,6 +1370,14 @@ export class ReaderSettingsStore {
     return value === 'percentage' || value === 'chapter' || value === 'book' || value === 'none' ? value : 'page';
   }
 
+  /** 取已保存的页眉页脚配置；没有或损坏时由旧版内容选项推导。返回规范化后的 JSON。 */
+  private static resolveInfoBarConfig(raw: string, legacy: ReaderSettings): string {
+    const config = ReaderInfoBarConfig.parse(raw) || ReaderInfoBarConfig.fromLegacy(
+      legacy.readerHeaderContentMode, legacy.readerFooterLeftMode, legacy.readerFooterProgressMode,
+      legacy.readerFooterShowProgressBar);
+    return config.serialize();
+  }
+
   private static normalizeFontMode(mode: string): string {
     if (mode === 'system' || mode === 'custom') {
       return mode;
@@ -1456,6 +1459,7 @@ export class ReaderSettingsStore {
     settings.readerFooterLeftMode = ReaderSettingsStore.normalizeFooterLeftMode(source.readerFooterLeftMode);
     settings.readerFooterProgressMode = ReaderSettingsStore.normalizeFooterProgressMode(source.readerFooterProgressMode);
     settings.readerFooterShowProgressBar = source.readerFooterShowProgressBar === true;
+    settings.readerInfoBarConfig = ReaderSettingsStore.resolveInfoBarConfig(source.readerInfoBarConfig, settings);
     settings.fontFamily = source.fontFamily || '';
     settings.fontFilePath = source.fontFilePath || '';
     settings.fontSourceName = source.fontSourceName || '系统默认';
@@ -1593,6 +1597,8 @@ export class ReaderSettingsStore {
     settings.readerFooterProgressMode = ReaderSettingsStore.normalizeFooterProgressMode(
       AppStorage.get<string>(ReaderSettingsStore.KEY_FOOTER_PROGRESS_MODE) || 'page');
     settings.readerFooterShowProgressBar = AppStorage.get<boolean>(ReaderSettingsStore.KEY_FOOTER_SHOW_PROGRESS_BAR) ?? false;
+    settings.readerInfoBarConfig = ReaderSettingsStore.resolveInfoBarConfig(
+      AppStorage.get<string>(ReaderSettingsStore.KEY_INFO_BAR_CONFIG) || '', settings);
     settings.fontFamily = AppStorage.get<string>(ReaderSettingsStore.KEY_FONT_FAMILY) || '';
     settings.fontFilePath = AppStorage.get<string>(ReaderSettingsStore.KEY_FONT_FILE_PATH) || '';
     settings.fontSourceName = AppStorage.get<string>(ReaderSettingsStore.KEY_FONT_SOURCE_NAME) || '系统默认';

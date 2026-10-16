@@ -50,9 +50,14 @@ const readerThemes = read('entry/src/main/ets/utils/ReaderThemeHelper.ets');
 const regexModel = read('entry/src/main/ets/model/reader/ReaderRegexFontRule.ets');
 const regexSettings = read('entry/src/main/ets/pages/ReaderFontSettings.ets');
 const reader = read('entry/src/main/ets/pages/ReadBook.ets');
+const readerPaginator = read('entry/src/main/ets/core/reader/ReaderV2Paginator.ets');
+const readerLayoutSettings = read('entry/src/main/ets/components/reader/ReaderLayoutSettings.ets');
 const readerBackgroundComponent = read('entry/src/main/ets/components/ReaderThemeBackground.ets');
-const indexPage = read('entry/src/main/ets/pages/Index.ets');
-const bookModel = read('entry/src/main/ets/model/data/Book.ts');
+// 首页各页签已拆到 components/home，检查时与入口页拼在一起看。
+const indexPage = read('entry/src/main/ets/pages/Index.ets') + '\n' +
+  ['HomeTabShells', 'BookshelfPage', 'ExplorePage', 'SearchPage', 'SettingsTabPage']
+    .map((name) => read(`entry/src/main/ets/components/home/${name}.ets`)).join('\n');
+const bookModel = read('harmony-book-source-engine/sourceengine/src/main/ets/model/data/Book.ts');
 const themePage = read('entry/src/main/ets/pages/ThemeSettings.ets');
 const readerSettingsPage = read('entry/src/main/ets/pages/Settings.ets');
 const ttsSettingsPage = read('entry/src/main/ets/pages/TtsSettings.ets');
@@ -71,12 +76,14 @@ const entryAbility = read('entry/src/main/ets/entryability/EntryAbility.ets');
 const serverIndex = read('server/src/index.ts');
 const serverThemeCatalog = read('server/migrations/011_theme_catalog.sql') + '\n' +
   read('server/migrations/012_qingluan_water_theme.sql') + '\n' +
-  read('server/migrations/013_cat_pipi_theme.sql');
+  read('server/migrations/013_cat_pipi_theme.sql') + '\n' +
+  read('server/migrations/014_anime_themes.sql') + '\n' +
+  read('server/migrations/015_letterpress_page_theme.sql');
 const pages = JSON.parse(read('entry/src/main/resources/base/profile/main_pages.json'));
 
 const expectedThemes = [
   'classic-blue', 'warm-paper', 'forest-mist', 'ink-wash', 'neon-night', 'sword-frost',
-  'qingluan-water', 'cat-pipi'
+  'qingluan-water', 'cat-pipi', 'azure-mecha', 'starwish-magic', 'letterpress-page'
 ];
 for (const themeId of expectedThemes) {
   assert(models.includes(`'${themeId}'`), `Theme id is missing from ThemeModels: ${themeId}`);
@@ -85,7 +92,7 @@ for (const themeId of expectedThemes) {
 const redeemableThemeIds = [
   'classic-blue', 'warm-paper', 'forest-mist', 'ink-wash', 'neon-night',
   'strawberry-cream', 'crimson-archive', 'plum-tea', 'rose-letter', 'moon-crane', 'sword-frost',
-  'qingluan-water', 'cat-pipi'
+  'qingluan-water', 'cat-pipi', 'azure-mecha', 'starwish-magic', 'letterpress-page'
 ];
 for (const themeId of redeemableThemeIds) {
   assert(serverThemeCatalog.includes(`('${themeId}'`), `Database theme catalog is missing: ${themeId}`);
@@ -100,7 +107,8 @@ const expectedBackgrounds = [
   'paper-light', 'paper-dark', 'forest-light', 'forest-dark',
   'ink-light', 'ink-dark', 'neon-light', 'neon-dark',
   'sword-frost-light', 'sword-frost-dark', 'qingluan-water-light', 'qingluan-water-dark',
-  'cat-pipi-light', 'cat-pipi-dark'
+  'cat-pipi-light', 'cat-pipi-dark', 'azure-mecha-light', 'azure-mecha-dark',
+  'starwish-magic-light', 'starwish-magic-dark', 'letterpress-page-light', 'letterpress-page-dark'
 ];
 for (const assetId of expectedBackgrounds) {
   assert(assets.includes(`'${assetId}'`), `Background asset id is not mapped: ${assetId}`);
@@ -132,6 +140,43 @@ for (const fileName of readerDecorationFiles) {
     `Invalid reader decoration dimensions: ${fileName}`);
   assert(!/(<script|<image|<use|href=|url\(|<filter)/i.test(source), `Unsafe SVG feature in ${fileName}`);
 }
+
+// Reader backgrounds pair the top-left ornament with a dedicated bottom-right drawing, not a mirror.
+const assetRegistrySource = read('entry/src/main/ets/theme/ThemeAssetRegistry.ets');
+for (const name of ['paper', 'forest', 'ink', 'neon', 'strawberry', 'crimson', 'plum_tea', 'rose_letter',
+  'moon_crane', 'sword_frost', 'qingluan_water', 'azure_mecha', 'starwish_magic', 'letterpress_page']) {
+  for (const mode of ['light', 'dark']) {
+    const resourceName = `reader_decor_${name}_trailing_${mode}`;
+    assert(fs.existsSync(path.join(mediaRoot, `${resourceName}.svg`)),
+      `Reader trailing ornament is missing: ${resourceName}.svg`);
+    assert(assetRegistrySource.includes(`app.media.${resourceName}`),
+      `Reader trailing ornament is not mapped in ThemeAssetRegistry: ${resourceName}`);
+  }
+}
+
+// Every builtin theme ships its own TTS / audiobook panel artwork in both modes.
+const ttsPanelThemeNames = [
+  'plain_default', 'classic_blue', 'warm_paper', 'forest_mist', 'ink_wash', 'neon_night', 'strawberry_cream',
+  'crimson_archive', 'plum_tea', 'rose_letter', 'moon_crane', 'sword_frost', 'qingluan_water', 'cat_pipi',
+  'azure_mecha', 'starwish_magic', 'letterpress_page'
+];
+const ttsPanelStyles = read('entry/src/main/ets/theme/TtsPanelThemeStyles.ets');
+for (const themeName of ttsPanelThemeNames) {
+  for (const mode of ['light', 'dark']) {
+    const resourceName = `tts_panel_${themeName}_${mode}`;
+    const filePath = path.join(mediaRoot, `${resourceName}.svg`);
+    assert(fs.existsSync(filePath), `TTS panel artwork is missing: ${resourceName}.svg`);
+    const source = fs.readFileSync(filePath, 'utf8');
+    assert(/viewBox="0 0 720 520"/.test(source), `Invalid TTS panel artwork viewBox: ${resourceName}.svg`);
+    assert(!/(<script|<image|<use|href=|url\(|<filter)/i.test(source), `Unsafe SVG feature in ${resourceName}.svg`);
+    assert(ttsPanelStyles.includes(`app.media.${resourceName}`),
+      `TTS panel artwork is not mapped in TtsPanelThemeStyles: ${resourceName}`);
+  }
+}
+assert(read('entry/src/main/ets/components/ReaderTtsPlayerPanel.ets').includes('TtsPanelThemeBackground('),
+  'TTS player panel must draw the themed panel background');
+assert(themePage.includes('this.storeTtsPane(theme, customSchemeId, inPager)'),
+  'Theme previews must include the TTS panel pane');
 
 const themedIconFiles = fs.readdirSync(mediaRoot).filter(fileName => /^ic_theme_.*\.svg$/.test(fileName));
 assert(themedIconFiles.length >= 8, 'Rounded and ink icon packs must each contain four icons');
@@ -235,7 +280,7 @@ for (const fileName of catPipiSvgs) {
 }
 
 const bubbleStyles = ['qq-soft', 'qq-solid', 'capsule', 'paper', 'neon', 'sword-talisman', 'qingluan-jade',
-  'pipi-soft-paw'];
+  'pipi-soft-paw', 'mecha-comm', 'starwish-ribbon', 'pencil-mark'];
 for (const styleId of bubbleStyles) {
   assert(models.includes(`'${styleId}'`), `Bubble style is missing from ThemeModels: ${styleId}`);
   assert(regexModel.includes(`'${styleId}'`), `Bubble resolver/codec is missing style: ${styleId}`);
@@ -244,7 +289,9 @@ for (const styleId of bubbleStyles) {
 assert(regexModel.includes('schemaVersion: number = 3'), 'Regex rule schema must be version 3');
 assert(regexSettings.includes('ReaderRegexFontCodec.decode'), 'Settings page must use the shared regex codec');
 assert(reader.includes('ReaderRegexFontCodec.decode'), 'Reader page must use the shared regex codec');
-assert(reader.includes('if (slice.ttsHighlighted)'), 'TTS highlight precedence is missing');
+// The TTS focus is painted from paragraph geometry as its own layer above the text and regex bubbles.
+assert(reader.includes('readerV2TtsHighlightRects(') && reader.includes('this.readerCurrentV2TtsOverlay('),
+  'TTS highlight overlay is missing');
 assert(reader.includes('start >= displayText.length || regex.lastIndex >= displayText.length'),
   'Reader zero-length regex guard is missing');
 assert(regexSettings.includes('start >= text.length || regex.lastIndex >= text.length'),
@@ -257,8 +304,8 @@ assert(readerBackgroundComponent.includes('ThemeAssetRegistry.readerBackgroundDe
 assert(reader.includes('ReaderThemeBackground({') && reader.includes('customImageFit: this.getBackgroundImageFit()'),
   'Reader root surface does not draw the responsive theme background');
 assert(readerBackgroundComponent.includes('.objectFit(ImageFit.Contain)') &&
-  readerBackgroundComponent.includes('readerBackgroundBorderColor'),
-  'Builtin reader backgrounds must preserve ornament proportions and draw a responsive native border');
+  !readerBackgroundComponent.includes('.border('),
+  'Builtin reader backgrounds must preserve ornament proportions and draw no frame border');
 assert(indexPage.includes('ThemeRuntime.iconPackId()'), 'Floating tab bar does not resolve the active icon pack');
 for (const tabId of ['bookshelf', 'explore', 'search', 'mine']) {
   assert(indexPage.includes(`this.navigationIcon('${tabId}')`), `Floating tab icon is not themed: ${tabId}`);
@@ -317,7 +364,10 @@ assert(!themeColorPage.includes("'pages/AppIconSettings'") &&
   !themeColorPage.includes("'pages/FontSettings'") &&
   !themeStore.includes('updateCustomFont') && !themeStore.includes('updateCustomDesktopIcon'),
   'Theme and appearance must remain independent from fonts and desktop icons');
-assert(themePage.includes('this.customThemeSectionTitle()') &&
+// 主题页重做后“默认与自定义”区块由 myThemesSectionTitle() 起头，排在“已购主题”“更多主题”之前。
+assert(themePage.includes('this.myThemesSectionTitle()') &&
+  themePage.indexOf('this.myThemesSectionTitle()') < themePage.indexOf("this.sectionTitle('已购主题')") &&
+  themePage.indexOf('this.myThemesSectionTitle()') < themePage.indexOf("this.sectionTitle('更多主题')") &&
   themePage.includes("url: 'pages/ThemeColorSettings'"),
   'Theme page does not expose the custom theme before builtin themes');
 assert(themeColorPage.includes('settings.themeId = ThemeIds.CUSTOM') &&
@@ -350,9 +400,10 @@ assert(readerSettingsPage.includes('this.typographyStepper()') &&
   readerSettingsPage.includes("{ value: '下边距' }") &&
   readerSettingsPage.includes('adjustCurrentTypographySetting'),
   'Reader typography dropdown/stepper does not expose all four margins');
-assert(reader.includes('this.getEffectiveReaderMarginLeft() + this.getEffectiveReaderMarginRight()') &&
-  reader.includes('this.getEffectiveReaderMarginTop() + this.getReaderContentBottomPadding()') &&
-  reader.includes('this.getEffectiveReaderMarginBottom() + this.getReaderContentBottomReserve()'),
+assert(reader.includes('input.marginLeftPx = this.toMeasurePx(this.getEffectiveReaderMarginLeft())') &&
+  reader.includes('input.marginRightPx = this.toMeasurePx(this.getEffectiveReaderMarginRight())') &&
+  reader.includes('this.toMeasurePx(this.getEffectiveReaderMarginTop())') &&
+  reader.includes('this.toMeasurePx(this.getEffectiveReaderMarginBottom())'),
   'Reader pagination does not account for configured margins');
 // Body rendering and pagination must resolve alignment from the same reader
 // setting.  The reader intentionally supports start/end/justify now, so do
@@ -361,25 +412,21 @@ assert(reader.includes('readerTextAlignValue(): TextAlign') &&
   reader.includes("if (this.readerTextAlign === 'start') return TextAlign.Start") &&
   reader.includes("if (this.readerTextAlign === 'end') return TextAlign.End") &&
   reader.includes('.textAlign(this.readerTextAlignValue())') &&
-  reader.includes('readerGraphicsTextAlignValue(): graphicsText.TextAlign') &&
-  reader.includes("if (this.readerTextAlign === 'start') return graphicsText.TextAlign.LEFT") &&
-  reader.includes("if (this.readerTextAlign === 'end') return graphicsText.TextAlign.RIGHT") &&
-  reader.includes('align: this.readerGraphicsTextAlignValue()') &&
-  reader.includes('input.textAlign = this.readerTextAlign'),
+  reader.includes('input.textAlign = this.readerTextAlign') &&
+  readerPaginator.includes('align: ReaderV2Paginator.textAlign(snapshot.textAlign)') &&
+  readerPaginator.includes("if (value === 'start') return graphicsText.TextAlign.LEFT") &&
+  readerPaginator.includes("if (value === 'end') return graphicsText.TextAlign.RIGHT"),
   'Reader body rendering and pagination measurement must use the shared text alignment setting');
-assert(reader.includes('const safeBest = Math.max(start + 1, Math.min(best, source.length))') &&
-  !reader.includes('Math.floor((best - start) * 0.96)'),
-  'Reader pagination must not roll back a full line merely to prefer sentence boundaries');
-assert(reader.includes('buildReaderMeasureTextStyle(this.readerFontSize, this.getBodyReaderFontFamily())') &&
-  reader.includes('fontFamily: this.getBodyReaderFontFamily()'),
+// Pages break on native line metrics, so no measured page end is ever rolled back to a sentence boundary.
+assert(reader.includes('input.bodyFontFamily = this.getBodyReaderFontFamily()') &&
+  readerPaginator.includes('fontFamilies: [heading ? snapshot.titleFontFamily : snapshot.bodyFontFamily]'),
   'Reader pagination measurement must use the same body font as rendering');
 assert(reader.includes('this.readerTypographySettingsPanel()') &&
   reader.includes('readerTypographyCombinedSettings()') &&
-  reader.includes("{ value: '左边距' }") &&
-  reader.includes("{ value: '右边距' }") &&
-  reader.includes("{ value: '上边距' }") &&
-  reader.includes("{ value: '下边距' }") &&
-  reader.includes('applyReaderTypographyValue') &&
+  reader.includes('ReaderTypographyStepper({') &&
+  readerLayoutSettings.includes("'左边距', '右边距', '上边距', '下边距'") &&
+  readerLayoutSettings.includes('static clamp(field: number, value: number)') &&
+  reader.includes('onReaderTypographyDraftChange') &&
   reader.includes('commitReaderTypographyDraft'),
   'In-reader settings do not provide the shared typography controls');
 assert(bookModel.includes('static hasStartedReading(book: Book | null)') &&
@@ -444,7 +491,8 @@ for (const iconName of desktopThemeIcons) {
 
 const requiredFiles = [
   'theme/ThemeModels.ets', 'theme/BuiltinThemeRegistry.ets', 'theme/ThemeRuntime.ets',
-  'theme/ThemeAssetRegistry.ets', 'components/ReaderThemeBackground.ets', 'pages/ThemeSettings.ets'
+  'theme/ThemeAssetRegistry.ets', 'theme/TtsPanelThemeStyles.ets', 'components/ReaderThemeBackground.ets',
+  'components/TtsPanelThemeBackground.ets', 'pages/ThemeSettings.ets'
 ];
 for (const relativePath of requiredFiles) {
   assert(fs.existsSync(path.join(etsRoot, relativePath)), `Required theme file is missing: ${relativePath}`);

@@ -4,19 +4,17 @@ import { util } from '@kit.ArkTS';
 import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import pasteboard from '@ohos.pasteboard';
-import { Book, BookChapter, BookSource, SearchBook } from '../model/data/Book';
+import { Book, BookChapter, BookSource, SearchBook, SourceRuntimeStage, BookSourceDebugContext, BookSourceDebugSession, BookSourceDebugStep, BookSourceDebugNetworkTrace, BookSourceDebugRuleTrace, BookSourceDebugLog, BookSourceDebugRedactor } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { SearchCoordinator } from '../core/book/SearchCoordinator';
 import { ExploreCoordinator, ExploreEntry } from '../core/book/ExploreCoordinator';
 import { WebBookService } from '../core/book/WebBookService';
-import { SourceRuntimeStage } from '../core/book/BookSourceRuntimeRouter';
-import { BookSourceDebugContext, BookSourceDebugSession, BookSourceDebugStep,
-  BookSourceDebugNetworkTrace, BookSourceDebugRuleTrace, BookSourceDebugLog,
-  BookSourceDebugRedactor } from '../core/book/BookSourceDebugModels';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
 
 class BookSourceDebugExportReport {
   reportVersion: number = 1;
@@ -40,8 +38,6 @@ class BookSourceDebugClipboardReport {
 @Component
 struct BookSourceDebugPage {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State source: BookSource = new BookSource();
   @State sourceUrl: string = '';
   @State keyword: string = '';
@@ -94,19 +90,11 @@ struct BookSourceDebugPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
-        Column({ space: 12 }) {
-          this.sourceCard()
-          this.inputCard()
-          this.resultCard()
-        }
-        .width('100%')
-        .padding({ top: 68 + this.statusBarHeight, bottom: 32 + this.navBarHeight + this.keyboardInset })
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      this.titleBar()
+      PageScaffold({ title: '书源调试', content: () => {
+        this.pageContent()
+      }, actions: () => {
+        this.titleActions()
+      } })
     }
     .width('100%')
     .height('100%')
@@ -115,46 +103,47 @@ struct BookSourceDebugPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-      Text('书源调试').fontSize(20).fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor()).layoutWeight(1)
-      Text('导出报告').fontSize(14).fontColor(this.accentColor())
-        .width(88)
-        .height(56)
-        .textAlign(TextAlign.Center)
-        .margin({ right: 12 })
-        .opacity(this.hasDebugReport() ? 1 : 0.45)
-        .onClick(() => this.exportDebugReport())
+  pageContent() {
+    Column({ space: AppSpacing.LG }) {
+      this.sourceCard()
+      this.inputCard()
+      this.resultCard()
     }
-    .width('100%').height(56 + this.statusBarHeight).padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .alignItems(VerticalAlign.Center)
+    .width('100%')
+    .padding({ top: AppSpacing.LG, bottom: this.keyboardInset })
+  }
+
+  @Builder
+  titleActions() {
+    Text('导出报告').fontSize(AppFontSize.BODY).fontColor(this.accentColor())
+      .width(88)
+      .height(56)
+      .textAlign(TextAlign.Center)
+      .margin({ right: AppSpacing.LG })
+      .opacity(this.hasDebugReport() ? 1 : 0.45)
+      .onClick(() => this.exportDebugReport())
   }
 
   @Builder
   sourceCard() {
-    Column({ space: 5 }) {
-      Text(this.source.bookSourceName || '正在加载书源').fontSize(17).fontWeight(FontWeight.Bold)
+    Column({ space: AppSpacing.XS }) {
+      Text(this.source.bookSourceName || '正在加载书源').fontSize(AppFontSize.SUBTITLE).fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor()).width('100%')
       Text(this.source.bookSourceUrl || this.sourceUrl || '未指定书源')
-        .fontSize(12).fontColor(this.subTextColor()).width('100%').maxLines(2)
-      Text(`状态：${this.status}`).fontSize(13).fontColor(this.running ? '#E89725' : this.accentColor())
+        .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%').maxLines(2)
+      Text(`状态：${this.status}`).fontSize(AppFontSize.BODY).fontColor(this.running ? ThemeRuntime.warningColor(this.appDarkMode) : this.accentColor())
         .width('100%')
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16).backgroundColor(this.cardColor())
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius()).backgroundColor(this.cardColor())
     .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   inputCard() {
-    Column({ space: 10 }) {
-      Text('调试阶段').fontSize(16).fontWeight(FontWeight.Medium)
+    Column({ space: AppSpacing.MD }) {
+      Text('调试阶段').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium)
         .fontColor(this.primaryTextColor()).width('100%')
-      Row({ space: 10 }) {
+      Row({ space: AppSpacing.MD }) {
         Button('搜索', { type: ButtonType.Capsule }).height(34).layoutWeight(1)
           .backgroundColor(this.stage === SourceRuntimeStage.SEARCH ? this.accentColor() : this.inputColor())
           .fontColor(this.stage === SourceRuntimeStage.SEARCH ? '#FFFFFF' : this.primaryTextColor())
@@ -166,95 +155,95 @@ struct BookSourceDebugPage {
       }.width('100%')
       Text(this.stage === SourceRuntimeStage.SEARCH ? '使用当前书源和已保存的登录状态，仅调试搜索' :
         '执行搜索 → 发现 → 详情 → 目录 → 正文；搜索无候选时尝试发现')
-        .fontSize(13).fontColor(this.subTextColor()).width('100%')
+        .fontSize(AppFontSize.BODY).fontColor(this.subTextColor()).width('100%')
       TextInput({ text: this.keyword, placeholder: this.stageInputPlaceholder() })
         .height(44).width('100%').fontColor(this.primaryTextColor())
         .backgroundColor(this.inputColor()).onChange((value: string) => this.keyword = value)
-      Row({ space: 10 }) {
+      Row({ space: AppSpacing.MD }) {
         Button(this.running ? '取消调试' : '开始调试', { type: ButtonType.Capsule })
           .layoutWeight(1).height(44).enabled(this.running || !!this.source.bookSourceUrl)
-          .backgroundColor(this.accentColor()).fontColor('#FFFFFF').onClick(() => this.runDebug())
+          .backgroundColor(this.accentColor()).fontColor(ThemeRuntime.onAccentColor()).onClick(() => this.runDebug())
         Button('清空', { type: ButtonType.Capsule }).height(44).width(82)
           .backgroundColor(this.inputColor()).fontColor(this.primaryTextColor())
           .onClick(() => this.clearDebugResult())
       }.width('100%')
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16).backgroundColor(this.cardColor())
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius()).backgroundColor(this.cardColor())
     .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   resultCard() {
-    Column({ space: 10 }) {
-      Row({ space: 10 }) {
-        Text('执行明细').fontSize(16).fontWeight(FontWeight.Medium)
+    Column({ space: AppSpacing.MD }) {
+      Row({ space: AppSpacing.MD }) {
+        Text('执行明细').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor()).layoutWeight(1)
         if (this.hasDebugReport() || this.debugContent.length > 0) {
           Button('复制调试内容', { type: ButtonType.Capsule })
-            .height(34).fontSize(12).backgroundColor(this.inputColor()).fontColor(this.primaryTextColor())
+            .height(34).fontSize(AppFontSize.CAPTION).backgroundColor(this.inputColor()).fontColor(this.primaryTextColor())
             .onClick(() => this.copyDebugReport())
         }
       }.width('100%')
       if (this.debugContent.length > 0) {
-        Row({ space: 10 }) {
-          Text(`正文内容（${this.debugContent.length} 字符）`).fontSize(13)
+        Row({ space: AppSpacing.MD }) {
+          Text(`正文内容（${this.debugContent.length} 字符）`).fontSize(AppFontSize.BODY)
             .fontColor(this.subTextColor()).layoutWeight(1)
           Button('复制正文', { type: ButtonType.Capsule })
-            .height(34).fontSize(12).backgroundColor(this.accentColor()).fontColor('#FFFFFF')
+            .height(34).fontSize(AppFontSize.CAPTION).backgroundColor(this.accentColor()).fontColor(ThemeRuntime.onAccentColor())
             .onClick(() => this.copyDebugContent())
         }.width('100%')
       }
       if (this.debugSearchLinks.length > 0) {
-        Text('搜索链接（点击填入）').fontSize(13).fontWeight(FontWeight.Medium)
+        Text('搜索链接（点击填入）').fontSize(AppFontSize.BODY).fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor()).width('100%')
         ForEach(this.debugSearchLinks, (url: string) => {
           this.debugLinkItem(url, SourceRuntimeStage.SEARCH)
         }, (url: string) => `search_${url}`)
       }
       if (this.debugExploreLinks.length > 0) {
-        Text('发现链接（点击填入）').fontSize(13).fontWeight(FontWeight.Medium)
+        Text('发现链接（点击填入）').fontSize(AppFontSize.BODY).fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor()).width('100%')
         ForEach(this.debugExploreLinks, (url: string) => {
           this.debugLinkItem(url, SourceRuntimeStage.EXPLORE)
         }, (url: string) => `explore_${url}`)
       }
       if (this.session.steps.length === 0 && this.session.logs.length === 0) {
-        Text('运行后显示请求、规则匹配和错误详情').fontSize(13).fontColor(this.subTextColor()).width('100%')
+        Text('运行后显示请求、规则匹配和错误详情').fontSize(AppFontSize.BODY).fontColor(this.subTextColor()).width('100%')
       }
       ForEach(this.session.steps, (step: BookSourceDebugStep) => {
         this.stepView(step)
       }, (step: BookSourceDebugStep) => `${step.stage}_${step.startedAt}`)
       ForEach(this.session.logs, (log: BookSourceDebugLog) => {
-        Text(`[${log.level}] ${log.message}`).fontSize(12).fontColor(this.subTextColor()).width('100%')
+        Text(`[${log.level}] ${log.message}`).fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
           .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
           .copyOption(CopyOptions.LocalDevice)
       }, (log: BookSourceDebugLog) => `${log.timestamp}_${log.message}`)
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16).backgroundColor(this.cardColor())
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius()).backgroundColor(this.cardColor())
     .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   stepView(step: BookSourceDebugStep) {
-    Column({ space: 8 }) {
+    Column({ space: AppSpacing.MD }) {
       Row() {
-      Text(step.name).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
+      Text(step.name).fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
           .layoutWeight(1)
-        Text(`${step.status} · ${step.elapsedMs}ms`).fontSize(12)
-          .fontColor(step.status === 'passed' ? '#20A464' : '#E84040')
+        Text(`${step.status} · ${step.elapsedMs}ms`).fontSize(AppFontSize.CAPTION)
+          .fontColor(step.status === 'passed' ? ThemeRuntime.successColor(this.appDarkMode) : ThemeRuntime.dangerColor(this.appDarkMode))
       }.width('100%')
-      if (step.error) Text(`错误：${step.error}`).fontSize(12).fontColor('#E84040').width('100%')
+      if (step.error) Text(`错误：${step.error}`).fontSize(12).fontColor(ThemeRuntime.dangerColor(this.appDarkMode)).width('100%')
         .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
         .copyOption(CopyOptions.LocalDevice)
       ForEach(step.requests, (item: BookSourceDebugNetworkTrace) => {
         Text(`${item.method} ${item.url}\nHTTP ${item.statusCode} · ${item.responseBytes} 字符 · ${item.elapsedMs}ms${item.error ? `\n${item.error}` : ''}`)
-          .fontSize(12).fontColor(this.subTextColor()).width('100%')
+          .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
           .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
           .copyOption(CopyOptions.LocalDevice)
         Text(`Cookie：${item.cookieNames.length > 0 ? item.cookieNames.join('、') : '未携带'}（仅显示名称）`)
           .fontSize(12).fontColor(this.subTextColor()).width('100%')
         if (item.bodyPreview) {
-          Text(`响应预览：${item.bodyPreview}`).fontSize(11).fontColor(this.subTextColor())
+          Text(`响应预览：${item.bodyPreview}`).fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
             .width('100%').maxLines(8)
             .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
             .copyOption(CopyOptions.LocalDevice)
@@ -262,7 +251,7 @@ struct BookSourceDebugPage {
       }, (item: BookSourceDebugNetworkTrace) => `${item.method}_${item.url}_${item.elapsedMs}`)
       ForEach(step.rules, (item: BookSourceDebugRuleTrace) => {
         Text(`${item.field} [${item.ruleType}] 匹配 ${item.matchedCount}/${item.inputCount} · ${item.elapsedMs}ms\n规则：${item.rule}${item.error ? `\n${item.error}` : ''}${item.outputPreview ? `\n结果：${item.outputPreview}` : ''}`)
-          .fontSize(12).fontColor(this.subTextColor()).width('100%')
+          .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
           .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
           .copyOption(CopyOptions.LocalDevice)
       }, (item: BookSourceDebugRuleTrace) => `${item.field}_${item.elapsedMs}`)
@@ -276,18 +265,18 @@ struct BookSourceDebugPage {
           .copyOption(CopyOptions.LocalDevice)
       }, (key: string) => key)
     }
-    .width('100%').padding(12).borderRadius(10).backgroundColor(this.inputColor())
+    .width('100%').padding(AppSpacing.LG).borderRadius(ThemeRuntime.mediumRadius()).backgroundColor(this.inputColor())
     .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   debugLinkItem(url: string, stage: string) {
-    Text(url).fontSize(11).fontColor(this.accentColor()).width('100%')
+    Text(url).fontSize(AppFontSize.CAPTION).fontColor(this.accentColor()).width('100%')
       .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
       .onClick(() => this.fillDebugLink(url, stage))
       .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
       .copyOption(CopyOptions.LocalDevice)
-      .padding({ top: 4, bottom: 4 })
+      .padding({ top: AppSpacing.XS, bottom: AppSpacing.XS })
   }
 
   private async loadSource(): Promise<void> {

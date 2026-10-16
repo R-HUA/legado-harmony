@@ -1,5 +1,6 @@
 import graphicsText from '@ohos.graphics.text';
 import { ReaderV2Rect } from './ReaderV2LayoutSnapshot';
+import { ReaderCommentBubbleStyle } from './ReaderCommentBubble';
 
 /** Minimal native Text span metadata used by the transparent system-selection layer. */
 export class ReaderV2SelectionRun {
@@ -43,6 +44,13 @@ export class ReaderV2RegexBubbleSegment {
   shadowOffsetYPx: number = 0;
 }
 
+/** One line's piece of a paragraph-comment / 本章说 bubble; only the last piece carries the tail. */
+export class ReaderV2CommentBubbleSegment {
+  rect: ReaderV2Rect = new ReaderV2Rect();
+  tail: boolean = true;
+  style: ReaderCommentBubbleStyle = new ReaderCommentBubbleStyle();
+}
+
 export class ReaderV2PageFragment {
   blockId: string = '';
   blockIndex: number = 0;
@@ -57,8 +65,14 @@ export class ReaderV2PageFragment {
   paragraphHeight: number = 0;
   selectionPageStart: number = 0;
   selectionPageEnd: number = 0;
+  /** 整页选中文本里，这个片段之后是否跟着一个换行（后面还有文字片段）。 */
+  selectionBreakAfter: boolean = false;
   selectionRuns: ReaderV2SelectionRun[] = [];
+  /** 图片片段：paragraph 为 null，图片以 Contain 方式绘制在 imageRect 内。 */
+  imageSource: string = '';
+  imageRect: ReaderV2Rect = new ReaderV2Rect();
   regexBubbleSegments: ReaderV2RegexBubbleSegment[] = [];
+  commentBubbleSegments: ReaderV2CommentBubbleSegment[] = [];
 }
 
 export class ReaderV2ActionHitArea {
@@ -83,6 +97,8 @@ export class ReaderV2PageLayout {
   selectionY: number = 0;
   selectionWidth: number = 0;
   selectionHeight: number = 0;
+  /** 本页最后一个片段的下边缘（含字形出血），滚动阅读用它确定列表项高度。 */
+  contentBottomPx: number = 0;
 
   actionAt(x: number, y: number, slopX: number, slopY: number): ReaderV2ActionHitArea | null {
     // Later actions win where expanded hit slop overlaps, which matches visual painting order.

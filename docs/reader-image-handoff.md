@@ -2,6 +2,8 @@
 
 2026-09-30，HarmonyOS 目标 SDK 26、兼容 API 12，Pura X View 真机。
 
+以下记录保留当时的实现与复测依据。合并上游后，图片解码复用与翻页交接已整合进 `ReaderImageBitmapCache` 和 V2 阅读页面，旧 `ReaderPagedImage` / `ReaderPagedImageCache` 组件已移除；对应回归脚本沿用原入口。
+
 ## 问题与修复
 
 含图片标记的章节使用传统 ArkUI 正文树。其页码/渲染身份变化会重建整页，包括 Image；预览和正式页原来分别从 URI 加载图片。动画收尾只延时 16ms（跨章48ms），没有图片解码完成检查。后台分页完成时 `applyReaderPaginationResult → setCurrentPageText` 同样会更新渲染身份。因此即使预览页已显示插图，正式页仍可能短暂露出背景。

@@ -23,19 +23,7 @@ import {
   CloudSyncStateStore
 } from './CloudSyncStateStore';
 import { AppDatabase } from '../model/data/AppDatabase';
-import {
-  Book,
-  BookGroup,
-  BookInfoRule,
-  BookListRule,
-  BookSource,
-  Bookmark,
-  ContentRule,
-  ExploreRule,
-  ReadConfig,
-  SearchRule,
-  TocRule
-} from '../model/data/Book';
+import { Book, BookGroup, BookInfoRule, BookListRule, BookSource, Bookmark, ContentRule, ExploreRule, ReadConfig, SearchRule, TocRule } from '@legado/sourceengine';
 import { ReaderSettings, ReaderSettingsStore } from '../utils/ReaderSettingsStore';
 import {
   ReaderReplaceRule,
@@ -1003,6 +991,11 @@ export class CloudSyncCoordinator {
       }
       if (typeof readerSettings.eyeTurnNextDwellMs !== 'number') {
         readerSettings.eyeTurnNextDwellMs = localReaderSettings.eyeTurnNextDwellMs;
+        needsEyeTurnBackfill = true;
+      }
+      if (typeof readerSettings.readerInfoBarConfig !== 'string' || !readerSettings.readerInfoBarConfig) {
+        // 云端数据来自还没有页眉页脚槽位配置的旧版本：保留本机配置，稍后回填上传。
+        readerSettings.readerInfoBarConfig = localReaderSettings.readerInfoBarConfig;
         needsEyeTurnBackfill = true;
       }
       if (needsEyeTurnBackfill) {

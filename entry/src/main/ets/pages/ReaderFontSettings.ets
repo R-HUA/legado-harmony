@@ -5,7 +5,6 @@ import { ReaderSettings, ReaderSettingsStore } from '../utils/ReaderSettingsStor
 import { ReaderFontHelper, ReaderFontItem } from '../utils/ReaderFontHelper';
 import { ReaderSystemFontHelper } from '../utils/ReaderSystemFontHelper';
 import { AdaptiveColorPicker } from '../components/AdaptiveColorPicker';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { AdaptiveIconButton } from '../components/AdaptiveIconButton';
 import { AdaptiveSwitch } from '../components/AdaptiveSwitch';
 import {
@@ -19,6 +18,9 @@ import {
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
 import { ThemeAccessPolicy } from '../account/ThemeAccessPolicy';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
 
 class ReaderCustomFontItem {
   familyName: string = '';
@@ -70,8 +72,6 @@ struct ReaderFontSettingsPage {
   @StorageLink('readerFontFamily') readerFontFamily: string = '';
   @StorageLink('readerSystemFontFamily') readerSystemFontFamily: string = '';
   @StorageLink('readerCustomFontsRaw') readerCustomFontsRaw: string = '';
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State regexRules: ReaderRegexFontRule[] = [];
   @State regexHighlightRefreshKey: number = 0;
   @State activeRegexInputKey: string = '';
@@ -157,73 +157,68 @@ struct ReaderFontSettingsPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
-        Column() {
-          this.sectionTitle('正文字体设置')
-          Column() {
-            this.fontModeItem('字体类型', this.readerBodyFontMode, this.readerBodyFontFamily, (mode: string, family: string) => {
-              this.readerBodyFontMode = mode;
-              this.readerBodyFontFamily = family;
-              this.saveSettings();
-            })
-            this.bodyFontSizeStepper()
-            this.bodyPreviewItem()
-          }
-          .width('calc(100% - 24vp)')
-          .margin({ left: 12, right: 12 })
-          .borderRadius(16)
-          .clip(true)
-          .backgroundColor(this.cardColor())
-
-          this.sectionTitle('标题字体设置')
-          Column() {
-            this.fontModeItem('字体类型', this.readerTitleFontMode, this.readerTitleFontFamily, (mode: string, family: string) => {
-              this.readerTitleFontMode = mode;
-              this.readerTitleFontFamily = family;
-              this.saveSettings();
-            })
-            this.titleFontSizeStepper()
-            this.titlePreviewItem()
-          }
-          .width('calc(100% - 24vp)')
-          .margin({ left: 12, right: 12 })
-          .borderRadius(16)
-          .clip(true)
-          .backgroundColor(this.cardColor())
-
-          this.sectionTitle('正则字体设置')
-          Column() {
-            this.regexEnableSwitchItem()
-            if (this.readerRegexFontEnabled) {
-              this.regexTemplateActions()
-              if (this.regexRules.length === 0) {
-                this.emptyRegexRule()
-              }
-              ForEach(this.regexRules, (rule: ReaderRegexFontRule, index: number) => {
-                this.regexRulePanel(rule, index, this.regexHighlightRefreshKey)
-              }, (rule: ReaderRegexFontRule) => rule.id)
-            }
-          }
-          .width('calc(100% - 24vp)')
-          .margin({ left: 12, right: 12 })
-          .borderRadius(16)
-          .clip(true)
-          .backgroundColor(this.cardColor())
-        }
-        .width('100%')
-        .padding({ top: 56 + this.statusBarHeight, bottom: 32 + this.navBarHeight })
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      .align(Alignment.TopStart)
-
-      this.titleBar()
+      PageScaffold({ title: '阅读字体', onBack: () => this.closeReaderFontSettings(), content: () => {
+        this.pageContent()
+      } })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  pageContent() {
+    this.sectionTitle('正文字体设置')
+    Column() {
+      this.fontModeItem('字体类型', this.readerBodyFontMode, this.readerBodyFontFamily, (mode: string, family: string) => {
+        this.readerBodyFontMode = mode;
+        this.readerBodyFontFamily = family;
+        this.saveSettings();
+      })
+      this.bodyFontSizeStepper()
+      this.bodyPreviewItem()
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    this.sectionTitle('标题字体设置')
+    Column() {
+      this.fontModeItem('字体类型', this.readerTitleFontMode, this.readerTitleFontFamily, (mode: string, family: string) => {
+        this.readerTitleFontMode = mode;
+        this.readerTitleFontFamily = family;
+        this.saveSettings();
+      })
+      this.titleFontSizeStepper()
+      this.titlePreviewItem()
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    this.sectionTitle('正则字体设置')
+    Column() {
+      this.regexEnableSwitchItem()
+      if (this.readerRegexFontEnabled) {
+        this.regexTemplateActions()
+        if (this.regexRules.length === 0) {
+          this.emptyRegexRule()
+        }
+        ForEach(this.regexRules, (rule: ReaderRegexFontRule, index: number) => {
+          this.regexRulePanel(rule, index, this.regexHighlightRefreshKey)
+        }, (rule: ReaderRegexFontRule) => rule.id)
+      }
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
   }
 
   saveSettings(regexRules: ReaderRegexFontRule[] = this.regexRules): void {
@@ -500,7 +495,7 @@ struct ReaderFontSettingsPage {
   }
 
   settingsDividerColor(): string {
-    return this.appDarkMode ? '#24FFFFFF' : '#14000000';
+    return ThemeRuntime.hairlineColor(this.appDarkMode);
   }
 
   primaryTextColor(): string {
@@ -515,44 +510,29 @@ struct ReaderFontSettingsPage {
     return ThemeRuntime.accentColor(this.appDarkMode);
   }
 
+  /**
+   * Keep the font selectors on this page on the same menu material.  HDS
+   * Select menus otherwise inherit a system shadow that can differ between
+   * the top-level font rows and the nested regex rule rows.
+   */
   syncBars(): void {
     syncSystemBars(getContext(this), this.appDarkMode, this.pageColor());
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => this.closeReaderFontSettings() })
-      Text('阅读字体')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
-  }
-
-  @Builder
   sectionTitle(title: string) {
     Text(title)
-      .fontSize(13)
+      .fontSize(AppFontSize.BODY)
       .fontColor(this.subTextColor())
       .width('100%')
-      .padding({ left: 16, right: 16, top: 20, bottom: 8 })
+      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXL, bottom: AppSpacing.MD })
   }
 
   @Builder
   fontModeItem(title: string, mode: string, family: string, onChange: (mode: string, family: string) => void) {
     Row() {
       Text(title)
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
       SettingsSelect({
@@ -560,7 +540,7 @@ struct ReaderFontSettingsPage {
         selectedIndex: this.selectedFontIndex(mode, family),
         selectedLabel: this.selectedFontValue(mode, family),
         darkMode: this.appDarkMode,
-        textSize: 14,
+        textSize: AppFontSize.BODY,
         textColor: this.subTextColor(),
         onSelected: (index: number) => {
           const result = this.modeAndFamilyByIndex(index);
@@ -570,8 +550,8 @@ struct ReaderFontSettingsPage {
     }
     .width('calc(100% - 32vp)')
     .constraintSize({ minHeight: 64 })
-    .padding({ left: 0, right: 0, top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
+    .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
     .alignItems(VerticalAlign.Center)
@@ -579,16 +559,16 @@ struct ReaderFontSettingsPage {
 
   @Builder
   bodyFontSizeStepper() {
-    Row({ space: 8 }) {
+    Row({ space: AppSpacing.MD }) {
       Text('字体大小')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
       this.fontSizeStepButton($r('sys.symbol.minus'), '减小正文字体', this.readerFontSize > 14, () => {
         this.setBodyFontSize(this.readerFontSize - 1);
       })
       Text(`${this.readerFontSize}sp`)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .width(52)
         .height(36)
@@ -599,8 +579,8 @@ struct ReaderFontSettingsPage {
     }
     .width('calc(100% - 32vp)')
     .constraintSize({ minHeight: 64 })
-    .padding({ left: 0, right: 0, top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
+    .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
     .alignItems(VerticalAlign.Center)
@@ -608,16 +588,16 @@ struct ReaderFontSettingsPage {
 
   @Builder
   titleFontSizeStepper() {
-    Row({ space: 8 }) {
+    Row({ space: AppSpacing.MD }) {
       Text('字体大小')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
       this.fontSizeStepButton($r('sys.symbol.minus'), '减小标题字体', this.readerTitleFontSize > 14, () => {
         this.setTitleFontSize(this.readerTitleFontSize - 1);
       })
       Text(`${this.readerTitleFontSize}sp`)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .width(52)
         .height(36)
@@ -628,8 +608,8 @@ struct ReaderFontSettingsPage {
     }
     .width('calc(100% - 32vp)')
     .constraintSize({ minHeight: 64 })
-    .padding({ left: 0, right: 0, top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
+    .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
     .alignItems(VerticalAlign.Center)
@@ -652,28 +632,28 @@ struct ReaderFontSettingsPage {
 
   @Builder
   regexTemplateActions() {
-    Column({ space: 8 }) {
+    Column({ space: AppSpacing.MD }) {
       Text('添加规则')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .width('100%')
-      Row({ space: 8 }) {
+      Row({ space: AppSpacing.MD }) {
         Button('对话')
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .backgroundColor(this.inputColor())
           .fontColor(this.primaryTextColor())
           .onClick(() => {
             this.addRegexRule('对话', '“[^”\\n]*”|「[^」\\n]*」|『[^』\\n]*』|"[^"\\n]*"');
           })
         Button('关键字匹配')
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .backgroundColor(this.inputColor())
           .fontColor(this.primaryTextColor())
           .onClick(() => {
             this.addRegexRule('关键字匹配', '关键词');
           })
         Button('空白规则')
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .backgroundColor(this.inputColor())
           .fontColor(this.primaryTextColor())
           .onClick(() => {
@@ -683,8 +663,8 @@ struct ReaderFontSettingsPage {
       .width('100%')
     }
     .width('calc(100% - 32vp)')
-    .padding({ left: 0, right: 0, top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
+    .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
   }
@@ -692,28 +672,28 @@ struct ReaderFontSettingsPage {
   @Builder
   emptyRegexRule() {
     Text('暂无正则规则')
-      .fontSize(13)
+      .fontSize(AppFontSize.BODY)
       .fontColor(this.subTextColor())
       .width('calc(100% - 32vp)')
-      .padding({ left: 0, right: 0, top: 10, bottom: 10 })
-      .margin({ left: 16, right: 16 })
+      .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+      .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
       .backgroundColor(Color.Transparent)
       .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
   }
 
   @Builder
   regexRulePanel(rule: ReaderRegexFontRule, index: number, refreshKey: number) {
-    Column({ space: 10 }) {
+    Column({ space: AppSpacing.MD }) {
       Row() {
-        Column({ space: 4 }) {
+        Column({ space: AppSpacing.XS }) {
           Text(rule.name || `规则${index + 1}`)
-            .fontSize(16)
+            .fontSize(AppFontSize.BODY_LARGE)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.primaryTextColor())
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
           Text(rule.pattern || '未设置正则表达式')
-            .fontSize(12)
+            .fontSize(AppFontSize.CAPTION)
             .fontColor(this.subTextColor())
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -721,7 +701,7 @@ struct ReaderFontSettingsPage {
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
         Button(this.isRegexRuleExpanded(index, refreshKey) ? '收起' : '展开')
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.primaryTextColor())
           .backgroundColor(this.inputColor())
           .height(32)
@@ -731,8 +711,8 @@ struct ReaderFontSettingsPage {
             });
           })
         Button('删除')
-          .fontSize(13)
-          .fontColor('#E53935')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(ThemeRuntime.dangerColor(this.appDarkMode))
           .backgroundColor(this.inputColor())
           .height(32)
           .onClick(() => {
@@ -743,11 +723,11 @@ struct ReaderFontSettingsPage {
 
       if (this.isRegexRuleExpanded(index, refreshKey)) {
         TextInput({ text: rule.name, placeholder: '规则名称' })
-          .fontSize(14)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.primaryTextColor())
           .placeholderColor(this.subTextColor())
           .backgroundColor(this.inputColor())
-          .borderRadius(8)
+          .borderRadius(ThemeRuntime.mediumRadius())
           .onEditChange((isEditing: boolean) => {
             this.setRegexInputEditing(rule.id, 'name', isEditing);
           })
@@ -761,11 +741,11 @@ struct ReaderFontSettingsPage {
           })
 
         TextInput({ text: rule.pattern, placeholder: '正则表达式' })
-          .fontSize(14)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.primaryTextColor())
           .placeholderColor(this.subTextColor())
           .backgroundColor(this.inputColor())
-          .borderRadius(8)
+          .borderRadius(ThemeRuntime.mediumRadius())
           .onEditChange((isEditing: boolean) => {
             this.setRegexInputEditing(rule.id, 'pattern', isEditing);
           })
@@ -792,17 +772,17 @@ struct ReaderFontSettingsPage {
       }
     }
     .width('calc(100% - 32vp)')
-    .padding({ left: 0, right: 0, top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
+    .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
   }
 
   @Builder
   bodyPreviewItem() {
-    Column({ space: 8 }) {
+    Column({ space: AppSpacing.MD }) {
       Text('正文预览')
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
         .width('100%')
       Text('这是一段阅读正文预览，文字会跟随当前正文字体设置显示。')
@@ -814,17 +794,17 @@ struct ReaderFontSettingsPage {
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('calc(100% - 32vp)')
-    .padding({ left: 0, right: 0, top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
+    .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
   }
 
   @Builder
   titlePreviewItem() {
-    Column({ space: 8 }) {
+    Column({ space: AppSpacing.MD }) {
       Text('标题预览')
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
         .width('100%')
       Text('第一章 风起时')
@@ -836,8 +816,8 @@ struct ReaderFontSettingsPage {
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('calc(100% - 32vp)')
-    .padding({ left: 0, right: 0, top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
+    .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
   }
@@ -1111,9 +1091,9 @@ struct ReaderFontSettingsPage {
 
   @Builder
   regexRulePreviewItem(index: number, refreshKey: number) {
-    Column({ space: 6 }) {
+    Column({ space: AppSpacing.SM }) {
       Text('规则预览')
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
         .width('100%')
       Text() {
@@ -1126,7 +1106,7 @@ struct ReaderFontSettingsPage {
       .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('100%')
-    .padding({ top: 4, bottom: 2 })
+    .padding({ top: AppSpacing.XS, bottom: AppSpacing.XXS })
   }
 
   emphasisModeOptions(): SelectOption[] {
@@ -1193,6 +1173,9 @@ struct ReaderFontSettingsPage {
     this.appendAccessibleBubbleStyle(options, 'sword-talisman', '剑符', revision);
     this.appendAccessibleBubbleStyle(options, 'qingluan-jade', '青鸾玉令', revision);
     this.appendAccessibleBubbleStyle(options, 'pipi-soft-paw', '皮皮软爪', revision);
+    this.appendAccessibleBubbleStyle(options, 'mecha-comm', '通讯频道', revision);
+    this.appendAccessibleBubbleStyle(options, 'starwish-ribbon', '星愿丝带', revision);
+    this.appendAccessibleBubbleStyle(options, 'pencil-mark', '铅笔划线', revision);
     return options;
   }
 
@@ -1225,10 +1208,10 @@ struct ReaderFontSettingsPage {
 
   @Builder
   regexEmphasisSettings(index: number, refreshKey: number) {
-    Column({ space: 8 }) {
+    Column({ space: AppSpacing.MD }) {
       Row() {
         Text('强调效果')
-          .fontSize(15)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontColor(this.primaryTextColor())
           .layoutWeight(1)
         SettingsSelect({
@@ -1236,7 +1219,7 @@ struct ReaderFontSettingsPage {
           selectedIndex: this.emphasisModeIndex(this.regexRuleAt(index).emphasisMode),
           selectedLabel: this.emphasisModeLabel(this.regexRuleAt(index).emphasisMode),
           darkMode: this.appDarkMode,
-          textSize: 13,
+          textSize: AppFontSize.BODY,
           textColor: this.subTextColor(),
           onSelected: (selectedIndex: number) => {
             this.updateRegexRule(index, (target: ReaderRegexFontRule) => {
@@ -1312,7 +1295,7 @@ struct ReaderFontSettingsPage {
         if (this.regexRuleAt(index).customBubbleEnabled) {
           Row() {
             Text('气泡风格')
-              .fontSize(15)
+              .fontSize(AppFontSize.BODY_LARGE)
               .fontColor(this.primaryTextColor())
               .layoutWeight(1)
             SettingsSelect({
@@ -1320,7 +1303,7 @@ struct ReaderFontSettingsPage {
               selectedIndex: this.bubbleStyleIndex(this.regexRuleAt(index).bubbleStyleId),
               selectedLabel: this.bubbleStyleLabel(this.regexRuleAt(index).bubbleStyleId),
               darkMode: this.appDarkMode,
-              textSize: 13,
+              textSize: AppFontSize.BODY,
               textColor: this.subTextColor(),
               onSelected: (selectedIndex: number) => {
                 const selectedStyleId = this.bubbleStyleByIndex(selectedIndex);
@@ -1356,10 +1339,10 @@ struct ReaderFontSettingsPage {
   regexEmphasisToggle(title: string, enabled: boolean, onChange: (enabled: boolean) => void) {
     Row() {
       Text(title)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
-      AdaptiveSwitch({ isOn: enabled, selectedColor: this.accentColor(),
+      AdaptiveSwitch({ isOn: enabled,
         onChange: (checked: boolean) => {
           onChange(checked);
         },
@@ -1367,7 +1350,7 @@ struct ReaderFontSettingsPage {
     }
     .width('100%')
     .constraintSize({ minHeight: 64 })
-    .padding({ top: 10, bottom: 10 })
+    .padding({ top: AppSpacing.MD, bottom: AppSpacing.MD })
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
     .alignItems(VerticalAlign.Center)
   }
@@ -1375,7 +1358,7 @@ struct ReaderFontSettingsPage {
   compactFontModeItem(title: string, mode: string, family: string, onChange: (mode: string, family: string) => void) {
     Row() {
       Text(title)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
       SettingsSelect({
@@ -1383,7 +1366,7 @@ struct ReaderFontSettingsPage {
         selectedIndex: this.selectedFontIndex(mode, family),
         selectedLabel: this.selectedFontValue(mode, family),
         darkMode: this.appDarkMode,
-        textSize: 13,
+        textSize: AppFontSize.BODY,
         textColor: this.subTextColor(),
         onSelected: (index: number) => {
           const result = this.modeAndFamilyByIndex(index);
@@ -1393,16 +1376,16 @@ struct ReaderFontSettingsPage {
     }
     .width('100%')
     .constraintSize({ minHeight: 64 })
-    .padding({ top: 10, bottom: 10 })
+    .padding({ top: AppSpacing.MD, bottom: AppSpacing.MD })
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
     .alignItems(VerticalAlign.Center)
   }
 
   @Builder
   regexFontSizeStepper(index: number) {
-    Row({ space: 8 }) {
+    Row({ space: AppSpacing.MD }) {
       Text('字体大小')
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
       this.fontSizeStepButton($r('sys.symbol.minus'), '减小规则字体',
@@ -1412,7 +1395,7 @@ struct ReaderFontSettingsPage {
         });
       })
       Text(`${Math.round(this.regexRuleAt(index).fontSize)}sp`)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .width(52)
         .height(36)
@@ -1426,7 +1409,7 @@ struct ReaderFontSettingsPage {
     }
     .width('100%')
     .constraintSize({ minHeight: 64 })
-    .padding({ top: 10, bottom: 10 })
+    .padding({ top: AppSpacing.MD, bottom: AppSpacing.MD })
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
     .alignItems(VerticalAlign.Center)
   }
@@ -1435,10 +1418,10 @@ struct ReaderFontSettingsPage {
   regexEnableSwitchItem() {
     Row() {
       Text('启用正则字体')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
-      AdaptiveSwitch({ isOn: this.readerRegexFontEnabled, selectedColor: this.accentColor(),
+      AdaptiveSwitch({ isOn: this.readerRegexFontEnabled,
         onChange: (checked: boolean) => {
           this.readerRegexFontEnabled = checked;
           this.saveSettings();
@@ -1447,8 +1430,8 @@ struct ReaderFontSettingsPage {
     }
     .width('calc(100% - 32vp)')
     .constraintSize({ minHeight: 64 })
-    .padding({ left: 0, right: 0, top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
+    .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
     .alignItems(VerticalAlign.Center)

@@ -6,6 +6,7 @@ import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { ReaderSettings, ReaderSettingsStore } from './ReaderSettingsStore';
 import { ReaderThemeHelper, ReaderThemeItem } from './ReaderThemeHelper';
 import { CloudSyncChangeTracker } from '../account/CloudSyncChangeTracker';
+import { HexColor } from './HexColor';
 
 export class AppThemeSettings {
   themeId: string = '';
@@ -466,14 +467,7 @@ export class AppThemeSettingsStore {
   }
 
   static normalizeColor(value: string, fallback: string): string {
-    const text = (value || '').trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(text)) {
-      return text.toUpperCase();
-    }
-    if (/^[0-9a-fA-F]{6}$/.test(text)) {
-      return `#${text.toUpperCase()}`;
-    }
-    return fallback;
+    return HexColor.normalize(value, fallback);
   }
 
   static sourcesForTheme(themeId: string): ThemeComponentSourceIds {
@@ -482,6 +476,7 @@ export class AppThemeSettingsStore {
     sources.startupThemeId = normalized;
     sources.paletteThemeId = normalized;
     sources.readerThemeId = normalized;
+    sources.ttsPanelThemeId = normalized;
     sources.bubbleThemeId = normalized;
     sources.navigationThemeId = normalized;
     sources.bookThemeId = normalized;
@@ -516,6 +511,8 @@ export class AppThemeSettingsStore {
     normalized.startupThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source?.startupThemeId || fallback);
     normalized.paletteThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source?.paletteThemeId || fallback);
     normalized.readerThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source?.readerThemeId || fallback);
+    normalized.ttsPanelThemeId = BuiltinThemeRegistry.normalizeBuiltinId(
+      source?.ttsPanelThemeId || source?.readerThemeId || fallback);
     normalized.bubbleThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source?.bubbleThemeId || fallback);
     normalized.navigationThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source?.navigationThemeId || fallback);
     normalized.bookThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source?.bookThemeId || fallback);

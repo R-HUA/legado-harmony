@@ -2,13 +2,12 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { stripTypeScriptTypes } from 'node:module';
-import { BookSourceRuntimeRouter, SourceRuntimeStage } from '../entry/src/main/ets/core/book/BookSourceRuntimeRouter.ts';
-import { BookSourceExecutionJournal, BookSourceHostActionKind } from '../entry/src/main/ets/core/book/BookSourceExecutionJournal.ts';
+import { readEtsModule } from './lib/ets-module-staging.mjs';
 
 // Execute the production bridge and coordinator with only platform I/O substituted.
 // Optional argument: an external book-source JSON. No real network or credentials are used.
 function load(file, names, bindings = {}) {
-  const source = fs.readFileSync(new URL('../entry/src/main/ets/core/' + file, import.meta.url), 'utf8')
+  const source = readEtsModule('core/' + file)
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
   const js = stripTypeScriptTypes(source, { mode: 'transform' });
   return vm.runInNewContext(js + '\n;({' + names.join(',') + '})', {
@@ -24,11 +23,22 @@ class RuleContext {
 class RuleFieldRequest { constructor(name, rule) { this.name = name; this.rule = rule; } }
 const db = { async getBookSource() { return null; }, async updateBookSourceLoginRuntime() {} };
 let cookieValue = 'other=1; session_key=test%3Akey; dotted.name=a=b';
+const storage = new Map();
+const { SourceEngineHost } = load('host/SourceEngineHost.ts', ['SourceEngineHost'], {
+  AppStorage: { get: key => storage.get(key), setOrCreate: (key, value) => storage.set(key, value) }
+});
+const { BookSourceRuntimeRouter, SourceRuntimeStage } = load('book/BookSourceRuntimeRouter.ts',
+  ['BookSourceRuntimeRouter', 'SourceRuntimeStage'], { SourceEngineHost });
+const { BookSourceExecutionJournal, BookSourceHostActionKind } = load('book/BookSourceExecutionJournal.ts',
+  ['BookSourceExecutionJournal', 'BookSourceHostActionKind']);
+const { BookSourceRuntimeStore } = load('book/BookSourceRuntimeStore.ts', ['BookSourceRuntimeStore'], { SourceEngineHost });
+BookSourceRuntimeStore.install(db);
+const { SourceScriptNotice } = load('book/SourceScriptNotice.ts', ['SourceScriptNotice'], { SourceRuntimeStage });
+const cookieJar = { getCookie: () => cookieValue };
 const bindings = {
   SourceRuntimeStage, BookSourceRuntimeRouter, BookSource, BookChapter, HttpClient,
-  BookSourceExecutionJournal, BookSourceHostActionKind,
-  AppDatabase: { getInstance: () => db },
-  CookieStore: { getCookie: () => cookieValue },
+  BookSourceExecutionJournal, BookSourceHostActionKind, SourceEngineHost, BookSourceRuntimeStore, SourceScriptNotice,
+  CookieStore: { forSource: () => cookieJar },
   util: {
     TextEncoder: class { encodeInto(s) { return Buffer.from(s); } },
     Base64Helper: class { encodeToStringSync(s) { return Buffer.from(s).toString('base64'); } }

@@ -1,27 +1,8 @@
-import { BookSource, ExploreRule, SearchBook } from '../../model/data/Book';
+import { NativeSourceService, BookSource, ExploreRule, SearchBook, HttpClient, AnalyzeUrl, AnalyzeRule, RuleContext, JsRuntime, VerificationSupport, EncodedSourceUrl, BookUrlResolver, PageCandidateUrl, BookSourceScriptRunner, BookTypeSupport, BookSourceRuntimeRouter, SourceRuntimeStage, BookSourceStageWebRuntime, StageWebRuntimeRequest, RuleExecutionService, RuleBatchExecutionRequest, RuleBatchExecutionResult, RuleFieldRequest, CooperativeScheduler, BookFieldSanitizer, QuickJsObservationContext, RuleExecutionTarget, RuleValue, BookSourceDebugContext, LogText, NetworkErrorText } from '@legado/sourceengine';
 import { appDb } from '../../model/data/AppDatabase';
-import { HttpClient } from '../http/HttpClient';
-import { AnalyzeUrl } from '../rule/AnalyzeUrl';
-import { AnalyzeRule } from '../rule/AnalyzeRule';
-import { RuleContext } from '../rule/RuleContext';
-import { JsRuntime } from '../rule/JsRuntime';
-import { VerificationSupport } from '../http/VerificationSupport';
-import { EncodedSourceUrl } from './EncodedSourceUrl';
 import { BookSourceDataUrlSupport } from './BookSourceDataUrlSupport';
-import { BookUrlResolver } from './BookUrlResolver';
-import { BookSourceScriptRunner } from './BookSourceScriptRunner';
 import { BookSourceMetadataSupport } from './BookSourceMetadataSupport';
-import { BookTypeSupport } from './BookTypeSupport';
-import { BookSourceRuntimeRouter, SourceRuntimeStage } from './BookSourceRuntimeRouter';
-import { BookSourceStageWebRuntime, StageWebRuntimeRequest } from './BookSourceStageWebRuntime';
 import { BookSourceStageRuleSupport } from './BookSourceStageRuleSupport';
-import { RuleExecutionService } from '../rule/RuleExecutionService';
-import { RuleBatchExecutionRequest, RuleBatchExecutionResult, RuleFieldRequest } from '../rule/RuleExecutionModels';
-import { CooperativeScheduler } from '../concurrency/CooperativeScheduler';
-import { BookFieldSanitizer } from '../../utils/BookFieldSanitizer';
-import { QuickJsObservationContext } from '../script/QuickJsRuntimeStatus';
-import { RuleExecutionTarget, RuleValue } from '../rule/RuleValue';
-import { BookSourceDebugContext } from './BookSourceDebugModels';
 
 export interface ExploreEntry {
   title: string;
@@ -36,6 +17,7 @@ export interface ExploreSourceOption {
   sourceUrl: string;
   sourceGroup: string;
   platforms: string[];
+  isNative?: boolean;
 }
 
 export interface ExploreFilterGroup {
@@ -113,6 +95,18 @@ export class ExploreCoordinator {
     const options: ExploreSourceOption[] = [];
     for (const source of sources) {
       if (!source.enabledExplore || !source.exploreUrl) continue;
+      if (NativeSourceService.isNative(source)) {
+        // 同一地址以前可能是兼容书源，清掉它留下的平台选择器，免得发现页显示成旧的切换项。
+        delete this.platformSelectors[source.bookSourceUrl];
+        options.push({
+          sourceName: source.bookSourceName,
+          sourceUrl: source.bookSourceUrl,
+          sourceGroup: (source.bookSourceGroup || '').trim(),
+          platforms: [],
+          isNative: true
+        });
+        continue;
+      }
       let platforms: string[] = [];
       const loginSelector = this.parseLoginPlatformSelector(source);
       if (!this.usesNativeExploreFilters(source) && loginSelector.labels.length > 0) {
@@ -139,6 +133,10 @@ export class ExploreCoordinator {
     for (const source of sources) {
       if (!source.enabledExplore || !source.exploreUrl) continue;
       if (sourceUrl && source.bookSourceUrl !== sourceUrl) continue;
+      if (NativeSourceService.isNative(source)) {
+        entries.push(...await this.nativeEntries(source, debugContext));
+        continue;
+      }
       if (!source.variable && this.requiresSourceVariable(source)) {
         const hint = (source.variableComment || '').trim();
         this.noticeMessage = hint ? `请先在书源编辑中填写书源变量：${hint}` :
@@ -161,6 +159,9 @@ export class ExploreCoordinator {
     this.noticeMessage = '';
     const source = await appDb.getBookSource(entry.sourceUrl);
     if (!source) return [];
+    if (NativeSourceService.isNative(source)) {
+      return await this.exploreNative(source, entry, page, maxItems, debugContext);
+    }
     try {
       VerificationSupport.clearVerification();
       const au = new AnalyzeUrl(source, this.http);
@@ -168,11 +169,11 @@ export class ExploreCoordinator {
       if (!reqUrl || /^\s*@?js:/i.test(reqUrl) ||
         (!/^https?:\/\//i.test(reqUrl) && !/^data:/i.test(reqUrl))) {
         console.warn('[ExploreCoordinator] invalid explore request:', source.bookSourceName,
-          'entry:', (entry.url || '').substring(0, 600), 'built:', (reqUrl || '').substring(0, 600));
+          'entry:', LogText.url(entry.url), 'built:', LogText.url(reqUrl));
         this.noticeMessage = '发现地址脚本未能生成有效请求地址';
         return [];
       }
-      console.info('[ExploreCoordinator] explore:', `${entry.sourceName}/${entry.title}`, reqUrl);
+      console.info('[ExploreCoordinator] explore:', `${entry.sourceName}/${entry.title}`, LogText.url(reqUrl));
       let resp = EncodedSourceUrl.canHandle(reqUrl) ?
         await this.fetchEncodedDataUrl(reqUrl, source) : await au.fetch(reqUrl, undefined, debugContext);
       const bodyJs = au.getConfig().bodyJs || '';
@@ -183,18 +184,20 @@ export class ExploreCoordinator {
           resp = { ...resp, body: scriptedBody, success: true, statusCode: 200 };
         }
       }
-      console.info('[ExploreCoordinator] response:', resp.statusCode, 'len:', resp.body?.length || 0, 'url:', resp.url);
-      if (VerificationSupport.shouldRequestBrowserVerification(source, resp.body, resp.statusCode, entry.url)) {
+      console.info('[ExploreCoordinator] response:', resp.statusCode, 'len:', resp.body?.length || 0, 'url:', LogText.url(resp.url));
+      if (VerificationSupport.shouldRequestBrowserVerification(source, resp.body, resp.statusCode, entry.url,
+        resp.error)) {
         const verifyUrl = VerificationSupport.pickVerificationUrl(source, resp.url || reqUrl,
           entry.url, resp.body, resp.statusCode);
         VerificationSupport.requestVerification(verifyUrl, `${source.bookSourceName} 验证`, source);
-        console.warn('[ExploreCoordinator] source needs browser verification:', source.bookSourceName, verifyUrl);
+        console.warn('[ExploreCoordinator] source needs browser verification:', source.bookSourceName, LogText.url(verifyUrl));
         return [];
       }
       if (!resp.success || !resp.body) {
         console.warn('[ExploreCoordinator] empty response:', resp.statusCode, resp.error || '');
         this.noticeMessage = !resp.success ? (resp.statusCode > 0 ?
-          `发现接口请求失败（HTTP ${resp.statusCode}）` : `发现接口请求失败：${resp.error || '网络异常'}`) :
+          `发现接口请求失败（HTTP ${resp.statusCode}）` :
+          `发现接口请求失败：${NetworkErrorText.describe(resp.error || '', reqUrl) || resp.error || '网络异常'}`) :
           '发现接口返回空响应';
         return [];
       }
@@ -542,7 +545,80 @@ export class ExploreCoordinator {
     const selectors = this.filterSelectors[sourceUrl] || [];
     const selector = selectors.find((item: ExplorePlatformSelector): boolean => item.parameter === title);
     if (!selector || !selection || selector.currentLabel === selection) return !!selector;
+    if (NativeSourceService.isNative(source)) {
+      const variable = NativeSourceService.variableAfterSelect(source, title, selection);
+      console.info('[ExploreCoordinator] native filter:', source.bookSourceName, `${title}=${selection}`,
+        variable ? 'saved' : 'unchanged-or-invalid');
+      if (!variable) return false;
+      await appDb.updateBookSourceVariable(sourceUrl, variable);
+      selector.currentLabel = selection;
+      this.clearExploreMenuCache();
+      return true;
+    }
     return await this.executeExploreSelector(source, selector, selection);
+  }
+
+  /** 原生书源的发现分类：筛选项来自定义里的变量，分类列表不经过脚本引擎。 */
+  private async nativeEntries(source: BookSource,
+    debugContext: BookSourceDebugContext | null = null): Promise<ExploreEntry[]> {
+    this.filterSelectors[source.bookSourceUrl] = NativeSourceService.filters(source).map((group) => {
+      const selector = new ExplorePlatformSelector();
+      selector.parameter = group.title;
+      selector.labels = group.options.slice();
+      selector.values = group.options.slice();
+      selector.currentLabel = group.selected;
+      selector.mode = 'native';
+      return selector;
+    });
+    const menuKey = this.menuCacheKey(source, 'native');
+    const cached = this.menuCache[menuKey];
+    console.info('[ExploreCoordinator] native menus:', source.bookSourceName,
+      this.filterSelectors[source.bookSourceUrl].map((item: ExplorePlatformSelector): string =>
+        `${item.parameter}=${item.currentLabel}`).join(' '), cached ? 'cached' : 'fetch');
+    // 调试时不用缓存，否则执行明细里看不到这次请求。
+    if (!debugContext && cached && Date.now() - cached.cachedAt < 5 * 60 * 1000) return cached.entries.slice();
+    const entries: ExploreEntry[] = [];
+    try {
+      let groupTitle = '';
+      for (const menu of await NativeSourceService.exploreMenus(source, this.http, debugContext)) {
+        if (!menu.target) {
+          groupTitle = menu.title;
+          continue;
+        }
+        entries.push({
+          title: menu.title,
+          url: menu.target,
+          sourceUrl: source.bookSourceUrl,
+          sourceName: source.bookSourceName,
+          groupTitle: groupTitle
+        });
+      }
+      if (entries.length > 0) this.storeMenuCache(menuKey, entries);
+    } catch (e) {
+      this.noticeMessage = e instanceof Error ? e.message : '发现分类加载失败';
+      console.warn('[ExploreCoordinator] native menus failed:', source.bookSourceName, this.noticeMessage);
+    }
+    return entries;
+  }
+
+  private async exploreNative(source: BookSource, entry: ExploreEntry, page: number,
+    maxItems: number, debugContext: BookSourceDebugContext | null = null): Promise<SearchBook[]> {
+    try {
+      // 清掉上一次遗留的待验证地址，发现页据此判断这次是否需要去验证。
+      VerificationSupport.clearVerification();
+      const found = await NativeSourceService.explore(source, this.http, entry.url, page, debugContext);
+      const books: SearchBook[] = [];
+      for (const book of maxItems > 0 ? found.slice(0, Math.max(1, maxItems)) : found) {
+        this.sanitizeExploreBook(book);
+        if (!books.some((item: SearchBook): boolean => item.bookUrl === book.bookUrl)) books.push(book);
+      }
+      if (books.length === 0) this.noticeMessage = '发现接口已有响应，但列表规则未匹配到内容';
+      return books;
+    } catch (e) {
+      this.noticeMessage = e instanceof Error ? e.message : '发现解析异常';
+      console.warn('[ExploreCoordinator] native explore failed:', source.bookSourceName, this.noticeMessage);
+      return [];
+    }
   }
 
   private async parseExploreUrl(source: BookSource, platform: string = '',
@@ -976,10 +1052,12 @@ export class ExploreCoordinator {
 
   private async buildUrl(source: BookSource, url: string, page: number,
     debugContext: BookSourceDebugContext | null = null): Promise<string> {
-    url = this.applyLegacyPageAlternative(url, page);
+    const isFullJsUrl = /^\s*@?js:/i.test(url || '') || /^\s*<js>[\s\S]*<\/js>\s*$/i.test(url || '');
+    // Script source is only rewritten where a group names the page template; the evaluated
+    // address below gets the complete shorthand.
+    url = PageCandidateUrl.apply(url, page, isFullJsUrl);
     const decision = BookSourceRuntimeRouter.decide(SourceRuntimeStage.URL,
       `${source.jsLib || ''}\n${url || ''}`);
-    const isFullJsUrl = /^\s*@?js:/i.test(url || '') || /^\s*<js>[\s\S]*<\/js>\s*$/i.test(url || '');
     const requiresStageRuntime = isFullJsUrl || (url.includes('{{') && decision.runtime === 'arkweb');
     const runtime = BookSourceStageWebRuntime.get();
     if (requiresStageRuntime && !runtime.isAvailable()) await runtime.waitUntilAvailable(8000);
@@ -1002,7 +1080,7 @@ export class ExploreCoordinator {
       try {
         const result = await runtime.execute(request);
         if (result.value) {
-          const evaluated = this.applyLegacyPageAlternative(result.value, page);
+          const evaluated = PageCandidateUrl.apply(result.value, page);
           // Stage scripts commonly return the same root-relative address that an ordinary
           // Legado template would produce. Resolve it before the caller applies its absolute-URL
           // safety check; otherwise a successfully evaluated `/api/...` request is rejected as
@@ -1033,15 +1111,6 @@ export class ExploreCoordinator {
     const fallback = js.evalTemplate(this.applySourceTemplate(url, source))
       .replace(/\{\{[^}]+\}\}/g, String(page));
     return BookUrlResolver.resolve(fallback, source.bookSourceUrl) || fallback;
-  }
-
-  /** Legado page-one shorthand: `<first-page,following-pages>`. */
-  private applyLegacyPageAlternative(url: string, page: number): string {
-    return (url || '').replace(/<([^<>]*),([^<>]*)>/g,
-      (match: string, firstPage: string, followingPages: string): string => {
-        if (match.includes('(') || !/\{\{\s*page(?:Index)?\b/i.test(match)) return match;
-        return page <= 1 ? firstPage : followingPages;
-      });
   }
 
   private async executeResponseBodyScript(source: BookSource, code: string, body: string,

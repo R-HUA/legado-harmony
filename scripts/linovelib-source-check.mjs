@@ -23,6 +23,7 @@ import vm from 'node:vm';
 import { execFileSync } from 'node:child_process';
 import { bindings as b } from './search-source-compat-check.mjs';
 import { lintSource } from './lib/legado-rule-grammar.mjs';
+import { readEtsModule } from './lib/ets-module-staging.mjs';
 import {
   buildSource, linovelibJsLib, chapterUrlSuffix,
   cleanLinovelibDocument, desktopUserAgent
@@ -230,8 +231,7 @@ assert.ok(hostFile.includes('hitTestBehavior(HitTestMode.None)'),
   '隐藏抓取宿主不得截获触摸或滑动');
 assert.ok(!/\.width\(1\)[\s\S]{0,40}\.height\(1\)/.test(hostFile),
   '隐藏抓取宿主不应退回 1×1vp');
-const fetchRuntimeFile = fs.readFileSync(new URL('../entry/src/main/ets/core/book/WebBookFetchRuntime.ts',
-  import.meta.url), 'utf8');
+const fetchRuntimeFile = readEtsModule('core/book/WebBookFetchRuntime.ts');
 assert.ok(fetchRuntimeFile.includes('applyUserAgent(') &&
   fetchRuntimeFile.includes('readControllerUserAgent('),
   '共享控制器必须在请求未声明 UA 时恢复默认 UA，避免跨书源泄漏');

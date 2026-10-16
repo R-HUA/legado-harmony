@@ -1,3 +1,5 @@
+import { ReaderCommentBubbleStyle } from './ReaderCommentBubble';
+
 export class ReaderV2Rect {
   left: number = 0;
   top: number = 0;
@@ -47,14 +49,16 @@ export class ReaderV2LayoutInput {
   bodyFontFamily: string = '';
   titleFontFamily: string = '';
   textColor: number = 0xFF202124;
-  commentTextColor: number = 0xFF2A6FCC;
-  commentBackgroundColor: number = 0x142A6FCC;
-  commentRadiusPx: number = 12;
+  commentBubble: ReaderCommentBubbleStyle = new ReaderCommentBubbleStyle();
   commentFontSizePx: number = 30;
   commentHitSlopXPx: number = 16;
   commentHitSlopYPx: number = 12;
   commentsEnabled: boolean = true;
   regexEnabled: boolean = false;
+  /** 图片原始像素按 vp 解释，这里是 1vp 对应的物理像素。 */
+  imagePxPerVp: number = 1;
+  /** 整页插图与正文同页时允许的最小高度。 */
+  imageMinHeightPx: number = 0;
   styleIdentity: string = '';
 }
 
@@ -72,14 +76,14 @@ export class ReaderV2LayoutSnapshot {
   bodyFontFamily: string = '';
   titleFontFamily: string = '';
   textColor: number = 0xFF202124;
-  commentTextColor: number = 0xFF2A6FCC;
-  commentBackgroundColor: number = 0x142A6FCC;
-  commentRadiusPx: number = 12;
+  commentBubble: ReaderCommentBubbleStyle = new ReaderCommentBubbleStyle();
   commentFontSizePx: number = 30;
   commentHitSlopXPx: number = 16;
   commentHitSlopYPx: number = 12;
   commentsEnabled: boolean = true;
   regexEnabled: boolean = false;
+  imagePxPerVp: number = 1;
+  imageMinHeightPx: number = 0;
   identity: string = '';
 
   static create(input: ReaderV2LayoutInput): ReaderV2LayoutSnapshot {
@@ -116,14 +120,14 @@ export class ReaderV2LayoutSnapshot {
     snapshot.bodyFontFamily = input.bodyFontFamily;
     snapshot.titleFontFamily = input.titleFontFamily || input.bodyFontFamily;
     snapshot.textColor = input.textColor;
-    snapshot.commentTextColor = input.commentTextColor;
-    snapshot.commentBackgroundColor = input.commentBackgroundColor;
-    snapshot.commentRadiusPx = Math.max(0, input.commentRadiusPx);
+    snapshot.commentBubble = input.commentBubble;
     snapshot.commentFontSizePx = Math.max(1, input.commentFontSizePx);
     snapshot.commentHitSlopXPx = Math.max(0, input.commentHitSlopXPx);
     snapshot.commentHitSlopYPx = Math.max(0, input.commentHitSlopYPx);
     snapshot.commentsEnabled = input.commentsEnabled;
     snapshot.regexEnabled = input.regexEnabled;
+    snapshot.imagePxPerVp = Math.max(0.01, input.imagePxPerVp);
+    snapshot.imageMinHeightPx = Math.max(0, input.imageMinHeightPx);
     snapshot.identity = ReaderV2LayoutSnapshot.buildIdentity(input, snapshot);
     return snapshot;
   }
@@ -133,7 +137,7 @@ export class ReaderV2LayoutSnapshot {
       snapshot.viewport.width(), snapshot.viewport.height(), snapshot.contentRect.left, snapshot.contentRect.top,
       snapshot.contentRect.right, snapshot.contentRect.bottom, snapshot.columnRects.length,
       snapshot.fontSizePx, snapshot.titleFontSizePx, snapshot.lineSpacingPx, snapshot.paragraphSpacingPx,
-      snapshot.letterSpacingPx, snapshot.textAlign, snapshot.commentFontSizePx, snapshot.commentRadiusPx,
+      snapshot.letterSpacingPx, snapshot.textAlign, snapshot.commentFontSizePx, snapshot.commentBubble.identity(),
       snapshot.commentsEnabled ? 1 : 0, snapshot.regexEnabled ? 1 : 0
     ];
     const rounded = values.map((value: string | number): string =>

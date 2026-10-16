@@ -2,16 +2,16 @@ import { bundleManager, common } from '@kit.AbilityKit';
 import { router } from '@kit.ArkUI';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
 
 @Entry
 @Component
 struct AboutPage {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State appVersionName: string = '';
 
   aboutToAppear(): void {
@@ -25,82 +25,9 @@ struct AboutPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
-        Column() {
-          Column() {
-            Image($r('app.media.icon'))
-              .width(72)
-              .height(72)
-              .borderRadius(18)
-          }
-          .width(72)
-          .height(72)
-          .borderRadius(18)
-          .justifyContent(FlexAlign.Center)
-          .margin({ top: 28, bottom: 14 })
-
-          Text('开源轻页')
-            .fontSize(22)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.primaryTextColor())
-          Text(this.appVersionName || '-')
-            .fontSize(13)
-            .fontColor(this.subTextColor())
-            .margin({ top: 6, bottom: 24 })
-
-          this.infoCard('项目说明',
-            '开源轻页是一个本地阅读与书源规则兼容项目，用于验证用户自行提供且有合法使用权限的规则在移动端的导入、解析和阅读体验。')
-
-          this.infoCard('合规说明',
-            '本项目不内置、不托管、不分发任何小说正文、章节内容、封面图片或付费资源；不提供书源订阅服务，也不推荐、维护或背书任何第三方内容站点。')
-
-          this.infoCard('使用提醒',
-            '导入书源前，请自行确认书源来源、目标站点协议、内容授权和所在地法律法规要求。项目仅按用户配置的规则发起访问和解析，不以破解付费内容、绕过访问控制、规避反爬机制或批量抓取受保护内容为目标。')
-
-          this.feedbackCard()
-
-          this.licenseCard()
-
-          this.infoCard('致谢',
-            '感谢 @南破万卷墙 @一个人吃二二 @jueyaocaptain @茶安安安 @相思界 @一程 @奔四老男人 为App开发提出的建议和支持。')
-
-          this.infoCard('APP 备案信息',
-            '备案编号：蜀ICP备2023018793号-2A')
-
-          Column() {
-            Text('请仅使用自有、授权或明确允许访问的内容与规则。')
-              .fontSize(12)
-              .fontColor(this.subTextColor())
-              .textAlign(TextAlign.Center)
-          }
-          .width('100%')
-          .padding({ left: 24, right: 24, top: 20, bottom: 32 + this.navBarHeight })
-        }
-        .width('100%')
-        .padding({ top: 56 + this.statusBarHeight })
-        .alignItems(HorizontalAlign.Center)
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-
-      Row() {
-        ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-          buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-          onBack: () => router.back() })
-
-        Text('关于')
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.primaryTextColor())
-          .layoutWeight(1)
-      }
-      .width('100%')
-      .height(56 + this.statusBarHeight)
-      .padding({ top: this.statusBarHeight })
-      .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-      .backdropBlur(ThemeRuntime.topBarBlur())
-      .alignItems(VerticalAlign.Center)
+      PageScaffold({ title: '关于', bottomInset: 0, content: () => {
+        this.pageContent()
+      } })
     }
     .width('100%')
     .height('100%')
@@ -109,25 +36,81 @@ struct AboutPage {
   }
 
   @Builder
+  pageContent() {
+    Column() {
+      Column() {
+        Image($r('app.media.icon'))
+          .width(72)
+          .height(72)
+          .borderRadius(18)
+      }
+      .width(72)
+      .height(72)
+      .borderRadius(18)
+      .justifyContent(FlexAlign.Center)
+      .margin({ top: 28, bottom: AppSpacing.LG })
+
+      Text('开源轻页')
+        .fontSize(AppFontSize.HEADLINE)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.primaryTextColor())
+      Text(this.appVersionName || '-')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.subTextColor())
+        .margin({ top: AppSpacing.SM, bottom: AppSpacing.XXXL })
+
+      this.infoCard('项目说明',
+        '开源轻页是一个本地阅读与书源规则兼容项目，用于验证用户自行提供且有合法使用权限的规则在移动端的导入、解析和阅读体验。')
+
+      this.infoCard('合规说明',
+        '本项目不内置、不托管、不分发任何小说正文、章节内容、封面图片或付费资源；不提供书源订阅服务，也不推荐、维护或背书任何第三方内容站点。')
+
+      this.infoCard('使用提醒',
+        '导入书源前，请自行确认书源来源、目标站点协议、内容授权和所在地法律法规要求。项目仅按用户配置的规则发起访问和解析，不以破解付费内容、绕过访问控制、规避反爬机制或批量抓取受保护内容为目标。')
+
+      this.feedbackCard()
+
+      this.licenseCard()
+
+      this.infoCard('致谢',
+        '感谢 @南破万卷墙 @一个人吃二二 @jueyaocaptain @茶安安安 @相思界 @一程 @奔四老男人 为App开发提出的建议和支持。')
+
+      this.infoCard('APP 备案信息',
+        '备案编号：蜀ICP备2023018793号-2A')
+
+      Column() {
+        Text('请仅使用自有、授权或明确允许访问的内容与规则。')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.subTextColor())
+          .textAlign(TextAlign.Center)
+      }
+      .width('100%')
+      .padding({ left: AppSpacing.XXXL, right: AppSpacing.XXXL, top: AppSpacing.XXL, bottom: 32 })
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
   infoCard(title: string, content: string) {
     Column() {
       Text(title)
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontWeight(FontWeight.Medium)
         .fontColor(this.primaryTextColor())
         .width('100%')
       Text(content)
-        .fontSize(14)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.secondaryTextColor())
         .lineHeight(22)
         .width('100%')
-        .margin({ top: 8 })
+        .margin({ top: AppSpacing.MD })
     }
     .width('100%')
-    .padding(16)
+    .padding(AppSpacing.XL)
     .backgroundColor(this.cardColor())
-    .borderRadius(10)
-    .margin({ left: 16, right: 16, bottom: 12 })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL, bottom: AppSpacing.LG })
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -135,7 +118,7 @@ struct AboutPage {
   feedbackCard() {
     Column() {
       Text('问题反馈')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontWeight(FontWeight.Medium)
         .fontColor(this.primaryTextColor())
         .width('100%')
@@ -150,10 +133,10 @@ struct AboutPage {
       })
     }
     .width('100%')
-    .padding(16)
+    .padding(AppSpacing.XL)
     .backgroundColor(this.cardColor())
-    .borderRadius(10)
-    .margin({ left: 16, right: 16, bottom: 12 })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL, bottom: AppSpacing.LG })
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -161,15 +144,15 @@ struct AboutPage {
   feedbackRow(label: string, value: string, action: () => void) {
     Row() {
       Text(`${label}：`)
-        .fontSize(14)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.secondaryTextColor())
         .width(76)
       Text(value)
-        .fontSize(14)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.accentColor())
     }
     .width('100%')
-    .padding({ top: 12, bottom: 2 })
+    .padding({ top: AppSpacing.LG, bottom: AppSpacing.XXS })
     .justifyContent(FlexAlign.Start)
     .onClick(action)
   }
@@ -183,30 +166,30 @@ struct AboutPage {
     Row() {
       Column() {
         Text('开源许可')
-          .fontSize(16)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor())
           .width('100%')
         Text('开源轻页采用 GPL-3.0 许可证，并包含适用 MIT、Apache-2.0 许可证的第三方组件。')
-          .fontSize(14)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.secondaryTextColor())
           .lineHeight(22)
           .width('100%')
-          .margin({ top: 8 })
+          .margin({ top: AppSpacing.MD })
         Text('查看主项目源码信息、版权声明和完整许可文本')
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.accentColor())
           .width('100%')
-          .margin({ top: 8 })
+          .margin({ top: AppSpacing.MD })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
-    .padding(16)
+    .padding(AppSpacing.XL)
     .backgroundColor(this.cardColor())
-    .borderRadius(10)
-    .margin({ left: 16, right: 16, bottom: 12 })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL, bottom: AppSpacing.LG })
     .alignItems(VerticalAlign.Center)
     .onClick(() => {
       router.pushUrl({ url: 'pages/OpenSourceLicenses' });

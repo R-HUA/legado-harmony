@@ -3,6 +3,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { stripTypeScriptTypes } from 'node:module';
+import { readEtsModule } from './lib/ets-module-staging.mjs';
 
 // 繁简转换门禁：词典数据完整性、转换算法正确性（词组优先/首候选/排除表/直通字符）、
 // 设置存储与阅读管线、规则引擎 java.t2s/java.s2t 的接线，全部对齐 HapeLee/legado-with-MD3。
@@ -41,7 +42,7 @@ const bindings = {
   console,
   setTimeout: (fn) => fn()
 };
-const converterSource = read('entry/src/main/ets/utils/ChineseConverter.ts');
+const converterSource = readEtsModule('utils/ChineseConverter.ts');
 const exportedNames = [...converterSource.matchAll(/export (?:class|function|const) (\w+)/g)]
   .map((match) => match[1]);
 const stripped = converterSource.replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
@@ -142,21 +143,38 @@ assert(settingsPage.includes("this.selectItem('简繁转换'"), '应用设置页
 const ability = read('entry/src/main/ets/entryability/EntryAbility.ets');
 assert(ability.includes('ChineseConverter.ensureLoaded(this.context, settings.chineseConverterType)'),
   '启动阶段必须按当前方向预热词典');
+assert(ability.includes('SourceEngineHost.install({') &&
+  /convertChinese:\s*\(text: string, converterType: number\): string =>\s*ChineseConverter\.convertText\(text, converterType\)/.test(ability),
+  '启动阶段必须向书源引擎注入应用词典转换');
 
-const jsRuntime = read('entry/src/main/ets/core/rule/JsRuntime.ts');
+const jsRuntime = readEtsModule('core/rule/JsRuntime.ts');
 assert(jsRuntime.includes("replaceFunctionCalls(expr, 'java.t2s'") &&
-  jsRuntime.includes('ChineseConverter.TYPE_T2S'), 'java.t2s 必须接入真实转换');
+  jsRuntime.includes('SourceEngineHost.convertChinese(this.evalStr(v), 1)'), 'java.t2s 必须接入宿主繁转简');
 assert(jsRuntime.includes("replaceFunctionCalls(expr, 'java.s2t'") &&
-  jsRuntime.includes('ChineseConverter.TYPE_S2T'), 'java.s2t 必须接入真实转换');
-assert(jsRuntime.includes('convertText(this.evalStr(v), ChineseConverter.TYPE_T2S)'),
+  jsRuntime.includes('SourceEngineHost.convertChinese(this.evalStr(v), 2)'), 'java.s2t 必须接入宿主简转繁');
+assert(jsRuntime.includes('convertChinese(this.evalStr(v), 1)'),
   'java.t2s 参数求值后必须转换');
 
-const analyzeRule = read('entry/src/main/ets/core/rule/AnalyzeRule.ts');
+const analyzeRule = readEtsModule('core/rule/AnalyzeRule.ts');
 assert(analyzeRule.includes('jsCode.includes(\'java.t2s\')') &&
-  analyzeRule.includes('ChineseConverter.convertText(value, ChineseConverter.TYPE_T2S)'),
+  analyzeRule.includes('SourceEngineHost.convertChinese(value, 1)'),
   'AnalyzeRule 的 java.t2s 快速路径必须转换');
+assert(analyzeRule.includes('jsCode.includes(\'java.s2t\')') &&
+  analyzeRule.includes('SourceEngineHost.convertChinese(value, 2)'),
+  'AnalyzeRule 的 java.s2t 快速路径必须转换');
 
-const scriptEngine = read('entry/src/main/ets/core/rule/ScriptEngine.ts');
+const hostSource = readEtsModule('core/host/SourceEngineHost.ts')
+  .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
+const { SourceEngineHost } = vm.runInNewContext(stripTypeScriptTypes(hostSource, { mode: 'transform' }) +
+  '\n;({SourceEngineHost})', bindings);
+// 词典已由生产解析函数构建，直接置入测试实例，继续执行实际 convertText 和宿主转发。
+converter.ChineseConverter.dictionaries[1] = t2sDict;
+converter.ChineseConverter.dictionaries[2] = s2tDict;
+SourceEngineHost.install({ convertChinese: (text, type) => converter.ChineseConverter.convertText(text, type) });
+assert(SourceEngineHost.convertChinese('頭髮', 1) === '头发', '宿主端口必须调用真实繁转简词典');
+assert(SourceEngineHost.convertChinese('头发', 2) === '頭髮', '宿主端口必须调用真实简转繁词典');
+
+const scriptEngine = readEtsModule('core/rule/ScriptEngine.ts');
 assert(scriptEngine.includes("'java.t2s', 'java.s2t'"), 'ScriptEngine 运行时调用表缺少 java.s2t');
 
 console.log(`Chinese converter check passed (${assertions} assertions): OpenCC dictionaries, ` +

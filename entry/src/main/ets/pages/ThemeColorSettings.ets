@@ -9,11 +9,13 @@ import { ThemeComponentSourceIds, ThemeIds, ThemePack, ThemeVariant } from '../t
 import { BuiltinThemeRegistry } from '../theme/BuiltinThemeRegistry';
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
 import { AccountSessionStore } from '../account/AccountSessionStore';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { ThemeStartupCover } from '../components/ThemeStartupCover';
 import { ReaderThemeBackground } from '../components/ReaderThemeBackground';
 import { StartupCoverImageStore } from '../utils/StartupCoverImageStore';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
 
 @Component
 struct ThemeColorOption {
@@ -29,7 +31,7 @@ struct ThemeColorOption {
     Stack() {
       Row() {
         Text(this.title)
-          .fontSize(16)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontColor(this.primaryTextColor)
           .layoutWeight(1)
         Row()
@@ -42,9 +44,9 @@ struct ThemeColorOption {
       .width('calc(100% - 32vp)')
       .height(60)
       .padding({ left: 0, right: 0 })
-      .margin({ left: 16, right: 16 })
+      .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
       .backgroundColor(Color.Transparent)
-      .border({ width: { bottom: 0.5 }, color: this.appDarkMode ? '#24FFFFFF' : '#14000000' })
+      .border({ width: { bottom: 0.5 }, color: ThemeRuntime.hairlineColor(this.appDarkMode) })
       .alignItems(VerticalAlign.Center)
 
       AdaptiveColorPicker({
@@ -72,8 +74,6 @@ struct ThemeColorSettingsPage {
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appThemeId') appThemeId: string = AppThemeSettingsStore.DEFAULT_THEME_ID;
   @StorageLink('accountEntitlementsRevision') accountEntitlementsRevision: number = 0;
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State selectedMode: string = 'light';
   @State lightAccentColor: string = '#007DFF';
   @State darkAccentColor: string = '#4E9BFF';
@@ -114,40 +114,34 @@ struct ThemeColorSettingsPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
-        Column() {
-          this.sectionTitle('从全部内置主题中组合部件，修改只更新方案预览，需返回主题页手动启用')
-          this.modeOptions()
-          this.sectionTitle(`${this.selectedMode === 'dark' ? '深色' : '浅色'}模式 · 主题部件`)
-          this.sourceOptions()
-          this.sectionTitle(`${this.selectedMode === 'dark' ? '深色' : '浅色'}模式 · 启动封面`)
-          this.startupCoverOptions()
-          this.sectionTitle(`${this.selectedMode === 'dark' ? '深色' : '浅色'}模式 · 自定义颜色`)
-          Column() {
-            this.colorOptions()
-          }
-          .width('calc(100% - 24vp)')
-          .margin({ left: 12, right: 12, top: 12 })
-          .borderRadius(16)
-          .clip(true)
-          .backgroundColor(this.cardColor())
-          this.previewPanel()
-        }
-        .width('100%')
-        .padding({ top: 56 + this.statusBarHeight, bottom: 32 + this.navBarHeight })
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      .align(Alignment.TopStart)
-      .backgroundColor(this.pageColor())
-
-      this.titleBar()
+      PageScaffold({ title: '自定义主题', onBack: () => this.closeEditor(), content: () => {
+        this.pageContent()
+      } })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  pageContent() {
+    this.sectionTitle('从全部内置主题中组合部件，修改只更新方案预览，需返回主题页手动启用')
+    this.modeOptions()
+    this.sectionTitle(`${this.selectedMode === 'dark' ? '深色' : '浅色'}模式 · 主题部件`)
+    this.sourceOptions()
+    this.sectionTitle(`${this.selectedMode === 'dark' ? '深色' : '浅色'}模式 · 启动封面`)
+    this.startupCoverOptions()
+    this.sectionTitle(`${this.selectedMode === 'dark' ? '深色' : '浅色'}模式 · 自定义颜色`)
+    Column() {
+      this.colorOptions()
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+    this.previewPanel()
   }
 
   async reloadSettings(): Promise<void> {
@@ -266,6 +260,7 @@ struct ThemeColorSettingsPage {
     if (category === 'startup') sources.startupThemeId = themeId;
     else if (category === 'palette') sources.paletteThemeId = themeId;
     else if (category === 'reader') sources.readerThemeId = themeId;
+    else if (category === 'ttsPanel') sources.ttsPanelThemeId = themeId;
     else if (category === 'bubble') sources.bubbleThemeId = themeId;
     else if (category === 'navigation') sources.navigationThemeId = themeId;
     else if (category === 'book') sources.bookThemeId = themeId;
@@ -314,6 +309,7 @@ struct ThemeColorSettingsPage {
     if (category === 'startup') return sources.startupThemeId;
     if (category === 'palette') return sources.paletteThemeId;
     if (category === 'reader') return sources.readerThemeId;
+    if (category === 'ttsPanel') return sources.ttsPanelThemeId;
     if (category === 'bubble') return sources.bubbleThemeId;
     if (category === 'navigation') return sources.navigationThemeId;
     if (category === 'book') return sources.bookThemeId;
@@ -449,7 +445,7 @@ struct ThemeColorSettingsPage {
 
   sourceUsesTheme(sources: ThemeComponentSourceIds, themeId: string): boolean {
     return sources.startupThemeId === themeId || sources.paletteThemeId === themeId ||
-      sources.readerThemeId === themeId ||
+      sources.readerThemeId === themeId || sources.ttsPanelThemeId === themeId ||
       sources.bubbleThemeId === themeId || sources.navigationThemeId === themeId ||
       sources.bookThemeId === themeId || sources.typographyThemeId === themeId ||
       sources.layoutThemeId === themeId || sources.radiusThemeId === themeId ||
@@ -509,44 +505,24 @@ struct ThemeColorSettingsPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => this.closeEditor() })
-      Text('自定义主题')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
-  }
-
-  @Builder
   sectionTitle(title: string) {
     Text(title)
-      .fontSize(13)
+      .fontSize(AppFontSize.BODY)
       .fontColor(this.subTextColor())
       .width('100%')
-      .padding({ left: 16, right: 16, top: 20, bottom: 8 })
+      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXL, bottom: AppSpacing.MD })
   }
 
   @Builder
   modeOptions() {
-    Row({ space: 8 }) {
+    Row({ space: AppSpacing.MD }) {
       this.modeButton('浅色模式', 'light')
       this.modeButton('深色模式', 'dark')
     }
     .width('calc(100% - 24vp)')
-    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
-    .margin({ left: 12, right: 12 })
-    .borderRadius(16)
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
     .clip(true)
     .backgroundColor(this.cardColor())
   }
@@ -555,7 +531,7 @@ struct ThemeColorSettingsPage {
   modeButton(title: string, mode: string) {
     Stack({ alignContent: Alignment.Center }) {
       Text(title)
-        .fontSize(14)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.selectedMode === mode ? '#FFFFFF' : this.primaryTextColor())
     }
       .layoutWeight(1)
@@ -573,6 +549,7 @@ struct ThemeColorSettingsPage {
       this.componentSourceRow('启动封面', 'App 冷启动时展示的主题插画与标识', 'startup')
       this.componentSourceRow('完整配色', '页面、卡片、文字、状态栏图标及基础颜色', 'palette')
       this.componentSourceRow('阅读背景', '阅读背景、正文颜色和背景素材', 'reader')
+      this.componentSourceRow('朗读/有声书面板', '朗读面板和有声书面板的背景插画与底色', 'ttsPanel')
       this.componentSourceRow('强调气泡', '正文强调方式、气泡样式及气泡配色', 'bubble')
       this.componentSourceRow('导航图标', '书架、发现、搜索和我的底部图标', 'navigation')
       this.componentSourceRow('书籍素材', '主题封面、书架边框和文件夹图案', 'book')
@@ -582,23 +559,23 @@ struct ThemeColorSettingsPage {
       this.componentSourceRow('磨砂效果', '模糊、透明度、边框和阴影参数', 'glass', false)
     }
     .width('calc(100% - 24vp)')
-    .margin({ left: 12, right: 12 })
-    .borderRadius(16)
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
     .clip(true)
     .backgroundColor(this.cardColor())
   }
 
   @Builder
   componentSourceRow(title: string, desc: string, category: string, divider: boolean = true) {
-    Row({ space: 8 }) {
+    Row({ space: AppSpacing.MD }) {
       Column() {
         Text(title)
-          .fontSize(15)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontColor(this.primaryTextColor())
         Text(desc)
-          .fontSize(11)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
-          .margin({ top: 3 })
+          .margin({ top: AppSpacing.XXS })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
@@ -608,7 +585,7 @@ struct ThemeColorSettingsPage {
         selectedIndex: this.sourceSelectedIndex(category),
         selectedLabel: BuiltinThemeRegistry.findById(this.sourceThemeId(category)).name,
         darkMode: this.appDarkMode,
-        textSize: 13,
+        textSize: AppFontSize.BODY,
         textColor: this.subTextColor(),
         onSelected: (index: number) => {
           if (index >= 0 && index < this.availableThemes.length) {
@@ -619,10 +596,10 @@ struct ThemeColorSettingsPage {
     }
     .width('calc(100% - 28vp)')
     .constraintSize({ minHeight: 68 })
-    .padding({ top: 9, bottom: 9 })
+    .padding({ top: AppSpacing.MD, bottom: AppSpacing.MD })
     .margin({ left: 14, right: 14 })
     .border({ width: { bottom: divider ? 0.5 : 0 },
-      color: this.appDarkMode ? '#24FFFFFF' : '#14000000' })
+      color: ThemeRuntime.hairlineColor(this.appDarkMode) })
     .alignItems(VerticalAlign.Center)
   }
 
@@ -679,20 +656,20 @@ struct ThemeColorSettingsPage {
 
   @Builder
   startupCoverOptions() {
-    Column({ space: 12 }) {
-      Row({ space: 10 }) {
+    Column({ space: AppSpacing.LG }) {
+      Row({ space: AppSpacing.MD }) {
         Button(this.currentStartupImagePath() ? '更换自定义封面' : '上传自定义封面',
           { type: ButtonType.Normal })
           .height(38)
-          .fontSize(13)
-          .fontColor('#FFFFFF')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(ThemeRuntime.onAccentColor())
           .backgroundColor(this.currentButtonColor())
           .layoutWeight(1)
           .onClick(() => this.chooseStartupImage())
         if (this.currentStartupImagePath()) {
           Button('恢复主题封面', { type: ButtonType.Normal })
             .height(38)
-            .fontSize(13)
+            .fontSize(AppFontSize.BODY)
             .fontColor(this.currentAccentColor())
             .backgroundColor(this.inputColor())
             .layoutWeight(1)
@@ -701,9 +678,9 @@ struct ThemeColorSettingsPage {
       }
       .width('100%')
 
-      Column({ space: 6 }) {
+      Column({ space: AppSpacing.SM }) {
         Text('主标题')
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
           .width('100%')
         TextInput({ placeholder: '可留空', text: this.currentStartupTitle() })
@@ -713,15 +690,15 @@ struct ThemeColorSettingsPage {
           .fontColor(this.primaryTextColor())
           .placeholderColor(this.subTextColor())
           .backgroundColor(this.inputColor())
-          .borderRadius(10)
+          .borderRadius(ThemeRuntime.mediumRadius())
           .onChange((value: string) => this.setCurrentStartupTitle(value))
       }
       .width('100%')
       .alignItems(HorizontalAlign.Start)
 
-      Column({ space: 6 }) {
+      Column({ space: AppSpacing.SM }) {
         Text('副标题')
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
           .width('100%')
         TextInput({ placeholder: '可留空', text: this.currentStartupSubtitle() })
@@ -731,16 +708,16 @@ struct ThemeColorSettingsPage {
           .fontColor(this.primaryTextColor())
           .placeholderColor(this.subTextColor())
           .backgroundColor(this.inputColor())
-          .borderRadius(10)
+          .borderRadius(ThemeRuntime.mediumRadius())
           .onChange((value: string) => this.setCurrentStartupSubtitle(value))
       }
       .width('100%')
       .alignItems(HorizontalAlign.Start)
     }
     .width('calc(100% - 24vp)')
-    .padding(14)
-    .margin({ left: 12, right: 12 })
-    .borderRadius(16)
+    .padding(AppSpacing.LG)
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
 
@@ -748,10 +725,10 @@ struct ThemeColorSettingsPage {
   previewPanel() {
     Column() {
       Text(`${this.selectedMode === 'dark' ? '深色' : '浅色'}模式预览`)
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
         .width('100%')
-        .margin({ bottom: 12 })
+        .margin({ bottom: AppSpacing.LG })
 
       ThemeStartupCover({
         themeId: this.customPreviewTheme().startup.styleId,
@@ -766,10 +743,10 @@ struct ThemeColorSettingsPage {
       .width('100%')
       .height(150)
       .borderRadius(this.customPreviewTheme().radius.medium)
-      .margin({ bottom: 12 })
+      .margin({ bottom: AppSpacing.LG })
       .clip(true)
 
-      Row({ space: 10 }) {
+      Row({ space: AppSpacing.MD }) {
         Stack() {
           ReaderThemeBackground({
             surfaceColor: this.customPreviewVariant().reader.backgroundColor,
@@ -777,7 +754,7 @@ struct ThemeColorSettingsPage {
             compact: true
           })
           Text('阅读')
-            .fontSize(14)
+            .fontSize(AppFontSize.BODY)
             .fontFamily(this.customPreviewTheme().typography.appFontFamily)
             .fontColor(this.customPreviewVariant().reader.textColor)
         }
@@ -786,8 +763,8 @@ struct ThemeColorSettingsPage {
         .borderRadius(this.customPreviewTheme().radius.medium)
         .clip(true)
 
-        Column({ space: 7 }) {
-          Row({ space: 6 }) {
+        Column({ space: AppSpacing.SM }) {
+          Row({ space: AppSpacing.SM }) {
             Blank()
               .height(8)
               .layoutWeight(1)
@@ -800,12 +777,12 @@ struct ThemeColorSettingsPage {
               .backgroundColor(this.customPreviewVariant().colors.subTextColor)
           }
           Text('强调气泡')
-            .fontSize(12)
+            .fontSize(AppFontSize.CAPTION)
             .fontColor(this.customPreviewVariant().regexEmphasis.emphasisTextColor)
-            .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+            .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XXS, bottom: AppSpacing.XXS })
             .borderRadius(this.customPreviewTheme().radius.bubble)
             .backgroundColor(this.customPreviewVariant().regexEmphasis.emphasisColor)
-          Row({ space: 8 }) {
+          Row({ space: AppSpacing.MD }) {
             ForEach(['bookshelf', 'explore', 'search', 'mine'], (tabId: string) => {
               Image(ThemeAssetRegistry.navigationIcon(
                 this.customPreviewTheme().navigation.iconPackId, tabId))
@@ -832,28 +809,28 @@ struct ThemeColorSettingsPage {
         .height(44)
       }
       .width('100%')
-      .padding(12)
+      .padding(AppSpacing.LG)
       .borderRadius(this.customPreviewTheme().radius.medium)
       .backgroundColor(this.customPreviewVariant().colors.inputColor)
 
-      Row({ space: 12 }) {
+      Row({ space: AppSpacing.LG }) {
         Button('主要按钮')
           .height(40)
           .layoutWeight(1)
-          .fontColor('#FFFFFF')
+          .fontColor(ThemeRuntime.onAccentColor())
           .backgroundColor(this.currentButtonColor())
         Text('强调文字')
-          .fontSize(15)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontColor(this.currentAccentColor())
           .layoutWeight(1)
       }
       .width('100%')
-      .margin({ top: 12 })
+      .margin({ top: AppSpacing.LG })
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 16, bottom: 16 })
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XL, bottom: AppSpacing.XL })
     .backgroundColor(this.cardColor())
-    .margin({ top: 12 })
+    .margin({ top: AppSpacing.LG })
   }
 
 }

@@ -1,25 +1,16 @@
-import { router } from '@kit.ArkUI';
 import { Context } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { LengthMetrics } from '@ohos.arkui.node';
 import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import { AppDatabase } from '../model/data/AppDatabase';
-import { BookSource } from '../model/data/Book';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
-import { QuickJsRegressionIssueCategory, QuickJsRegressionItemResult, QuickJsRegressionProgress,
-  QuickJsRegressionReport, QuickJsRegressionRunner, QuickJsRegressionStage, QuickJsRegressionStatus }
-  from '../core/script/QuickJsRegressionRunner';
-import { QuickJsRegressionArtifactSnapshot, QuickJsRegressionArtifactStore,
-  QuickJsRegressionFixtureRecord } from '../core/script/QuickJsRegressionArtifacts';
-import { QuickJsMigrationStore } from '../core/script/QuickJsMigrationStore';
-import { QuickJsRuntimeMode } from '../core/script/QuickJsRuntimeStatus';
-import { QuickJsShadowComparator } from '../core/script/QuickJsScriptRuntime';
-import { QuickJsValidationCandidate, QuickJsValidationSeed, QuickJsValidationSnapshot,
-  QuickJsValidationStore } from '../core/script/QuickJsValidationStore';
+import { BookSource, QuickJsRegressionIssueCategory, QuickJsRegressionItemResult, QuickJsRegressionProgress, QuickJsRegressionReport, QuickJsRegressionRunner, QuickJsRegressionStage, QuickJsRegressionStatus, QuickJsRegressionArtifactSnapshot, QuickJsRegressionArtifactStore, QuickJsRegressionFixtureRecord, QuickJsMigrationStore, QuickJsRuntimeMode, QuickJsShadowComparator, QuickJsValidationCandidate, QuickJsValidationSeed, QuickJsValidationSnapshot, QuickJsValidationStore } from '@legado/sourceengine';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
 
 class QuickJsCategoryStat {
   category: string = '';
@@ -36,8 +27,6 @@ class QuickJsCategoryStat {
 struct QuickJsRegressionPage {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
   @StorageLink('quickJsValidationRevision') @Watch('onValidationRevisionChanged')
   quickJsValidationRevision: number = 0;
   @StorageLink('quickJsMigrationRevision') @Watch('onValidationRevisionChanged')
@@ -75,23 +64,9 @@ struct QuickJsRegressionPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
-        Column({ space: 12 }) {
-          this.explanationCard()
-          this.stageCard()
-          this.sourceCard()
-          this.actionCard()
-          if (this.validationSnapshot.candidates.length > 0) this.validationCard()
-          if (this.artifactSnapshot.fixtures.length > 0) this.artifactCard()
-          if (this.report.completedCandidates > 0 || this.report.error) this.reportCard()
-        }
-        .width('100%')
-        .padding({ top: 68 + this.statusBarHeight, bottom: 32 + this.navBarHeight })
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      this.titleBar()
+      PageScaffold({ title: '书源脚本回归测试', content: () => {
+        this.pageContent()
+      } })
     }
     .width('100%')
     .height('100%')
@@ -100,72 +75,87 @@ struct QuickJsRegressionPage {
   }
 
   @Builder
-  explanationCard() {
-    Column({ space: 6 }) {
-      Text('本地只读回归')
-        .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
-      Text('从所选书源提取安全纯表达式，以数值、文本和 JSON 三组固定输入对比 Legacy 与 TaskPool QuickJS。不会发起网络请求，也不会读取或修改 Cookie、登录信息和书源变量。')
-        .fontSize(12).fontColor(this.subTextColor()).lineHeight(19)
+  pageContent() {
+    Column({ space: AppSpacing.LG }) {
+      this.explanationCard()
+      this.stageCard()
+      this.sourceCard()
+      this.actionCard()
+      if (this.validationSnapshot.candidates.length > 0) this.validationCard()
+      if (this.artifactSnapshot.fixtures.length > 0) this.artifactCard()
+      if (this.report.completedCandidates > 0 || this.report.error) this.reportCard()
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16)
+    .width('100%')
+    .padding({ top: AppSpacing.LG })
+  }
+
+  @Builder
+  explanationCard() {
+    Column({ space: AppSpacing.SM }) {
+      Text('本地只读回归')
+        .fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
+      Text('从所选书源提取安全纯表达式，以数值、文本和 JSON 三组固定输入对比 Legacy 与 TaskPool QuickJS。不会发起网络请求，也不会读取或修改 Cookie、登录信息和书源变量。')
+        .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).lineHeight(19)
+    }
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor()).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   stageCard() {
-    Column({ space: 10 }) {
-      Text('执行阶段').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
+    Column({ space: AppSpacing.MD }) {
+      Text('执行阶段').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
         .width('100%')
       Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
         ForEach(QuickJsRegressionStage.all(), (stage: string) => {
           Button(QuickJsRegressionStage.label(stage))
             .type(ButtonType.Capsule)
-            .fontSize(13)
+            .fontSize(AppFontSize.BODY)
             .fontColor(this.selectedStages.includes(stage) ? '#FFFFFF' : this.primaryTextColor())
             .backgroundColor(this.selectedStages.includes(stage) ? this.accentColor() : this.softColor())
             .height(34)
-            .padding({ left: 16, right: 16 })
+            .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
             .onClick((): void => this.toggleStage(stage))
         }, (stage: string): string => stage)
       }.width('100%')
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16)
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor()).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   sourceCard() {
-    Column({ space: 10 }) {
+    Column({ space: AppSpacing.MD }) {
       Row() {
         Text(`书源（已选 ${this.selectedSourceUrls.length}）`)
-          .fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
+          .fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
         Blank()
         Text('选择当前')
-          .fontSize(13).fontColor(this.accentColor()).padding(8)
+          .fontSize(AppFontSize.BODY).fontColor(this.accentColor()).padding(AppSpacing.MD)
           .onClick((): void => this.selectVisibleSources())
         Text('清空')
-          .fontSize(13).fontColor(this.subTextColor()).padding(8)
+          .fontSize(AppFontSize.BODY).fontColor(this.subTextColor()).padding(AppSpacing.MD)
           .onClick((): void => { if (!this.isRunning) this.selectedSourceUrls = []; })
       }.width('100%')
 
       TextInput({ text: this.searchText, placeholder: '搜索书源名称或地址' })
-        .height(42).fontSize(14).fontColor(this.primaryTextColor())
+        .height(42).fontSize(AppFontSize.BODY).fontColor(this.primaryTextColor())
         .placeholderColor(this.subTextColor()).backgroundColor(this.softColor())
-        .borderRadius(12).padding({ left: 12, right: 12 })
+        .borderRadius(ThemeRuntime.mediumRadius()).padding({ left: AppSpacing.LG, right: AppSpacing.LG })
         .onChange((value: string): void => { this.searchText = value; })
 
       Scroll() {
-        Row({ space: 8 }) {
+        Row({ space: AppSpacing.MD }) {
           this.groupChip('__all__', '全部')
           ForEach(this.groups(), (group: string) => this.groupChip(group, group),
             (group: string): string => group)
-        }.padding({ right: 8 })
+        }.padding({ right: AppSpacing.MD })
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
 
       if (this.isLoading) {
         Row() { LoadingProgress().width(28).height(28) }.height(160).justifyContent(FlexAlign.Center).width('100%')
       } else if (this.visibleSources().length === 0) {
-        Text('没有匹配的书源').fontSize(14).fontColor(this.subTextColor())
+        Text('没有匹配的书源').fontSize(AppFontSize.BODY).fontColor(this.subTextColor())
           .height(120).width('100%').textAlign(TextAlign.Center)
       } else {
         List({ space: 0 }) {
@@ -176,100 +166,100 @@ struct QuickJsRegressionPage {
         .height(280).width('100%').scrollBar(BarState.Auto)
         if (this.filteredSources().length > 100) {
           Text(`当前仅显示前 100 个匹配项，共 ${this.filteredSources().length} 个；可通过搜索缩小范围`)
-            .fontSize(11).fontColor(this.subTextColor()).width('100%')
+            .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
         }
       }
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16)
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor()).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   groupChip(group: string, label: string) {
     Button(label)
-      .type(ButtonType.Capsule).height(32).fontSize(12)
+      .type(ButtonType.Capsule).height(32).fontSize(AppFontSize.CAPTION)
       .fontColor(this.activeGroup === group ? '#FFFFFF' : this.primaryTextColor())
       .backgroundColor(this.activeGroup === group ? this.accentColor() : this.softColor())
-      .padding({ left: 14, right: 14 })
+      .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
       .onClick((): void => { this.activeGroup = group; })
   }
 
   @Builder
   sourceRow(source: BookSource) {
-    Row({ space: 10 }) {
+    Row({ space: AppSpacing.MD }) {
       Toggle({ type: ToggleType.Checkbox, isOn: this.selectedSourceUrls.includes(source.bookSourceUrl) })
         .selectedColor(this.accentColor()).hitTestBehavior(HitTestMode.None)
-      Column({ space: 3 }) {
+      Column({ space: AppSpacing.XXS }) {
         Text(source.bookSourceName || source.bookSourceUrl)
-          .fontSize(14).fontColor(this.primaryTextColor()).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontSize(AppFontSize.BODY).fontColor(this.primaryTextColor()).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(source.bookSourceGroup || source.bookSourceUrl)
-          .fontSize(11).fontColor(this.subTextColor()).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
     }
-    .width('100%').height(58).padding({ left: 4, right: 4 })
+    .width('100%').height(58).padding({ left: AppSpacing.XS, right: AppSpacing.XS })
     .border({ width: { bottom: 0.5 }, color: this.dividerColor() })
     .onClick((): void => this.toggleSource(source.bookSourceUrl))
   }
 
   @Builder
   actionCard() {
-    Column({ space: 10 }) {
+    Column({ space: AppSpacing.MD }) {
       if (this.isRunning) {
         Row() {
-          Text(this.progressText || '正在准备…').fontSize(13).fontColor(this.primaryTextColor()).layoutWeight(1)
-          Text(`${this.progressCompleted}/${this.progressTotal}`).fontSize(12).fontColor(this.subTextColor())
+          Text(this.progressText || '正在准备…').fontSize(AppFontSize.BODY).fontColor(this.primaryTextColor()).layoutWeight(1)
+          Text(`${this.progressCompleted}/${this.progressTotal}`).fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
         }.width('100%')
         Progress({ value: this.progressCompleted, total: Math.max(1, this.progressTotal), type: ProgressType.Linear })
           .color(this.accentColor()).width('100%')
       }
       Button(this.isRunning ? '停止测试' : '开始回归测试')
-        .type(ButtonType.Capsule).height(44).width('100%').fontSize(15)
-        .fontColor('#FFFFFF').backgroundColor(this.isRunning ? '#D44848' : this.accentColor())
+        .type(ButtonType.Capsule).height(44).width('100%').fontSize(AppFontSize.BODY_LARGE)
+        .fontColor(ThemeRuntime.onAccentColor()).backgroundColor(this.isRunning ? ThemeRuntime.dangerColor(this.appDarkMode) : this.accentColor())
         .onClick((): void => { if (this.isRunning) this.runner.cancel(); else this.startRegression(); })
       Text('单次最多测试 50 个书源、300 个候选表达式；超出部分会在报告中标记。')
-        .fontSize(11).fontColor(this.subTextColor()).width('100%')
+        .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16)
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor()).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   validationCard() {
-    Column({ space: 10 }) {
+    Column({ space: AppSpacing.MD }) {
       Row() {
-        Text('真实影子验证').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
+        Text('真实影子验证').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
         Blank()
         Text(this.validationSnapshot.active ? '验证进行中' :
           (this.migrationMode === QuickJsRuntimeMode.CANARY ? '灰度接管中' : '未运行'))
-          .fontSize(12)
-          .fontColor(this.validationSnapshot.active ? '#20A464' : this.subTextColor())
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.validationSnapshot.active ? ThemeRuntime.successColor(this.appDarkMode) : this.subTextColor())
       }.width('100%')
       Row() {
-        this.statItem('待验证', this.pendingValidationCount(), '#E89725')
-        this.statItem('灰度合格', this.qualifiedValidationCount(), '#20A464')
-        this.statItem('存在问题', this.validationIssueCount(), '#E84040')
+        this.statItem('待验证', this.pendingValidationCount(), ThemeRuntime.warningColor(this.appDarkMode))
+        this.statItem('灰度合格', this.qualifiedValidationCount(), ThemeRuntime.successColor(this.appDarkMode))
+        this.statItem('存在问题', this.validationIssueCount(), ThemeRuntime.dangerColor(this.appDarkMode))
         this.statItem('仅离线', this.offlineOnlyValidationCount(), this.subTextColor())
       }.width('100%')
       Text(this.validationSnapshot.active ?
         '请返回应用正常搜索、浏览发现、打开详情、目录和正文。匹配的表达式会用真实上下文后台对比，旧引擎结果仍然生效。' :
         `离线一致项需累计 ${QuickJsValidationStore.REAL_MATCH_THRESHOLD} 次真实一致且零差异、零失败，才能进入灰度接管。`)
-        .fontSize(12).fontColor(this.subTextColor()).lineHeight(19).width('100%')
-      Row({ space: 10 }) {
+        .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).lineHeight(19).width('100%')
+      Row({ space: AppSpacing.MD }) {
         Button(this.validationSnapshot.active ? '停止真实验证' : '开始真实验证')
-          .type(ButtonType.Capsule).height(42).layoutWeight(1).fontSize(14)
-          .fontColor('#FFFFFF')
-          .backgroundColor(this.validationSnapshot.active ? '#D44848' : this.accentColor())
+          .type(ButtonType.Capsule).height(42).layoutWeight(1).fontSize(AppFontSize.BODY)
+          .fontColor(ThemeRuntime.onAccentColor())
+          .backgroundColor(this.validationSnapshot.active ? ThemeRuntime.dangerColor(this.appDarkMode) : this.accentColor())
           .enabled(this.validationSnapshot.active || this.routableValidationCount() > 0)
           .onClick((): void => { this.toggleRealValidation().catch((): void => {}); })
         Button(this.migrationMode === QuickJsRuntimeMode.CANARY ? '已开启灰度' : '开启灰度接管')
-          .type(ButtonType.Capsule).height(42).layoutWeight(1).fontSize(14)
+          .type(ButtonType.Capsule).height(42).layoutWeight(1).fontSize(AppFontSize.BODY)
           .fontColor(this.qualifiedValidationCount() > 0 ? '#FFFFFF' : this.subTextColor())
-          .backgroundColor(this.qualifiedValidationCount() > 0 ? '#20A464' : this.softColor())
+          .backgroundColor(this.qualifiedValidationCount() > 0 ? ThemeRuntime.successColor(this.appDarkMode) : this.softColor())
           .enabled(this.qualifiedValidationCount() > 0 && this.migrationMode !== QuickJsRuntimeMode.CANARY)
           .onClick((): void => { this.enableCanary().catch((): void => {}); })
       }.width('100%')
       if (this.validationCandidatesForDisplay().length > 0) {
-        List({ space: 6 }) {
+        List({ space: AppSpacing.SM }) {
           ForEach(this.validationCandidatesForDisplay(), (item: QuickJsValidationCandidate) => {
             ListItem() { this.validationCandidateRow(item) }
           }, (item: QuickJsValidationCandidate): string =>
@@ -279,135 +269,135 @@ struct QuickJsRegressionPage {
         .width('100%').scrollBar(BarState.Auto)
       }
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16)
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor()).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   validationCandidateRow(item: QuickJsValidationCandidate) {
-    Row({ space: 10 }) {
-      Column({ space: 3 }) {
+    Row({ space: AppSpacing.MD }) {
+      Column({ space: AppSpacing.XXS }) {
         Text(`${item.sourceName} · ${QuickJsRegressionStage.label(item.stage)} · ${item.field}`)
-          .fontSize(13).fontColor(this.primaryTextColor()).maxLines(1)
+          .fontSize(AppFontSize.BODY).fontColor(this.primaryTextColor()).maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(item.routable ?
           `${item.fingerprint} · 一致 ${item.realMatches} / ${QuickJsValidationStore.REAL_MATCH_THRESHOLD}` :
           `${item.fingerprint} · 当前同步表达式不参与接管`)
-          .fontSize(11).fontColor(this.subTextColor()).maxLines(1)
+          .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).maxLines(1)
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Text(this.validationCandidateStatus(item)).fontSize(11)
+      Text(this.validationCandidateStatus(item)).fontSize(AppFontSize.CAPTION)
         .fontColor(this.validationCandidateColor(item))
     }
-    .width('100%').height(60).padding({ left: 10, right: 10 })
-    .borderRadius(10).backgroundColor(this.softColor())
+    .width('100%').height(60).padding({ left: AppSpacing.MD, right: AppSpacing.MD })
+    .borderRadius(ThemeRuntime.mediumRadius()).backgroundColor(this.softColor())
   }
 
   @Builder
   artifactCard() {
-    Column({ space: 10 }) {
+    Column({ space: AppSpacing.MD }) {
       Row() {
-        Text('兼容性问题夹具').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
+        Text('兼容性问题夹具').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
         Blank()
         Text(`${this.unresolvedArtifactCount()} 待处理 · ${this.resolvedArtifactCount()} 已修复`)
-          .fontSize(12).fontColor(this.subTextColor())
+          .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
       }.width('100%')
       if (this.artifactCategoryStats().length > 0) {
         Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
           ForEach(this.artifactCategoryStats(), (item: QuickJsCategoryStat) => {
             Text(`${QuickJsRegressionIssueCategory.label(item.category)} ${item.count}`)
-              .fontSize(11).fontColor(this.issueCategoryColor(item.category))
-              .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-              .borderRadius(12).backgroundColor(this.softColor())
+              .fontSize(AppFontSize.CAPTION).fontColor(this.issueCategoryColor(item.category))
+              .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.SM, bottom: AppSpacing.SM })
+              .borderRadius(ThemeRuntime.mediumRadius()).backgroundColor(this.softColor())
           }, (item: QuickJsCategoryStat): string => item.category)
         }.width('100%')
       } else {
-        Text('已保存的问题用例均已通过复测').fontSize(12).fontColor('#20A464').width('100%')
+        Text('已保存的问题用例均已通过复测').fontSize(AppFontSize.CAPTION).fontColor(ThemeRuntime.successColor(this.appDarkMode)).width('100%')
       }
       if (this.unresolvedArtifactsForDisplay().length > 0) {
-        List({ space: 6 }) {
+        List({ space: AppSpacing.SM }) {
           ForEach(this.unresolvedArtifactsForDisplay(), (item: QuickJsRegressionFixtureRecord) => {
             ListItem() {
-              Row({ space: 8 }) {
-                Column({ space: 3 }) {
+              Row({ space: AppSpacing.MD }) {
+                Column({ space: AppSpacing.XXS }) {
                   Text(`${item.sourceName} · ${QuickJsRegressionStage.label(item.stage)} · ${item.field}`)
-                    .fontSize(12).fontColor(this.primaryTextColor()).maxLines(1)
+                    .fontSize(AppFontSize.CAPTION).fontColor(this.primaryTextColor()).maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis })
                   Text(`${item.fingerprint}${item.fixture ? ` · ${item.fixture}` : ''}`)
-                    .fontSize(10).fontColor(this.subTextColor()).maxLines(1)
+                    .fontSize(AppFontSize.MICRO).fontColor(this.subTextColor()).maxLines(1)
                 }.layoutWeight(1).alignItems(HorizontalAlign.Start)
                 Text(QuickJsRegressionIssueCategory.label(item.errorCategory))
-                  .fontSize(10).fontColor(this.issueCategoryColor(item.errorCategory))
+                  .fontSize(AppFontSize.MICRO).fontColor(this.issueCategoryColor(item.errorCategory))
               }
-              .width('100%').height(52).padding({ left: 10, right: 10 })
-              .borderRadius(10).backgroundColor(this.softColor())
+              .width('100%').height(52).padding({ left: AppSpacing.MD, right: AppSpacing.MD })
+              .borderRadius(ThemeRuntime.mediumRadius()).backgroundColor(this.softColor())
             }
           }, (item: QuickJsRegressionFixtureRecord): string =>
             `${item.sourceUrl}-${item.stage}-${item.field}-${item.fingerprint}`)
         }.height(Math.min(244, this.unresolvedArtifactsForDisplay().length * 58)).width('100%')
           .scrollBar(BarState.Auto)
       }
-      Row({ space: 10 }) {
+      Row({ space: AppSpacing.MD }) {
         Button(this.isRunning ? '正在复测…' : `重跑问题用例 (${this.unresolvedArtifactCount()})`)
-          .type(ButtonType.Capsule).height(42).layoutWeight(1).fontSize(13)
+          .type(ButtonType.Capsule).height(42).layoutWeight(1).fontSize(AppFontSize.BODY)
           .fontColor(this.unresolvedArtifactCount() > 0 && !this.isRunning ? '#FFFFFF' : this.subTextColor())
           .backgroundColor(this.unresolvedArtifactCount() > 0 && !this.isRunning ? this.accentColor() : this.softColor())
           .enabled(this.unresolvedArtifactCount() > 0 && !this.isRunning)
           .onClick((): void => { this.rerunIssueFixtures().catch((): void => {}); })
         Button(this.isExporting ? '正在导出…' : '导出脱敏报告')
-          .type(ButtonType.Capsule).height(42).layoutWeight(1).fontSize(13)
+          .type(ButtonType.Capsule).height(42).layoutWeight(1).fontSize(AppFontSize.BODY)
           .fontColor(!this.isExporting ? this.primaryTextColor() : this.subTextColor())
           .backgroundColor(this.softColor()).enabled(!this.isExporting)
           .onClick((): void => { this.exportRegressionReport().catch((): void => {}); })
       }.width('100%')
       Text('精确脚本仅保存在应用私有目录，用于后续版本复测；导出文件会移除 Cookie、URL 参数、原始结果和脚本文本字面量。')
-        .fontSize(11).fontColor(this.subTextColor()).lineHeight(17).width('100%')
+        .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).lineHeight(17).width('100%')
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16)
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor()).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   reportCard() {
-    Column({ space: 10 }) {
+    Column({ space: AppSpacing.MD }) {
       Row() {
-        Text('回归报告').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
+        Text('回归报告').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
         Blank()
         if (this.report.elapsedMs > 0) {
-          Text(`${this.report.elapsedMs} ms`).fontSize(12).fontColor(this.subTextColor())
+          Text(`${this.report.elapsedMs} ms`).fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
         }
       }.width('100%')
       if (this.report.error) {
-        Text(this.report.error).fontSize(13).fontColor('#E84040').width('100%')
+        Text(this.report.error).fontSize(AppFontSize.BODY).fontColor(ThemeRuntime.dangerColor(this.appDarkMode)).width('100%')
       } else {
         Row() {
-          this.statItem('一致', this.report.matchCount, '#20A464')
-          this.statItem('差异', this.report.mismatchCount, '#E89725')
-          this.statItem('失败', this.report.failureCount, '#E84040')
+          this.statItem('一致', this.report.matchCount, ThemeRuntime.successColor(this.appDarkMode))
+          this.statItem('差异', this.report.mismatchCount, ThemeRuntime.warningColor(this.appDarkMode))
+          this.statItem('失败', this.report.failureCount, ThemeRuntime.dangerColor(this.appDarkMode))
           this.statItem('退出迁移', this.report.excludedCount, this.subTextColor())
         }.width('100%')
         if (this.report.truncatedCount > 0) {
           Text(`另有 ${this.report.truncatedCount} 个候选因数量上限未测试`)
-            .fontSize(11).fontColor(this.subTextColor()).width('100%')
+            .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
         }
         if (this.currentReportCategoryStats().length > 0) {
           Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
             ForEach(this.currentReportCategoryStats(), (item: QuickJsCategoryStat) => {
               Text(`${QuickJsRegressionIssueCategory.label(item.category)} ${item.count}`)
-                .fontSize(11).fontColor(this.issueCategoryColor(item.category))
-                .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-                .borderRadius(12).backgroundColor(this.softColor())
+                .fontSize(AppFontSize.CAPTION).fontColor(this.issueCategoryColor(item.category))
+                .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.SM, bottom: AppSpacing.SM })
+                .borderRadius(ThemeRuntime.mediumRadius()).backgroundColor(this.softColor())
             }, (item: QuickJsCategoryStat): string => item.category)
           }.width('100%')
         }
-        Row({ space: 8 }) {
+        Row({ space: AppSpacing.MD }) {
           this.filterChip('issues', '仅问题')
           this.filterChip('all', '全部结果')
         }.width('100%')
         if (this.visibleResults().length === 0) {
           Text(this.resultFilter === 'issues' ? '没有发现差异或执行失败' : '暂无结果')
-            .fontSize(13).fontColor(this.subTextColor()).height(90).width('100%').textAlign(TextAlign.Center)
+            .fontSize(AppFontSize.BODY).fontColor(this.subTextColor()).height(90).width('100%').textAlign(TextAlign.Center)
         } else {
-          List({ space: 8 }) {
+          List({ space: AppSpacing.MD }) {
             ForEach(this.visibleResults(), (item: QuickJsRegressionItemResult, index: number) => {
               ListItem() { this.resultRow(item) }
             }, (item: QuickJsRegressionItemResult, index: number): string =>
@@ -416,21 +406,21 @@ struct QuickJsRegressionPage {
         }
       }
     }
-    .width('calc(100% - 24vp)').padding(16).borderRadius(16)
+    .width('calc(100% - 24vp)').padding(AppSpacing.XL).borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor()).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   statItem(label: string, value: number, color: string) {
-    Column({ space: 3 }) {
-      Text(`${value}`).fontSize(19).fontWeight(FontWeight.Bold).fontColor(color)
-      Text(label).fontSize(11).fontColor(this.subTextColor())
+    Column({ space: AppSpacing.XXS }) {
+      Text(`${value}`).fontSize(AppFontSize.TITLE).fontWeight(FontWeight.Bold).fontColor(color)
+      Text(label).fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
     }.layoutWeight(1)
   }
 
   @Builder
   filterChip(filter: string, label: string) {
-    Button(label).type(ButtonType.Capsule).height(30).fontSize(12)
+    Button(label).type(ButtonType.Capsule).height(30).fontSize(AppFontSize.CAPTION)
       .fontColor(this.resultFilter === filter ? '#FFFFFF' : this.primaryTextColor())
       .backgroundColor(this.resultFilter === filter ? this.accentColor() : this.softColor())
       .onClick((): void => { this.resultFilter = filter; })
@@ -438,43 +428,29 @@ struct QuickJsRegressionPage {
 
   @Builder
   resultRow(item: QuickJsRegressionItemResult) {
-    Column({ space: 4 }) {
+    Column({ space: AppSpacing.XS }) {
       Row() {
         Text(`${QuickJsRegressionStage.label(item.stage)} · ${item.field}`)
-          .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor()).layoutWeight(1)
-        Text(this.resultStatusLabel(item)).fontSize(11).fontColor(this.resultStatusColor(item))
+          .fontSize(AppFontSize.BODY).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor()).layoutWeight(1)
+        Text(this.resultStatusLabel(item)).fontSize(AppFontSize.CAPTION).fontColor(this.resultStatusColor(item))
       }.width('100%')
       Text(`${item.sourceName} · ${item.fingerprint}${item.fixture ? ` · ${item.fixture}` : ''}`)
-        .fontSize(11).fontColor(this.subTextColor()).maxLines(1)
+        .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).maxLines(1)
       Text(item.expressionPreview)
-        .fontSize(11).fontColor(this.subTextColor()).maxLines(1)
+        .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
       if (item.status === QuickJsRegressionStatus.MISMATCH) {
         Text(`Legacy: ${item.legacyPreview}  |  QuickJS: ${item.quickPreview}`)
-          .fontSize(11).fontColor(this.subTextColor()).maxLines(2)
+          .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).maxLines(2)
       } else if (item.error) {
-        Text(item.error).fontSize(11).fontColor('#E84040').maxLines(2)
+        Text(item.error).fontSize(AppFontSize.CAPTION).fontColor(ThemeRuntime.dangerColor(this.appDarkMode)).maxLines(2)
       }
       if (item.errorCategory && item.errorCategory !== QuickJsRegressionIssueCategory.NONE) {
         Text(`分类：${QuickJsRegressionIssueCategory.label(item.errorCategory)}`)
-          .fontSize(10).fontColor(this.issueCategoryColor(item.errorCategory))
+          .fontSize(AppFontSize.MICRO).fontColor(this.issueCategoryColor(item.errorCategory))
       }
-    }.width('100%').padding(10).borderRadius(10).backgroundColor(this.softColor())
+    }.width('100%').padding(AppSpacing.MD).borderRadius(ThemeRuntime.mediumRadius()).backgroundColor(this.softColor())
       .alignItems(HorizontalAlign.Start)
-  }
-
-  @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-      Text('书源脚本回归测试').fontSize(20).fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor()).layoutWeight(1)
-    }
-    .width('100%').height(56 + this.statusBarHeight).padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode)).backdropBlur(ThemeRuntime.topBarBlur())
-    .alignItems(VerticalAlign.Center)
   }
 
   private async loadSources(): Promise<void> {
@@ -724,12 +700,12 @@ struct QuickJsRegressionPage {
   }
 
   private issueCategoryColor(category: string): string {
-    if (category === QuickJsRegressionIssueCategory.SEMANTIC_MISMATCH) return '#E89725';
+    if (category === QuickJsRegressionIssueCategory.SEMANTIC_MISMATCH) return ThemeRuntime.warningColor(this.appDarkMode);
     if (category === QuickJsRegressionIssueCategory.UNSUPPORTED ||
       category === QuickJsRegressionIssueCategory.MISSING_BINDING) return '#8A6BC2';
     if (category === QuickJsRegressionIssueCategory.TIMEOUT ||
-      category === QuickJsRegressionIssueCategory.RESOURCE_LIMIT) return '#D44848';
-    return '#E84040';
+      category === QuickJsRegressionIssueCategory.RESOURCE_LIMIT) return ThemeRuntime.dangerColor(this.appDarkMode);
+    return ThemeRuntime.dangerColor(this.appDarkMode);
   }
 
   private async saveRegressionForValidation(report: QuickJsRegressionReport): Promise<void> {
@@ -833,10 +809,10 @@ struct QuickJsRegressionPage {
   }
 
   private validationCandidateColor(item: QuickJsValidationCandidate): string {
-    if (item.offlineStatus !== QuickJsRegressionStatus.MATCH || this.hasValidationIssue(item)) return '#E84040';
+    if (item.offlineStatus !== QuickJsRegressionStatus.MATCH || this.hasValidationIssue(item)) return ThemeRuntime.dangerColor(this.appDarkMode);
     if (!item.routable) return this.subTextColor();
-    if (this.isValidationQualified(item)) return '#20A464';
-    return '#E89725';
+    if (this.isValidationQualified(item)) return ThemeRuntime.successColor(this.appDarkMode);
+    return ThemeRuntime.warningColor(this.appDarkMode);
   }
 
   private canValidateCandidate(item: QuickJsValidationCandidate): boolean {
@@ -859,9 +835,9 @@ struct QuickJsRegressionPage {
   }
 
   private statusColor(status: string): string {
-    if (status === QuickJsRegressionStatus.MATCH) return '#20A464';
-    if (status === QuickJsRegressionStatus.MISMATCH) return '#E89725';
-    return '#E84040';
+    if (status === QuickJsRegressionStatus.MATCH) return ThemeRuntime.successColor(this.appDarkMode);
+    if (status === QuickJsRegressionStatus.MISMATCH) return ThemeRuntime.warningColor(this.appDarkMode);
+    return ThemeRuntime.dangerColor(this.appDarkMode);
   }
 
   private resultStatusLabel(item: QuickJsRegressionItemResult): string {
@@ -883,5 +859,5 @@ struct QuickJsRegressionPage {
   private subTextColor(): string { return ThemeRuntime.subTextColor(this.appDarkMode); }
   private accentColor(): string { return ThemeRuntime.accentColor(this.appDarkMode); }
   private softColor(): string { return this.appDarkMode ? '#24FFFFFF' : '#0D000000'; }
-  private dividerColor(): string { return this.appDarkMode ? '#20FFFFFF' : '#12000000'; }
+  private dividerColor(): string { return ThemeRuntime.softFillColor(this.appDarkMode); }
 }

@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,6 +30,14 @@ jobs:
       - run: node scripts/theme-framework-check.mjs
       - run: node scripts/neutral-source-engine-check.mjs
       - run: node scripts/log-policy-check.mjs
-      # 这两个检查会导入 entry 下的 TypeScript 模块，需要 Node 的类型擦除能力。
+      # 这些检查会导入 entry 下的 TypeScript 模块，需要 Node 的类型擦除能力。
       - run: node --experimental-strip-types scripts/java-regex-compat-check.mjs
       - run: node --experimental-strip-types scripts/replace-rule-import-check.mjs
+      - run: node --experimental-strip-types scripts/opds-parser-check.mjs
+      - run: node --experimental-strip-types scripts/opds-kavita-check.mjs
+      - run: node --experimental-strip-types scripts/epub-converter-check.mjs
+      - run: node --experimental-strip-types scripts/epub-mixed-layout-check.mjs
+      - run: node --experimental-strip-types scripts/reader-text-normalizer-check.mjs
+      - run: node --experimental-strip-types scripts/reader-chunk-pagination-check.mjs
+      # 书源解析内核（子模块）自己的回归检查。
+      - run: for f in harmony-book-source-engine/scripts/*-check.mjs; do node --experimental-strip-types "$f" || exit 1; done

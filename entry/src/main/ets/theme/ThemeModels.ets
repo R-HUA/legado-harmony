@@ -14,12 +14,17 @@ export class ThemeIds {
   static readonly SWORD_FROST: string = 'sword-frost';
   static readonly QINGLUAN_WATER: string = 'qingluan-water';
   static readonly CAT_PIPI: string = 'cat-pipi';
+  static readonly AZURE_MECHA: string = 'azure-mecha';
+  static readonly STARWISH_MAGIC: string = 'starwish-magic';
+  static readonly LETTERPRESS_PAGE: string = 'letterpress-page';
 }
 
 export class ThemeComponentSourceIds {
   startupThemeId: string = ThemeIds.PLAIN_DEFAULT;
   paletteThemeId: string = ThemeIds.PLAIN_DEFAULT;
   readerThemeId: string = ThemeIds.PLAIN_DEFAULT;
+  // Added after the other sources: empty in schemes saved before it existed, which follow readerThemeId.
+  ttsPanelThemeId: string = '';
   bubbleThemeId: string = ThemeIds.PLAIN_DEFAULT;
   navigationThemeId: string = ThemeIds.PLAIN_DEFAULT;
   bookThemeId: string = ThemeIds.PLAIN_DEFAULT;
@@ -57,6 +62,9 @@ export class ThemeBubbleStyles {
   static readonly SWORD_TALISMAN: string = 'sword-talisman';
   static readonly QINGLUAN_JADE: string = 'qingluan-jade';
   static readonly PIPI_SOFT_PAW: string = 'pipi-soft-paw';
+  static readonly MECHA_COMM: string = 'mecha-comm';
+  static readonly STARWISH_RIBBON: string = 'starwish-ribbon';
+  static readonly PENCIL_MARK: string = 'pencil-mark';
 }
 
 export class ThemeColorTokens {

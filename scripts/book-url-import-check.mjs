@@ -1,12 +1,12 @@
-import fs from 'node:fs';
 import vm from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
 import assert from 'node:assert/strict';
+import { readEtsModule } from './lib/ets-module-staging.mjs';
 
 // 执行实际匹配和导入协调代码，只替换平台网络与媒体类型适配。
 const bindings = { console: { warn() {} } };
 function load(file, names) {
-  const source = fs.readFileSync(new URL('../entry/src/main/ets/' + file, import.meta.url), 'utf8')
+  const source = readEtsModule(file)
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
   Object.assign(bindings, vm.runInNewContext(stripTypeScriptTypes(source, { mode: 'transform' }) +
     '\n;({' + names.join(',') + '})', bindings));

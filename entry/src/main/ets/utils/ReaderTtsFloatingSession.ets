@@ -1,3 +1,5 @@
+import { readStatsTracker } from '../core/stats/ReadStatsTracker';
+
 export class ReaderTtsFloatingSession {
   private static ownerId: string = '';
   private static toggleAction: (() => Promise<void>) | null = null;
@@ -31,10 +33,13 @@ export class ReaderTtsFloatingSession {
     AppStorage.setOrCreate('globalTtsActive', true);
     AppStorage.setOrCreate('globalTtsPaused', paused);
     AppStorage.setOrCreate('globalTtsBookUrl', bookUrl);
+    readStatsTracker.setTtsActive(paused ? '' : bookUrl);
     AppStorage.setOrCreate('globalTtsBookName', bookName || '正在朗读');
     AppStorage.setOrCreate('globalTtsChapterTitle', chapterTitle || '');
     AppStorage.setOrCreate('globalTtsMode', 'tts');
     AppStorage.setOrCreate('globalTtsVoiceCode', '');
+    AppStorage.setOrCreate('globalTtsStatusText', '');
+    AppStorage.setOrCreate('globalTtsBusy', false);
     ReaderTtsFloatingSession.notifyChanged();
   }
 
@@ -52,6 +57,7 @@ export class ReaderTtsFloatingSession {
     AppStorage.setOrCreate('globalTtsPaused', paused);
     AppStorage.setOrCreate('globalTtsBookName', nextName);
     AppStorage.setOrCreate('globalTtsChapterTitle', nextTitle);
+    readStatsTracker.setTtsActive(paused ? '' : AppStorage.get<string>('globalTtsBookUrl') || '');
     ReaderTtsFloatingSession.notifyChanged();
   }
 
@@ -128,6 +134,17 @@ export class ReaderTtsFloatingSession {
     }
     if (AppStorage.get<number>('globalTtsAudioDurationMs') !== nextDuration) {
       AppStorage.setOrCreate('globalTtsAudioDurationMs', nextDuration);
+    }
+  }
+
+  /** 听书取地址、缓冲或失败时的提示；busy 表示正在加载，面板和胶囊据此显示加载状态。 */
+  static updateStatus(ownerId: string, text: string, busy: boolean): void {
+    if (!ReaderTtsFloatingSession.isOwner(ownerId)) return;
+    if (AppStorage.get<string>('globalTtsStatusText') !== text) {
+      AppStorage.setOrCreate('globalTtsStatusText', text);
+    }
+    if (AppStorage.get<boolean>('globalTtsBusy') !== busy) {
+      AppStorage.setOrCreate('globalTtsBusy', busy);
     }
   }
 
@@ -300,7 +317,10 @@ export class ReaderTtsFloatingSession {
       await action();
       const pausedState = ReaderTtsFloatingSession.pausedState;
       if (pausedState && ReaderTtsFloatingSession.isActive()) {
-        AppStorage.setOrCreate('globalTtsPaused', pausedState());
+        const paused = pausedState();
+        AppStorage.setOrCreate('globalTtsPaused', paused);
+        readStatsTracker.setTtsActive(
+          paused ? '' : AppStorage.get<string>('globalTtsBookUrl') || '');
         ReaderTtsFloatingSession.notifyChanged();
       }
     }
@@ -398,12 +418,15 @@ export class ReaderTtsFloatingSession {
     AppStorage.setOrCreate('globalTtsActive', false);
     AppStorage.setOrCreate('globalTtsPaused', false);
     AppStorage.setOrCreate('globalTtsBookUrl', '');
+    readStatsTracker.setTtsActive('');
     AppStorage.setOrCreate('globalTtsBookName', '');
     AppStorage.setOrCreate('globalTtsChapterTitle', '');
     AppStorage.setOrCreate('globalTtsMode', '');
     AppStorage.setOrCreate('globalTtsVoiceCode', '');
     AppStorage.setOrCreate('globalTtsAudioPositionMs', 0);
     AppStorage.setOrCreate('globalTtsAudioDurationMs', 0);
+    AppStorage.setOrCreate('globalTtsStatusText', '');
+    AppStorage.setOrCreate('globalTtsBusy', false);
     AppStorage.setOrCreate<ResourceStr>('globalTtsCover', '');
     AppStorage.setOrCreate<ResourceStr>('globalTtsCoverFrame', '');
     AppStorage.setOrCreate('globalTtsContent', '');

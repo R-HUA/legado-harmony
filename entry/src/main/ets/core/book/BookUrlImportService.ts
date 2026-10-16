@@ -1,7 +1,6 @@
-import { Book, BookSource } from '../../model/data/Book';
+import { Book, BookSource, BookTypeSupport } from '@legado/sourceengine';
 import { WebBookService } from './WebBookService';
 import { BookUrlSourceMatcher } from './BookUrlSourceMatcher';
-import { BookTypeSupport } from './BookTypeSupport';
 
 /** 链接导入只解析候选；用户确认前不写入书架。 */
 export class BookUrlImportService {

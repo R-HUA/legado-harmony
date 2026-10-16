@@ -1,4 +1,4 @@
-import { BookSource } from '../../model/data/Book';
+import { BookSource } from '@legado/sourceengine';
 import { BookCoverCache } from '../../utils/BookCoverCache';
 
 /**

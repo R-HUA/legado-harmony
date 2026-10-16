@@ -1,5 +1,5 @@
 import { router } from '@kit.ArkUI';
-import { SearchBook } from '../model/data/Book';
+import { SearchBook } from '@legado/sourceengine';
 import { SearchBookResultList } from '../components/book/SearchBookResultList';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { SearchResultAggregationStore, SearchResultGroupSnapshot } from '../utils/SearchResultAggregationStore';
@@ -7,6 +7,8 @@ import { SearchBookShelfChange, SearchBookShelfHelper } from '../utils/SearchBoo
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
 
 @Entry
 @Component
@@ -67,9 +69,9 @@ struct SearchResultGroupPage {
           onToggleShelf: (book: SearchBook) => this.toggleShelf(book)
         })
       } else {
-        Column({ space: 10 }) {
+        Column({ space: AppSpacing.MD }) {
           Text('聚合结果已失效，请返回重新搜索')
-            .fontSize(15)
+            .fontSize(AppFontSize.BODY_LARGE)
             .fontColor(this.subTextColor())
         }
         .width('100%')
@@ -92,15 +94,15 @@ struct SearchResultGroupPage {
           onBack: () => router.back()
         })
 
-        Column({ space: 2 }) {
+        Column({ space: AppSpacing.XXS }) {
           Text(this.groupTitle)
-            .fontSize(18)
+            .fontSize(AppFontSize.SUBTITLE)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.primaryTextColor())
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
           Text(`${this.books.length} 个同名结果`)
-            .fontSize(11)
+            .fontSize(AppFontSize.CAPTION)
             .fontColor(this.subTextColor())
         }
         .layoutWeight(1)
@@ -108,7 +110,7 @@ struct SearchResultGroupPage {
       }
       .width('100%')
       .height(56 + this.statusBarHeight)
-      .padding({ left: 4, right: 16, top: this.statusBarHeight })
+      .padding({ left: AppSpacing.XS, right: AppSpacing.XL, top: this.statusBarHeight })
       .alignItems(VerticalAlign.Center)
       .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
       .backdropBlur(ThemeRuntime.topBarBlur())

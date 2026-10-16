@@ -11,6 +11,7 @@ import {
   ThemeRegexEmphasisModes,
   ThemeVariant
 } from './ThemeModels';
+import { HexColor } from '../utils/HexColor';
 
 export class ThemeRuntime {
   static readonly KEY_GLASS_ENABLED: string = 'glassEnabled';
@@ -139,6 +140,14 @@ export class ThemeRuntime {
       return ThemeRuntime.customSourceTheme('startup', darkMode).startup.styleId;
     }
     return ThemeRuntime.currentPack().startup.styleId;
+  }
+
+  /** Theme whose TTS / audiobook panel background applies; a custom theme names its own source. */
+  static ttsPanelThemeId(darkMode: boolean = AppStorage.get<boolean>('appDarkMode') || false): string {
+    if (ThemeRuntime.currentThemeId() === ThemeIds.CUSTOM) {
+      return ThemeRuntime.customSourceTheme('ttsPanel', darkMode).id;
+    }
+    return ThemeRuntime.currentThemeId();
   }
 
   static themeRevision(): number {
@@ -369,6 +378,43 @@ export class ThemeRuntime {
     const fallback = ThemeRuntime.fallbackVariant(darkMode).colors.dangerColor;
     return ThemeRuntime.colorFromStorage(darkMode ? ThemeRuntime.KEY_DARK_DANGER_COLOR :
       ThemeRuntime.KEY_LIGHT_DANGER_COLOR, fallback);
+  }
+
+  // 以下语义色不属于主题包，各主题共用，只随深浅色变化。
+
+  /** 成功、通过、已启用等状态的文字和图标。 */
+  static successColor(darkMode: boolean): string {
+    return darkMode ? '#7CC7A0' : '#1F8F55';
+  }
+
+  /** 成功状态标签的浅底色。 */
+  static successSurfaceColor(darkMode: boolean): string {
+    return darkMode ? '#24382F' : '#E6F4EC';
+  }
+
+  /** 警告、待处理等状态。 */
+  static warningColor(_darkMode: boolean): string {
+    return '#E89725';
+  }
+
+  /** 强调色、按钮色、危险色等实色背景上的文字。 */
+  static onAccentColor(): string {
+    return '#FFFFFF';
+  }
+
+  /** 弹窗与浮层背后的遮罩。 */
+  static scrimColor(darkMode: boolean): string {
+    return darkMode ? '#99000000' : '#33000000';
+  }
+
+  /** 列表行、卡片的细分隔线和描边。 */
+  static hairlineColor(darkMode: boolean): string {
+    return darkMode ? '#24FFFFFF' : '#14000000';
+  }
+
+  /** 叠在任意底色上的浅色填充，用于次要按钮、选中行、占位块。 */
+  static softFillColor(darkMode: boolean): string {
+    return darkMode ? '#1FFFFFFF' : '#0D000000';
   }
 
   static fontFamily(): string {
@@ -624,6 +670,7 @@ export class ThemeRuntime {
     if (category === 'startup') themeId = sources.startupThemeId;
     else if (category === 'palette') themeId = sources.paletteThemeId;
     else if (category === 'reader') themeId = sources.readerThemeId;
+    else if (category === 'ttsPanel') themeId = sources.ttsPanelThemeId;
     else if (category === 'bubble') themeId = sources.bubbleThemeId;
     else if (category === 'navigation') themeId = sources.navigationThemeId;
     else if (category === 'book') themeId = sources.bookThemeId;
@@ -650,6 +697,8 @@ export class ThemeRuntime {
     normalized.startupThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.startupThemeId || fallback);
     normalized.paletteThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.paletteThemeId || fallback);
     normalized.readerThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.readerThemeId || fallback);
+    normalized.ttsPanelThemeId = BuiltinThemeRegistry.normalizeBuiltinId(
+      source.ttsPanelThemeId || source.readerThemeId || fallback);
     normalized.bubbleThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.bubbleThemeId || fallback);
     normalized.navigationThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.navigationThemeId || fallback);
     normalized.bookThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.bookThemeId || fallback);
@@ -666,15 +715,7 @@ export class ThemeRuntime {
   }
 
   private static normalizeColor(value: string, fallback: string): string {
-    const text = (value || '').trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(text)) {
-      return text.toUpperCase();
-    }
-    if (/^[0-9a-fA-F]{6}$/.test(text)) {
-      return `#${text.toUpperCase()}`;
-    }
-    const fallbackText = (fallback || '').trim();
-    return /^#[0-9a-fA-F]{6}$/.test(fallbackText) ? fallbackText.toUpperCase() : '#000000';
+    return HexColor.normalize(value, fallback, '#000000');
   }
 
   private static normalizeEmphasisMode(value: string, fallback: string): string {
@@ -702,7 +743,8 @@ export class ThemeRuntime {
       style === ThemeBubbleStyles.CRIMSON_STAMP || style === ThemeBubbleStyles.CELADON_SLIP ||
       style === ThemeBubbleStyles.ROSE_FRAME || style === ThemeBubbleStyles.MOON_HALO ||
       style === ThemeBubbleStyles.SWORD_TALISMAN || style === ThemeBubbleStyles.QINGLUAN_JADE ||
-      style === ThemeBubbleStyles.PIPI_SOFT_PAW) {
+      style === ThemeBubbleStyles.PIPI_SOFT_PAW || style === ThemeBubbleStyles.MECHA_COMM ||
+      style === ThemeBubbleStyles.STARWISH_RIBBON || style === ThemeBubbleStyles.PENCIL_MARK) {
       return style;
     }
     const fallbackStyle = (fallback || '').trim();
@@ -716,7 +758,10 @@ export class ThemeRuntime {
       fallbackStyle === ThemeBubbleStyles.ROSE_FRAME || fallbackStyle === ThemeBubbleStyles.MOON_HALO ||
       fallbackStyle === ThemeBubbleStyles.SWORD_TALISMAN ||
       fallbackStyle === ThemeBubbleStyles.QINGLUAN_JADE ||
-      fallbackStyle === ThemeBubbleStyles.PIPI_SOFT_PAW) {
+      fallbackStyle === ThemeBubbleStyles.PIPI_SOFT_PAW ||
+      fallbackStyle === ThemeBubbleStyles.MECHA_COMM ||
+      fallbackStyle === ThemeBubbleStyles.STARWISH_RIBBON ||
+      fallbackStyle === ThemeBubbleStyles.PENCIL_MARK) {
       return fallbackStyle;
     }
     return ThemeBubbleStyles.QQ_SOFT;

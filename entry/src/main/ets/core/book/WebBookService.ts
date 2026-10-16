@@ -1,32 +1,12 @@
-import { Book, BookChapter, BookSource } from '../../model/data/Book';
-import { HttpClient } from '../http/HttpClient';
-import { AnalyzeUrl } from '../rule/AnalyzeUrl';
-import { AnalyzeRule } from '../rule/AnalyzeRule';
-import { RuleContext } from '../rule/RuleContext';
+import { SourceEngineHost, Book, BookChapter, BookSource, ContentRule, HttpClient, HttpResponse, AnalyzeUrl, AnalyzeRule, RuleContext, VerificationSupport, EncodedSourceUrl, BookUrlResolver, BookFieldSanitizer, AjaxRuleCompat, JavaRegexCompat, JsRuntime, ScriptEngine, ScriptEngineContext, SourceRuntimeStage, BookSourceStageWebRuntime, StageWebRuntimeRequest, ReaderActionMarker, CookieStore, RuleExecutionService, RuleBatchExecutionRequest, RuleFieldRequest, CooperativeScheduler, RuleExecutionTarget, RuleValue, BookSourceDebugContext, LogText, NativeSourceService, NetworkErrorText } from '@legado/sourceengine';
 import { util } from '@kit.ArkTS';
-import { VerificationSupport } from '../http/VerificationSupport';
-import { EncodedSourceUrl } from './EncodedSourceUrl';
 import { BookSourceDataUrlSupport } from './BookSourceDataUrlSupport';
-import { BookUrlResolver } from './BookUrlResolver';
-import { BookFieldSanitizer } from '../../utils/BookFieldSanitizer';
-import { AjaxRuleCompat } from '../rule/AjaxRuleCompat';
-import { JavaRegexCompat } from '../rule/JavaRegexCompat';
 import { ReaderImageMarker } from './ReaderImageMarker';
-import { JsRuntime } from '../rule/JsRuntime';
-import { ScriptEngine, ScriptEngineContext } from '../rule/ScriptEngine';
 import { ComicImagePipeline, ComicImageRequestContext } from './ComicImagePipeline';
-import { BookSourceRuntimeRouter, SourceRuntimeStage } from './BookSourceRuntimeRouter';
-import { BookSourceStageWebRuntime, StageWebRuntimeRequest } from './BookSourceStageWebRuntime';
-import { ReaderActionMarker } from './ReaderActionMarker';
 import { BookSourceInteractionPostProcessor } from './BookSourceInteractionPostProcessor';
-import { CookieStore } from '../http/CookieStore';
-import { RuleExecutionService } from '../rule/RuleExecutionService';
-import { RuleBatchExecutionRequest, RuleFieldRequest } from '../rule/RuleExecutionModels';
-import { CooperativeScheduler } from '../concurrency/CooperativeScheduler';
 import { BookSourceAudioWebRuntime } from './BookSourceAudioWebRuntime';
+import { AudioRuleSupport } from './AudioRuleSupport';
 import { BookSourceMetadataSupport } from './BookSourceMetadataSupport';
-import { RuleExecutionTarget, RuleValue } from '../rule/RuleValue';
-import { BookSourceDebugContext } from './BookSourceDebugModels';
 
 class ContentPageData {
   content: string = '';
@@ -55,6 +35,16 @@ export class WebBookService {
 
   async getBookInfo(source: BookSource, book: Book,
     debugContext: BookSourceDebugContext | null = null): Promise<Book> {
+    if (NativeSourceService.isNative(source)) {
+      // 原生书源不经过脚本引擎，也不套用兼容书源的各类兜底修补。
+      try {
+        return await NativeSourceService.getBookInfo(source, this.http, book, debugContext);
+      } catch (e) {
+        console.warn('[WS] native book info failed:', source.bookSourceName, (e as Error).message);
+        SourceEngineHost.setError(source, (e as Error).message || '详情解析失败');
+        return book;
+      }
+    }
     // Imported rules may build the virtual detail URL while the field batch is still executing.
     // Preserve its request data and bridge the SearchBook identity that is already known.
     book.bookUrl = EncodedSourceUrl.repairBookName(book.bookUrl, book.name, 'details');
@@ -67,10 +57,14 @@ export class WebBookService {
     const resp = EncodedSourceUrl.canHandle(book.bookUrl) ?
       await this.fetchEncodedDataUrl(book.bookUrl, source) : await au.fetch(book.bookUrl, undefined, debugContext);
     console.log('[WS] getBookInfo resp:', resp.success, 'len:', resp.body.length);
-    if (this.requestVerificationIfNeeded(source, book.bookUrl, resp.body, resp.statusCode, source.bookInfoRule.init)) {
+    if (this.requestVerificationIfNeeded(source, book.bookUrl, resp.body, resp.statusCode, source.bookInfoRule.init,
+      resp.error || '')) {
       return book;
     }
-    if (!resp.success || !resp.body) return book;
+    if (!resp.success || !resp.body) {
+      SourceEngineHost.setError(source, resp.error || '详情请求失败或空响应');
+      return book;
+    }
     const baseUrl = BookUrlResolver.effectiveBase(resp, book.bookUrl, source.bookSourceUrl);
 
     const ctx = new RuleContext();
@@ -87,7 +81,8 @@ export class WebBookService {
       let initResult = await this.runStageRule(source, book, infoRule.init, content, stageBaseUrl,
         SourceRuntimeStage.BOOK_INFO, null, {}, debugContext);
       if (!initResult && !this.stageRuleCode(infoRule.init)) {
-        const ir = new AnalyzeRule(content, baseUrl, ctx);
+        const ir = new AnalyzeRule(content, baseUrl, ctx)
+          .setNoticeScope(SourceRuntimeStage.BOOK_INFO, source.bookSourceName);
         this.seedSourceVariables(ctx, source);
         initResult = ir.getString(infoRule.init);
       }
@@ -266,10 +261,27 @@ export class WebBookService {
     return '';
   }
 
+  // Catalog pages listed all at once by nextTocUrl are fetched this many at a time.
+  private static readonly TOC_PAGE_FETCH_BATCH: number = 4;
+
   async getChapterList(source: BookSource, book: Book, maxChapters: number = 0,
     allowGenericFallback: boolean = true,
     debugContext: BookSourceDebugContext | null = null): Promise<BookChapter[]> {
-    AppStorage.setOrCreate('bookSourceStageLastError', '');
+    SourceEngineHost.setError(source, '');
+    if (NativeSourceService.isNative(source)) {
+      try {
+        const nativeChapters = await NativeSourceService.getChapterList(source, this.http, book,
+          maxChapters > 0 ? Math.max(1, Math.round(maxChapters)) : 0, debugContext);
+        if (nativeChapters.length === 0) {
+          SourceEngineHost.setError(source, '目录规则没有匹配到章节');
+        }
+        return nativeChapters;
+      } catch (e) {
+        console.warn('[WS] native chapter list failed:', source.bookSourceName, (e as Error).message);
+        SourceEngineHost.setError(source, (e as Error).message || '目录解析失败');
+        return [];
+      }
+    }
     BookSourceMetadataSupport.applyBook(source, book, [book.bookUrl, book.tocUrl]);
     const chapterLimit = maxChapters > 0 ? Math.max(1, Math.round(maxChapters)) : 0;
     if (BookSourceDataUrlSupport.isEncodedSource(book.tocUrl) || BookSourceDataUrlSupport.isEncodedSource(book.bookUrl)) {
@@ -284,7 +296,7 @@ export class WebBookService {
     if (!resp.success || !resp.body) {
       // A silent empty return left the chapter list showing a generic placeholder with no hint
       // of whether the network, the tocUrl composition or the API failed.
-      AppStorage.setOrCreate('bookSourceStageLastError', `目录请求失败：${!resp.success ?
+      SourceEngineHost.setError(source, `目录请求失败：${!resp.success ?
         (resp.statusCode > 0 ? `HTTP ${resp.statusCode}` : (resp.error || '网络异常')) : '接口返回空响应'}`);
       return [];
     }
@@ -292,7 +304,7 @@ export class WebBookService {
     if (tocApiFailure) {
       // Servers commonly answer a malformed tocUrl (e.g. a missing bookid) with a JSON error.
       // Record it so the chapter list page can show the real cause instead of 暂无目录.
-      AppStorage.setOrCreate('bookSourceStageLastError', `目录接口返回失败：${tocApiFailure}`);
+      SourceEngineHost.setError(source, `目录接口返回失败：${tocApiFailure}`);
       return [];
     }
     const ctx = new RuleContext();
@@ -310,57 +322,120 @@ export class WebBookService {
     // Pagination is already protected by seenPageUrls and the optional chapterLimit. The old
     // 100-page ceiling truncated long novels at roughly 2,000 chapters (20 chapters/page).
     // Keep a generous abuse guard while allowing common 4,000–10,000 chapter catalogs.
+    const hasStageRule = !!this.stageRuleCode(tocRule.chapterList || '');
+    const appendChapters = (pageChapters: BookChapter[]): void => {
+      for (const chapter of pageChapters) {
+        if (chapterLimit > 0 && chapters.length >= chapterLimit) return;
+        const chapterKey = this.urlWithoutFragment(chapter.url);
+        // Chapters without an address (volume headings, script-built entries) are never duplicates of each other.
+        if (chapterKey) {
+          if (seenChapterUrls.has(chapterKey)) continue;
+          seenChapterUrls.add(chapterKey);
+        }
+        chapter.index = chapters.length;
+        chapters.push(chapter);
+      }
+    };
+    // Chapters of one catalog page. The chapterList rule runs on every page, scripts included, as Legado's
+    // BookChapterList does; null means the source asked for browser verification and paging must stop.
+    const parsePage = async (pageResp: HttpResponse, pageUrl: string, first: boolean): Promise<BookChapter[] | null> => {
+      if (this.requestVerificationIfNeeded(source, pageUrl, pageResp.body, pageResp.statusCode, tocRule.chapterList,
+        pageResp.error || '')) {
+        return null;
+      }
+      const baseUrl = BookUrlResolver.effectiveBase(pageResp, pageUrl, book.bookUrl || source.bookSourceUrl);
+      if (first) {
+        firstBody = pageResp.body;
+        firstBaseUrl = baseUrl;
+      }
+      const remainingLimit = chapterLimit > 0 ? Math.max(0, chapterLimit - chapters.length) : 0;
+      if (first || hasStageRule) {
+        const runtimeInput = this.stageDataUrlInput(tocRule.chapterList, pageUrl, pageResp.body);
+        const stageBaseUrl = EncodedSourceUrl.decode(pageUrl) ? pageUrl : baseUrl;
+        const runtimeList = await this.runStageRule(source, book, tocRule.chapterList,
+          runtimeInput, stageBaseUrl, SourceRuntimeStage.TOC, null,
+          EncodedSourceUrl.scalarVariables(pageUrl), debugContext);
+        if (runtimeList) {
+          const runtimeChapters = await this.parseStageChapterList(source, book, runtimeList, baseUrl,
+            first ? chapterLimit : remainingLimit, debugContext);
+          if (runtimeChapters.length > 0) return runtimeChapters;
+          if (first) {
+            SourceEngineHost.setError(source,
+              `目录脚本已返回内容，但没有转换出章节（返回 ${runtimeList.length} 字符）`);
+          }
+        } else if (first && hasStageRule) {
+          const lastError = SourceEngineHost.getError(source) || '';
+          if (!lastError) SourceEngineHost.setError(source, '目录脚本返回空结果');
+        }
+      }
+      return await this.parseChapterPage(source, book, pageResp.body, baseUrl, ctx,
+        chapters.length, remainingLimit, debugContext);
+    };
+    const fetchPage = async (pageUrl: string): Promise<HttpResponse> => EncodedSourceUrl.canHandle(pageUrl) ?
+      await this.fetchEncodedDataUrl(pageUrl, source) : await au.fetch(pageUrl, undefined, debugContext);
+
     for (let page = 0; page < 1000; page++) {
       if (!currentResp.success || !currentResp.body) break;
       const pageKey = this.urlWithoutFragment(currentResp.url || currentUrl);
       if (seenPageUrls.has(pageKey)) break;
       seenPageUrls.add(pageKey);
-      if (this.requestVerificationIfNeeded(source, currentUrl, currentResp.body, currentResp.statusCode, tocRule.chapterList)) {
-        break;
+      if (chapterLimit > 0 && chapters.length >= chapterLimit) break;
+      const pageChapters = await parsePage(currentResp, currentUrl, page === 0);
+      if (pageChapters === null) break;
+      if (page === 0 && !tocRule.nextTocUrl && hasStageRule && pageChapters.length > 0) {
+        // A script-built single-page catalog is returned exactly as the script produced it.
+        const lastError = SourceEngineHost.getError(source) || '';
+        if (!lastError) return pageChapters;
       }
-      const baseUrl = BookUrlResolver.effectiveBase(currentResp, currentUrl, book.bookUrl || source.bookSourceUrl);
-      if (page === 0) {
-        firstBody = currentResp.body;
-        firstBaseUrl = baseUrl;
-        const runtimeInput = this.stageDataUrlInput(tocRule.chapterList, currentUrl, currentResp.body);
-        const stageBaseUrl = EncodedSourceUrl.decode(currentUrl) ? currentUrl : baseUrl;
-        const runtimeList = await this.runStageRule(source, book, tocRule.chapterList,
-          runtimeInput, stageBaseUrl, SourceRuntimeStage.TOC, null,
-          EncodedSourceUrl.scalarVariables(currentUrl), debugContext);
-        if (runtimeList) {
-            const runtimeChapters = await this.parseStageChapterList(source, book, runtimeList, baseUrl,
-              chapterLimit, debugContext);
-          if (runtimeChapters.length > 0) {
-            return runtimeChapters;
-          }
-          AppStorage.setOrCreate('bookSourceStageLastError',
-            `目录脚本已返回内容，但没有转换出章节（返回 ${runtimeList.length} 字符）`);
-        } else if (this.stageRuleCode(tocRule.chapterList || '')) {
-          const lastError = AppStorage.get<string>('bookSourceStageLastError') || '';
-          if (!lastError) AppStorage.setOrCreate('bookSourceStageLastError', '目录脚本返回空结果');
-        }
-      }
-      const remainingLimit = chapterLimit > 0 ? Math.max(0, chapterLimit - chapters.length) : 0;
-      if (chapterLimit > 0 && remainingLimit === 0) break;
-      const pageChapters = await this.parseChapterPage(source, book, currentResp.body, baseUrl, ctx,
-        chapters.length, remainingLimit, debugContext);
-      for (const chapter of pageChapters) {
-        const chapterKey = this.urlWithoutFragment(chapter.url);
-        if (seenChapterUrls.has(chapterKey)) continue;
-        seenChapterUrls.add(chapterKey);
-        chapter.index = chapters.length;
-        chapters.push(chapter);
-        if (chapterLimit > 0 && chapters.length >= chapterLimit) break;
-      }
+      appendChapters(pageChapters);
+      // A later page produced chapters: a diagnostic left by an empty earlier attempt is no longer the outcome.
+      if (page > 0 && pageChapters.length > 0) SourceEngineHost.setError(source, '');
       if (chapterLimit > 0 && chapters.length >= chapterLimit) break;
       if (!tocRule.nextTocUrl) break;
-      const nextUrl = await this.executeSingleRuleField(source, book, null, tocRule.nextTocUrl,
-        currentResp.body, baseUrl, SourceRuntimeStage.TOC, ctx, true, debugContext);
-      const nextKey = this.urlWithoutFragment(nextUrl);
-      if (!nextUrl || seenPageUrls.has(nextKey)) break;
-      currentUrl = nextUrl;
-      currentResp = EncodedSourceUrl.canHandle(currentUrl) ?
-        await this.fetchEncodedDataUrl(currentUrl, source) : await au.fetch(currentUrl, undefined, debugContext);
+
+      const baseUrl = BookUrlResolver.effectiveBase(currentResp, currentUrl, book.bookUrl || source.bookSourceUrl);
+      const pendingUrls: string[] = [];
+      for (const nextUrl of await this.evaluateNextTocUrls(source, book, currentResp.body, baseUrl, ctx,
+        debugContext)) {
+        const nextKey = this.urlWithoutFragment(nextUrl);
+        if (!nextKey || seenPageUrls.has(nextKey) || pendingUrls.indexOf(nextUrl) >= 0) continue;
+        pendingUrls.push(nextUrl);
+      }
+      if (pendingUrls.length === 0) break;
+      if (pendingUrls.length === 1) {
+        currentUrl = pendingUrls[0];
+        currentResp = await fetchPage(currentUrl);
+        continue;
+      }
+      // Legado semantics: nextTocUrl yielding several addresses lists every remaining page at once. Fetch them
+      // a few at a time and parse in the listed order; their own nextTocUrl is not followed.
+      const remainingPages = pendingUrls.slice(0, Math.max(0, 1000 - seenPageUrls.size));
+      let stopped = false;
+      for (let offset = 0; offset < remainingPages.length && !stopped; offset += WebBookService.TOC_PAGE_FETCH_BATCH) {
+        const batchUrls = remainingPages.slice(offset, offset + WebBookService.TOC_PAGE_FETCH_BATCH);
+        const batchResponses = await Promise.all(batchUrls.map((url: string): Promise<HttpResponse | null> =>
+          fetchPage(url).catch((error: Error): null => {
+            console.warn('[WS] toc page fetch failed:', source.bookSourceName, error.message);
+            return null;
+          })));
+        for (let index = 0; index < batchUrls.length; index++) {
+          const listedResp = batchResponses[index];
+          seenPageUrls.add(this.urlWithoutFragment(batchUrls[index]));
+          if (!listedResp || !listedResp.success || !listedResp.body) continue;
+          const listedChapters = await parsePage(listedResp, batchUrls[index], false);
+          if (listedChapters === null) {
+            stopped = true;
+            break;
+          }
+          appendChapters(listedChapters);
+          if (listedChapters.length > 0) SourceEngineHost.setError(source, '');
+          if (chapterLimit > 0 && chapters.length >= chapterLimit) {
+            stopped = true;
+            break;
+          }
+        }
+      }
+      break;
     }
 
     book.variable = ctx.toPersistentJson();
@@ -370,7 +445,7 @@ export class WebBookService {
 
     const fallbackChapters = this.tryBuildGenericChapterList(book, firstBody, firstBaseUrl);
     if (fallbackChapters.length > 0) {
-      AppStorage.setOrCreate('bookSourceStageLastError', '正式目录规则未匹配，当前使用临时通用目录');
+      SourceEngineHost.setError(source, '正式目录规则未匹配，当前使用临时通用目录');
       return chapterLimit > 0 ? fallbackChapters.slice(0, chapterLimit) : fallbackChapters;
     }
     return chapters;
@@ -428,12 +503,11 @@ export class WebBookService {
     // A complete list script has already been attempted through ArkWeb by getChapterList. Never
     // retry it synchronously when it returned no usable chapters.
     if (this.stageRuleCode(tocRule.chapterList || '')) return [];
-    const rule = new AnalyzeRule(body, baseUrl, ctx);
+    const rule = new AnalyzeRule(body, baseUrl, ctx).setNoticeScope(SourceRuntimeStage.TOC, source.bookSourceName);
     const matchedValues = rule.execute(tocRule.chapterList || '', RuleExecutionTarget.ELEMENTS);
     const itemValues = maxItems > 0 ? matchedValues.slice(0, maxItems) : matchedValues;
-    const matchedItems = matchedValues.map((item: RuleValue): string => item.asString());
     const items = itemValues.map((item: RuleValue): string => item.asString());
-    console.log('[WS] getChapterList page items:', matchedItems.length, 'processing:', items.length,
+    console.log('[WS] getChapterList page items:', matchedValues.length, 'processing:', items.length,
       'from resp:', body.length);
     const chapters: BookChapter[] = [];
     if (items.length === 0) return chapters;
@@ -453,7 +527,8 @@ export class WebBookService {
       new RuleFieldRequest('isPay', tocRule.isPay || ''),
       new RuleFieldRequest('updateTime', tocRule.updateTime || '')
     ];
-    fieldRequest.timeoutMs = 30000;
+    // A fixed 30 s budget failed the whole catalog of very long novels; scale it with the page size.
+    fieldRequest.timeoutMs = Math.max(30000, items.length * 15);
     fieldRequest.debugContext = debugContext;
     let fieldValues: Record<string, string>[] = [];
     let contextValues: string[] = [];
@@ -461,11 +536,12 @@ export class WebBookService {
       const batch = await RuleExecutionService.get().executeBatch(fieldRequest);
       fieldValues = batch.values;
       contextValues = batch.contextValues;
+      console.info(`[WS] toc fields items=${items.length} elapsed=${batch.elapsedMs}ms yields=${batch.yieldedCount}`);
       if (batch.errors.length > 0) {
         console.warn('[WS] toc field errors:', source.bookSourceName, batch.errors.join('; '));
         // A failed chapterUrl rule silently empties every chapter; surface the cause on the
         // catalog page instead of a generic 暂无目录.
-        AppStorage.setOrCreate('bookSourceStageLastError', `目录字段解析失败：${batch.errors[0]}`);
+        SourceEngineHost.setError(source, `目录字段解析失败：${batch.errors[0]}`);
       }
     } finally {
       RuleExecutionService.get().clearOwner(fieldRequest.ownerId);
@@ -509,9 +585,9 @@ export class WebBookService {
     if (chapters.length === 0 && items.length > 0) {
       // Every chapter was dropped (chapterUrl rule produced nothing usable). Record why so the
       // catalog page shows the real cause instead of a silent empty state.
-      const droppedError = AppStorage.get<string>('bookSourceStageLastError') ||
+      const droppedError = SourceEngineHost.getError(source) ||
         `目录匹配 ${items.length} 章，但章节地址全部为空（chapterUrl 规则未生成有效地址）`;
-      AppStorage.setOrCreate('bookSourceStageLastError', droppedError);
+      SourceEngineHost.setError(source, droppedError);
     }
     if (contextValues.length > 0) ctx.loadFromJson(contextValues[contextValues.length - 1]);
     return chapters;
@@ -520,10 +596,69 @@ export class WebBookService {
   async getContent(source: BookSource, book: Book, chapter: BookChapter,
     shouldCancel: (() => boolean) | null = null,
     debugContext: BookSourceDebugContext | null = null): Promise<string> {
+    if (NativeSourceService.isNative(source)) {
+      return await this.getNativeContent(source, book, chapter, shouldCancel, debugContext);
+    }
+    // `ruleContent.audioUrl` is the dedicated media-address rule of an audio source. It takes
+    // precedence over `content`, which remains the fallback when it yields nothing.
+    const audioUrlRule = this.isAudioContent(source, book) ? (source.contentRule.audioUrl || '').trim() : '';
+    if (audioUrlRule) {
+      const preferred = await this.getContentWithRules(this.sourceWithContentRule(source, audioUrlRule),
+        book, chapter, shouldCancel, debugContext);
+      if (preferred || this.contentRequestCanceled(shouldCancel) ||
+        !(source.contentRule.content || '').trim()) {
+        return preferred;
+      }
+    }
+    return await this.getContentWithRules(source, book, chapter, shouldCancel, debugContext);
+  }
+
+  private async getNativeContent(source: BookSource, book: Book, chapter: BookChapter,
+    shouldCancel: (() => boolean) | null, debugContext: BookSourceDebugContext | null = null): Promise<string> {
+    SourceEngineHost.setError(source, '');
+    try {
+      const result = await NativeSourceService.getContent(source, this.http, book, chapter,
+        (): boolean => this.contentRequestCanceled(shouldCancel), debugContext);
+      if (this.contentRequestCanceled(shouldCancel)) return '';
+      if (result.kind === 'audio' || result.kind === 'video') return result.text.trim();
+      if (result.kind === 'images' && result.images.length > 0) {
+        // 漫画图片按显式图片列表处理，地址后附带的请求头选项会在取图时生效。
+        return await this.normalizeReaderContent(source, '',
+          result.baseUrl || chapter.url || book.bookUrl || source.bookSourceUrl, result.images);
+      }
+      if (!result.text.trim()) {
+        SourceEngineHost.setError(source, '正文规则没有取到内容');
+        return '';
+      }
+      return await this.normalizeReaderContent(source, result.text,
+        result.baseUrl || chapter.url || book.bookUrl || source.bookSourceUrl);
+    } catch (e) {
+      console.warn('[WS] native content failed:', source.bookSourceName, (e as Error).message);
+      SourceEngineHost.setError(source, (e as Error).message || '正文解析失败');
+      return '';
+    }
+  }
+
+  private isAudioContent(source: BookSource, book: Book): boolean {
+    return source.bookSourceType === 1 || (Number(book.type) & 32) !== 0;
+  }
+
+  private sourceWithContentRule(source: BookSource, contentRule: string): BookSource {
+    const copy = Object.assign(new BookSource(), source);
+    SourceEngineHost.bindSource(source, copy);
+    copy.contentRule = Object.assign(new ContentRule(), source.contentRule);
+    copy.contentRule.content = contentRule;
+    copy.contentRule.audioUrl = '';
+    return copy;
+  }
+
+  private async getContentWithRules(source: BookSource, book: Book, chapter: BookChapter,
+    shouldCancel: (() => boolean) | null = null,
+    debugContext: BookSourceDebugContext | null = null): Promise<string> {
     if (this.contentRequestCanceled(shouldCancel)) return '';
     // Validation and reader diagnostics must describe the current content request, not a
     // stale error left by a previous catalog/script stage.
-    AppStorage.setOrCreate('bookSourceStageLastError', '');
+    SourceEngineHost.setError(source, '');
     if (BookSourceDataUrlSupport.isEncodedSource(chapter.url)) {
       const shortcutContent = await BookSourceDataUrlSupport.getContent(this.http, source, book, chapter);
       if (this.contentRequestCanceled(shouldCancel)) return '';
@@ -546,11 +681,15 @@ export class WebBookService {
     if (isAudioContent) {
       const audioRule = (source.contentRule.content || '').trim();
       const directAudioUrl = this.resolvedAudioChapterUrl(source, book, chapter);
+      const directRule = !audioRule || this.isPureAudioBaseUrlRule(audioRule);
+      const webJs = AudioRuleSupport.webJsCode(audioRule);
+      if (webJs) return await this.resolveAudioWebJsUrl(source, chapter, webJs);
+      const webViewAudioUrl = await this.tryResolveAudioWebViewUrl(source, chapter,
+        AudioRuleSupport.splitRequestOptions(directAudioUrl).url, directRule);
+      if (webViewAudioUrl) return webViewAudioUrl;
       // In Legado an empty audio content rule means that the catalog's chapterUrl is already
       // the playable address. It does not need a filename extension (signed streams commonly do not).
-      if (!audioRule || this.isPureAudioBaseUrlRule(audioRule)) return directAudioUrl;
-      const webViewAudioUrl = await this.tryResolveAudioWebViewUrl(source, chapter, directAudioUrl);
-      if (webViewAudioUrl) return webViewAudioUrl;
+      if (directRule) return directAudioUrl;
     }
     const stageContent = await this.tryGetStageContent(source, book, chapter, debugContext);
     if (this.contentRequestCanceled(shouldCancel)) return '';
@@ -579,12 +718,12 @@ export class WebBookService {
       const status = Number(resp.statusCode || 0);
       const detail = String(resp.error || '').trim();
       if (status === 401 || status === 403) {
-        AppStorage.setOrCreate('bookSourceStageLastError', `正文请求需要登录、验证或授权（HTTP ${status}）`);
+        SourceEngineHost.setError(source, `正文请求需要登录、验证或授权（HTTP ${status}）`);
       } else if (status === 408 || status === 425 || status === 429 || status >= 500 || status === 0) {
-        AppStorage.setOrCreate('bookSourceStageLastError',
+        SourceEngineHost.setError(source,
           `正文网络请求暂时失败${status > 0 ? `（HTTP ${status}）` : ''}${detail ? `：${detail}` : ''}`);
       } else {
-        AppStorage.setOrCreate('bookSourceStageLastError',
+        SourceEngineHost.setError(source,
           `正文请求失败（HTTP ${status}）${detail ? `：${detail}` : ''}`);
       }
       return '';
@@ -607,7 +746,8 @@ export class WebBookService {
       const pageKey = this.urlWithoutFragment(currentResp.url || currentUrl);
       if (seenPageUrls.has(pageKey)) break;
       seenPageUrls.add(pageKey);
-      if (this.requestVerificationIfNeeded(source, currentUrl, currentResp.body, currentResp.statusCode, contentRule.content)) {
+      if (this.requestVerificationIfNeeded(source, currentUrl, currentResp.body, currentResp.statusCode, contentRule.content,
+        currentResp.error || '')) {
         break;
       }
       const baseUrl = BookUrlResolver.effectiveBase(currentResp,
@@ -616,6 +756,12 @@ export class WebBookService {
       const pageData = await this.parseContentPage(source, book, chapter, currentResp.body, baseUrl, ctx,
         shouldCancel, debugContext);
       if (this.contentRequestCanceled(shouldCancel)) return '';
+      if (!pageData.content && isAudioContent) {
+        // The content rule found nothing; `sourceRegex` may still select the stream from the
+        // final response address or from the page itself.
+        pageData.content = this.extractAudioSourceRegexUrl(contentRule.sourceRegex || '',
+          currentResp.url || currentUrl, currentResp.body, baseUrl);
+      }
       if (pageData.content) {
         totalLength += pageData.content.length;
         if (totalLength > 8 * 1024 * 1024) break;
@@ -697,7 +843,7 @@ export class WebBookService {
         // form or a report dialog. Surface the failed rule so it can be diagnosed.
         content = '';
         const message = '正文规则未匹配到有效内容，请检查正文规则或网站响应';
-        AppStorage.setOrCreate('bookSourceStageLastError', message);
+        SourceEngineHost.setError(source, message);
         if (debugContext) debugContext.addLog('error', message);
       } else {
         const fallbackContent = this.tryExtractReadableContentFromHtml(body);
@@ -741,7 +887,8 @@ export class WebBookService {
     const plan = AjaxRuleCompat.directResultPlan(contentRule);
     if (!plan) return '';
 
-    const urlAnalyze = new AnalyzeRule(body, baseUrl, ctx);
+    const urlAnalyze = new AnalyzeRule(body, baseUrl, ctx)
+      .setNoticeScope(SourceRuntimeStage.CONTENT, source.bookSourceName);
     const requestUrl = urlAnalyze.getString(plan.urlRule, true);
     if (!requestUrl || !/^https?:\/\//.test(requestUrl)) return '';
 
@@ -759,13 +906,18 @@ export class WebBookService {
     return { url: url, statusCode: 200, headers: {}, body: JSON.stringify(root), success: true };
   }
 
-  private requestVerificationIfNeeded(source: BookSource, requestUrl: string, body: string, statusCode: number, rule: string): boolean {
-    if (!VerificationSupport.shouldRequestBrowserVerification(source, body, statusCode, rule)) {
+  private requestVerificationIfNeeded(source: BookSource, requestUrl: string, body: string, statusCode: number, rule: string,
+    error: string = ''): boolean {
+    if (!VerificationSupport.shouldRequestBrowserVerification(source, body, statusCode, rule, error)) {
+      if (statusCode === 0 && error) {
+        const reason = NetworkErrorText.describe(error, requestUrl);
+        if (reason) console.warn('[WS] network request failed:', source.bookSourceName, reason);
+      }
       return false;
     }
     const verifyUrl = VerificationSupport.pickVerificationUrl(source, requestUrl, rule, body, statusCode);
     VerificationSupport.requestVerification(verifyUrl, `${source.bookSourceName} 验证`, source);
-    console.warn('[WS] source needs browser verification:', source.bookSourceName, verifyUrl);
+    console.warn('[WS] source needs browser verification:', source.bookSourceName, LogText.url(verifyUrl));
     return true;
   }
 
@@ -1568,7 +1720,7 @@ export class WebBookService {
     // runs simple <js> list/init scripts and the caller receives a misleading empty catalog.
     const runtime = BookSourceStageWebRuntime.get();
     if (!await runtime.waitUntilAvailable()) {
-      AppStorage.setOrCreate('bookSourceStageLastError', `${stage} 阶段脚本运行环境未就绪`);
+      SourceEngineHost.setError(source, `${stage} 阶段脚本运行环境未就绪`);
       return '';
     }
     const request = new StageWebRuntimeRequest();
@@ -1599,7 +1751,7 @@ export class WebBookService {
     } catch (error) {
       console.warn('[WS] stage runtime failed:', source.bookSourceName, stage, error);
       const message = error instanceof Error ? error.message : String(error || '');
-      AppStorage.setOrCreate('bookSourceStageLastError', `${stage} 阶段：${message || '脚本执行失败'}`);
+      SourceEngineHost.setError(source, `${stage} 阶段：${message || '脚本执行失败'}`);
       return '';
     }
   }
@@ -1632,6 +1784,57 @@ export class WebBookService {
     } finally {
       RuleExecutionService.get().clearOwner(request.ownerId);
     }
+  }
+
+  /**
+   * nextTocUrl as a list of addresses, the way Legado reads it: one address means "the next page", several mean
+   * "all remaining pages". Falls back to the single-value evaluation when the list form yields nothing.
+   */
+  private async evaluateNextTocUrls(source: BookSource, book: Book, content: string, baseUrl: string,
+    ctx: RuleContext, debugContext: BookSourceDebugContext | null): Promise<string[]> {
+    const rawRule = source.tocRule.nextTocUrl || '';
+    if (!rawRule) return [];
+    const request = new RuleBatchExecutionRequest();
+    request.source = source;
+    request.book = book;
+    request.chapter = null;
+    request.readerActionMode = false;
+    request.stage = SourceRuntimeStage.TOC;
+    request.ownerId = `${SourceRuntimeStage.TOC}_next_${Date.now()}_${book.bookUrl}`;
+    request.typedContents = [RuleValue.fromExternal(content)];
+    request.contents = [content];
+    request.baseUrl = baseUrl;
+    request.contextValues = ctx.toPersistentRecord();
+    request.fields = [new RuleFieldRequest('value', rawRule, false, true)];
+    request.timeoutMs = 15000;
+    request.debugContext = debugContext;
+    const urls: string[] = [];
+    try {
+      const batch = await RuleExecutionService.get().executeBatch(request);
+      if (batch.contextValues.length > 0) ctx.loadFromJson(batch.contextValues[0]);
+      if (batch.errors.length > 0) {
+        console.warn('[WS] toc next urls error:', source.bookSourceName, batch.errors.join('; '));
+      }
+      const raw = batch.values.length > 0 ? batch.values[0]['value'] || '' : '';
+      const listedValues = this.parseStringListValue(raw);
+      // Whole-rule scripts are answered as plain text rather than a JSON array.
+      if (listedValues.length === 0 && raw.trim() && !raw.trim().startsWith('[')) listedValues.push(raw);
+      for (const listed of listedValues) {
+        // A script may hand back one string holding several lines instead of an array.
+        for (const item of listed.split(/\r?\n/)) {
+          const url = item.trim() ? BookUrlResolver.resolve(item.trim(), baseUrl) : '';
+          if (url && urls.indexOf(url) < 0) urls.push(url);
+        }
+      }
+    } catch (error) {
+      console.warn('[WS] toc next urls failed:', source.bookSourceName, (error as Error).message);
+    } finally {
+      RuleExecutionService.get().clearOwner(request.ownerId);
+    }
+    if (urls.length > 0) return urls;
+    const single = await this.executeSingleRuleField(source, book, null, rawRule, content, baseUrl,
+      SourceRuntimeStage.TOC, ctx, true, debugContext);
+    return single ? [single] : [];
   }
 
   private parseStringListValue(value: string): string[] {
@@ -1834,7 +2037,11 @@ export class WebBookService {
     const analyzer = new AnalyzeUrl(source, this.http);
     const config = analyzer.parse(chapter.url || '');
     const value = config.url || chapter.url || '';
-    return BookUrlResolver.resolve(value, book.bookUrl || source.bookSourceUrl);
+    // Headers the catalog rule attached to the address (`url,{"headers":{...}}`) belong to the
+    // media request, so they stay part of the returned value for the player.
+    return AudioRuleSupport.joinRequestOptions(
+      BookUrlResolver.resolve(value, book.bookUrl || source.bookSourceUrl),
+      AudioRuleSupport.splitRequestOptions(chapter.url || '').headers);
   }
 
   private isPureAudioBaseUrlRule(rawRule: string): boolean {
@@ -1846,25 +2053,62 @@ export class WebBookService {
     return normalized === 'baseUrl' || normalized === 'String(baseUrl)';
   }
 
-  private async tryResolveAudioWebViewUrl(source: BookSource, chapter: BookChapter,
-    resolvedChapterUrl: string): Promise<string> {
-    const sourceRegex = source.contentRule.sourceRegex || '';
-    if (!sourceRegex || !this.audioChapterRuleUsesWebView(source)) return '';
-    const runtime = BookSourceAudioWebRuntime.get();
-    if (!await runtime.waitUntilAvailable()) return '';
-    try {
-      return await runtime.resolveAudioUrl(resolvedChapterUrl, sourceRegex,
-        this.audioSourceUserAgent(source), 15000);
-    } catch (error) {
-      console.warn('[WS] audio WebView source interception failed, fallback HTTP:',
-        source.bookSourceName, chapter.title, error);
+  /**
+   * `@webjs:` audio rule: the script runs inside the rendered chapter page and returns the stream
+   * address. The page is loaded by the same isolated WebView transport as `webView: true` requests.
+   */
+  private async resolveAudioWebJsUrl(source: BookSource, chapter: BookChapter, webJs: string): Promise<string> {
+    const analyzer = new AnalyzeUrl(source, this.http);
+    analyzer.parse(chapter.url || '');
+    const request = analyzer.buildRequest();
+    if (!/^https?:\/\//i.test(request.url || '')) {
+      SourceEngineHost.setError(source, '网页音频规则需要 HTTP(S) 章节地址');
       return '';
     }
+    const response = await this.http.execute({
+      ...request,
+      useWebView: true,
+      webJs: webJs,
+      webJsAcceptPattern: '^https?://\\S',
+      webJsMaxAttempts: 10
+    });
+    let value = (response.body || '').trim();
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try { value = String(JSON.parse(value)).trim(); } catch (_) {}
+    }
+    // Without a script result the transport returns the page DOM, which is not an address.
+    if (response.success && /^https?:\/\/[^\s<>]+$/i.test(AudioRuleSupport.splitRequestOptions(value).url)) {
+      return value;
+    }
+    SourceEngineHost.setError(source, response.success ?
+      '网页音频规则未返回 HTTP(S) 音频地址' : `网页音频规则执行失败：${response.error || '网页加载失败'}`);
+    return '';
   }
 
-  private audioChapterRuleUsesWebView(source: BookSource): boolean {
-    const raw = source.tocRule.chapterUrl || '';
-    return /["'“”]?webView["'“”]?\s*:\s*["'“”]?true["'“”]?/i.test(raw);
+  private async tryResolveAudioWebViewUrl(source: BookSource, chapter: BookChapter,
+    resolvedChapterUrl: string, directRule: boolean): Promise<string> {
+    const sourceRegex = source.contentRule.sourceRegex || '';
+    // Without `sourceRegex` the sniffer accepts known media extensions only. That is the whole
+    // resolution for a rule-less chapter; with a content rule the rule itself reads the page.
+    if (!this.audioChapterUsesWebView(source, chapter) || (!sourceRegex && !directRule)) return '';
+    return SourceEngineHost.withWeb(source.bookSourceUrl, async (): Promise<string> => {
+      const runtime = BookSourceAudioWebRuntime.get();
+      if (!await runtime.waitUntilAvailable()) return '';
+      try {
+        return await runtime.resolveAudioUrl(resolvedChapterUrl, sourceRegex,
+          this.audioSourceUserAgent(source), 15000);
+      } catch (error) {
+        console.warn('[WS] audio WebView source interception failed, fallback HTTP:',
+          source.bookSourceName, chapter.title, error);
+        return '';
+      }
+    });
+  }
+
+  /** The option may be literal in the catalog rule or computed into the chapter address by a script. */
+  private audioChapterUsesWebView(source: BookSource, chapter: BookChapter): boolean {
+    const declared = /["'“”]?webView["'“”]?\s*:\s*["'“”]?true["'“”]?/i;
+    return declared.test(source.tocRule.chapterUrl || '') || declared.test(chapter.url || '');
   }
 
   private audioSourceUserAgent(source: BookSource): string {
@@ -1885,15 +2129,7 @@ export class WebBookService {
     body: string, baseUrl: string): string {
     const pattern = (rawRegex || '').trim();
     if (!pattern) return '';
-    const matches = (candidate: string): boolean => {
-      try {
-        const literal = pattern.match(/^\/([\s\S]+)\/([dgimsuvy]*)$/);
-        const regex = literal ? new RegExp(literal[1], literal[2]) : new RegExp(pattern, 'i');
-        return regex.test(candidate);
-      } catch (_) {
-        return /\.(?:aac|flac|m3u8|m4a|mp3|mp4|ogg|opus|wav)(?:[?#]|$)/i.test(candidate);
-      }
-    };
+    const matches = (candidate: string): boolean => AudioRuleSupport.matchesSourceRegex(candidate, pattern);
     const candidates: string[] = [];
     const append = (value: string): void => {
       const decoded = String(value || '').replace(/&amp;/gi, '&').replace(/\\\//g, '/').trim();
@@ -1914,6 +2150,13 @@ export class WebBookService {
     }
     for (const candidate of candidates) {
       if (matches(candidate)) return candidate;
+    }
+    // A pattern written against the page text (`"play":"(.*?)"`) selects the address itself.
+    for (const captured of AudioRuleSupport.captureFromBody(body || '', pattern)) {
+      const decoded = captured.replace(/&amp;/gi, '&').replace(/\\\//g, '/').trim();
+      if (!decoded || /[\s<>"']/.test(decoded)) continue;
+      const resolved = BookUrlResolver.resolve(decoded, baseUrl);
+      if (/^https?:\/\//i.test(resolved)) return resolved;
     }
     return '';
   }

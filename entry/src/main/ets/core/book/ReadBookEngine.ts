@@ -1,13 +1,11 @@
-import { Book, BookChapter, BookSource, SearchBook } from '../../model/data/Book';
+import { Book, BookChapter, BookSource, SearchBook, ReaderActionMarker, BookUrlResolver } from '@legado/sourceengine';
 import { appDb } from '../../model/data/AppDatabase';
 import { WebBookService } from './WebBookService';
 import { SearchCoordinator } from './SearchCoordinator';
 import { CoverUrlNormalizer } from '../../utils/CoverUrlNormalizer';
 import { LocalChapterContentLoader } from './LocalChapterContentLoader';
-import { ReaderActionMarker } from './ReaderActionMarker';
 import { BookSourceInteractionPostProcessor } from './BookSourceInteractionPostProcessor';
 import { ReaderOpenTrace } from '../../utils/ReaderOpenTrace';
-import { BookUrlResolver } from './BookUrlResolver';
 
 export class ReadBookEngine {
   private static inst: ReadBookEngine | null = null;
@@ -23,6 +21,8 @@ export class ReadBookEngine {
 
   private chapterCache: Map<number, string> = new Map();
   private chapterLoading: Map<number, Promise<string>> = new Map();
+  /** 正在加载的章节由谁取消；发起方取消后，后来的调用方不能共用这个会返回空串的任务。 */
+  private chapterLoadingCancel: Map<number, (() => boolean) | null> = new Map();
   private readonly chapterCacheLimit: number = 7;
   private preloadGeneration: number = 0;
   private bookGeneration: number = 0;
@@ -45,6 +45,28 @@ export class ReadBookEngine {
 
   static createBackgroundWorker(): ReadBookEngine {
     return new ReadBookEngine();
+  }
+
+  /**
+   * Copies the shared session for `bookUrl` into a private engine. A reader that left the route stack but keeps
+   * reading aloud uses it so that opening another book on the shared engine cannot take its chapters away.
+   * Returns null when the shared engine already belongs to another book or is still opening.
+   */
+  static forkSession(bookUrl: string): ReadBookEngine | null {
+    const live = ReadBookEngine.inst;
+    if (!live || !bookUrl || live.book?.bookUrl !== bookUrl || live.chapters.length === 0) return null;
+    const fork = new ReadBookEngine();
+    fork.book = live.book;
+    fork.source = live.source;
+    fork.chapters = [...live.chapters];
+    fork.curIdx = live.curIdx;
+    fork.curPos = live.curPos;
+    fork.content = live.content;
+    fork.chapterCache = new Map(live.chapterCache);
+    fork.sourceInteractionIdentity = live.sourceInteractionIdentity;
+    fork.sourceLoadedAt = live.sourceLoadedAt;
+    fork.sourceLoadedOrigin = live.sourceLoadedOrigin;
+    return fork;
   }
 
   async openBook(book: Book, sourceHint: BookSource | null = null): Promise<void> {
@@ -374,6 +396,7 @@ export class ReadBookEngine {
     probe.group = staleBook.group;
     probe.isPinned = staleBook.isPinned;
     probe.pendingAddToShelf = staleBook.pendingAddToShelf;
+    probe.isPrivate = staleBook.isPrivate;
     probe.shelfModifiedTime = staleBook.shelfModifiedTime;
     probe.latestChapterTitle = candidate.latestChapterTitle || staleBook.latestChapterTitle;
     probe.updateTime = staleBook.updateTime;
@@ -394,6 +417,7 @@ export class ReadBookEngine {
     target.group = source.group;
     target.isPinned = source.isPinned;
     target.pendingAddToShelf = source.pendingAddToShelf;
+    target.isPrivate = source.isPrivate;
     target.shelfModifiedTime = source.shelfModifiedTime;
     target.updateTime = source.updateTime || target.updateTime;
     target.order = source.order;
@@ -429,12 +453,12 @@ export class ReadBookEngine {
     return /https?:\/\/[^/]+\/{2,}/.test(url);
   }
 
-  async loadContent(idx: number): Promise<string> {
+  async loadContent(idx: number, shouldCancel: (() => boolean) | null = null): Promise<string> {
     if (idx < 0 || idx >= this.chapters.length || !this.book) return '';
 
     this.curIdx = idx;
     this.preloadGeneration++;
-    return await this.fetchContent(idx);
+    return await this.fetchContent(idx, shouldCancel);
   }
 
   async peekContent(idx: number): Promise<string> {
@@ -449,14 +473,14 @@ export class ReadBookEngine {
     return this.chapterCache.get(idx) || '';
   }
 
-  async reloadContent(idx: number): Promise<string> {
+  async reloadContent(idx: number, shouldCancel: (() => boolean) | null = null): Promise<string> {
     if (idx < 0 || idx >= this.chapters.length || !this.book) return '';
 
     this.curIdx = idx;
     if (this.book.origin === 'local') {
       this.chapterCache.delete(idx);
       this.chapterLoading.delete(idx);
-      return await this.fetchContent(idx);
+      return await this.fetchContent(idx, shouldCancel);
     }
     this.chapterCache.delete(idx);
     this.chapterLoading.delete(idx);
@@ -465,7 +489,7 @@ export class ReadBookEngine {
     if (chapter) {
       chapter.cacheDate = 0;
     }
-    return await this.fetchContent(idx);
+    return await this.fetchContent(idx, shouldCancel);
   }
 
   private async fetchContent(idx: number, shouldCancel: (() => boolean) | null = null): Promise<string> {
@@ -479,14 +503,27 @@ export class ReadBookEngine {
       ReaderOpenTrace.mark(this.book.bookUrl, 'content-memory-hit', `chapter=${idx}`);
       return memoryContent;
     }
-    if (this.chapterLoading.has(idx)) return await this.chapterLoading.get(idx)!;
+    const pending = this.chapterLoading.get(idx);
+    if (pending) {
+      const pendingCancel = this.chapterLoadingCancel.get(idx) || null;
+      if (!pendingCancel || !pendingCancel()) {
+        const text = await pending;
+        if (text || !pendingCancel || !pendingCancel() || (shouldCancel && shouldCancel())) return text;
+        // 共用的任务被发起方中途取消而返回空串，本调用方仍需要这一章，重新发起。
+        return await this.fetchContent(idx, shouldCancel);
+      }
+    }
 
     const task = this.fetchContentUncached(idx, shouldCancel);
     this.chapterLoading.set(idx, task);
+    this.chapterLoadingCancel.set(idx, shouldCancel);
     try {
       return await task;
     } finally {
-      if (this.chapterLoading.get(idx) === task) this.chapterLoading.delete(idx);
+      if (this.chapterLoading.get(idx) === task) {
+        this.chapterLoading.delete(idx);
+        this.chapterLoadingCancel.delete(idx);
+      }
     }
   }
 

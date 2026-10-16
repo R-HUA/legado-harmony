@@ -1,14 +1,15 @@
-import { Book, SearchBook } from '../model/data/Book';
+import { Book, SearchBook, BookFieldSanitizer } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { SearchCoordinator, SearchProgress } from '../core/book/SearchCoordinator';
 import { WebBookService } from '../core/book/WebBookService';
 import { ChangeSourceResultCache } from '../utils/ChangeSourceResultCache';
 import { SearchExploreSettingsStore } from '../utils/SearchExploreSettingsStore';
 import { SearchBookShelfHelper } from '../utils/SearchBookShelfHelper';
-import { BookFieldSanitizer } from '../utils/BookFieldSanitizer';
 import { CoverUrlNormalizer } from '../utils/CoverUrlNormalizer';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
 
 /**
  * 换源面板（书架长按"换源"与书籍详情页"换源"共用）。
@@ -103,7 +104,7 @@ export struct BookChangeSourceDialog {
     const target = this.targetBook;
     if (!target) return;
     const cacheBookName = target.name;
-    const coordinator = new SearchCoordinator(Math.min(2, SearchExploreSettingsStore.getSearchConcurrency()));
+    const coordinator = new SearchCoordinator(SearchExploreSettingsStore.getSearchConcurrency());
     this.activeCoordinator = coordinator;
     this.searching = true;
     this.status = '正在搜索可用书源...';
@@ -264,6 +265,7 @@ export struct BookChangeSourceDialog {
     book.durChapterTitle = oldBook.durChapterTitle;
     book.durChapterTime = oldBook.durChapterTime;
     book.pendingAddToShelf = oldBook.pendingAddToShelf;
+    book.isPrivate = oldBook.isPrivate;
     if (this.markReadOnSwitch) {
       book.putVariable('readStarted', '1');
       book.putVariable('lastReadTime', `${Date.now()}`);
@@ -289,6 +291,7 @@ export struct BookChangeSourceDialog {
     target.durChapterTime = oldBook.durChapterTime;
     target.syncTime = oldBook.syncTime;
     target.pendingAddToShelf = oldBook.pendingAddToShelf;
+    target.isPrivate = oldBook.isPrivate;
     if (this.markReadOnSwitch) {
       target.putVariable('readStarted', '1');
       target.putVariable('lastReadTime', `${Date.now()}`);
@@ -307,13 +310,13 @@ export struct BookChangeSourceDialog {
 
       Column() {
         Row() {
-          Column({ space: 3 }) {
+          Column({ space: AppSpacing.XXS }) {
             Text('换源')
-              .fontSize(19)
+              .fontSize(AppFontSize.TITLE)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.primaryTextColor())
             Text(`《${this.targetBook?.name || ''}》`)
-              .fontSize(12)
+              .fontSize(AppFontSize.CAPTION)
               .fontColor(this.subTextColor())
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -325,14 +328,14 @@ export struct BookChangeSourceDialog {
             LoadingProgress()
               .width(26)
               .height(26)
-              .margin({ right: 14 })
+              .margin({ right: AppSpacing.LG })
           } else {
             SymbolGlyph($r('sys.symbol.arrow_clockwise'))
               .fontSize(21)
               .fontColor([this.primaryTextColor()])
               .width(40)
               .height(40)
-              .margin({ right: 4 })
+              .margin({ right: AppSpacing.XS })
               .onClick(() => this.refreshResults())
           }
           SymbolGlyph($r('sys.symbol.xmark'))
@@ -348,16 +351,16 @@ export struct BookChangeSourceDialog {
         .alignItems(VerticalAlign.Center)
 
         Text(this.status || '将使用当前书名进行全词匹配搜索')
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.subTextColor())
           .width('100%')
-          .margin({ top: 8, bottom: 10 })
+          .margin({ top: AppSpacing.MD, bottom: AppSpacing.MD })
 
         if (this.searching && this.results.length === 0) {
-          Column({ space: 10 }) {
+          Column({ space: AppSpacing.MD }) {
             LoadingProgress().width(36).height(36)
             Text('正在搜索可用书源...')
-              .fontSize(13)
+              .fontSize(AppFontSize.BODY)
               .fontColor(this.subTextColor())
           }
           .width('100%')
@@ -365,30 +368,30 @@ export struct BookChangeSourceDialog {
           .justifyContent(FlexAlign.Center)
         } else if (this.results.length === 0) {
           Text('暂无可切换书源')
-            .fontSize(15)
+            .fontSize(AppFontSize.BODY_LARGE)
             .fontColor(this.subTextColor())
             .width('100%')
             .height(260)
             .textAlign(TextAlign.Center)
         } else {
-          List({ space: 8 }) {
+          List({ space: AppSpacing.MD }) {
             ForEach(this.results, (book: SearchBook) => {
               ListItem() {
                 Row() {
-                  Column({ space: 4 }) {
+                  Column({ space: AppSpacing.XS }) {
                     Text(book.originName || book.origin)
-                      .fontSize(15)
+                      .fontSize(AppFontSize.BODY_LARGE)
                       .fontWeight(FontWeight.Bold)
                       .fontColor(this.primaryTextColor())
                       .maxLines(1)
                       .textOverflow({ overflow: TextOverflow.Ellipsis })
                     Text(`作者：${book.author || '未知'}`)
-                      .fontSize(12)
+                      .fontSize(AppFontSize.CAPTION)
                       .fontColor(this.subTextColor())
                       .maxLines(1)
                       .textOverflow({ overflow: TextOverflow.Ellipsis })
                     Text(`最新：${book.latestChapterTitle || '书源未提供'}`)
-                      .fontSize(12)
+                      .fontSize(AppFontSize.CAPTION)
                       .fontColor(this.subTextColor())
                       .maxLines(1)
                       .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -399,25 +402,25 @@ export struct BookChangeSourceDialog {
                   Button(this.switching ? '切换中' : '切换')
                     .width(68)
                     .height(32)
-                    .fontSize(13)
+                    .fontSize(AppFontSize.BODY)
                     .borderRadius(16)
                     .backgroundColor(this.buttonColor())
-                    .fontColor('#FFFFFF')
+                    .fontColor(ThemeRuntime.onAccentColor())
                     .enabled(!this.switching)
                     .onClick(() => this.switchSource(book))
                 }
                 .width('100%')
-                .padding(12)
+                .padding(AppSpacing.LG)
                 .backgroundColor(this.inputColor())
-                .borderRadius(10)
+                .borderRadius(ThemeRuntime.mediumRadius())
               }
             }, (book: SearchBook) => `${book.origin}|${book.bookUrl}`)
 
             if (this.searching) {
               ListItem() {
-                Row({ space: 8 }) {
+                Row({ space: AppSpacing.MD }) {
                   LoadingProgress().width(20).height(20)
-                  Text('继续加载中...').fontSize(13).fontColor(this.subTextColor())
+                  Text('继续加载中...').fontSize(AppFontSize.BODY).fontColor(this.subTextColor())
                 }
                 .width('100%')
                 .height(42)
@@ -431,7 +434,7 @@ export struct BookChangeSourceDialog {
         }
       }
       .width('90%')
-      .padding(20)
+      .padding(AppSpacing.XXL)
       .borderRadius(ThemeRuntime.glassCornerRadius(14, 'panel'))
       .clip(true)
       .backgroundColor(ThemeRuntime.glassPanelColor(this.appDarkMode, '', 'panel'))

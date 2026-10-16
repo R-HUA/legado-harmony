@@ -6,21 +6,7 @@ import preferences from '@ohos.data.preferences';
 import { Context } from '@kit.AbilityKit';
 import { statfs } from '@kit.CoreFileKit';
 import { AppDatabase } from '../model/data/AppDatabase';
-import {
-  Book,
-  BookGroup,
-  Bookmark,
-  BookSource,
-  BookListRule,
-  SearchRule,
-  ExploreRule,
-  BookInfoRule,
-  TocRule,
-  ContentRule,
-  HttpTTS,
-  ReadConfig,
-  SearchKeyword
-} from '../model/data/Book';
+import { Book, BookGroup, Bookmark, BookSource, BookListRule, SearchRule, ExploreRule, BookInfoRule, TocRule, ContentRule, HttpTTS, ReadConfig, SearchKeyword } from '@legado/sourceengine';
 import { LocalBookService } from '../core/book/LocalBookService';
 import { BackupCrypto } from './BackupCrypto';
 import { BookSourceGroupStore } from './BookSourceGroupStore';
@@ -1206,6 +1192,7 @@ export class AppDataBackupService {
     book.type = raw.type || 0;
     book.group = raw.group || 0;
     book.isPinned = raw.isPinned === true;
+    book.isPrivate = raw.isPrivate === true;
     book.latestChapterTitle = raw.latestChapterTitle || '';
     book.updateTime = raw.updateTime || '';
     book.latestChapterTime = raw.latestChapterTime || 0;
@@ -1586,7 +1573,12 @@ export class AppDataBackupService {
   }
 
   private static async ensureDir(path: string): Promise<void> {
-    try { await fs.mkdir(path, true); } catch (_) {}
+    try {
+      await fs.mkdir(path, true);
+    } catch (error) {
+      // Already existing is fine; any other failure surfaces at the first write, this only records the cause.
+      if (!AppDataBackupService.exists(path)) console.warn('创建备份目录失败:', (error as Error).message);
+    }
   }
 
   private static parentPath(path: string): string {

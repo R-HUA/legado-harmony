@@ -1,4 +1,3 @@
-import { SettingsPageLayout } from '../components/SettingsPageLayout';
 import { promptAction, router } from '@kit.ArkUI';
 import { AccountSessionStore } from '../account/AccountSessionStore';
 import { CloudSyncSettings, CloudSyncSettingsStore } from '../account/CloudSyncSettingsStore';
@@ -7,6 +6,10 @@ import { CloudSyncStateStore } from '../account/CloudSyncStateStore';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
+import { SettingNavRow, SettingSwitchRow } from '../components/common/SettingRow';
 
 @Entry
 @Component
@@ -26,8 +29,6 @@ struct DataSyncPage {
   @StorageLink('cloudSyncPendingCount') pendingCount: number = 0;
   @StorageLink('cloudSyncStatus') syncStatus: string = CloudSyncSettingsStore.STATUS_DISABLED;
   @StorageLink('cloudSyncErrorMessage') syncErrorMessage: string = '';
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State saving: boolean = false;
   @State loadingSettings: boolean = false;
   private loadedUserId: string = '__not_loaded__';
@@ -64,123 +65,11 @@ struct DataSyncPage {
     }
   }
 
-  private pageScroller: Scroller = new Scroller();
-
-  @Builder
-  settingsContent() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      Scroll(this.pageScroller) {
-        Column() {
-          Row()
-            .height(56 + this.statusBarHeight)
-
-          this.statusCard()
-
-          this.sectionTitle('同步设置')
-          if (this.loadingSettings) {
-            this.settingsLoadingCard()
-          } else {
-            Column() {
-              this.switchItem('云同步', '登录后在设备之间同步阅读数据和阅读偏好',
-                this.cloudSyncEnabled, true, (value: boolean) => {
-                  this.setCloudSyncEnabled(value);
-                })
-              this.switchItem('自动同步', '数据修改后自动同步，失败时保留待同步任务',
-                this.autoSyncEnabled, true, (value: boolean) => {
-                  this.autoSyncEnabled = value;
-                  this.saveSettings();
-                })
-              this.switchItem('仅 Wi-Fi 自动同步', '开启后移动网络下仍可手动同步',
-                this.wifiOnly, true, (value: boolean) => {
-                  this.wifiOnly = value;
-                  this.saveSettings();
-                })
-              this.switchItem('回到前台时同步', '打开应用或重新进入前台时检查云端变更',
-                this.foregroundSyncEnabled, true, (value: boolean) => {
-                  this.foregroundSyncEnabled = value;
-                  this.saveSettings();
-                }, false)
-            }
-            .width('calc(100% - 24vp)')
-            .margin({ left: 12, right: 12 })
-            .borderRadius(16)
-            .clip(true)
-            .backgroundColor(this.cardColor())
-
-            this.sectionTitle('同步内容')
-            Column() {
-              this.switchItem('阅读数据', '在线书架、分组、排序、阅读进度、书签；本地书仅同步阅读进度',
-                this.readingDataEnabled, true, (value: boolean) => {
-                  this.setScopeEnabled(true, value);
-                })
-              this.switchItem('书源', '书源配置、分组、排序、启用和锁定状态，不同步登录凭证',
-                this.bookSourcesEnabled, true, (value: boolean) => {
-                  this.setBookSourcesEnabled(value);
-                })
-              this.switchItem('阅读偏好', '字体大小、边距、字体规则、替换规则、主题设置',
-                this.readingPreferencesEnabled, true, (value: boolean) => {
-                  this.setScopeEnabled(false, value);
-                })
-              this.switchItem('应用偏好', '显示模式、书架布局、搜索显示、自定义主题方案',
-                this.applicationPreferencesEnabled, true, (value: boolean) => {
-                  this.setApplicationScopeEnabled(value);
-                }, false)
-            }
-            .width('calc(100% - 24vp)')
-            .margin({ left: 12, right: 12 })
-            .borderRadius(16)
-            .clip(true)
-            .backgroundColor(this.cardColor())
-          }
-
-          this.sectionTitle('管理')
-          Column() {
-            this.actionItem('同步设备', '查看和管理使用当前账号同步的设备', true, () => {
-              if (!this.accountLoggedIn) {
-                HdsFeedback.showToast('请先登录华为账号');
-                return;
-              }
-              router.pushUrl({ url: 'pages/SyncDevices' });
-            })
-            this.actionItem('同步问题', this.syncErrorMessage || '当前没有需要处理的同步问题', true, () => {
-              if (this.syncErrorMessage) {
-                HdsFeedback.showToast(this.syncErrorMessage);
-              } else {
-                HdsFeedback.showToast('当前没有同步问题');
-              }
-            })
-            this.actionItem('重新从云端同步', '保留本机待上传修改，重新获取云端数据', false, () => {
-              this.confirmReloadFromCloud();
-            })
-          }
-          .width('calc(100% - 24vp)')
-          .margin({ left: 12, right: 12 })
-          .borderRadius(16)
-          .clip(true)
-          .backgroundColor(this.cardColor())
-
-          Text('数据导入和导出仍位于“其他设置”，用于手动备份，不会代替云同步。')
-            .fontSize(12)
-            .fontColor(this.subTextColor())
-            .lineHeight(18)
-            .width('calc(100% - 32vp)')
-            .margin({ left: 16, right: 16, top: 14, bottom: 32 + this.navBarHeight })
-        }
-        .width('100%')
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      .align(Alignment.TopStart)
-    }
-    .width('100%')
-    .height('100%')
-  }
-
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      SettingsPageLayout({ pageTitle: '数据同步', darkMode: this.appDarkMode,
-        scroller: this.pageScroller, pageContent: (): void => this.settingsContent() })
+      PageScaffold({ title: '数据同步', bottomInset: 0, content: () => {
+        this.pageContent()
+      } })
     }
     .width('100%')
     .height('100%')
@@ -189,16 +78,145 @@ struct DataSyncPage {
   }
 
   @Builder
+  pageContent() {
+    this.statusCard()
+
+    this.sectionTitle('同步设置')
+    if (this.loadingSettings) {
+      this.settingsLoadingCard()
+    } else {
+      Column() {
+        SettingSwitchRow({
+          title: '云同步',
+          description: '登录后在多台设备间同步',
+          isOn: this.cloudSyncEnabled,
+          onChange: (value: boolean) => {
+            this.setCloudSyncEnabled(value);
+          }
+        })
+        SettingSwitchRow({
+          title: '自动同步',
+          description: '数据变更后自动同步，失败后稍后重试',
+          isOn: this.autoSyncEnabled,
+          onChange: (value: boolean) => {
+            this.autoSyncEnabled = value;
+            this.saveSettings();
+          }
+        })
+        SettingSwitchRow({
+          title: '仅 Wi-Fi 自动同步',
+          description: '移动网络下仍可手动同步',
+          isOn: this.wifiOnly,
+          onChange: (value: boolean) => {
+            this.wifiOnly = value;
+            this.saveSettings();
+          }
+        })
+        SettingSwitchRow({
+          title: '回到前台时同步',
+          description: '打开或切回应用时检查云端变更',
+          isOn: this.foregroundSyncEnabled,
+          showDivider: false,
+          onChange: (value: boolean) => {
+            this.foregroundSyncEnabled = value;
+            this.saveSettings();
+          }
+        })
+      }
+      .width('calc(100% - 24vp)')
+      .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+      .borderRadius(ThemeRuntime.cardRadius())
+      .clip(true)
+      .backgroundColor(this.cardColor())
+
+      this.sectionTitle('同步内容')
+      Column() {
+        SettingSwitchRow({
+          title: '阅读数据',
+          description: '在线书架、分组、排序、进度、书签；本地书仅同步进度',
+          isOn: this.readingDataEnabled,
+          onChange: (value: boolean) => {
+            this.setScopeEnabled(true, value);
+          }
+        })
+        SettingSwitchRow({
+          title: '书源',
+          description: '配置、分组、排序、启用和锁定状态；不含登录凭证',
+          isOn: this.bookSourcesEnabled,
+          onChange: (value: boolean) => {
+            this.setBookSourcesEnabled(value);
+          }
+        })
+        SettingSwitchRow({
+          title: '阅读偏好',
+          description: '字号、边距、字体规则、替换规则、主题',
+          isOn: this.readingPreferencesEnabled,
+          onChange: (value: boolean) => {
+            this.setScopeEnabled(false, value);
+          }
+        })
+        SettingSwitchRow({
+          title: '应用偏好',
+          description: '显示模式、书架布局、搜索显示、自定义主题',
+          isOn: this.applicationPreferencesEnabled,
+          showDivider: false,
+          onChange: (value: boolean) => {
+            this.setApplicationScopeEnabled(value);
+          }
+        })
+      }
+      .width('calc(100% - 24vp)')
+      .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+      .borderRadius(ThemeRuntime.cardRadius())
+      .clip(true)
+      .backgroundColor(this.cardColor())
+    }
+
+    this.sectionTitle('管理')
+    Column() {
+      this.actionItem('同步设备', '查看和管理当前账号下的设备', true, () => {
+        if (!this.accountLoggedIn) {
+          HdsFeedback.showToast('请先登录华为账号');
+          return;
+        }
+        router.pushUrl({ url: 'pages/SyncDevices' });
+      })
+      this.actionItem('同步问题', this.syncErrorMessage || '暂无待处理的问题', true, () => {
+        if (this.syncErrorMessage) {
+          HdsFeedback.showToast(this.syncErrorMessage);
+        } else {
+          HdsFeedback.showToast('当前没有同步问题');
+        }
+      })
+      this.actionItem('重新从云端同步', '保留本机待上传修改，重新获取云端数据', false, () => {
+        this.confirmReloadFromCloud();
+      })
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    Text('数据导入和导出仍位于“其他设置”，用于手动备份，不会代替云同步。')
+      .fontSize(AppFontSize.CAPTION)
+      .fontColor(this.subTextColor())
+      .lineHeight(18)
+      .width('calc(100% - 32vp)')
+      .margin({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: 32 })
+  }
+
+  @Builder
   statusCard() {
-    Column({ space: 12 }) {
+    Column({ space: AppSpacing.LG }) {
       Row() {
-        Column({ space: 4 }) {
+        Column({ space: AppSpacing.XS }) {
           Text('云同步')
-            .fontSize(18)
+            .fontSize(AppFontSize.SUBTITLE)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.primaryTextColor())
           Text(this.statusSummary())
-            .fontSize(13)
+            .fontSize(AppFontSize.BODY)
             .fontColor(this.statusColor())
         }
         .layoutWeight(1)
@@ -211,10 +229,10 @@ struct DataSyncPage {
             .color(this.accentColor())
         } else {
           Text(this.cloudSyncEnabled && this.accountLoggedIn ? '已开启' : '未开启')
-            .fontSize(12)
+            .fontSize(AppFontSize.CAPTION)
             .fontColor(this.cloudSyncEnabled && this.accountLoggedIn ? this.accentColor() : this.subTextColor())
-            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-            .borderRadius(12)
+            .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XS, bottom: AppSpacing.XS })
+            .borderRadius(ThemeRuntime.mediumRadius())
             .backgroundColor(this.softColor())
         }
       }
@@ -222,13 +240,13 @@ struct DataSyncPage {
 
       if (!this.accountLoggedIn) {
         Text('登录华为账号后，可跨设备同步书架、阅读进度和阅读设置；本地书不会上传文件。')
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.subTextColor())
           .lineHeight(20)
           .width('100%')
       } else {
         Text(this.lastSyncDescription())
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
           .width('100%')
         Button(this.syncStatus === CloudSyncSettingsStore.STATUS_SYNCING ? '正在同步' : '立即同步')
@@ -243,94 +261,35 @@ struct DataSyncPage {
       }
     }
     .width('calc(100% - 24vp)')
-    .padding(16)
-    .margin({ left: 12, right: 12, top: 12 })
-    .borderRadius(16)
+    .padding(AppSpacing.XL)
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
 
   @Builder
   settingsLoadingCard() {
-    Row({ space: 10 }) {
+    Row({ space: AppSpacing.MD }) {
       LoadingProgress()
         .width(22)
         .height(22)
         .color(this.accentColor())
       Text('正在读取本机同步设置')
-        .fontSize(14)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
     }
     .width('calc(100% - 24vp)')
     .height(72)
-    .padding({ left: 16, right: 16 })
-    .margin({ left: 12, right: 12 })
-    .borderRadius(16)
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
     .alignItems(VerticalAlign.Center)
   }
 
   @Builder
-  switchItem(title: string, desc: string, value: boolean, enabled: boolean,
-    onChange: (value: boolean) => void, showDivider: boolean = true) {
-    Row() {
-      Column() {
-        Text(title)
-          .fontSize(16)
-          .fontColor(enabled ? this.primaryTextColor() : this.subTextColor())
-        Text(desc)
-          .fontSize(12)
-          .fontColor(this.subTextColor())
-          .margin({ top: 4 })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Toggle({ type: ToggleType.Switch, isOn: value })
-        .selectedColor(this.buttonColor())
-        .enabled(enabled)
-        .opacity(enabled ? 1 : 0.45)
-        .onChange((checked: boolean) => {
-          onChange(checked);
-        })
-    }
-    .width('calc(100% - 32vp)')
-    .constraintSize({ minHeight: 64 })
-    .padding({ top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
-    .border({ width: { bottom: showDivider ? 0.5 : 0 },
-      color: this.dividerColor() })
-    .alignItems(VerticalAlign.Center)
-  }
-
-  @Builder
   actionItem(title: string, desc: string, showDivider: boolean, onClick: () => void) {
-    Row() {
-      Column() {
-        Text(title)
-          .fontSize(16)
-          .fontColor(this.primaryTextColor())
-        Text(desc)
-          .fontSize(12)
-          .fontColor(this.subTextColor())
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .margin({ top: 4 })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(18)
-        .fontColor([this.subTextColor()])
-    }
-    .width('calc(100% - 32vp)')
-    .constraintSize({ minHeight: 64 })
-    .padding({ top: 10, bottom: 10 })
-    .margin({ left: 16, right: 16 })
-    .border({ width: { bottom: showDivider ? 0.5 : 0 },
-      color: this.dividerColor() })
-    .alignItems(VerticalAlign.Center)
-    .onClick(onClick)
+    SettingNavRow({ title: title, description: desc, showDivider: showDivider, onTap: onClick })
   }
 
   async setCloudSyncEnabled(value: boolean): Promise<void> {
@@ -530,7 +489,7 @@ struct DataSyncPage {
 
   statusColor(): string {
     if (this.syncStatus === CloudSyncSettingsStore.STATUS_ERROR) {
-      return '#E5484D';
+      return ThemeRuntime.dangerColor(this.appDarkMode);
     }
     if (this.cloudSyncEnabled && this.accountLoggedIn) {
       return this.accentColor();
@@ -567,7 +526,7 @@ struct DataSyncPage {
   }
 
   dividerColor(): string {
-    return this.appDarkMode ? '#24FFFFFF' : '#14000000';
+    return ThemeRuntime.hairlineColor(this.appDarkMode);
   }
 
   syncBars(): void {
@@ -577,11 +536,10 @@ struct DataSyncPage {
   @Builder
   sectionTitle(title: string) {
     Text(title)
-      .fontSize(13)
+      .fontSize(AppFontSize.BODY)
       .fontColor(this.subTextColor())
       .width('100%')
-      .padding({ left: 16, right: 16, top: 20, bottom: 8 })
+      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXL, bottom: AppSpacing.MD })
   }
-
 
 }

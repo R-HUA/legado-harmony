@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { stripTypeScriptTypes } from 'node:module';
+import { readEtsModule } from './lib/ets-module-staging.mjs';
 
 // 执行生产代码，以可控的系统、存储和播放回调验证离线契约与播放完成边界。
 const storage = new Map();
@@ -10,7 +11,7 @@ let timerSerial = 0;
 let now = 100000;
 let checks = 0;
 const calls = { queries: [], engines: [], downloads: [], speaks: [], toasts: [], stops: 0,
-  moduleQueries: 0, legacyQueries: 0 };
+  moduleQueries: 0 };
 let voices = [];
 let queryError;
 let downloadImpl;
@@ -19,7 +20,6 @@ function createMockEngine(name) {
   return {
     name, isShutdown: false,
     setListener(listener) { this.listener = listener; },
-    async listVoices(params) { calls.legacyQueries++; calls.queries.push(params); if (queryError) throw queryError; return voices; },
     speak(text, params) { calls.speaks.push({ text, params }); },
     stop() { calls.stops++; }, shutdown() { this.isShutdown = true; }, isBusy() { return false; }
   };
@@ -63,7 +63,7 @@ const bindings = {
 };
 const context = vm.createContext(bindings);
 function load(file) {
-  const raw = fs.readFileSync(new URL('../entry/src/main/ets/' + file, import.meta.url), 'utf8');
+  const raw = readEtsModule(file);
   const names = [...raw.matchAll(/export (?:class|enum) (\w+)/g)].map(match => match[1]);
   const source = raw.replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
   Object.assign(bindings, vm.runInContext(stripTypeScriptTypes(source, { mode: 'transform' }) +
@@ -71,6 +71,7 @@ function load(file) {
 }
 load('utils/TtsSettingsStore.ets');
 load('utils/SystemTtsReader.ets');
+load('utils/TtsVoiceCatalog.ets');
 const { SystemTtsReader: Reader, TtsVoiceOption: Voice, TtsSettingsStore: Store } = bindings;
 
 // ArkUI DSL 不在 Node 中执行；抽取原页面全部非 Builder 方法，仍调用原方法体。
@@ -142,7 +143,9 @@ await check('旧设置、偏好与显式参数统一离线，旧女声别名可�
   storage.set('ttsCustomVoiceId', '');
 });
 
-await check('离线查询、状态与 API 版本门槛', async () => {
+await check('模块离线查询尊重系统音色状态，不创建播放引擎或触发下载', async () => {
+  const moduleQueries = calls.moduleQueries;
+  const engineCount = calls.engines.length; const downloadCount = calls.downloads.length;
   voices = [rawVoice(0, 'INSTALLED'), rawVoice(13, 'INSTALLED'), rawVoice(21, 'GA'), rawVoice(8, 'EOM', 'en-US')];
   let list = await Reader.listAvailableVoices();
   assert.equal(list.filter(v => v.id === 0 || v.id === 13).length, 1);
@@ -152,21 +155,19 @@ await check('离线查询、状态与 API 版本门槛', async () => {
   voices = [rawVoice(21, 'UNKNOWN')];
   list = await Reader.listAvailableVoices();
   assert.equal(list.find(v => v.id === 21).available, false);
-  voices = [rawVoice(21, undefined)];
+  assert.equal(list.find(v => v.id === 21).downloadable, false);
+  voices = [rawVoice(13, undefined), rawVoice(21, undefined)];
   list = await Reader.listAvailableVoices();
   assert.equal(list.find(v => v.id === 21).available, false);
-  bindings.deviceInfo.sdkApiVersion = 12;
-  const moduleQueries = calls.moduleQueries; const legacyQueries = calls.legacyQueries;
-  list = await Reader.listAvailableVoices();
-  assert.equal(calls.moduleQueries, moduleQueries); assert.equal(calls.legacyQueries, legacyQueries + 1);
-  assert.equal(list.find(v => v.id === 21).available, true);
   assert.equal(list.find(v => v.id === 21).downloadable, false);
-  assert.equal(Reader.supportsVoiceDownload(), false);
-  bindings.deviceInfo.sdkApiVersion = 26;
+  assert.equal(list.find(v => v.id === 13).available, true, '无状态试用只适用于默认女声');
+  assert.equal(list.find(v => v.id === 13).downloadable, false);
   queryError = Error('query failed');
-  await assert.rejects(Reader.listAvailableVoices()); queryError = undefined;
+  await assert.rejects(Reader.listAvailableVoices(), /query failed/); queryError = undefined;
+  assert.equal(calls.moduleQueries, moduleQueries + 4);
+  assert.equal(calls.engines.length, engineCount);
+  assert.equal(calls.downloads.length, downloadCount);
   assert.ok(calls.queries.every(q => q.online === 1));
-  assert.ok(calls.engines.every(p => p.online === 1 && p.extraParams.locate === 'CN' && p.extraParams.isBackStage));
 });
 
 await check('下载原参数、终态解绑与已下载状态', async () => {
@@ -220,7 +221,7 @@ await check('PCM 序号零按实际序号合并，格式及帧校验', async () 
   assert.throws(() => reader.normalizeSystemPcm(new ArrayBuffer(4), 16, 1, 'mp3'));
 });
 
-await check('朗读、试听和临时查询引擎同一时刻使用不同名称，关闭试听不影响朗读', async () => {
+await check('朗读和试听引擎互相隔离，模块查询不创建引擎，关闭试听不影响朗读', async () => {
   const before = calls.engines.length;
   const reading = new Reader(); const preview = new Reader();
   await reading.start('阅读中的正文。');
@@ -228,11 +229,13 @@ await check('朗读、试听和临时查询引擎同一时刻使用不同名称�
   const readingRequest = reading.currentRequestId;
   await preview.start('试听中的正文。');
   const previewEngine = preview.engine;
-  bindings.deviceInfo.sdkApiVersion = 12;
-  try { await Reader.listAvailableVoices(); } finally { bindings.deviceInfo.sdkApiVersion = 26; }
+  const moduleQueries = calls.moduleQueries;
+  await Reader.listAvailableVoices();
   const names = calls.engines.slice(before).map(params => params.extraParams.name);
-  assert.equal(names.length, 3); assert.equal(new Set(names).size, 3);
+  assert.equal(calls.moduleQueries, moduleQueries + 1);
+  assert.equal(names.length, 2); assert.equal(new Set(names).size, 2);
   assert.ok(names.every(name => name.startsWith('LegadoReaderTts')));
+  assert.ok(calls.engines.slice(before).every(p => p.online === 1 && p.extraParams.locate === 'CN' && p.extraParams.isBackStage));
   assert.notEqual(readingEngine, previewEngine);
   assert.equal(readingEngine.isShutdown, false); assert.equal(previewEngine.isShutdown, false);
   preview.shutdown();

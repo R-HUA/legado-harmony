@@ -15,10 +15,12 @@ import {
 import { AccountSessionStore } from '../account/AccountSessionStore';
 import { CloudSyncSettingsStore } from '../account/CloudSyncSettingsStore';
 import { HuaweiAccountService } from '../account/HuaweiAccountService';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
+import { PageScaffold } from '../components/common/PageScaffold';
 
 @Entry
 @Component
@@ -36,8 +38,6 @@ struct AccountCenterPage {
   @StorageLink('cloudSyncLastSuccessAt') cloudSyncLastSuccessAt: number = 0;
   @StorageLink('cloudSyncPendingCount') cloudSyncPendingCount: number = 0;
   @StorageLink('cloudSyncStatus') cloudSyncStatus: string = CloudSyncSettingsStore.STATUS_DISABLED;
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State loading: boolean = false;
   @State purchasingProductId: string = '';
   @State products: RechargeProduct[] = AccountCommerceConfig.rechargeProducts();
@@ -76,42 +76,11 @@ struct AccountCenterPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll() {
-        Column({ space: 14 }) {
-          if (!this.editingProfile) {
-            this.accountCard()
-            this.cloudSyncCard()
-          }
-          if (this.accountLoggedIn) {
-            if (this.editingProfile) {
-              if (this.croppingAvatar) {
-                this.avatarCropper()
-              } else {
-                this.profileEditor()
-              }
-            }
-            this.pointsCard()
-            this.rechargeSection()
-            this.accountActions()
-          } else {
-            this.loginGuide()
-          }
-          this.serviceHint()
-        }
-        .width('100%')
-        .padding({
-          left: 14,
-          right: 14,
-          top: 70 + this.statusBarHeight,
-          bottom: 32 + this.navBarHeight
-        })
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      .align(Alignment.TopStart)
-
-      this.titleBar()
+      PageScaffold({ title: '账号与点数', content: () => {
+        this.pageContent()
+      }, actions: () => {
+        this.titleActions()
+      } })
     }
     .width('100%')
     .height('100%')
@@ -127,6 +96,51 @@ struct AccountCenterPage {
         this.viewportHeight = height;
       }
     })
+  }
+
+  @Builder
+  pageContent() {
+    Column({ space: AppSpacing.LG }) {
+      if (!this.editingProfile) {
+        this.accountCard()
+        this.cloudSyncCard()
+      }
+      if (this.accountLoggedIn) {
+        if (this.editingProfile) {
+          if (this.croppingAvatar) {
+            this.avatarCropper()
+          } else {
+            this.profileEditor()
+          }
+        }
+        this.pointsCard()
+        this.rechargeSection()
+        this.accountActions()
+      } else {
+        this.loginGuide()
+      }
+      this.serviceHint()
+    }
+    .width('100%')
+    .padding({
+      left: AppSpacing.LG,
+      right: AppSpacing.LG,
+      top: 14
+    })
+  }
+
+  @Builder
+  titleActions() {
+    if (this.accountLoggedIn) {
+      SymbolGlyph($r('sys.symbol.arrow_clockwise'))
+        .fontSize(21)
+        .fontColor([this.accentColor()])
+        .width(48)
+        .height(48)
+        .onClick(() => {
+          this.refreshAccount();
+        })
+    }
   }
 
   async initialize(): Promise<void> {
@@ -158,7 +172,8 @@ struct AccountCenterPage {
       await this.recoverUnfinishedPurchases();
     } catch (e) {
       const error = e as BusinessError;
-      if (error.code !== 1001502005) {
+      // 1001502012: the user dismissed the authorization sheet.
+      if (error.code !== 1001502005 && error.code !== 1001502012) {
         HdsFeedback.showToast(this.errorMessage(e, '华为账号登录失败'));
       }
     } finally {
@@ -187,7 +202,7 @@ struct AccountCenterPage {
       message: '点数和主题权益仍保存在云端，下次登录后会自动恢复。',
       buttons: [
         { text: '取消', color: this.subTextColor() },
-        { text: '退出', color: '#E5484D' }
+        { text: '退出', color: ThemeRuntime.dangerColor(this.appDarkMode) }
       ]
     });
     if (result.index !== 1) {
@@ -553,40 +568,8 @@ struct AccountCenterPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-        onBack: () => router.back() })
-      Text('账号与点数')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-      if (this.accountLoggedIn) {
-        SymbolGlyph($r('sys.symbol.arrow_clockwise'))
-          .fontSize(21)
-          .fontColor([this.accentColor()])
-          .width(48)
-          .height(48)
-          .onClick(() => {
-            this.refreshAccount();
-          })
-      } else {
-        Blank().width(48)
-      }
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    .padding({ top: this.statusBarHeight })
-    .alignItems(VerticalAlign.Center)
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
-  }
-
-  @Builder
   accountCard() {
-    Row({ space: 14 }) {
+    Row({ space: AppSpacing.LG }) {
       if (this.accountLoggedIn && this.avatarUrl) {
         Image(this.avatarUrl)
           .width(56)
@@ -606,14 +589,14 @@ struct AccountCenterPage {
           .borderRadius(28)
           .objectFit(ImageFit.Cover)
       }
-      Column({ space: 5 }) {
+      Column({ space: AppSpacing.XS }) {
         Text(this.accountLoggedIn ? this.displayName : '未登录')
-          .fontSize(18)
+          .fontSize(AppFontSize.SUBTITLE)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.primaryTextColor())
         if (!this.accountLoggedIn) {
           Text('登录后新用户免费获得 300 点')
-            .fontSize(12)
+            .fontSize(AppFontSize.CAPTION)
             .fontColor(this.subTextColor())
         }
       }
@@ -622,7 +605,7 @@ struct AccountCenterPage {
       if (this.accountLoggedIn) {
         Button('编辑')
           .height(34)
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.accentColor())
           .backgroundColor(this.inputColor())
           .onClick(() => {
@@ -631,37 +614,37 @@ struct AccountCenterPage {
       } else {
         Button(this.loading ? '登录中' : '华为账号登录')
           .height(38)
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .enabled(!this.loading)
           .backgroundColor(this.accentColor())
-          .fontColor('#FFFFFF')
+          .fontColor(ThemeRuntime.onAccentColor())
           .onClick(() => {
             this.login();
           })
       }
     }
     .width('100%')
-    .padding(16)
-    .borderRadius(16)
+    .padding(AppSpacing.XL)
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
 
   @Builder
   cloudSyncCard() {
-    Row({ space: 12 }) {
+    Row({ space: AppSpacing.LG }) {
       SymbolGlyph($r('sys.symbol.arrow_clockwise'))
         .fontSize(24)
         .fontColor([this.accentColor()])
         .width(32)
 
-      Column({ space: 4 }) {
+      Column({ space: AppSpacing.XS }) {
         Text('数据同步')
-          .fontSize(16)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.primaryTextColor())
         Text(CloudSyncSettingsStore.statusSummary(this.accountLoggedIn, this.cloudSyncEnabled,
           this.cloudSyncStatus, this.cloudSyncPendingCount, this.cloudSyncLastSuccessAt))
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
       }
       .layoutWeight(1)
@@ -672,8 +655,8 @@ struct AccountCenterPage {
         .fontColor([this.subTextColor()])
     }
     .width('100%')
-    .padding(16)
-    .borderRadius(16)
+    .padding(AppSpacing.XL)
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
     .onClick(() => {
       router.pushUrl({ url: 'pages/DataSync' });
@@ -682,14 +665,14 @@ struct AccountCenterPage {
 
   @Builder
   avatarCropper() {
-    Column({ space: 14 }) {
+    Column({ space: AppSpacing.LG }) {
       Text('裁剪头像')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor())
         .width('100%')
       Text('拖动图片调整位置，使用下方滑块缩放。圆形区域是头像最终显示范围。')
-        .fontSize(12)
+        .fontSize(AppFontSize.CAPTION)
         .lineHeight(18)
         .fontColor(this.subTextColor())
         .width('100%')
@@ -725,9 +708,9 @@ struct AccountCenterPage {
           }),
         GestureMask.IgnoreInternal
       )
-      Row({ space: 10 }) {
+      Row({ space: AppSpacing.MD }) {
         Text('缩放')
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.subTextColor())
         Slider({ value: this.cropZoom, min: 1, max: 4, step: 0.05 })
           .layoutWeight(1)
@@ -738,12 +721,12 @@ struct AccountCenterPage {
             this.cropZoom = value;
           })
         Text(`${this.cropZoom.toFixed(1)}×`)
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
           .width(36)
       }
       .width('100%')
-      Row({ space: 10 }) {
+      Row({ space: AppSpacing.MD }) {
         Button('重新选择')
           .layoutWeight(1)
           .height(40)
@@ -766,7 +749,7 @@ struct AccountCenterPage {
         Button(this.processingCrop ? '处理中' : '确认裁剪')
           .layoutWeight(1.35)
           .height(40)
-          .fontColor('#FFFFFF')
+          .fontColor(ThemeRuntime.onAccentColor())
           .backgroundColor(this.accentColor())
           .enabled(!this.processingCrop)
           .onClick(() => {
@@ -776,20 +759,20 @@ struct AccountCenterPage {
       .width('100%')
     }
     .width('100%')
-    .padding(16)
-    .borderRadius(16)
+    .padding(AppSpacing.XL)
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
 
   @Builder
   profileEditor() {
-    Column({ space: 14 }) {
+    Column({ space: AppSpacing.LG }) {
       Text('编辑个人资料')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor())
         .width('100%')
-      Row({ space: 14 }) {
+      Row({ space: AppSpacing.LG }) {
         if (this.profileAvatarPixelMap) {
           Image(this.profileAvatarPixelMap)
             .width(64)
@@ -809,10 +792,10 @@ struct AccountCenterPage {
             .borderRadius(32)
             .objectFit(ImageFit.Cover)
         }
-        Column({ space: 8 }) {
+        Column({ space: AppSpacing.MD }) {
           Button('选择头像')
             .height(34)
-            .fontSize(13)
+            .fontSize(AppFontSize.BODY)
             .fontColor(this.accentColor())
             .backgroundColor(this.inputColor())
             .enabled(!this.savingProfile)
@@ -821,7 +804,7 @@ struct AccountCenterPage {
             })
           Button('使用默认头像')
             .height(30)
-            .fontSize(12)
+            .fontSize(AppFontSize.CAPTION)
             .fontColor(this.subTextColor())
             .backgroundColor(Color.Transparent)
             .enabled(!this.savingProfile)
@@ -835,22 +818,22 @@ struct AccountCenterPage {
       TextInput({ text: this.profileNameInput, placeholder: '请输入昵称' })
         .width('100%')
         .height(44)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .placeholderColor(this.subTextColor())
         .backgroundColor(this.inputColor())
-        .borderRadius(10)
+        .borderRadius(ThemeRuntime.mediumRadius())
         .maxLength(30)
         .enabled(!this.savingProfile)
         .onChange((value: string) => {
           this.profileNameInput = value;
         })
-      Text('昵称和头像由你主动设置，将保存到账号服务端，不会申请华为账号敏感资料权限。')
-        .fontSize(11)
+      Text('登录时默认使用华为账号的昵称和头像，在这里修改后不会再被覆盖。资料保存在账号服务端并随账号跨设备同步。')
+        .fontSize(AppFontSize.CAPTION)
         .lineHeight(17)
         .fontColor(this.subTextColor())
         .width('100%')
-      Row({ space: 10 }) {
+      Row({ space: AppSpacing.MD }) {
         Button('取消')
           .layoutWeight(1)
           .height(40)
@@ -863,7 +846,7 @@ struct AccountCenterPage {
         Button(this.savingProfile ? '保存中' : '保存')
           .layoutWeight(1)
           .height(40)
-          .fontColor('#FFFFFF')
+          .fontColor(ThemeRuntime.onAccentColor())
           .backgroundColor(this.accentColor())
           .enabled(!this.savingProfile)
           .onClick(() => {
@@ -873,21 +856,21 @@ struct AccountCenterPage {
       .width('100%')
     }
     .width('100%')
-    .padding(16)
-    .borderRadius(16)
+    .padding(AppSpacing.XL)
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
 
   @Builder
   pointsCard() {
     Row() {
-      Column({ space: 5 }) {
-        Row({ space: 6 }) {
+      Column({ space: AppSpacing.XS }) {
+        Row({ space: AppSpacing.SM }) {
           Text('可用点数')
-            .fontSize(13)
+            .fontSize(AppFontSize.BODY)
             .fontColor(this.subTextColor())
           Text('?')
-            .fontSize(10)
+            .fontSize(AppFontSize.MICRO)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.subTextColor())
             .textAlign(TextAlign.Center)
@@ -907,28 +890,28 @@ struct AccountCenterPage {
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
-      Column({ space: 5 }) {
+      Column({ space: AppSpacing.XS }) {
         Text('兑换比例')
-          .fontSize(13)
+          .fontSize(AppFontSize.BODY)
           .fontColor(this.subTextColor())
         Text('1 元 = 10 点')
-          .fontSize(16)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor())
       }
       .alignItems(HorizontalAlign.End)
     }
     .width('100%')
-    .padding(18)
-    .borderRadius(16)
+    .padding(AppSpacing.XL)
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
 
   @Builder
   pointsUsageDialogContent() {
-    Column({ space: 12 }) {
+    Column({ space: AppSpacing.LG }) {
       Text('点数使用说明')
-        .fontSize(17)
+        .fontSize(AppFontSize.SUBTITLE)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor())
         .width('100%')
@@ -936,22 +919,22 @@ struct AccountCenterPage {
         '• 兑换精选主题：60 点/个（以主题页标示为准），有效期 365 天，充值点和赠送点均可支付，优先消耗赠送点\n' +
         '• 兑换在线朗读字数包：在“我的-在线朗读”中兑换，仅支持充值点，赠送点不能兑换\n' +
         '• 点数仅限本应用内消费，不支持转让或提现；余额与主题权益跨设备同步')
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
         .lineHeight(22)
         .width('100%')
       Button('我知道了')
         .width('100%')
         .height(42)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.accentColor())
         .backgroundColor(this.inputColor())
-        .borderRadius(12)
+        .borderRadius(ThemeRuntime.buttonRadius())
         .onClick(() => {
           this.closePointsUsageDialog();
         })
     }
-    .padding(20)
+    .padding(AppSpacing.XXL)
   }
 
   showPointsUsageDialog(): void {
@@ -964,7 +947,7 @@ struct AccountCenterPage {
       builder: this.pointsUsageDialogBuilder,
       autoCancel: true,
       alignment: DialogAlignment.Center,
-      maskColor: this.appDarkMode ? '#99000000' : '#33000000'
+      maskColor: ThemeRuntime.scrimColor(this.appDarkMode)
     }).then((dialogId: number) => {
       this.pointsUsageDialogId = dialogId;
     }).catch((error: Error) => {
@@ -981,22 +964,22 @@ struct AccountCenterPage {
 
   @Builder
   rechargeSection() {
-    Column({ space: 10 }) {
+    Column({ space: AppSpacing.MD }) {
       Text('充值点数')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor())
         .width('100%')
       Grid() {
         ForEach(this.products, (product: RechargeProduct) => {
           GridItem() {
-            Column({ space: 7 }) {
+            Column({ space: AppSpacing.SM }) {
               Text(`${product.points} 点`)
-                .fontSize(18)
+                .fontSize(AppFontSize.SUBTITLE)
                 .fontWeight(FontWeight.Bold)
                 .fontColor(this.primaryTextColor())
               Text(product.localPrice || `预计 ¥${product.expectedPriceYuan}`)
-                .fontSize(13)
+                .fontSize(AppFontSize.BODY)
                 .fontColor(this.accentColor())
               if (this.purchasingProductId === product.productId) {
                 LoadingProgress()
@@ -1008,7 +991,7 @@ struct AccountCenterPage {
             .width('100%')
             .height(98)
             .justifyContent(FlexAlign.Center)
-            .borderRadius(14)
+            .borderRadius(ThemeRuntime.largeRadius())
             .backgroundColor(this.inputColor())
             .border({ width: 1, color: this.dividerColor() })
             .onClick(() => {
@@ -1018,15 +1001,15 @@ struct AccountCenterPage {
         }, (product: RechargeProduct) => product.productId)
       }
       .columnsTemplate(this.rechargeColumnsTemplate())
-      .columnsGap(10)
-      .rowsGap(10)
+      .columnsGap(AppSpacing.MD)
+      .rowsGap(AppSpacing.MD)
       .width('100%')
       .height(this.rechargeGridHeight())
       .enableScrollInteraction(false)
     }
     .width('100%')
-    .padding(16)
-    .borderRadius(16)
+    .padding(AppSpacing.XL)
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
 
@@ -1036,7 +1019,7 @@ struct AccountCenterPage {
       Button('退出登录')
         .width('100%')
         .height(44)
-        .fontColor('#E5484D')
+        .fontColor(ThemeRuntime.dangerColor(this.appDarkMode))
         .backgroundColor(this.cardColor())
         .onClick(() => {
           this.logout();
@@ -1047,21 +1030,21 @@ struct AccountCenterPage {
 
   @Builder
   loginGuide() {
-    Column({ space: 8 }) {
+    Column({ space: AppSpacing.MD }) {
       Text('登录后可用')
-        .fontSize(16)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor())
         .width('100%')
       Text('• 每个华为账号首次登录赠送 300 点\n• 点数余额和主题有效期可跨终端同步')
-        .fontSize(13)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
         .lineHeight(22)
         .width('100%')
     }
     .width('100%')
-    .padding(16)
-    .borderRadius(16)
+    .padding(AppSpacing.XL)
+    .borderRadius(ThemeRuntime.cardRadius())
     .backgroundColor(this.cardColor())
   }
 
@@ -1069,20 +1052,20 @@ struct AccountCenterPage {
   serviceHint() {
     if (!AccountCommerceConfig.isServerConfigured()) {
       Text('开发配置未完成：请在 AccountCommerceConfig.ets 填写 HTTPS 服务端地址，并在 module.json5 配置 AGC Client ID。')
-        .fontSize(12)
+        .fontSize(AppFontSize.CAPTION)
         .fontColor('#C05A23')
         .lineHeight(18)
         .width('100%')
-        .padding(14)
-        .borderRadius(12)
+        .padding(AppSpacing.LG)
+        .borderRadius(ThemeRuntime.mediumRadius())
         .backgroundColor(this.appDarkMode ? '#332216' : '#FFF3E8')
     } else {
-      Text('登录和购买表示你同意应用的用户协议、隐私政策与点数服务规则。你主动设置的昵称和头像将保存到账号服务端并随华为账号同步；点数仅用于本应用数字内容，不支持转让或提现。')
-        .fontSize(11)
+      Text('登录和购买表示你同意应用的用户协议、隐私政策与点数服务规则。登录时会获取华为账号的昵称和头像作为默认资料，昵称和头像保存到账号服务端并随账号同步；点数仅用于本应用数字内容，不支持转让或提现。')
+        .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor())
         .lineHeight(17)
         .width('100%')
-        .padding({ left: 4, right: 4 })
+        .padding({ left: AppSpacing.XS, right: AppSpacing.XS })
     }
   }
 

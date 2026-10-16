@@ -1,8 +1,7 @@
 import { textToSpeech } from '@kit.CoreSpeechKit';
 import { connection } from '@kit.NetworkKit';
-import deviceInfo from '@ohos.deviceInfo';
 import { CloudTtsAudio, CloudTtsClient, CloudTtsTiming } from '../account/CloudTtsClient';
-import { HttpTTS } from '../model/data/Book';
+import { HttpTTS } from '@legado/sourceengine';
 import { HttpTtsAudio, HttpTtsReader } from './HttpTtsReader';
 import { TtsAudioSession } from './TtsAudioSession';
 import { PcmPlaybackCue, TtsPcmAudioPlayer } from './TtsPcmAudioPlayer';
@@ -207,14 +206,7 @@ export class SystemTtsReader {
     return SystemTtsReader.dedupeVoices(SystemTtsReader.knownVoiceOptions().concat(voices));
   }
 
-  static supportsVoiceDownload(): boolean {
-    return deviceInfo.sdkApiVersion >= 19;
-  }
-
   static async downloadVoice(voice: TtsVoiceOption, callbacks?: TtsVoiceDownloadCallbacks): Promise<void> {
-    if (!SystemTtsReader.supportsVoiceDownload()) {
-      throw new Error('当前系统版本不支持下载系统音色，请升级至 API 19 或更高版本');
-    }
     const person = voice.downloadPerson >= 0 ? voice.downloadPerson : voice.id;
     if (!voice.downloadable || voice.systemStatus !== 'GA' || !voice.downloadLanguage ||
       !Number.isInteger(person) || person < 0) {
@@ -331,9 +323,6 @@ export class SystemTtsReader {
   }
 
   private static async listModuleVoices(): Promise<TtsVoiceOption[]> {
-    if (deviceInfo.sdkApiVersion < 19) {
-      return SystemTtsReader.listLegacyEngineVoices();
-    }
     const voices = await textToSpeech.listVoices({
       requestId: SystemTtsReader.createGlobalRequestId('moduleVoices'),
       online: SystemTtsReader.OFFLINE_MODE
@@ -456,6 +445,8 @@ export class SystemTtsReader {
       return;
     }
     this.ttsPcmPlayType = options?.directPlayback === true ? 1 : 0;
+    // A cloud chapter may have left its renderer open for the handoff; the system voice never uses it.
+    this.httpReader.stop();
     this.resetSystemPcmPipeline();
     let engine: textToSpeech.TextToSpeechEngine;
     try {
@@ -809,7 +800,7 @@ export class SystemTtsReader {
   }
 
   private finish(notify: boolean): void {
-    const keepPcmOutput = notify && this.keepAudioOutputOnFinish && this.ttsPcmPlayType === 0;
+    const keepPcmOutput = notify && this.keepsPcmOutputOnFinish();
     this.readGeneration++;
     this.active = false;
     this.paused = false;
@@ -848,14 +839,19 @@ export class SystemTtsReader {
     if (notify && this.onFinished) this.onFinished();
   }
 
+  private keepsPcmOutputOnFinish(): boolean {
+    return this.keepAudioOutputOnFinish && this.ttsPcmPlayType === 0;
+  }
+
   private schedulePcmOutputRelease(): void {
     this.cancelPendingPcmOutputRelease();
-    console.info(`[TTS] keeping pcm output for chapter handoff: ${this.pcmPlayer.debugState()}`);
+    console.info(`[TTS] keeping pcm output for chapter handoff: ${this.audioDebugState()}`);
     this.pcmOutputReleaseTimerId = setTimeout(() => {
       this.pcmOutputReleaseTimerId = -1;
       if (!this.active) {
         console.info('[TTS] releasing idle pcm output after chapter handoff grace period');
         this.pcmPlayer.stop();
+        this.httpReader.stop();
       }
     }, 15000);
   }
@@ -898,7 +894,12 @@ export class SystemTtsReader {
       if (jobs.length === 0) {
         await this.httpReader.drain();
         if (this.readGeneration === generation && this.active) {
-          this.httpReader.stop();
+          // Cloud audio plays through httpReader's renderer, not this.pcmPlayer. Stopping it here
+          // rebuilt the renderer at every chapter boundary, which stuttered the next chapter's
+          // first sentence. finish() schedules its release when the output is being kept.
+          if (!this.keepsPcmOutputOnFinish()) {
+            this.httpReader.stop();
+          }
           this.finish(true);
         }
         return;
@@ -1896,10 +1897,18 @@ export class SystemTtsReader {
     return result;
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      setTimeout(resolve, ms);
-    });
+  /**
+   * End offset of the last character start() can turn into an audible chunk. It must run the same
+   * sanitizing as start(): a trailing decorative line (a lone ">", "***", "---" ...) is blanked there
+   * and trimmed off the final chunk, so measuring the raw text would point past anything ever spoken.
+   */
+  speechTextEnd(text: string): number {
+    const cleanText = this.normalizeText(text);
+    let end = cleanText.length;
+    while (end > 0 && this.isTrimChar(cleanText.charAt(end - 1))) {
+      end--;
+    }
+    return end;
   }
 
   private normalizeText(text: string): string {
@@ -2219,27 +2228,6 @@ export class SystemTtsReader {
     }
   }
 
-  private static async listLegacyEngineVoices(): Promise<TtsVoiceOption[]> {
-    let engine: textToSpeech.TextToSpeechEngine | null = null;
-    try {
-      engine = await SystemTtsReader.createEngineWithMode(13, 'zh-CN');
-      const voices = await engine.listVoices({
-        requestId: SystemTtsReader.createGlobalRequestId('legacyEngineVoices'),
-        online: SystemTtsReader.OFFLINE_MODE
-      });
-      console.info('[TTS] legacy engine listVoices: ' +
-        `${SystemTtsReader.voiceInfosSummary(voices)}`);
-      return SystemTtsReader.parseVoices(voices);
-    } finally {
-      if (engine) {
-        try {
-          engine.shutdown();
-        } catch (_) {
-        }
-      }
-    }
-  }
-
   static serializeCustomVoices(voices: HttpTTS[]): string {
     return JSON.stringify(voices);
   }
@@ -2316,10 +2304,9 @@ export class SystemTtsReader {
       option.downloadLanguage = raw.language || '';
       option.downloadPerson = raw.person;
       option.gender = raw.gender || SystemTtsReader.knownVoiceGender(id, language);
-      option.downloadable = SystemTtsReader.supportsVoiceDownload() &&
-        SystemTtsReader.isDownloadableStatus(raw.status || '');
+      option.downloadable = SystemTtsReader.isDownloadableStatus(raw.status || '');
       option.available = SystemTtsReader.isInstalledStatus(raw.status || '') ||
-        (!raw.status && (deviceInfo.sdkApiVersion < 19 || id === 13));
+        (!raw.status && id === 13);
       options.push(option);
     }
     options.sort((a: TtsVoiceOption, b: TtsVoiceOption) => a.online - b.online ||

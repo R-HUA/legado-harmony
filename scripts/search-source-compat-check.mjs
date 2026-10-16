@@ -2,28 +2,34 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
 import assert from 'node:assert/strict';
+import { readEtsModule } from './lib/ets-module-staging.mjs';
 
 // Run production URL, parser, batch-field and search coordinator code. Only platform
 // I/O and optional native engine availability are substituted. Optional arguments:
 // book-source JSON, captured HTML response, keyword. No network is performed here.
 const bindings = { console, AppStorage: { get() { return ''; }, setOrCreate() {} } };
 function load(file, names, aliases = {}) {
-  let s = fs.readFileSync(new URL('../entry/src/main/ets/' + file, import.meta.url), 'utf8')
+  let s = readEtsModule(file)
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
   for (const [original, replacement] of Object.entries(aliases)) s = s.replace(new RegExp('\\b' + original + '\\b', 'g'), replacement);
   Object.assign(bindings, vm.runInNewContext(stripTypeScriptTypes(s, { mode: 'transform' }) + '\n;({' + names.join(',') + '})', bindings));
 }
 load('model/data/Book.ts', ['BookSource', 'SearchBook', 'Book', 'BookChapter']);
+load('core/host/SourceEngineHost.ts', ['SourceEngineHost']);
 load('core/rule/RuleValue.ts', ['RuleValue', 'RuleValueKind', 'RuleExecutionTarget']);
 load('core/rule/RuleContext.ts', ['RuleContext']);
 load('core/rule/JsonPathEvaluator.ts', ['JsonPathEvaluator']);
 load('core/rule/JavaRegexCompat.ts', ['JavaRegexCompat']);
 load('core/book/BookUrlResolver.ts', ['BookUrlResolver']);
+load('core/rule/PageCandidateUrl.ts', ['PageCandidateUrl']);
 load('core/book/BookSourceRuntimeRouter.ts', ['BookSourceRuntimeRouter', 'SourceRuntimeStage']);
 load('core/book/EncodedSourceUrl.ts', ['EncodedSourceUrl']);
 load('core/book/BookTypeSupport.ts', ['BookTypeSupport']);
 load('utils/BookFieldSanitizer.ts', ['BookFieldSanitizer']);
 load('utils/BookDisplayHelper.ets', ['BookDisplayHelper']);
+load('utils/LogText.ts', ['LogText']);
+load('core/http/NetworkErrorText.ts', ['NetworkErrorText']);
+load('core/book/SourceScriptNotice.ts', ['SourceScriptNotice']);
 load('core/book/BookSourceDebugModels.ts', ['BookSourceDebugContext', 'BookSourceDebugNetworkTrace',
   'BookSourceDebugRuleTrace', 'BookSourceDebugRedactor']);
 load('utils/CoverUrlNormalizer.ts', ['CoverUrlNormalizer']);
@@ -33,18 +39,22 @@ Object.assign(bindings, {
   QuickJsShadowComparator: { compare() {} },
   QuickJsObservationContext: class {},
   QuickJsScriptRuntime: { isPureExpressionCandidate() { return false; } },
-  CookieStore: { getCookie() { return ''; } },
+  CookieStore: { getCookie() { return ''; }, forSource() { return this; } },
   BookSourceScriptRunner: { loginEntryUrl() { return ''; } },
   ScriptEngine: class {},
   BookSourceStageWebRuntime: { get: () => ({ isAvailable: () => false, clearOwner() {} }) },
   BookSourceStageRuleSupport: { async getElements() { return null; } },
-  CooperativeCancellationToken: class { throwIfCancelled() {} isCancelled() { return false; } },
+  CooperativeCancellationToken: class { cancel() {} throwIfCancelled() {} isCancelled() { return false; } },
   CooperativeScheduler: { createTimeSlice: () => ({ async checkpoint() { return false; } }),
     async yieldToNextUiFrame() {}, reportSynchronousOperation() {} }
 });
+// 原生书源是独立的解析入口；仍加载生产分流条件，当前夹具继续走兼容书源链路。
+load('core/nativesource/NativeSourceSpec.ts', ['NativeSourceSpec']);
+load('core/nativesource/NativeSourceService.ts', ['NativeSourceService']);
 load('core/http/VerificationSupport.ts', ['VerificationSupport']);
 load('core/http/RequestSessionSupport.ts', ['RequestSessionSupport']);
-load('core/http/BookSourceRateLimiter.ts', ['BookSourceRateLimiter']);
+load('core/http/BookSourceRateLimiter.ts', ['BookSourceRateLimiter', 'RateLimitAcquireResult']);
+load('core/book/BookSourceHeaderRuntime.ts', ['BookSourceHeaderRuntime']);
 Object.assign(bindings, {
   JSRuntimeOptions: class {},
   JSContext: class { constructor() { throw new Error('native runtime unavailable'); } },
@@ -163,6 +173,7 @@ assert.equal(debug.session.steps[0].status, 'passed');
 assert.equal(debug.session.steps[0].requests[0].statusCode, 200);
 assert.ok(debug.session.steps[0].rules.some(rule => rule.field === 'name' && rule.outputPreview));
 load('core/rule/AjaxRuleCompat.ts', ['AjaxRuleCompat']);
+load('core/book/AudioRuleSupport.ts', ['AudioRuleSupport']);
 load('core/book/ReaderImageMarker.ts', ['ReaderImageMarker']);
 load('core/book/ReaderActionMarker.ts', ['ReaderActionMarker']);
 // 图片物化属于漫画缓存路径，本脚本只验证正文文本：替身保持原地址，且不声明任何请求上下文。

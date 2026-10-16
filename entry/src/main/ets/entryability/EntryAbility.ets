@@ -24,12 +24,16 @@ import { CloudSyncSettingsStore } from '../account/CloudSyncSettingsStore';
 import { CloudSyncCoordinator } from '../account/CloudSyncCoordinator';
 import { CloudSyncChangeTracker } from '../account/CloudSyncChangeTracker';
 import { StartupCoverTextStore } from '../utils/StartupCoverTextStore';
-import { QuickJsDiagnostics } from '../core/script/QuickJsDiagnostics';
-import { TlsTrustStore } from '../core/http/TlsTrustStore';
+import { BookSourceRuntimeStore, SourceScriptNotice, TlsTrustStore, SourceEngineHost } from '@legado/sourceengine';
+import { HdsFeedback } from '../utils/HdsFeedback';
+import { QuickJsDiagnostics } from '@legado/sourceengine/Diagnostics';
+import { AppDatabase } from '../model/data/AppDatabase';
 import fs from '@ohos.file.fs';
 import { util } from '@kit.ArkTS';
 import { FullTextCacheCancelCoordinator } from '../utils/FullTextCacheCancelCoordinator';
 import { lanReaderServer } from '../core/lan/LanReaderServer';
+import { LanReaderPasswordStore } from '../core/lan/LanReaderPasswordStore';
+import { readStatsTracker } from '../core/stats/ReadStatsTracker';
 
 export default class EntryAbility extends UIAbility {
   private appliedColorMode: number = -1;
@@ -41,6 +45,10 @@ export default class EntryAbility extends UIAbility {
   private mainWindowStage: window.WindowStage | null = null;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    SourceEngineHost.install({
+      convertChinese: (text: string, converterType: number): string =>
+        ChineseConverter.convertText(text, converterType)
+    });
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onCreate');
     AppStorage.setOrCreate('startupT0', Date.now());
     AppStorage.setOrCreate('appCacheDir', this.context.cacheDir);
@@ -62,6 +70,11 @@ export default class EntryAbility extends UIAbility {
     AccountSessionStore.initializeStorage();
     CloudSyncSettingsStore.initializeStorage();
     CloudSyncChangeTracker.initializeStorage();
+    readStatsTracker.init(this.context);
+    BookSourceRuntimeStore.install(AppDatabase.getInstance());
+    SourceScriptNotice.setHandler((sourceName: string, message: string): void => {
+      HdsFeedback.showToast(sourceName ? `${sourceName}：${message}` : message);
+    });
     TlsTrustStore.load(this.context).catch((e: Error) => {
       hilog.warn(0x0000, 'testTag', 'Load TLS trust settings failed: %{public}s', JSON.stringify(e));
     });
@@ -97,6 +110,8 @@ export default class EntryAbility extends UIAbility {
     PersistentStorage.persistProp('readerRegexShadowColor', '');
     PersistentStorage.persistProp('readerRegexFontRulesRaw', '');
     PersistentStorage.persistProp('lanReaderEnabled', false);
+    // Only read here to pick up a plain-text password left by older versions; LanReaderPasswordStore moves it
+    // into encrypted storage and stops persisting this entry.
     PersistentStorage.persistProp('lanReaderPassword', '');
     AppStorage.setOrCreate('lanReaderAddress', '');
     AppStorage.setOrCreate('lanReaderStatus', '已关闭');
@@ -156,6 +171,7 @@ export default class EntryAbility extends UIAbility {
     PersistentStorage.persistProp('searchExploreUseBookshelfCoverGallery', false);
     PersistentStorage.persistProp('searchExploreShowResultTags', true);
     PersistentStorage.persistProp('searchExploreAggregateResults', true);
+    PersistentStorage.persistProp('searchResultCategory', 'all');
     PersistentStorage.persistProp('searchExplorePromptAddToShelfOnBack', true);
     PersistentStorage.persistProp('searchExploreExactSearch', false);
     PersistentStorage.persistProp('searchExploreExactSearchMatchAuthor', true);
@@ -164,6 +180,7 @@ export default class EntryAbility extends UIAbility {
     PersistentStorage.persistProp('searchExploreSelectedSourceGroups', '');
     PersistentStorage.persistProp('searchExploreSourceSort', '');
     PersistentStorage.persistProp('bookSourceOrderRevision', 0);
+    PersistentStorage.persistProp('compatSourceNoticeDismissed', false);
     PersistentStorage.persistProp('appLightAccentColor', '#007DFF');
     PersistentStorage.persistProp('appDarkAccentColor', '#4E9BFF');
     PersistentStorage.persistProp('appLightButtonColor', '#007DFF');
@@ -227,7 +244,7 @@ export default class EntryAbility extends UIAbility {
           return lanReaderServer.start(this.context);
         });
       }
-      return converterWarmup;
+      return converterWarmup.then(() => LanReaderPasswordStore.restore(this.context));
     }).catch((e: Error) => {
       hilog.warn(0x0000, 'testTag', 'Sync reader settings failed: %{public}s', JSON.stringify(e));
     });
@@ -241,6 +258,7 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     lanReaderServer.stop().catch(() => undefined);
+    readStatsTracker.flush();
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onDestroy');
   }
 
@@ -303,6 +321,7 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onForeground');
+    readStatsTracker.setAppForeground(true);
     AppStorage.setOrCreate<number>('appLifecycleForegroundRevision', Date.now());
     if (AppStorage.get<boolean>('lanReaderEnabled') && !lanReaderServer.isRunning()) {
       lanReaderServer.start(this.context).catch((e: Error) => {
@@ -356,6 +375,7 @@ export default class EntryAbility extends UIAbility {
 
   onBackground(): void {
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onBackground');
+    readStatsTracker.setAppForeground(false);
     // Page.onPageShow is shared by real route returns and a simple Home/lock-screen resume. Publish a
     // background revision so retained pages do not treat the foreground transition as a settings change.
     AppStorage.setOrCreate<number>('appLifecycleBackgroundRevision', Date.now());

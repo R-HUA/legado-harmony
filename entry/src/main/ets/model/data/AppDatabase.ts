@@ -1,5 +1,6 @@
 import relationalStore from '@ohos.data.relationalStore';
-import { Book, BookChapter, BookSource, BookGroup, Bookmark, SearchKeyword, ExploreRule, TocRule, ContentRule } from './Book';
+import { Book, BookChapter, BookSource, BookGroup, Bookmark, SearchKeyword, ExploreRule, TocRule, ContentRule,
+  BookSourceRuntimePersistence } from '@legado/sourceengine';
 import { Context } from '@kit.AbilityKit';
 import { CloudSyncChangeTracker } from '../../account/CloudSyncChangeTracker';
 import { BookIdentity } from '../../utils/BookIdentity';
@@ -39,7 +40,31 @@ class BookLifecycleMigrationRecord {
   shelfModifiedTime: number = 0;
 }
 
-export class AppDatabase {
+export class ReadStatsEntry {
+  dayKey: string = '';
+  bookUrl: string = '';
+  durationMs: number = 0;
+  lastReadAt: number = 0;
+}
+
+export class ReadStatsRow {
+  dayKey: string = '';
+  bookUrl: string = '';
+  durationMs: number = 0;
+}
+
+export class ReadStatsBookMeta {
+  bookUrl: string = '';
+  name: string = '';
+  author: string = '';
+  coverUrl: string = '';
+}
+
+// 原生书源把定义存在 jsLib 里，并以这个键开头（见 NativeSourceSpec.pack）。
+const NATIVE_SOURCE_JSLIB_HEAD: string = '{"nativeSource":';
+const NATIVE_SOURCE_RULE_MARKER: string = 'native';
+
+export class AppDatabase implements BookSourceRuntimePersistence {
   private static readonly BATCH_INSERT_CHUNK_SIZE: number = 400;
   private static instance: AppDatabase | null = null;
   private store: relationalStore.RdbStore | null = null;
@@ -50,8 +75,9 @@ export class AppDatabase {
   private readerPaginationWriteTasks: Map<string, Promise<void>> = new Map<string, Promise<void>>();
   private bookProgressWriteTasks: Map<string, Promise<void>> = new Map<string, Promise<void>>();
   private latestBookProgressWriteTimes: Map<string, number> = new Map<string, number>();
+  private readStatsWriteTask: Promise<void> = Promise.resolve();
   private readonly DATABASE_NAME = 'legado.db';
-  private readonly SCHEMA_VERSION = 18;
+  private readonly SCHEMA_VERSION = 19;
 
   private constructor() {}
 
@@ -136,6 +162,7 @@ export class AppDatabase {
         syncTime INTEGER DEFAULT 0,
         identityKey TEXT DEFAULT '',
         pendingAddToShelf INTEGER DEFAULT 0,
+        isPrivate INTEGER DEFAULT 0,
         shelfModifiedTime INTEGER DEFAULT 0
       )
     `);
@@ -277,6 +304,16 @@ export class AppDatabase {
       )
     `);
 
+    await this.store.executeSql(`
+      CREATE TABLE IF NOT EXISTS read_stats (
+        dayKey TEXT NOT NULL,
+        bookUrl TEXT NOT NULL,
+        durationMs INTEGER DEFAULT 0,
+        lastReadAt INTEGER DEFAULT 0,
+        PRIMARY KEY (dayKey, bookUrl)
+      )
+    `);
+
     const schemaVersion = await this.getSchemaVersion();
     if (schemaVersion < this.SCHEMA_VERSION) {
       await this.migrateTables();
@@ -325,6 +362,8 @@ export class AppDatabase {
         resultSet.close();
       }
     } catch (e) {
+      // Expected on first launch (no schema_meta yet). Anything else makes the migrations start from zero again.
+      console.info('读取数据库版本失败，按全新数据库处理:', e);
     }
     return 0;
   }
@@ -378,6 +417,7 @@ export class AppDatabase {
       { table: 'books', column: 'syncTime', definition: 'syncTime INTEGER DEFAULT 0' },
       { table: 'books', column: 'identityKey', definition: "identityKey TEXT DEFAULT ''" },
       { table: 'books', column: 'pendingAddToShelf', definition: 'pendingAddToShelf INTEGER DEFAULT 0' },
+      { table: 'books', column: 'isPrivate', definition: 'isPrivate INTEGER DEFAULT 0' },
       { table: 'books', column: 'shelfModifiedTime', definition: 'shelfModifiedTime INTEGER DEFAULT 0' },
       { table: 'book_sources', column: 'searchUrl', definition: "searchUrl TEXT DEFAULT ''" },
       { table: 'book_sources', column: 'exploreUrl', definition: "exploreUrl TEXT DEFAULT ''" },
@@ -599,6 +639,7 @@ export class AppDatabase {
       syncTime: book.syncTime,
       identityKey: book.identityKey,
       pendingAddToShelf: book.pendingAddToShelf ? 1 : 0,
+      isPrivate: book.isPrivate ? 1 : 0,
       shelfModifiedTime: book.shelfModifiedTime
     };
 
@@ -648,6 +689,7 @@ export class AppDatabase {
       syncTime: book.syncTime,
       identityKey: book.identityKey,
       pendingAddToShelf: book.pendingAddToShelf ? 1 : 0,
+      isPrivate: book.isPrivate ? 1 : 0,
       shelfModifiedTime: book.shelfModifiedTime
     };
 
@@ -705,6 +747,7 @@ export class AppDatabase {
       syncTime: book.syncTime,
       identityKey: book.identityKey,
       pendingAddToShelf: book.pendingAddToShelf ? 1 : 0,
+      isPrivate: book.isPrivate ? 1 : 0,
       shelfModifiedTime: book.shelfModifiedTime
     };
     const chapterBuckets: relationalStore.ValuesBucket[] = [];
@@ -1056,6 +1099,17 @@ export class AppDatabase {
     return books;
   }
 
+  /** 隐私标记只存在本机，不参与云同步，所以不更新 shelfModifiedTime，也不触发同步。 */
+  async setBookPrivate(bookUrl: string, isPrivate: boolean): Promise<void> {
+    if (!this.store || !bookUrl) return;
+    const predicates = new relationalStore.RdbPredicates('books');
+    predicates.equalTo('bookUrl', bookUrl);
+    const affected = await this.store.update({ isPrivate: isPrivate ? 1 : 0 }, predicates);
+    if (affected <= 0) {
+      throw new Error(`标记隐私书籍未命中数据库记录: ${bookUrl}`);
+    }
+  }
+
   async setBookPinned(bookUrl: string, pinned: boolean, modifiedTime: number = Date.now()): Promise<void> {
     if (!this.store || !bookUrl) return;
     const predicates = new relationalStore.RdbPredicates('books');
@@ -1265,6 +1319,7 @@ export class AppDatabase {
     book.syncTime = this.getLongColumn(resultSet, 'syncTime');
     book.identityKey = this.getStringColumn(resultSet, 'identityKey') || BookIdentity.keyOfBook(book);
     book.pendingAddToShelf = this.getLongColumn(resultSet, 'pendingAddToShelf') === 1;
+    book.isPrivate = this.getLongColumn(resultSet, 'isPrivate') === 1;
     book.shelfModifiedTime = this.getLongColumn(resultSet, 'shelfModifiedTime');
     return book;
   }
@@ -1342,11 +1397,14 @@ export class AppDatabase {
           bucket['isPinned'] = this.getLongColumn(resultSet, 'isPinned');
           source.isPinned = bucket['isPinned'] === 1;
           // 登录信息、脚本设置和运行时缓存属于用户状态，更新书源定义时不能被覆盖。
-          bucket['variable'] = this.getStringColumn(resultSet, 'variable');
+          // 同一地址的书源在原生与兼容格式之间替换时除外：两种格式的状态互不通用，沿用会带入对方的残留值。
+          const sameFormat = this.getStringColumn(resultSet, 'jsLib').startsWith(NATIVE_SOURCE_JSLIB_HEAD) ===
+            (source.jsLib || '').startsWith(NATIVE_SOURCE_JSLIB_HEAD);
+          bucket['variable'] = sameFormat ? this.getStringColumn(resultSet, 'variable') : '';
           source.variable = bucket['variable'] as string;
-          bucket['loginHeader'] = this.getStringColumn(resultSet, 'loginHeader');
+          bucket['loginHeader'] = sameFormat ? this.getStringColumn(resultSet, 'loginHeader') : '';
           source.loginHeader = bucket['loginHeader'] as string;
-          bucket['loginInfo'] = this.getStringColumn(resultSet, 'loginInfo');
+          bucket['loginInfo'] = sameFormat ? this.getStringColumn(resultSet, 'loginInfo') : '';
           source.loginInfo = bucket['loginInfo'] as string;
         }
       } finally {
@@ -1558,19 +1616,20 @@ export class AppDatabase {
   /** 列表只读取轻量字段；规则详情在实际使用时再按主键加载。 */
   async getBookSourceSummaries(): Promise<BookSource[]> {
     if (!this.store) return [];
-    const predicates = new relationalStore.RdbPredicates('book_sources');
-    predicates.orderByDesc('isPinned');
-    predicates.orderByAsc('customOrder');
     const columns = [
       'bookSourceUrl', 'bookSourceName', 'bookSourceGroup', 'loginUrl', 'loginUi',
       'loginCheckJs', 'loginHeader', 'exploreUrl', 'lastUpdateTime', 'customOrder', 'isPinned', 'enabled', 'enabledExplore', 'isLocked',
       'validationStatus'
     ];
-    const resultSet = await this.store.query(predicates, columns);
+    // 列表不加载完整 jsLib，只取开头一小段判断是否为原生书源。
+    const resultSet = await this.store.querySql(
+      `SELECT ${columns.join(', ')}, substr(jsLib, 1, ${NATIVE_SOURCE_JSLIB_HEAD.length}) AS jsLibHead ` +
+        'FROM book_sources ORDER BY isPinned DESC, customOrder ASC');
     const sources: BookSource[] = [];
     try {
       while (resultSet.goToNextRow()) {
         const source = new BookSource();
+        source.sourceFormat = this.getStringColumn(resultSet, 'jsLibHead') === NATIVE_SOURCE_JSLIB_HEAD ? 'native' : '';
         source.bookSourceUrl = resultSet.getString(resultSet.getColumnIndex('bookSourceUrl'));
         source.bookSourceName = resultSet.getString(resultSet.getColumnIndex('bookSourceName'));
         source.bookSourceGroup = resultSet.getString(resultSet.getColumnIndex('bookSourceGroup'));
@@ -1784,6 +1843,7 @@ export class AppDatabase {
     source.searchUrl = this.getStringColumn(resultSet, 'searchUrl');
     source.exploreUrl = this.getStringColumn(resultSet, 'exploreUrl');
     source.jsLib = this.getStringColumn(resultSet, 'jsLib');
+    source.sourceFormat = source.jsLib.startsWith(NATIVE_SOURCE_JSLIB_HEAD) ? 'native' : '';
     source.header = this.getStringColumn(resultSet, 'header');
     if (ruleScope === 'all') {
       try {
@@ -1817,6 +1877,18 @@ export class AppDatabase {
         source.contentRule.nextContentUrl = source.contentRule.nextContentUrl || '';
         source.contentRule.imageDecode = source.contentRule.imageDecode || '';
       } catch (e) {}
+    }
+    if (source.sourceFormat === 'native') {
+      if (source.searchUrl) {
+        source.searchRule.bookList = source.searchRule.bookList || NATIVE_SOURCE_RULE_MARKER;
+        source.searchRule.name = source.searchRule.name || NATIVE_SOURCE_RULE_MARKER;
+        source.searchRule.bookUrl = source.searchRule.bookUrl || NATIVE_SOURCE_RULE_MARKER;
+      }
+      if (source.exploreUrl) {
+        source.exploreRule.bookList = source.exploreRule.bookList || NATIVE_SOURCE_RULE_MARKER;
+        source.exploreRule.name = source.exploreRule.name || NATIVE_SOURCE_RULE_MARKER;
+        source.exploreRule.bookUrl = source.exploreRule.bookUrl || NATIVE_SOURCE_RULE_MARKER;
+      }
     }
     source.variableComment = this.getStringColumn(resultSet, 'variableComment');
     source.variable = this.getStringColumn(resultSet, 'variable');
@@ -2257,6 +2329,127 @@ export class AppDatabase {
     const predicates = new relationalStore.RdbPredicates('search_keywords');
     predicates.equalTo('keyword', keyword);
     await this.store.delete(predicates);
+  }
+
+  async addReadStats(entries: ReadStatsEntry[]): Promise<void> {
+    if (!this.store || entries.length === 0) return;
+    const task = this.readStatsWriteTask.catch(() => {
+    }).then(async (): Promise<void> => {
+      for (const entry of entries) {
+        if (!entry.dayKey || !entry.bookUrl || entry.durationMs <= 0) continue;
+        await this.performReadStatsUpsert(entry);
+      }
+    });
+    this.readStatsWriteTask = task;
+    try {
+      await task;
+    } catch (error) {
+      console.warn('累计阅读时长入库失败', error);
+    }
+  }
+
+  private async getPrivateBookUrls(bookUrls: string[]): Promise<Set<string>> {
+    const urls = new Set<string>();
+    const candidates = bookUrls.filter((url) => !!url);
+    if (!this.store || candidates.length === 0) return urls;
+    const predicates = new relationalStore.RdbPredicates('books');
+    predicates.in('bookUrl', candidates);
+    predicates.and();
+    predicates.equalTo('isPrivate', 1);
+    const resultSet = await this.store.query(predicates, ['bookUrl']);
+    try {
+      while (resultSet.goToNextRow()) {
+        urls.add(resultSet.getString(resultSet.getColumnIndex('bookUrl')));
+      }
+    } finally {
+      resultSet.close();
+    }
+    return urls;
+  }
+
+  private async performReadStatsUpsert(entry: ReadStatsEntry): Promise<void> {
+    if (!this.store) return;
+    const predicates = new relationalStore.RdbPredicates('read_stats');
+    predicates.equalTo('dayKey', entry.dayKey);
+    predicates.and();
+    predicates.equalTo('bookUrl', entry.bookUrl);
+    const resultSet = await this.store.query(predicates, ['durationMs']);
+    let existingMs = 0;
+    try {
+      if (resultSet.goToFirstRow()) {
+        existingMs = resultSet.getLong(resultSet.getColumnIndex('durationMs'));
+      }
+    } finally {
+      resultSet.close();
+    }
+    const bucket: relationalStore.ValuesBucket = {
+      durationMs: existingMs + entry.durationMs,
+      lastReadAt: entry.lastReadAt
+    };
+    if (existingMs > 0) {
+      await this.store.update(bucket, predicates);
+    } else {
+      bucket.dayKey = entry.dayKey;
+      bucket.bookUrl = entry.bookUrl;
+      await this.store.insert('read_stats', bucket);
+    }
+  }
+
+  async getReadStatsByDayRange(startDayKey: string, endDayKey: string): Promise<ReadStatsRow[]> {
+    const rows: ReadStatsRow[] = [];
+    if (!this.store || !startDayKey || !endDayKey || startDayKey > endDayKey) return rows;
+    const predicates = new relationalStore.RdbPredicates('read_stats');
+    predicates.between('dayKey', startDayKey, endDayKey);
+    const resultSet = await this.store.query(predicates, ['dayKey', 'bookUrl', 'durationMs']);
+    try {
+      while (resultSet.goToNextRow()) {
+        const row = new ReadStatsRow();
+        row.dayKey = resultSet.getString(resultSet.getColumnIndex('dayKey'));
+        row.bookUrl = resultSet.getString(resultSet.getColumnIndex('bookUrl'));
+        row.durationMs = resultSet.getLong(resultSet.getColumnIndex('durationMs'));
+        rows.push(row);
+      }
+    } finally {
+      resultSet.close();
+    }
+    // 隐私书籍的时长照常入库，只是不在统计里显示；取消隐私后恢复显示。
+    const privateUrls = await this.getPrivateBookUrls(Array.from(new Set(rows.map((row) => row.bookUrl))));
+    if (privateUrls.size === 0) return rows;
+    return rows.filter((row) => !privateUrls.has(row.bookUrl));
+  }
+
+  /** 删除某本书在 [startDayKey, endDayKey] 内的阅读时长记录。 */
+  async deleteReadStatsForBook(bookUrl: string, startDayKey: string, endDayKey: string): Promise<void> {
+    if (!this.store || !bookUrl || !startDayKey || !endDayKey || startDayKey > endDayKey) return;
+    // 等排队中的时长写入落库后再删，避免刚删掉又被旧的写入任务补回来。
+    await this.readStatsWriteTask.catch(() => {
+    });
+    const predicates = new relationalStore.RdbPredicates('read_stats');
+    predicates.equalTo('bookUrl', bookUrl);
+    predicates.and();
+    predicates.between('dayKey', startDayKey, endDayKey);
+    await this.store.delete(predicates);
+  }
+
+  async getReadStatsBookMeta(bookUrls: string[]): Promise<Map<string, ReadStatsBookMeta>> {
+    const metaMap = new Map<string, ReadStatsBookMeta>();
+    if (!this.store || bookUrls.length === 0) return metaMap;
+    const predicates = new relationalStore.RdbPredicates('books');
+    predicates.in('bookUrl', bookUrls);
+    const resultSet = await this.store.query(predicates, ['bookUrl', 'name', 'author', 'coverUrl']);
+    try {
+      while (resultSet.goToNextRow()) {
+        const meta = new ReadStatsBookMeta();
+        meta.bookUrl = resultSet.getString(resultSet.getColumnIndex('bookUrl'));
+        meta.name = resultSet.getString(resultSet.getColumnIndex('name'));
+        meta.author = resultSet.getString(resultSet.getColumnIndex('author'));
+        meta.coverUrl = resultSet.getString(resultSet.getColumnIndex('coverUrl'));
+        metaMap.set(meta.bookUrl, meta);
+      }
+    } finally {
+      resultSet.close();
+    }
+    return metaMap;
   }
 }
 

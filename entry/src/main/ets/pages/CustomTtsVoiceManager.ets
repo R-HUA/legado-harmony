@@ -2,8 +2,7 @@ import { router } from '@kit.ArkUI';
 import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import { util } from '@kit.ArkTS';
-import { HttpTTS } from '../model/data/Book';
-import { HttpClient } from '../core/http/HttpClient';
+import { HttpTTS, HttpClient } from '@legado/sourceengine';
 import { syncSystemBars } from '../utils/SystemBars';
 import { SystemTtsReader } from '../utils/SystemTtsReader';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
@@ -16,6 +15,9 @@ import { HdsListItem, HdsSwipeActionOptions } from '@kit.UIDesignKit';
 import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
+import { AdaptiveSwitch } from '../components/AdaptiveSwitch';
+import { AppFontSize } from '../theme/AppFontSize';
+import { AppSpacing } from '../theme/AppSpacing';
 
 class VoiceEditFormDraft {
   editingVoiceId: string = '';
@@ -127,18 +129,18 @@ struct CustomTtsVoiceManagerPage {
         if (this.filteredVoices().length === 0) {
           Column() {
             Text(this.searchText ? '未找到匹配音色' : '暂无自定义音色')
-              .fontSize(16)
+              .fontSize(AppFontSize.BODY_LARGE)
               .fontColor(this.subTextColor())
             Text('点击右下角“+”导入原版 HttpTTS JSON')
-              .fontSize(14)
+              .fontSize(AppFontSize.BODY)
               .fontColor(this.subTextColor())
-              .margin({ top: 8 })
+              .margin({ top: AppSpacing.MD })
           }
           .width('100%')
           .layoutWeight(1)
           .justifyContent(FlexAlign.Center)
         } else {
-          List({ space: 8, scroller: this.voiceListScroller }) {
+          List({ space: AppSpacing.MD, scroller: this.voiceListScroller }) {
             ForEach(this.filteredVoices(), (voice: HttpTTS) => {
               if (deviceInfo.sdkApiVersion >= 26) {
                 HdsListItem({
@@ -176,7 +178,7 @@ struct CustomTtsVoiceManagerPage {
           .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
           .width('100%')
           .layoutWeight(1)
-          .padding({ left: 16, right: 16 })
+          .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
           .clip(true)
           .lanes(ResponsiveManagerListLayout.laneCount(this.contextViewportWidth),
             ResponsiveManagerListLayout.gutter(this.contextViewportWidth))
@@ -747,7 +749,7 @@ struct CustomTtsVoiceManagerPage {
     }
     .width(56)
     .height(64)
-    .margin({ left: -10, right: 2 })
+    .margin({ left: -10, right: AppSpacing.XXS })
     .priorityGesture(
       GestureGroup(GestureMode.Exclusive,
         PanGesture({ direction: PanDirection.Vertical, distance: 2 })
@@ -961,13 +963,13 @@ struct CustomTtsVoiceManagerPage {
         onBack: () => router.back() })
 
       Text('自定义音色管理')
-        .fontSize(20)
+        .fontSize(AppFontSize.TITLE)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
 
       Text(this.selectionMode ? '取消' : '选择')
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .width(52)
         .height(56)
@@ -979,7 +981,7 @@ struct CustomTtsVoiceManagerPage {
     }
     .width('100%')
     .height(56 + this.statusBarHeight)
-    .padding({ right: 16, top: this.statusBarHeight })
+    .padding({ right: AppSpacing.XL, top: this.statusBarHeight })
     .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
     .backdropBlur(ThemeRuntime.topBarBlur())
     .alignItems(VerticalAlign.Center)
@@ -994,7 +996,7 @@ struct CustomTtsVoiceManagerPage {
     }
     .width(52)
     .height(52)
-    .margin({ right: 22, bottom: this.navBarHeight + 22 })
+    .margin({ right: AppSpacing.XXL, bottom: this.navBarHeight + 22 })
     .backgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode, this.cardColor(), 'button'))
     .backdropBlur(ThemeRuntime.glassBlur('button', 12))
     .border({ width: ThemeRuntime.glassBorderWidth('button'), color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'button') })
@@ -1015,21 +1017,21 @@ struct CustomTtsVoiceManagerPage {
         .backgroundColor(this.inputColor())
         .fontColor(this.primaryTextColor())
         .placeholderColor(this.subTextColor())
-        .padding({ left: 16, right: 16 })
+        .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
         .onChange((value: string) => {
           this.searchText = value;
           this.pruneSelectedVoices();
         })
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.MD, bottom: AppSpacing.MD })
   }
 
   @Builder
   selectionHeader() {
     Row() {
       Text(this.isAllSelected() ? '☑' : '☐')
-        .fontSize(20)
+        .fontSize(AppFontSize.TITLE)
         .fontColor(this.accentColor())
         .width(28)
         .textAlign(TextAlign.Center)
@@ -1037,12 +1039,12 @@ struct CustomTtsVoiceManagerPage {
           this.toggleAllVoices();
         })
       Text(`已选择 ${this.selectedVoiceIds.length}/${this.filteredVoices().length}`)
-        .fontSize(14)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
-        .margin({ left: 8 })
+        .margin({ left: AppSpacing.MD })
         .layoutWeight(1)
       Text(this.isAllSelected() ? '取消全选' : '全选')
-        .fontSize(14)
+        .fontSize(AppFontSize.BODY)
         .fontColor(this.accentColor())
         .onClick(() => {
           this.toggleAllVoices();
@@ -1050,7 +1052,7 @@ struct CustomTtsVoiceManagerPage {
     }
     .width('100%')
     .height(42)
-    .padding({ left: 16, right: 16 })
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
   }
 
   @Builder
@@ -1062,29 +1064,29 @@ struct CustomTtsVoiceManagerPage {
 
       Column() {
         Text(voice.name || '未命名音色')
-          .fontSize(16)
+          .fontSize(AppFontSize.BODY_LARGE)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.primaryTextColor())
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(voice.url || '')
-          .fontSize(12)
+          .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
-          .margin({ top: 4 })
+          .margin({ top: AppSpacing.XS })
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(voice.enabled ? '已启用' : '已禁用')
-          .fontSize(12)
-          .fontColor(voice.enabled ? '#1E8E3E' : this.subTextColor())
-          .margin({ top: 4 })
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(voice.enabled ? ThemeRuntime.successColor(this.appDarkMode) : this.subTextColor())
+          .margin({ top: AppSpacing.XS })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
-    .padding(12)
+    .padding(AppSpacing.LG)
     .backgroundColor(this.cardColor())
-    .borderRadius(8)
+    .borderRadius(ThemeRuntime.cardRadius())
     .opacity(voice.enabled ? 1 : 0.45)
     .gesture(
       LongPressGesture({ repeat: false })
@@ -1104,12 +1106,12 @@ struct CustomTtsVoiceManagerPage {
 
   @Builder
   voiceDisableSwipeAction(voice: HttpTTS) {
-    Column({ space: 4 }) {
+    Column({ space: AppSpacing.XS }) {
       SymbolGlyph(voice.enabled ? $r('sys.symbol.minus_circle') : $r('sys.symbol.checkmark_circle'))
         .fontSize(22)
         .fontColor(['#FFFFFF'])
       Text(voice.enabled ? '禁用' : '启用')
-        .fontSize(11)
+        .fontSize(AppFontSize.CAPTION)
         .fontColor('#FFFFFF')
     }
     .width(64)
@@ -1124,12 +1126,12 @@ struct CustomTtsVoiceManagerPage {
 
   @Builder
   voiceDeleteSwipeAction(voice: HttpTTS) {
-    Column({ space: 4 }) {
+    Column({ space: AppSpacing.XS }) {
       SymbolGlyph($r('sys.symbol.trash'))
         .fontSize(22)
         .fontColor(['#FFFFFF'])
       Text('删除')
-        .fontSize(11)
+        .fontSize(AppFontSize.CAPTION)
         .fontColor('#FFFFFF')
     }
     .width(64)
@@ -1159,10 +1161,10 @@ struct CustomTtsVoiceManagerPage {
           () => this.toggleActionVoiceEnabled())
         this.voiceContextActionItem($r('sys.symbol.list_bullet'), '多选', this.primaryTextColor(),
           () => this.enterActionVoiceSelection())
-        this.voiceContextActionItem($r('sys.symbol.trash'), '删除', '#E53935', () => this.deleteActionVoice())
+        this.voiceContextActionItem($r('sys.symbol.trash'), '删除', ThemeRuntime.dangerColor(this.appDarkMode), () => this.deleteActionVoice())
       }
       .width(148)
-      .padding({ top: 6, bottom: 6 })
+      .padding({ top: AppSpacing.SM, bottom: AppSpacing.SM })
       .backgroundColor(ThemeRuntime.glassPanelColor(this.appDarkMode, '', 'panel'))
       .borderRadius(ThemeRuntime.glassCornerRadius(14, 'panel'))
       .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
@@ -1176,19 +1178,19 @@ struct CustomTtsVoiceManagerPage {
 
   @Builder
   voiceContextActionItem(icon: Resource, label: string, color: string, action: () => void) {
-    Row({ space: 10 }) {
+    Row({ space: AppSpacing.MD }) {
       SymbolGlyph(icon)
         .fontSize(18)
         .fontColor([color])
         .width(24)
       Text(label)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(color)
         .layoutWeight(1)
     }
     .width('100%')
     .height(44)
-    .padding({ left: 12, right: 12 })
+    .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
     .alignItems(VerticalAlign.Center)
     .onClick(action)
   }
@@ -1201,14 +1203,14 @@ struct CustomTtsVoiceManagerPage {
         .height(42)
         .enabled(this.selectedVoiceIds.length > 0 && !this.isBatchOperating)
         .backgroundColor(this.buttonColor())
-        .fontColor('#FFFFFF')
+        .fontColor(ThemeRuntime.onAccentColor())
         .onClick(() => {
           this.batchSetEnabled(true);
         })
       Button('禁用')
         .layoutWeight(1)
         .height(42)
-        .margin({ left: 8 })
+        .margin({ left: AppSpacing.MD })
         .enabled(this.selectedVoiceIds.length > 0 && !this.isBatchOperating)
         .backgroundColor(this.inputColor())
         .fontColor(this.primaryTextColor())
@@ -1218,16 +1220,16 @@ struct CustomTtsVoiceManagerPage {
       Button('删除')
         .layoutWeight(1)
         .height(42)
-        .margin({ left: 8 })
+        .margin({ left: AppSpacing.MD })
         .enabled(this.selectedVoiceIds.length > 0 && !this.isBatchOperating)
-        .backgroundColor('#E53935')
-        .fontColor('#FFFFFF')
+        .backgroundColor(ThemeRuntime.dangerColor(this.appDarkMode))
+        .fontColor(ThemeRuntime.onAccentColor())
         .onClick(() => {
           this.batchDelete();
         })
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 10, bottom: 12 })
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.MD, bottom: AppSpacing.LG })
     .backgroundColor(this.cardColor())
   }
 
@@ -1257,13 +1259,13 @@ struct CustomTtsVoiceManagerPage {
         }, false)
       }
       .width(176)
-      .padding(6)
+      .padding(AppSpacing.SM)
       .backgroundColor(ThemeRuntime.glassPanelColor(this.appDarkMode, '', 'panel'))
       .borderRadius(ThemeRuntime.glassCornerRadius(16, 'panel'))
       .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
       .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'panel') })
       .shadow({ radius: ThemeRuntime.glassShadowRadius('panel'), color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'panel'), offsetX: ThemeRuntime.glassShadowOffsetX('panel'), offsetY: ThemeRuntime.glassShadowOffsetY('panel') })
-      .margin({ right: 22, bottom: this.navBarHeight + 82 })
+      .margin({ right: AppSpacing.XXL, bottom: this.navBarHeight + 82 })
     }
     .width('100%')
     .height('100%')
@@ -1273,17 +1275,17 @@ struct CustomTtsVoiceManagerPage {
   addVoiceMenuItem(label: string, action: () => void, showDivider: boolean = true) {
     Column() {
       Text(label)
-        .fontSize(15)
+        .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .width('100%')
         .height(44)
-        .padding({ left: 12, right: 12 })
+        .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
         .textAlign(TextAlign.Start)
       if (showDivider) {
         Divider()
           .strokeWidth(0.5)
           .color(ThemeRuntime.glassBorderColor(this.appDarkMode))
-          .margin({ left: 12, right: 12 })
+          .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
       }
     }
     .width('100%')
@@ -1301,7 +1303,7 @@ struct CustomTtsVoiceManagerPage {
       this.importUrlDialogContent();
     }, {
       autoCancel: true,
-      maskColor: this.appDarkMode ? '#99000000' : '#33000000',
+      maskColor: ThemeRuntime.scrimColor(this.appDarkMode),
       warnTag: '显示音色URL导入弹窗失败:'
     });
   }
@@ -1310,12 +1312,12 @@ struct CustomTtsVoiceManagerPage {
   importUrlDialogContent() {
     Column() {
       Text('从URL导入')
-        .fontSize(18)
+        .fontSize(AppFontSize.SUBTITLE)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryTextColor())
         .width('100%')
         .textAlign(TextAlign.Center)
-        .margin({ bottom: 14 })
+        .margin({ bottom: AppSpacing.LG })
       TextInput({ placeholder: '音色 JSON URL', text: this.importUrl })
         .width('100%')
         .height(44)
@@ -1325,7 +1327,7 @@ struct CustomTtsVoiceManagerPage {
         .onChange((value: string) => {
           this.importUrl = value;
         })
-      Row({ space: 10 }) {
+      Row({ space: AppSpacing.MD }) {
         Button('取消')
           .layoutWeight(1)
           .height(42)
@@ -1338,15 +1340,15 @@ struct CustomTtsVoiceManagerPage {
           .layoutWeight(1)
           .height(42)
           .backgroundColor(this.buttonColor())
-          .fontColor('#FFFFFF')
+          .fontColor(ThemeRuntime.onAccentColor())
           .enabled(!this.isImporting)
           .onClick(() => {
             this.importFromUrl();
           })
       }
       .width('100%')
-      .margin({ top: 14 })
-    }    .padding(20)
+      .margin({ top: AppSpacing.LG })
+    }    .padding(AppSpacing.XXL)
   }
 
 
@@ -1355,15 +1357,15 @@ struct CustomTtsVoiceManagerPage {
     Column() {
       Column() {
         Text(this.editingVoiceId ? '编辑自定义音色' : '新建自定义音色')
-          .fontSize(18)
+          .fontSize(AppFontSize.SUBTITLE)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.primaryTextColor())
           .width('100%')
           .textAlign(TextAlign.Center)
-          .margin({ bottom: 14 })
+          .margin({ bottom: AppSpacing.LG })
 
         Scroll() {
-          Column({ space: 10 }) {
+          Column({ space: AppSpacing.MD }) {
             this.editInput('名称', '音色名称', this.editName, (value: string) => {
               this.editName = value;
             })
@@ -1396,18 +1398,19 @@ struct CustomTtsVoiceManagerPage {
             })
             Row() {
               Text('启用 CookieJar')
-                .fontSize(15)
+                .fontSize(AppFontSize.BODY_LARGE)
                 .fontColor(this.primaryTextColor())
                 .layoutWeight(1)
-              Toggle({ type: ToggleType.Switch, isOn: this.editEnabledCookieJar })
-                .selectedColor(this.buttonColor())
-                .onChange((value: boolean) => {
+              AdaptiveSwitch({
+                isOn: this.editEnabledCookieJar,
+                onChange: (value: boolean) => {
                   this.editEnabledCookieJar = value;
                   this.saveVoiceEditDraft();
-                })
+                }
+              })
             }
             .width('100%')
-            .padding({ top: 4, bottom: 4 })
+            .padding({ top: AppSpacing.XS, bottom: AppSpacing.XS })
           }
           .width('100%')
         }
@@ -1415,7 +1418,7 @@ struct CustomTtsVoiceManagerPage {
         .width('100%')
         .height(420)
 
-        Row({ space: 10 }) {
+        Row({ space: AppSpacing.MD }) {
           Button('取消')
             .layoutWeight(1)
             .height(42)
@@ -1428,16 +1431,16 @@ struct CustomTtsVoiceManagerPage {
             .layoutWeight(1)
             .height(42)
             .backgroundColor(this.buttonColor())
-            .fontColor('#FFFFFF')
+            .fontColor(ThemeRuntime.onAccentColor())
             .onClick(() => {
               this.saveEditedVoice();
             })
         }
         .width('100%')
-        .margin({ top: 14 })
+        .margin({ top: AppSpacing.LG })
       }
       .width('90%')
-      .padding(20)
+      .padding(AppSpacing.XXL)
       .backgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode, '', 'overlay'))
       .borderRadius(ThemeRuntime.glassCornerRadius(16, 'overlay'))
       .backdropBlur(ThemeRuntime.glassBlur('overlay', 28))
@@ -1454,10 +1457,10 @@ struct CustomTtsVoiceManagerPage {
   editInput(label: string, placeholder: string, value: string, onChange: (value: string) => void) {
     Column() {
       Text(label)
-        .fontSize(12)
+        .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor())
         .width('100%')
-        .margin({ bottom: 4 })
+        .margin({ bottom: AppSpacing.XS })
       TextInput({ placeholder, text: value })
         .width('100%')
         .height(42)

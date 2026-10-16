@@ -34,6 +34,11 @@ tmp/
 # HarmonyOS
 /node_modules
 /oh_modules
+# ohpm 为模块依赖生成的链接目录
+/entry/oh_modules/
+# 引擎迁移前保留在本机的 QuickJS 构建缓存
+/quickjs/.cxx/
+/quickjs/oh_modules/
 /.hvigor
 /.appanalyzer
 server/node_modules/

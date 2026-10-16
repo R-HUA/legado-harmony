@@ -1,5 +1,4 @@
-import { BookSource } from '../../model/data/Book';
-import { JavaRegexCompat } from '../rule/JavaRegexCompat';
+import { BookSource, JavaRegexCompat } from '@legado/sourceengine';
 
 export class BookUrlSourceMatches {
   sources: BookSource[] = [];
