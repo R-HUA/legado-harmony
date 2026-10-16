@@ -73,7 +73,49 @@ export class VerificationSupport {
     if (source) {
       AppStorage.setOrCreate('pendingVerificationSourceUrl', source.bookSourceUrl || '');
       AppStorage.setOrCreate('pendingVerificationLoginUrl', this.resolveBookSourceLoginUrl(source));
+      AppStorage.setOrCreate('pendingVerificationUserAgent', this.staticSourceUserAgent(source));
+    } else {
+      // A verification request without a source must not inherit an earlier source's UA.
+      AppStorage.setOrCreate('pendingVerificationUserAgent', '');
     }
+  }
+
+  /**
+   * The literal User-Agent a source declares in `header`, or '' when it declares none.
+   *
+   * Only static headers are read: a `@js:`/`js:` header is computed per request and must not be
+   * guessed here. Sites commonly serve a different theme per User-Agent, so a verification or
+   * login page opened for a source that declares one has to present the same UA as its requests —
+   * otherwise the operator completes verification against a page the source itself never sees
+   * (for example the site's mobile theme with its own cookies).
+   */
+  static staticSourceUserAgent(source: BookSource): string {
+    const header = (source.header || '').trim();
+    if (!header || /^@?js:/i.test(header) || header.startsWith('<js>')) return '';
+    let entries: Record<string, string> = {};
+    if (header.startsWith('{') || header.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(header) as Object;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          entries = parsed as Record<string, string>;
+        }
+      } catch (_) {
+        return '';
+      }
+    } else {
+      for (const line of header.split(/\r?\n/)) {
+        const index = line.indexOf(':');
+        if (index <= 0) continue;
+        entries[line.substring(0, index).trim()] = line.substring(index + 1).trim();
+      }
+    }
+    for (const name of Object.keys(entries)) {
+      if (name.toLowerCase() !== 'user-agent') continue;
+      const value = String(entries[name] || '').trim();
+      // Guard against placeholder/script values reaching the Web component's UA.
+      return value && !value.includes('{{') && !/^@?js:/i.test(value) ? value : '';
+    }
+    return '';
   }
 
   static buildBookSourceLoginUrl(source: BookSource): string {
@@ -115,6 +157,7 @@ export class VerificationSupport {
     AppStorage.setOrCreate('pendingVerificationTitle', '');
     AppStorage.setOrCreate('pendingVerificationSourceUrl', '');
     AppStorage.setOrCreate('pendingVerificationLoginUrl', '');
+    AppStorage.setOrCreate('pendingVerificationUserAgent', '');
   }
 
   static getPendingUrl(): string {

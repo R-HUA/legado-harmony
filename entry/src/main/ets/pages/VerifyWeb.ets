@@ -170,10 +170,20 @@ struct VerifyWebPage {
     (value: string): void => this.storeBrowserSourceVariable(value));
   private readonly mobileUserAgent: string =
     'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  /**
+   * User-Agent the pending verification request was made with, when the source declares a static
+   * one. Only adopted while the page being opened is that same pending verification URL, so an
+   * unrelated verification/comment page can never inherit a stale source UA.
+   */
+  private sourceUserAgent: string = '';
   aboutToAppear(): void {
     this.syncBars();
     const params = router.getParams() as Record<string, string>;
     const initialUrl = params?.['url'] || AppStorage.get<string>('pendingVerificationUrl') || 'about:blank';
+    const pendingUrl = AppStorage.get<string>('pendingVerificationUrl') || '';
+    if (initialUrl && initialUrl === pendingUrl) {
+      this.sourceUserAgent = AppStorage.get<string>('pendingVerificationUserAgent') || '';
+    }
     this.title = params?.['title'] || AppStorage.get<string>('pendingVerificationTitle') || '网页验证';
     this.requireLoginCookie = params?.['requireLoginCookie'] === 'true';
     this.readerCommentMode = params?.['readerCommentMode'] === 'true';
@@ -372,7 +382,10 @@ struct VerifyWebPage {
     // Keep verification pages consistent with the device form factor. Native-app launch links
     // exposed by Fanqie's mobile page are filtered in handleBrowserLoadIntercept(), while its
     // normal HTTPS page, passport requests and session cookies remain inside ArkWeb.
-    return this.mobileUserAgent;
+    // A source that declares its own static UA gets that UA here instead: several sites serve a
+    // different theme (and a different cookie scope) per UA, so verifying with the app's mobile UA
+    // would leave the source's own desktop requests still unverified.
+    return this.sourceUserAgent || this.mobileUserAgent;
   }
 
   loadBrowserPayload(): void {

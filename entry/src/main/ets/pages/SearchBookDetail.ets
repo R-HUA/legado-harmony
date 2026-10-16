@@ -18,6 +18,7 @@ import { BookChangeSourceDialog } from '../components/BookChangeSourceDialog';
 import { WebBookFetchRuntimeHost } from '../components/WebBookFetchRuntimeHost';
 import { BookUrlResolver } from '../core/book/BookUrlResolver';
 import { LocalBookService } from '../core/book/LocalBookService';
+import { CoverImageService } from '../core/book/CoverImageService';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 
@@ -25,6 +26,8 @@ import { SystemDialogSession } from '../utils/SystemDialogSession';
 @Component
 struct SearchBookDetailPage {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
+  // 封面下载完成后计数变化，读过它的封面区块才会重建并切到本地文件（见 CoverImageService）。
+  @StorageLink('coverImageVersion') coverImageVersion: number = 0;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
@@ -621,6 +624,8 @@ struct SearchBookDetailPage {
     await db.initWithContext(getContext(this));
     const source = await db.getBookSource(this.origin);
     if (!source) return null;
+    // 详情页已经拿到书源：封面下载可以直接复用它的请求头，无需再查一次数据库。
+    CoverImageService.primeSource(source);
     const book = this.buildCurrentBook();
     BookTypeSupport.applyBookType(book, source);
     return new WebBookService().getBookInfo(source, book);
@@ -1279,7 +1284,7 @@ struct SearchBookDetailPage {
       .backgroundColor(this.accentColor())
 
       if (coverUrl) {
-        Image(coverUrl)
+        Image(CoverImageService.displayUri(coverUrl, this.origin, this.bookUrl, this.coverImageVersion))
           .width(width)
           .height(height)
           .objectFit(ImageFit.Cover)

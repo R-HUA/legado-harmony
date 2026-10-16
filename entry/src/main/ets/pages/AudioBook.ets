@@ -12,6 +12,7 @@ import { BookUrlResolver } from '../core/book/BookUrlResolver';
 import { VerificationSupport } from '../core/http/VerificationSupport';
 import { RemoteAudioPlayback, RemoteAudioPlaybackListener } from '../utils/RemoteAudioPlayback';
 import { ReaderTtsFloatingSession } from '../utils/ReaderTtsFloatingSession';
+import { CoverImageService } from '../core/book/CoverImageService';
 import { CoverUrlNormalizer } from '../utils/CoverUrlNormalizer';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
@@ -60,6 +61,8 @@ class AudioBookAvSessionHolder {
 @Component
 struct AudioBookPage {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
+  // 在线封面下载完成后计数变化，读过它的封面区块才会重建并切到本地文件（见 CoverImageService）。
+  @StorageLink('coverImageVersion') coverImageVersion: number = 0;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
@@ -240,7 +243,7 @@ struct AudioBookPage {
     Column({ space: 8 }) {
       Stack({ alignContent: Alignment.Center }) {
         if (this.displayCover()) {
-          Image(this.displayCover())
+          Image(this.displayCoverUri())
             .width('100%')
             .height('100%')
             .objectFit(ImageFit.Contain)
@@ -438,7 +441,7 @@ struct AudioBookPage {
   coverSection() {
     Column() {
       if (this.displayCover()) {
-        Image(this.displayCover())
+        Image(this.displayCoverUri())
           .width(190)
           .height(250)
           .borderRadius(14)
@@ -1080,7 +1083,7 @@ struct AudioBookPage {
     );
     ReaderTtsFloatingSession.updateDetails(
       this.floatingSessionOwnerId,
-      this.displayIntro(), '', '', '', this.displayCover(), '',
+      this.displayIntro(), '', '', '', this.displayCoverUri(), '',
       `${this.chapterIndex + 1}/${Math.max(1, this.chapters.length)}章`,
       this.speed, this.sleepMinutes, this.sleepRemainingSeconds,
       this.chapterIndex > 0, this.chapterIndex < this.chapters.length - 1
@@ -1310,6 +1313,12 @@ struct AudioBookPage {
 
   displayCover(): string {
     return this.book ? CoverUrlNormalizer.normalize(this.book.getDisplayCover()) : '';
+  }
+
+  /** 封面渲染值：本地缓存优先，未缓存则排队下载并在解析完成后重建（见 CoverImageService）。 */
+  displayCoverUri(): string {
+    return CoverImageService.displayUri(this.displayCover(), this.book?.origin || '', this.bookUrl,
+      this.coverImageVersion);
   }
 
   formatDuration(valueMs: number): string {

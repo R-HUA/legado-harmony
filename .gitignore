@@ -29,6 +29,7 @@ hs_err_pid*
 build/
 tmp/
 .agents/
+.zcodeignore
 
 # HarmonyOS
 /node_modules
@@ -52,6 +53,11 @@ output/
 
 # Local configuration
 local.properties
+
+# Personal book sources imported into the app from this working copy. docs/book-sources/README.md
+# states that this repository does not ship sources for real third-party content sites, so keep
+# locally authored ones here instead of committing them.
+docs/book-sources/local/
 
 # OS generated files
 .DS_Store

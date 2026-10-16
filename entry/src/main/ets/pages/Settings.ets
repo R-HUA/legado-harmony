@@ -19,6 +19,7 @@ import fs from '@ohos.file.fs';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 import { TapZoneSettingsDialogContent } from '../components/TapZoneSettingsDialog';
+import { ChineseConverter } from '../utils/ChineseConverter';
 class ReaderCustomFontItem {
   familyName: string = '';
   filePath: string = '';
@@ -77,6 +78,7 @@ struct SettingsPage {
     ReaderSettingsStore.SCREEN_TIMEOUT_ALWAYS_ON;
   @StorageLink('readerExtendToStatusBar') readerExtendToStatusBar: boolean = false;
   @StorageLink('readerKeepParagraphIndent') keepParagraphIndent: boolean = false;
+  @StorageLink('readerChineseConverterType') chineseConverterType: number = 0;
   @StorageLink('readerHeaderEnabled') readerHeaderEnabled: boolean = false;
   @StorageLink('readerHeaderContentMode') readerHeaderContentMode: string = 'chapter';
   @StorageLink('readerFooterEnabled') readerFooterEnabled: boolean = true;
@@ -185,6 +187,10 @@ struct SettingsPage {
             this.switchItem('保留段首缩进', '章节开头与页首保留原文的全角空格缩进', this.keepParagraphIndent, (value: boolean) => {
               this.setKeepParagraphIndent(value);
             })
+            this.selectItem('简繁转换', '在繁体中文与简体中文之间转换正文',
+              this.chineseConverterOptions(), this.chineseConverterSelectedIndex(), (index: number) => {
+                this.setChineseConverterByIndex(index);
+              }, 'settings_reader_chinese_converter_select')
           }
           .width('calc(100% - 24vp)')
           .margin({ left: 12, right: 12 })
@@ -592,6 +598,7 @@ struct SettingsPage {
     this.readerScreenTimeoutMinutes = settings.screenTimeoutMinutes;
     this.readerExtendToStatusBar = settings.extendToStatusBar;
     this.keepParagraphIndent = settings.keepParagraphIndent;
+    this.chineseConverterType = settings.chineseConverterType;
     this.readerHeaderEnabled = settings.readerHeaderEnabled;
     this.readerHeaderContentMode = settings.readerHeaderContentMode;
     this.readerFooterEnabled = settings.readerFooterEnabled;
@@ -1120,6 +1127,24 @@ struct SettingsPage {
     const values = this.readerTextAlignValues();
     this.readerTextAlign = index >= 0 && index < values.length ? values[index] : 'justify';
     this.saveReaderLayoutSettings();
+  }
+
+  chineseConverterOptions(): SelectOption[] {
+    return [{ value: '不转换' }, { value: '繁体转简体' }, { value: '简体转繁体' }];
+  }
+
+  chineseConverterSelectedIndex(): number {
+    return this.chineseConverterType >= 1 && this.chineseConverterType <= 2 ? this.chineseConverterType : 0;
+  }
+
+  setChineseConverterByIndex(index: number): void {
+    const type = index === 1 ? ChineseConverter.TYPE_T2S :
+      (index === 2 ? ChineseConverter.TYPE_S2T : ChineseConverter.TYPE_OFF);
+    if (this.chineseConverterType === type) return;
+    this.chineseConverterType = type;
+    ReaderSettingsStore.saveChineseConverterType(getContext(this), type).catch((e: Error) => {
+      console.warn('保存简繁转换设置失败:', e);
+    });
   }
 
   setReaderLineHeight(lineHeight: number): void {

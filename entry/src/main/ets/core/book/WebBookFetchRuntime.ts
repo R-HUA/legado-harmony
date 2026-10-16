@@ -31,6 +31,18 @@ class WebBookFetchTask {
   pageEnded: boolean = false;
 }
 
+/** One mounted hidden host plus the User-Agent state the runtime installed on its controller. */
+class WebBookFetchHost {
+  controller: webview.WebviewController;
+  appliedUserAgent: string = '';
+  defaultUserAgentValue: string = '';
+
+  constructor(controller: webview.WebviewController, defaultUserAgentValue: string) {
+    this.controller = controller;
+    this.defaultUserAgentValue = defaultUserAgentValue;
+  }
+}
+
 /**
  * Browser-backed transport for rules that explicitly declare `webView: true`.
  * It only opens source-owned URLs, executes normal page JavaScript and returns the
@@ -42,6 +54,17 @@ export class WebBookFetchRuntime {
   private ready: boolean = false;
   private active: WebBookFetchTask | null = null;
   private queue: WebBookFetchTask[] = [];
+  /** UA currently installed on the shared controller, so it is only changed when it must be. */
+  private appliedUserAgent: string = '';
+  private defaultUserAgentValue: string = '';
+  /**
+   * Every mounted hidden host, most recently used last. A routed page keeps its own Web component
+   * alive underneath the page that is currently on top, so the runtime must remember all of them:
+   * when the top page's host disappears, the still-mounted host of the page below has to take over
+   * instead of leaving the transport unattached — that left the next search with a detached
+   * controller and the "WebView 抓取环境未挂载" failure even though a host was still on screen.
+   */
+  private hosts: WebBookFetchHost[] = [];
 
   static get(): WebBookFetchRuntime {
     if (!WebBookFetchRuntime.instance) WebBookFetchRuntime.instance = new WebBookFetchRuntime();
@@ -49,34 +72,47 @@ export class WebBookFetchRuntime {
   }
 
   attach(controller: webview.WebviewController): void {
+    const known = this.findHost(controller);
+    const host = known ? known : new WebBookFetchHost(controller, this.readControllerUserAgent(controller));
+    if (known) {
+      this.hosts = this.hosts.filter((item: WebBookFetchHost): boolean => item !== host);
+    }
+    // onControllerAttached means loadUrl/postUrl are already usable. Waiting for the initial
+    // about:blank onPageEnd introduces a cold-start race and is unnecessary for this transport.
+    // A controller's own User-Agent is read strictly before any custom UA is installed on it.
+    this.hosts.push(host);
     if (this.controller === controller) {
+      this.adoptHost(host);
+      this.ready = true;
       this.recoverIdleController();
+      this.runNext();
       return;
     }
     // A routed page can attach its host before the previous page has disappeared. Preserve the
     // in-flight request and restart it on the new controller; failing it here creates a race where
     // a detail request submitted by aboutToAppear is cancelled by that very detail page's host.
-    const migratingTask = this.active;
-    if (migratingTask) {
-      if (migratingTask.timeoutId >= 0) clearTimeout(migratingTask.timeoutId);
-      if (migratingTask.inspectId >= 0) clearTimeout(migratingTask.inspectId);
-      migratingTask.timeoutId = -1;
-      migratingTask.inspectId = -1;
-      migratingTask.pageEnded = false;
-      migratingTask.stableCount = 0;
-      migratingTask.lastSignature = '';
-      this.active = null;
-      this.queue.unshift(migratingTask);
-    }
+    this.suspendActiveForMigration();
     this.controller = controller;
-    // onControllerAttached means loadUrl/postUrl are already usable. Waiting for the initial
-    // about:blank onPageEnd introduces a cold-start race and is unnecessary for this transport.
+    this.adoptHost(host);
     this.ready = true;
     this.runNext();
   }
 
   detach(controller: webview.WebviewController): void {
+    this.hosts = this.hosts.filter((host: WebBookFetchHost): boolean => host.controller !== controller);
     if (this.controller !== controller) return;
+    const fallback = this.hosts.length > 0 ? this.hosts[this.hosts.length - 1] : null;
+    if (fallback) {
+      // The page that owned this controller is gone, but another hidden host is still mounted:
+      // continue on it rather than reporting the transport as closed.
+      console.info(`[WebBookFetch] 宿主页面已退出，改用仍挂载的隐藏宿主（剩余 ${this.hosts.length} 个）`);
+      this.suspendActiveForMigration();
+      this.controller = fallback.controller;
+      this.adoptHost(fallback);
+      this.ready = true;
+      this.runNext();
+      return;
+    }
     if (this.active) this.finishActive(this.failure(this.active.request.url, '网页抓取环境已关闭'));
     while (this.queue.length > 0) {
       const task = this.queue.shift();
@@ -84,6 +120,33 @@ export class WebBookFetchRuntime {
     }
     this.controller = null;
     this.ready = false;
+  }
+
+  private findHost(controller: webview.WebviewController): WebBookFetchHost | null {
+    for (const host of this.hosts) {
+      if (host.controller === controller) return host;
+    }
+    return null;
+  }
+
+  private adoptHost(host: WebBookFetchHost): void {
+    this.appliedUserAgent = host.appliedUserAgent;
+    this.defaultUserAgentValue = host.defaultUserAgentValue;
+  }
+
+  /** Moves the in-flight task back into the queue so the next host restarts it from scratch. */
+  private suspendActiveForMigration(): void {
+    const task = this.active;
+    if (!task) return;
+    if (task.timeoutId >= 0) clearTimeout(task.timeoutId);
+    if (task.inspectId >= 0) clearTimeout(task.inspectId);
+    task.timeoutId = -1;
+    task.inspectId = -1;
+    task.pageEnded = false;
+    task.stableCount = 0;
+    task.lastSignature = '';
+    this.active = null;
+    this.queue.unshift(task);
   }
 
   setReady(ready: boolean, controller: webview.WebviewController): void {
@@ -120,6 +183,10 @@ export class WebBookFetchRuntime {
     while (Date.now() - startedAt < Math.max(100, timeoutMs)) {
       await new Promise<void>((resolve) => setTimeout(resolve, 50));
       if (this.isAttached()) return true;
+    }
+    if (!this.isAttached()) {
+      console.warn(`[WebBookFetch] 等待隐藏宿主超时：已注册 ${this.hosts.length} 个，` +
+        `当前页面是否挂载了 WebBookFetchRuntimeHost`);
     }
     return this.isAttached();
   }
@@ -183,8 +250,10 @@ export class WebBookFetchRuntime {
       }
     }, timeoutMs);
     try {
-      const userAgent = this.headerValue(task.request.headers, 'user-agent');
-      if (userAgent) this.controller.setCustomUserAgent(userAgent);
+      // A custom UA set for one source would otherwise leak into every later `webView` request on
+      // this shared controller, including sources that never declared a User-Agent header and would
+      // be served a different (for example mobile or desktop) theme because of the leftover value.
+      this.applyUserAgent(this.headerValue(task.request.headers, 'user-agent'));
       const cookie = this.headerValue(task.request.headers, 'cookie');
       if (cookie) CookieStore.setCookies(task.request.url, cookie);
       if (String(task.request.method || 'GET').toUpperCase() === 'POST') {
@@ -195,6 +264,38 @@ export class WebBookFetchRuntime {
       }
     } catch (error) {
       this.finishActive(this.failure(task.request.url, this.errorMessage(error as Object)));
+    }
+  }
+
+  /**
+   * Applies the request's User-Agent, or restores the value the controller had before this runtime
+   * touched it when the request declares none. Without this a desktop UA installed for one source
+   * would leak into every later `webView` request on the shared controller, and sources that never
+   * declared a UA would suddenly be served a different theme.
+   */
+  private applyUserAgent(userAgent: string): void {
+    const controller = this.controller;
+    if (!controller) return;
+    const wanted = userAgent || this.defaultUserAgentValue;
+    if (!wanted || wanted === this.appliedUserAgent) return;
+    try {
+      controller.setCustomUserAgent(wanted);
+      this.appliedUserAgent = wanted;
+      const host = this.findHost(controller);
+      if (host) host.appliedUserAgent = wanted;
+    } catch (error) {
+      console.warn('[WebBookFetch] setCustomUserAgent failed:', this.errorMessage(error as Object));
+    }
+  }
+
+  private readControllerUserAgent(controller: webview.WebviewController): string {
+    try {
+      // Read on attach, strictly before any custom UA is installed on this controller, so the
+      // captured value is the ArkWeb platform default rather than some other source's UA.
+      return controller.getUserAgent() || '';
+    } catch (error) {
+      console.warn('[WebBookFetch] getUserAgent unavailable:', this.errorMessage(error as Object));
+      return '';
     }
   }
 

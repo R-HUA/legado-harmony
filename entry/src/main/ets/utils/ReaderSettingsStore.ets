@@ -11,6 +11,8 @@ export class ReaderSettings {
   paragraphSpacing: number = 0;
   // 保留段首缩进：开启后分页/分块边界不再裁掉原文的全角空格缩进（默认关闭，维持裁剪现状）。
   keepParagraphIndent: boolean = false;
+  // 简繁转换：0 不转换 / 1 繁体转简体 / 2 简体转繁体（对齐 legado-with-MD3 的 chineseConverterType）。
+  chineseConverterType: number = 0;
   marginLeft: number = 18;
   marginRight: number = 18;
   marginTop: number = 18;
@@ -93,6 +95,7 @@ export class ReaderSettingsStore {
   static readonly KEY_LINE_HEIGHT_MODE: string = 'readerLineHeightMode';
   static readonly KEY_PARAGRAPH_SPACING: string = 'readerParagraphSpacing';
   static readonly KEY_KEEP_PARAGRAPH_INDENT: string = 'readerKeepParagraphIndent';
+  static readonly KEY_CHINESE_CONVERTER_TYPE: string = 'readerChineseConverterType';
   static readonly KEY_MARGIN_LEFT: string = 'readerMarginLeft';
   static readonly KEY_MARGIN_RIGHT: string = 'readerMarginRight';
   static readonly KEY_MARGIN_TOP: string = 'readerMarginTop';
@@ -200,6 +203,12 @@ export class ReaderSettingsStore {
       store,
       ReaderSettingsStore.KEY_KEEP_PARAGRAPH_INDENT,
       false
+    );
+    const storedConverterType = await store.get(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE, 0);
+    settings.chineseConverterType = ReaderSettingsStore.normalizeChineseConverterType(
+      typeof storedConverterType === 'number' ? storedConverterType :
+        (typeof storedConverterType === 'string' ? Number(storedConverterType) :
+          (AppStorage.get<number>(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE) ?? 0))
     );
     settings.marginLeft = await ReaderSettingsStore.getNumber(
       store, ReaderSettingsStore.KEY_MARGIN_LEFT, 18, 'horizontalMargin');
@@ -649,6 +658,17 @@ export class ReaderSettingsStore {
     await store.flush();
   }
 
+  static async saveChineseConverterType(context: Context, converterType: number): Promise<void> {
+    const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
+    settings.chineseConverterType = ReaderSettingsStore.normalizeChineseConverterType(converterType);
+    ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE, settings.chineseConverterType);
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    await store.put(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE, settings.chineseConverterType);
+    await ReaderSettingsStore.persistActiveThemeProfile(store, settings);
+    await store.flush();
+  }
+
   static async savePreloadChapterCount(context: Context, count: number): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
     settings.preloadChapterCount = ReaderSettingsStore.normalizePreloadChapterCount(count);
@@ -913,6 +933,7 @@ export class ReaderSettingsStore {
     await ReaderSettingsStore.saveTapZoneActions(context, settings.tapZoneActions);
     await ReaderSettingsStore.savePreloadEnabled(context, settings.preloadEnabled);
     await ReaderSettingsStore.saveKeepParagraphIndent(context, settings.keepParagraphIndent);
+    await ReaderSettingsStore.saveChineseConverterType(context, settings.chineseConverterType);
     await ReaderSettingsStore.savePreloadChapterCount(context, settings.preloadChapterCount);
     await ReaderSettingsStore.saveQuickBookmarkEnabled(context, settings.quickBookmarkEnabled);
     await ReaderSettingsStore.saveFontSettings(
@@ -961,6 +982,7 @@ export class ReaderSettingsStore {
     ReaderSettingsStore.applyEyeTurnToStorage(normalized);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_PRELOAD_ENABLED, normalized.preloadEnabled);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_KEEP_PARAGRAPH_INDENT, normalized.keepParagraphIndent);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE, normalized.chineseConverterType);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_PRELOAD_CHAPTER_COUNT, normalized.preloadChapterCount);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_TTS_QUICK_ACTION, normalized.useTtsQuickAction);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_CHAPTER_QUICK_JUMP, normalized.useChapterQuickJump);
@@ -1291,6 +1313,12 @@ export class ReaderSettingsStore {
     return Math.max(1, Math.min(value, 10));
   }
 
+  private static normalizeChineseConverterType(converterType: number): number {
+    const value = Math.round(Number(converterType));
+    if (value === 1 || value === 2) return value;
+    return 0;
+  }
+
   static normalizeScreenTimeoutMinutes(minutes: number): number {
     const value = Math.round(minutes);
     if (value === ReaderSettingsStore.SCREEN_TIMEOUT_ALWAYS_ON ||
@@ -1413,6 +1441,8 @@ export class ReaderSettingsStore {
     settings.extendToStatusBar = source.extendToStatusBar;
     settings.preloadEnabled = source.preloadEnabled;
     settings.keepParagraphIndent = source.keepParagraphIndent;
+    settings.chineseConverterType = ReaderSettingsStore.normalizeChineseConverterType(
+      typeof source.chineseConverterType === 'number' ? source.chineseConverterType : 0);
     settings.preloadChapterCount = ReaderSettingsStore.normalizePreloadChapterCount(source.preloadChapterCount);
     settings.useTtsQuickAction = typeof source.useTtsQuickAction === 'boolean' ? source.useTtsQuickAction :
       (AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_TTS_QUICK_ACTION) ?? true);
@@ -1546,6 +1576,8 @@ export class ReaderSettingsStore {
     settings.extendToStatusBar = AppStorage.get<boolean>(ReaderSettingsStore.KEY_EXTEND_TO_STATUS_BAR) ?? false;
     settings.preloadEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_PRELOAD_ENABLED) ?? true;
     settings.keepParagraphIndent = AppStorage.get<boolean>(ReaderSettingsStore.KEY_KEEP_PARAGRAPH_INDENT) ?? false;
+    settings.chineseConverterType = ReaderSettingsStore.normalizeChineseConverterType(
+      AppStorage.get<number>(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE) ?? 0);
     settings.preloadChapterCount = ReaderSettingsStore.normalizePreloadChapterCount(
       AppStorage.get<number>(ReaderSettingsStore.KEY_PRELOAD_CHAPTER_COUNT) ?? 1
     );
