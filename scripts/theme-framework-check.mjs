@@ -364,10 +364,11 @@ assert(!themeColorPage.includes("'pages/AppIconSettings'") &&
   !themeColorPage.includes("'pages/FontSettings'") &&
   !themeStore.includes('updateCustomFont') && !themeStore.includes('updateCustomDesktopIcon'),
   'Theme and appearance must remain independent from fonts and desktop icons');
-// 主题页重做后“默认与自定义”区块由 myThemesSectionTitle() 起头，排在“已购主题”“更多主题”之前。
+// 本地主题页先展示默认与自定义，再展示可直接使用的内置主题。
 assert(themePage.includes('this.myThemesSectionTitle()') &&
-  themePage.indexOf('this.myThemesSectionTitle()') < themePage.indexOf("this.sectionTitle('已购主题')") &&
-  themePage.indexOf('this.myThemesSectionTitle()') < themePage.indexOf("this.sectionTitle('更多主题')") &&
+  themePage.includes('this.myThemesRow()') &&
+  themePage.indexOf('this.myThemesSectionTitle()') < themePage.indexOf("this.sectionTitle('内置主题')") &&
+  themePage.includes('this.themeRows(this.availableThemes())') &&
   themePage.includes("url: 'pages/ThemeColorSettings'"),
   'Theme page does not expose the custom theme before builtin themes');
 assert(themeColorPage.includes('settings.themeId = ThemeIds.CUSTOM') &&

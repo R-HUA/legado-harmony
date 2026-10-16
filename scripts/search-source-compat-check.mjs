@@ -7,7 +7,8 @@ import { readEtsModule } from './lib/ets-module-staging.mjs';
 // Run production URL, parser, batch-field and search coordinator code. Only platform
 // I/O and optional native engine availability are substituted. Optional arguments:
 // book-source JSON, captured HTML response, keyword. No network is performed here.
-const bindings = { console, AppStorage: { get() { return ''; }, setOrCreate() {} } };
+const bindings = { console, setTimeout, clearTimeout,
+  AppStorage: { get() { return ''; }, setOrCreate() {} } };
 function load(file, names, aliases = {}) {
   let s = readEtsModule(file)
     .replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
@@ -163,7 +164,12 @@ load('core/rule/AnalyzeUrl.ts', ['AnalyzeUrl']);
 load('core/book/SearchCoordinator.ts', ['SearchCoordinator']);
 const coordinator = new bindings.SearchCoordinator();
 const debug = new bindings.BookSourceDebugContext(source.bookSourceUrl, source.bookSourceName, 'search');
-const result = await coordinator.searchOne(source, keyword, { debugContext: debug });
+let result;
+await coordinator.search(keyword, () => {}, {
+  targetSources: [source], debugContext: debug,
+  async onSourceComplete(_source, completed) { result = completed; }
+});
+assert.ok(result, 'the public search API must report the completed source');
 console.log('Search result:', result.books.length, result.reason);
 assert.ok(result.books.length > 0, result.reason);
 const expectedRows = new bindings.AnalyzeRule(html, source.bookSourceUrl).getElements(source.searchRule.bookList).length;
