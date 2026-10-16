@@ -68,6 +68,7 @@ import { TapZoneSettingsDialogContent } from '../components/TapZoneSettingsDialo
 import { SearchBookShelfHelper } from '../utils/SearchBookShelfHelper';
 import { BookDisplayHelper } from '../utils/BookDisplayHelper';
 import { BookCoverCache } from '../utils/BookCoverCache';
+import { CoverImageService } from '../core/book/CoverImageService';
 import { CoverGallerySettings } from '../utils/CoverGallerySettings';
 import { AppThemeModeStore } from '../utils/AppThemeModeStore';
 import {
@@ -306,6 +307,8 @@ struct ReadBookPage {
   @StorageLink('globalTtsCanPrevious') globalTtsCanPrevious: boolean = false;
   @StorageLink('globalTtsCanNext') globalTtsCanNext: boolean = false;
   @StorageLink('globalTtsBookUrl') globalTtsBookUrl: string = '';
+  // 在线封面下载完成后计数变化，读过它的封面区块（目录/朗读面板）才会重建并切到本地文件。
+  @StorageLink('coverImageVersion') coverImageVersion: number = 0;
   @StorageLink('globalTtsChapterIndex') globalTtsChapterIndex: number = -1;
   @StorageLink('globalTtsOffsetStart') globalTtsOffsetStart: number = -1;
   @StorageLink('globalTtsOffsetEnd') globalTtsOffsetEnd: number = -1;
@@ -3589,7 +3592,7 @@ struct ReadBookPage {
       Column() {
         Row({ space: 14 }) {
           if (this.getTocCover()) {
-            Image(this.getTocCover())
+            Image(this.readerCoverUri(this.getTocCover()))
               .width(52)
               .height(68)
               .borderRadius(8)
@@ -5305,7 +5308,7 @@ struct ReadBookPage {
       panelColor: this.readerGlassPanelColor(),
       bookName: this.book?.name || '',
       bookInitial: this.getTocBookInitial(),
-      cover: this.getTocCover(),
+      cover: this.readerCoverUri(this.getTocCover()),
       bookSubtitle: this.book?.author || '',
       count: ReaderTtsFloatingSession.catalogCount(),
       currentDisplayIndex: this.globalTtsCatalogDisplayIndex(ReaderTtsFloatingSession.catalogIndex()),
@@ -5512,6 +5515,16 @@ struct ReadBookPage {
 
   getTocCover(): string {
     return this.book ? this.book.getDisplayCover() : '';
+  }
+
+  /**
+   * 封面渲染值：本地缓存优先；未缓存时返回原始地址并排队下载，解析完成后由 coverImageVersion
+   * 触发重建（见 CoverImageService）。主题封面是本地资源，原样返回。
+   */
+  readerCoverUri(cover: ResourceStr): ResourceStr {
+    if (typeof cover !== 'string') return cover;
+    return CoverImageService.displayUri(cover, this.book?.origin || '', this.bookUrl,
+      this.coverImageVersion);
   }
 
   getTocBookInitial(): string {
@@ -14294,12 +14307,14 @@ struct ReadBookPage {
     let pixelMap: image.PixelMap | null = null;
     try {
       const context = getContext(this);
-      const coverPath = await BookCoverCache.prepareCoverFile(context, raw);
+      const coverOrigin = this.book?.origin || '';
+      const coverPath = await BookCoverCache.prepareCoverFile(context, raw, coverOrigin, this.bookUrl);
       if (coverPath) {
         pixelMap = await this.createTtsMediaPixelMap(coverPath);
-        resolved = pixelMap ? coverPath : await BookCoverCache.resolveCover(context, raw);
+        resolved = pixelMap ? coverPath :
+          await BookCoverCache.resolveCover(context, raw, coverOrigin, this.bookUrl);
       } else {
-        resolved = await BookCoverCache.resolveCover(context, raw);
+        resolved = await BookCoverCache.resolveCover(context, raw, coverOrigin, this.bookUrl);
       }
     } catch (error) {
       console.warn('解析朗读媒体封面失败:', error);
@@ -14428,7 +14443,7 @@ struct ReadBookPage {
       return themeCovers.length > 0 ? themeCovers[0] : '';
     }
     const covers = this.getTtsPanelCoverList();
-    return covers.length > 0 ? covers[0] : '';
+    return covers.length > 0 ? this.readerCoverUri(covers[0]) : '';
   }
 
   getTtsCoverPlaceholderColor(): string {

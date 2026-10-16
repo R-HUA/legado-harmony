@@ -24,6 +24,7 @@ import { HdsFeedback } from '../utils/HdsFeedback';
 import { RecentReadShortcut } from '../utils/RecentReadShortcut';
 import { BookDisplayHelper } from '../utils/BookDisplayHelper';
 import { BookCoverCache } from '../utils/BookCoverCache';
+import { CoverImageService } from '../core/book/CoverImageService';
 import { CoverGallerySettings } from '../utils/CoverGallerySettings';
 import { BookshelfDisplaySettingsStore } from '../utils/BookshelfDisplaySettingsStore';
 import { BookshelfStateStore } from '../utils/BookshelfStateStore';
@@ -1011,6 +1012,8 @@ struct BookshelfPage {
   @StorageLink('appThemeBookCoverEnabled') themeBookCoverEnabled: boolean = false;
   @StorageLink('appThemeId') appThemeId: string = AppThemeSettingsStore.DEFAULT_THEME_ID;
   @StorageLink('appCustomBaseThemeId') appCustomBaseThemeId: string = AppThemeSettingsStore.DEFAULT_THEME_ID;
+  // 在线封面下载完成后计数变化，读过它的封面区块（在线封面候选）才会重建并切到本地文件。
+  @StorageLink('coverImageVersion') coverImageVersion: number = 0;
   @State books: Book[] = [];
   @State allBooks: Book[] = [];
   private shelfListBooksSource: ShelfBookDataSource = new ShelfBookDataSource();
@@ -1824,8 +1827,9 @@ struct BookshelfPage {
       const key = this.shelfCoverKey(book, i);
       if (this.shelfCoverMap.get(key) && this.shelfCoverRawUrls.get(key) === raw) continue;
       try {
+        // 封面下载必须带书源请求头与书籍页 Referer：受保护的图片站会用 Cloudflare 挑战页挡住裸链。
         const local = await BookCoverCache.resolveCachedCoverAsync(context, raw) ||
-          await BookCoverCache.resolveCover(context, raw);
+          await BookCoverCache.resolveCover(context, raw, book.origin, book.bookUrl);
         if (revision !== this.shelfCoverCacheRevision) return new Map();
         if (local && local !== raw) {
           this.shelfCoverRawUrls.set(key, raw);
@@ -2346,7 +2350,8 @@ struct BookshelfPage {
                         .justifyContent(FlexAlign.Center)
                         .backgroundColor(this.accentColor())
 
-                        Image(candidate.coverUrl)
+                        Image(CoverImageService.displayUri(candidate.coverUrl, candidate.origin,
+                          candidate.bookUrl, this.coverImageVersion))
                           .width('100%')
                           .height('100%')
                           .objectFit(ImageFit.Cover)
@@ -5881,7 +5886,8 @@ struct BookshelfPage {
       return;
     }
     try {
-      const coverPath = await BookCoverCache.prepareCoverFile(getContext(this), raw);
+      const coverPath = await BookCoverCache.prepareCoverFile(getContext(this), raw, book.origin,
+        book.bookUrl);
       if (!coverPath) {
         return;
       }

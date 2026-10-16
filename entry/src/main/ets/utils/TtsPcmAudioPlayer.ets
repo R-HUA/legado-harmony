@@ -131,6 +131,9 @@ export class TtsPcmAudioPlayer {
       completionPromise
     ]).then(() => {
     });
+    // 写入调用方可能先处理失败再停止，聚合拒绝也需及时观察；保留原 Promise 供 drain 传播错误。
+    this.writeChain.catch((_error: Error) => {
+    });
     return completionPromise;
   }
 

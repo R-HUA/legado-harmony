@@ -183,14 +183,14 @@ export class RecentReadCardDataProvider {
       return '';
     }
     try {
-      const coverPath = await BookCoverCache.prepareCoverFile(context, raw);
+      const coverPath = await BookCoverCache.prepareCoverFile(context, raw, book.origin, book.bookUrl);
       if (coverPath) {
         const imageKey = RecentReadCardDataProvider.coverImageKey(index, data.version);
         const file = fs.openSync(coverPath, fs.OpenMode.READ_ONLY);
         data.formImages[imageKey] = file.fd;
         return `memory://${imageKey}`;
       }
-      return await BookCoverCache.resolveCover(context, raw);
+      return await BookCoverCache.resolveCover(context, raw, book.origin, book.bookUrl);
     } catch (e) {
       console.warn('解析最近阅读卡片封面失败:', e);
       return raw;

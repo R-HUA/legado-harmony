@@ -18,12 +18,34 @@ ESJ 正文原规则：
 
 当前手机 ESJ 目录规则还使用 `org.jsoup.Jsoup.parse(result).select(...)`、`remove()` 和 `eachText()`，之后将 HTML 交给尾部的 `a` 规则提取。原路径既未路由到完整 JS，也未提供 Jsoup 桥接，HTML 章节项还会被只接受 JSON 对象的目录转换器丢弃。本次补充 detached DOM 的有限 Jsoup 桥接、HTML 章节上下文和阶段脚本执行路径。桥接只实现有验证的集合操作，不代表移植了整个 Java Jsoup 库。
 
+## 补充：`@css:` 前缀与 `.N` 索引的作用域（2026-10-07）
+
+本仓库生成的哔哩轻小说书源导入 Android 阅读后，打开书籍报
+`详情页出错: Could not parse query '@css:.read-btn': unexpected token at '@css:.read-btn'`。
+原因是书源用了本项目接受、上游拒绝的两种写法，而离线校验用的是本项目解析器，所以没有拦住。
+
+上游 `AnalyzeByJSoup.SourceRule` 只对**整条规则最前面**的 `@CSS:` 剥一次前缀，之后才按 `&&`/`||`/`%%`
+切分；每一段都用 `lastIndexOf('@')` 切成“选择器 + 取值”。由此：
+
+- `@css:.a@href||@css:.b@href` 的第二段前缀不会被剥掉，`@css:.b` 整串被交给 `jsoup.select()`，
+  抛 `Could not parse query`；标量规则里没有 `@` 的分支则抛 `StringIndexOutOfBoundsException`；
+  `bookList` / `chapterList` 在 CSS 模式下整段都是选择器，不能带 `@`。
+- `.N` / `!N` / `[N]` 索引只在 `ElementsSingle.findIndexSet`（Default 模式）里解析。写在 `@css:`
+  选择器里会被 jsoup 当成 `class="0"` 字面量：**不报错，静默取空**。本项目解析器支持 CSS 模式下的
+  `.0`，因此这类错误在本地表现为“能跑通”，到上游才变成缺字段。
+
+已修：7 个依赖索引/重复前缀的字段改用阅读 Default 语法或单前缀写法；新增
+`scripts/lib/legado-rule-grammar.mjs` + `scripts/legado-rule-grammar-check.mjs` 按上游语义做静态检查，
+并把它接进 `scripts/linovelib-source-check.mjs`（含对旧写法的自检，防止检查器本身失效）。
+未修的是本项目解析器仍然比上游宽松：它依旧接受重复 `@css:` 与 CSS 模式下的 `.N`，只是现在有工具
+能在导出前发现。是否让解析器同样拒绝（上游在详情页会直接中止整阶段）属于单独的行为变更。
+
 ## 按能力对照
 
 | 能力 | 当前结论 | 实现/验证依据及限制 |
 | --- | --- | --- |
 | 常用默认选择器 | 部分支持 | `class/id/tag`、普通正负索引、部分排除、children、text、ownText 等已有实现。`tag.p[0,2]`、`tag.p[!0,-1]`、`tag.p[0:3:2]` 实测为空；不能等同完整索引语言。 |
-| CSS | 部分支持 | ID、class、属性、后代/子节点、简单 has/not/eq 等可用。本次补 all、ownText/textNodes 分发与 html 去除 script/style。`p + p`、`nth-child(odd)` 无结果；分组按规则分组顺序拼接而非文档顺序。textNodes 仍会包含后代文本。底层是字符串扫描，不是完整 Jsoup DOM。 |
+| CSS | 部分支持 | ID、class、属性、后代/子节点、简单 has/not/eq 等可用。本次补 all、ownText/textNodes 分发与 html 去除 script/style。`p + p`、`nth-child(odd)` 无结果；分组按规则分组顺序拼接而非文档顺序。textNodes 仍会包含后代文本。底层是字符串扫描，不是完整 Jsoup DOM。前缀与索引的作用域比上游宽松（见上节补充）。 |
 | XPath | 部分支持且有错误结果风险 | 本次修复 `//a/@href` 被误当 URL 字面量，并识别标量 `@XPath:` 前缀。底层把简单 XPath 翻译成 CSS；`text()="C"`、`position()>1` 谓词可能被丢弃而返回所有节点，`/` 和 `//` 层级混淆，兄弟轴不完整。不能宣称 XPath 1.0 或 JsoupXpath 兼容。 |
 | JSONPath | 常用子集支持 | wildcard、recursive property、数字比较过滤在独立样例通过。Jayway 聚合函数如 `length()` 不支持；不能仅凭 JSONPath 文件名声称完整 Jayway 兼容。 |
 | 正则、组合、变量、模板 | 常用功能已有覆盖，非完整证明 | 已有 `##`、AllInOne 捕获上下文、`&&/\|\|/%%`、put/get、JSON/CSS 模板及 Java 正则兼容测试。本次修复模板内 CSS 执行和残留规则文本泄漏。任意提取/JS/正则交错、类型和转义组合仍需上游差分测试。 |

@@ -165,6 +165,13 @@ assert.ok(debug.session.steps[0].rules.some(rule => rule.field === 'name' && rul
 load('core/rule/AjaxRuleCompat.ts', ['AjaxRuleCompat']);
 load('core/book/ReaderImageMarker.ts', ['ReaderImageMarker']);
 load('core/book/ReaderActionMarker.ts', ['ReaderActionMarker']);
+// 图片物化属于漫画缓存路径，本脚本只验证正文文本：替身保持原地址，且不声明任何请求上下文。
+Object.assign(bindings, {
+  ComicImagePipeline: {
+    contextFromSource() { return { referer: '', headers: {}, isEmpty: () => true }; },
+    async materialize(_http, _source, raw) { return raw; }
+  }
+});
 load('core/book/WebBookService.ts', ['WebBookService']);
 const contentSource = Object.assign(new bindings.BookSource(), { contentRule: { content: chapterRule } });
 const contentDebug = new bindings.BookSourceDebugContext();

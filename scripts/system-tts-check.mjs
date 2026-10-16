@@ -14,12 +14,16 @@ const calls = { queries: [], engines: [], downloads: [], speaks: [], toasts: [],
 let voices = [];
 let queryError;
 let downloadImpl;
-const engine = {
-  setListener(listener) { this.listener = listener; },
-  async listVoices(params) { calls.legacyQueries++; calls.queries.push(params); if (queryError) throw queryError; return voices; },
-  speak(text, params) { calls.speaks.push({ text, params }); },
-  stop() { calls.stops++; }, shutdown() {}, isBusy() { return false; }
-};
+let engine;
+function createMockEngine(name) {
+  return {
+    name, isShutdown: false,
+    setListener(listener) { this.listener = listener; },
+    async listVoices(params) { calls.legacyQueries++; calls.queries.push(params); if (queryError) throw queryError; return voices; },
+    speak(text, params) { calls.speaks.push({ text, params }); },
+    stop() { calls.stops++; }, shutdown() { this.isShutdown = true; }, isBusy() { return false; }
+  };
+}
 class PcmPlayer {
   segments = [];
   stopped = false;
@@ -42,14 +46,14 @@ const bindings = {
   console: { info() {}, warn() {}, error() {} },
   Date: class extends Date { static now() { return now; } },
   ArrayBuffer, Uint8Array, Int16Array, Float32Array,
-  setTimeout(fn) { const id = ++timerSerial; timers.set(id, fn); return id; },
+  setTimeout(fn, delay = 0) { const id = ++timerSerial; timers.set(id, { fn, dueAt: now + delay }); return id; },
   clearTimeout(id) { timers.delete(id); },
   AppStorage: { get(key) { return storage.get(key); }, setOrCreate(key, value) { storage.set(key, value); } },
   preferences,
   deviceInfo: { sdkApiVersion: 26 },
   textToSpeech: {
     async listVoices(params) { calls.moduleQueries++; calls.queries.push(params); if (queryError) throw queryError; return voices; },
-    async createEngine(params) { calls.engines.push(params); return engine; },
+    async createEngine(params) { calls.engines.push(params); engine = createMockEngine(params.extraParams.name); return engine; },
     downloadVoice(params, callback) { calls.downloads.push(params); downloadImpl(params, callback); }
   },
   TtsPcmAudioPlayer: PcmPlayer, HttpTtsReader: HttpReader, CloudTtsClient: class { stop() {} }, HttpTTS: class {},
@@ -103,6 +107,23 @@ async function check(name, action) {
 const rawVoice = (person, status, language = 'zh-CN') =>
   ({ person, status, language, style: 'interaction-broadcast', gender: person === 21 ? 'Male' : 'Female', description: '' });
 const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+async function advance(ms) {
+  const target = now + ms;
+  for (;;) {
+    const due = [...timers].filter(([, timer]) => timer.dueAt <= target)
+      .sort((a, b) => a[1].dueAt - b[1].dueAt || a[0] - b[0])[0];
+    if (!due) break;
+    const [id, timer] = due;
+    now = Math.max(now, timer.dueAt);
+    timers.delete(id);
+    timer.fn();
+    await tick();
+  }
+  now = target;
+  await tick();
+}
+const settlePcm = () => advance(Reader.SYSTEM_PCM_SETTLE_DELAY_MS);
+const emptyPcmGrace = () => advance(Reader.SYSTEM_PCM_EMPTY_GRACE_MS);
 
 await check('旧设置、偏好与显式参数统一离线，旧女声别名可读', async () => {
   storage.set('ttsOnline', 0); storage.set('ttsPerson', 0);
@@ -199,6 +220,186 @@ await check('PCM 序号零按实际序号合并，格式及帧校验', async () 
   assert.throws(() => reader.normalizeSystemPcm(new ArrayBuffer(4), 16, 1, 'mp3'));
 });
 
+await check('朗读、试听和临时查询引擎同一时刻使用不同名称，关闭试听不影响朗读', async () => {
+  const before = calls.engines.length;
+  const reading = new Reader(); const preview = new Reader();
+  await reading.start('阅读中的正文。');
+  const readingEngine = reading.engine; const readingListener = readingEngine.listener;
+  const readingRequest = reading.currentRequestId;
+  await preview.start('试听中的正文。');
+  const previewEngine = preview.engine;
+  bindings.deviceInfo.sdkApiVersion = 12;
+  try { await Reader.listAvailableVoices(); } finally { bindings.deviceInfo.sdkApiVersion = 26; }
+  const names = calls.engines.slice(before).map(params => params.extraParams.name);
+  assert.equal(names.length, 3); assert.equal(new Set(names).size, 3);
+  assert.ok(names.every(name => name.startsWith('LegadoReaderTts')));
+  assert.notEqual(readingEngine, previewEngine);
+  assert.equal(readingEngine.isShutdown, false); assert.equal(previewEngine.isShutdown, false);
+  preview.shutdown();
+  assert.equal(previewEngine.isShutdown, true); assert.equal(readingEngine.isShutdown, false);
+  assert.equal(readingEngine.listener, readingListener);
+  assert.equal(reading.currentRequestId, readingRequest); assert.equal(reading.isSpeaking(), true);
+  reading.shutdown();
+});
+
+await check('type0 先于所有 PCM 回调时保留请求，首包宽限内收到音频后正常播放', async () => {
+  const reader = new Reader(); let finished = 0; const errors = [];
+  await reader.start('合成完成后才收到音频。', { onFinished() { finished++; }, onError(message) { errors.push(message); } });
+  const request = reader.currentRequestId; const listener = reader.engine.listener;
+  const speakCount = calls.speaks.length;
+  listener.onStart(request, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
+  listener.onComplete(request, { type: 0 });
+  await advance(Reader.SYSTEM_PCM_EMPTY_GRACE_MS - 1);
+  assert.equal(reader.currentRequestId, request); assert.equal(calls.speaks.length, speakCount);
+  assert.equal(reader.pcmPlayer.segments.length, 0); assert.equal(finished, 0);
+  listener.onData(request, new Int16Array(1600).fill(3000).buffer, { sequence: 0, audioType: 'pcm' });
+  await advance(Reader.SYSTEM_PCM_SETTLE_DELAY_MS - 1);
+  assert.equal(reader.pcmPlayer.segments.length, 0); assert.equal(finished, 0);
+  await advance(1);
+  assert.equal(reader.pcmPlayer.segments.length, 1); assert.equal(finished, 1);
+  assert.equal(calls.speaks.length, speakCount); assert.equal(errors.length, 0);
+  assert.equal(reader.systemPcmSettleTimerId, -1); assert.equal(reader.systemPcmDeadlineTimerId, -1);
+  reader.stop();
+});
+
+await check('type0 先于末包时每个新包延长静默窗口，旧收尾不能截断 PCM', async () => {
+  const reader = new Reader(); let finished = 0;
+  await reader.start('最后一个包延迟到达的正文。', { onFinished() { finished++; } });
+  const request = reader.currentRequestId; const listener = reader.engine.listener;
+  listener.onStart(request, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
+  listener.onData(request, new Int16Array(1600).fill(1000).buffer, { sequence: 0, audioType: 'pcm' });
+  listener.onComplete(request, { type: 0 });
+  const oldSettle = timers.get(reader.systemPcmSettleTimerId).fn;
+  await advance(Reader.SYSTEM_PCM_SETTLE_DELAY_MS - 1);
+  listener.onData(request, new Int16Array(1600).fill(2000).buffer, { sequence: 1, audioType: 'pcm' });
+  oldSettle();
+  await advance(1);
+  assert.equal(reader.pcmPlayer.segments.length, 0); assert.equal(finished, 0);
+  assert.equal(reader.currentRequestId, request);
+  await advance(Reader.SYSTEM_PCM_SETTLE_DELAY_MS - 1);
+  assert.equal(reader.pcmPlayer.segments.length, 1); assert.equal(finished, 1);
+  const pcm = new Int16Array(reader.pcmPlayer.segments[0].pcm);
+  assert.equal(pcm.length, 3200); assert.equal(pcm[800], 1000); assert.equal(pcm[2400], 2000);
+  reader.stop();
+});
+
+await check('乱序缺包先等待，序号补齐后按顺序播放，空首包保留序号', async () => {
+  for (const emptyFirst of [false, true]) {
+    const reader = new Reader(); const errors = [];
+    await reader.start('乱序到达的完整音频。', { onError(message) { errors.push(message); } });
+    const request = reader.currentRequestId; const listener = reader.engine.listener;
+    listener.onStart(request, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
+    if (!emptyFirst) {
+      listener.onData(request, new Int16Array(1600).fill(3000).buffer, { sequence: 2, audioType: 'pcm' });
+    }
+    listener.onData(request, emptyFirst ? new ArrayBuffer(0) : new Int16Array(1600).fill(1000).buffer,
+      { sequence: 0, audioType: 'pcm' });
+    assert.equal(reader.currentFocusAudioReceived, !emptyFirst);
+    listener.onComplete(request, { type: 0 });
+    await settlePcm();
+    assert.equal(reader.currentRequestId, request); assert.equal(reader.pcmPlayer.segments.length, 0);
+    assert.equal(errors.length, 0);
+    listener.onData(request, new Int16Array(1600).fill(2000).buffer, { sequence: 1, audioType: 'pcm' });
+    await settlePcm();
+    assert.equal(reader.pcmPlayer.segments.length, 1); assert.equal(errors.length, 0);
+    const pcm = new Int16Array(reader.pcmPlayer.segments[0].pcm);
+    assert.equal(pcm.length, emptyFirst ? 1600 : 4800);
+    assert.equal(pcm[800], emptyFirst ? 2000 : 1000);
+    if (!emptyFirst) { assert.equal(pcm[2400], 2000); assert.equal(pcm[4000], 3000); }
+    reader.stop();
+  }
+});
+
+await check('缺包及持续收包均受总等待上限约束，失败保留当前段落不跳段或完成', async () => {
+  for (const continuous of [false, true]) {
+    const reader = new Reader(); let finished = 0; const errors = [];
+    reader.splitSystemText = text => [
+      { text: text.slice(0, 4), start: 0, end: 4 }, { text: text.slice(4), start: 4, end: text.length }
+    ];
+    await reader.start('当前正文后续正文', { onFinished() { finished++; }, onError(message) { errors.push(message); } });
+    const request = reader.currentRequestId; const listener = reader.engine.listener;
+    const speakCount = calls.speaks.length;
+    listener.onStart(request, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
+    listener.onData(request, new Int16Array(160).fill(3000).buffer,
+      { sequence: continuous ? 0 : 1, audioType: 'pcm' });
+    listener.onComplete(request, { type: 0 });
+    const startedAt = now;
+    if (continuous) {
+      let sequence = 1;
+      while (now - startedAt < Reader.SYSTEM_PCM_COLLECTION_TIMEOUT_MS - Reader.SYSTEM_PCM_SETTLE_DELAY_MS) {
+        await advance(Reader.SYSTEM_PCM_SETTLE_DELAY_MS - 1);
+        listener.onData(request, new Int16Array(160).fill(3000).buffer, { sequence: sequence++, audioType: 'pcm' });
+        // 重复完成通知也不能延长总等待上限。
+        listener.onComplete(request, { type: 0 });
+      }
+    } else {
+      await settlePcm();
+      assert.equal(errors.length, 0); assert.equal(reader.isSpeaking(), true);
+    }
+    await advance(Reader.SYSTEM_PCM_COLLECTION_TIMEOUT_MS - (now - startedAt));
+    assert.equal(reader.isSpeaking(), false); assert.equal(finished, 0);
+    assert.equal(reader.chunkIndex, 0); assert.equal(calls.speaks.length, speakCount);
+    assert.equal(reader.pcmPlayer.segments.length, 0); assert.equal(reader.pcmPlayer.stopped, true);
+    assert.equal(errors.length, 1); assert.ok(errors[0].includes('音频数据不完整'));
+    assert.equal(reader.systemCurrentPcmBytes, 0); assert.equal(reader.systemCurrentPcmSequenceSet.size, 0);
+    assert.equal(reader.systemPcmSettleTimerId, -1); assert.equal(reader.systemPcmDeadlineTimerId, -1);
+    listener.onData(request, new Int16Array(160).fill(3000).buffer, { sequence: 0, audioType: 'pcm' });
+    listener.onComplete(request, { type: 0 });
+    assert.equal(reader.systemCurrentPcmBytes, 0); assert.equal(errors.length, 1);
+    reader.stop();
+  }
+});
+
+await check('stop 和重新开始清除收尾状态，旧定时器及回调不能结束新请求', async () => {
+  const reader = new Reader(); let finished = 0; const errors = [];
+  await reader.start('即将停止的旧正文。', { onError(message) { errors.push(message); } });
+  const oldRequest = reader.currentRequestId; const oldListener = reader.engine.listener;
+  oldListener.onStart(oldRequest, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
+  oldListener.onData(oldRequest, new Int16Array(1600).fill(1000).buffer, { sequence: 0, audioType: 'pcm' });
+  oldListener.onComplete(oldRequest, { type: 0 });
+  const settleId = reader.systemPcmSettleTimerId; const deadlineId = reader.systemPcmDeadlineTimerId;
+  const oldSettle = timers.get(settleId).fn; const oldDeadline = timers.get(deadlineId).fn;
+  reader.stop();
+  assert.equal(timers.has(settleId), false); assert.equal(timers.has(deadlineId), false);
+  assert.equal(reader.systemPcmSynthesisComplete, false); assert.equal(reader.systemCurrentPcmBytes, 0);
+  await reader.start('重新开始的新正文。', { onFinished() { finished++; }, onError(message) { errors.push(message); } });
+  const request = reader.currentRequestId; const listener = reader.engine.listener;
+  oldSettle(); oldDeadline();
+  oldListener.onData(oldRequest, new Int16Array(1600).fill(1000).buffer, { sequence: 1, audioType: 'pcm' });
+  oldListener.onComplete(oldRequest, { type: 0 });
+  assert.equal(reader.currentRequestId, request); assert.equal(reader.systemCurrentPcmBytes, 0);
+  assert.equal(reader.isSpeaking(), true); assert.equal(finished, 0); assert.equal(errors.length, 0);
+  listener.onStart(request, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
+  listener.onData(request, new Int16Array(1600).fill(2000).buffer, { sequence: 0, audioType: 'pcm' });
+  listener.onComplete(request, { type: 0 }); await settlePcm();
+  assert.equal(finished, 1); assert.equal(errors.length, 0); reader.stop();
+});
+
+await check('单包和累计 PCM 超出字节预算时立即停止，不截断为成功', async () => {
+  for (const aggregate of [false, true]) {
+    const reader = new Reader(); let finished = 0; const errors = [];
+    await reader.start('异常音频响应的当前正文。', { onFinished() { finished++; }, onError(message) { errors.push(message); } });
+    const request = reader.currentRequestId; const listener = reader.engine.listener;
+    const speakCount = calls.speaks.length; const stopCount = calls.stops;
+    listener.onStart(request, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
+    if (aggregate) {
+      listener.onData(request, new ArrayBuffer(Reader.SYSTEM_PCM_MAX_BYTES), { sequence: 0, audioType: 'pcm' });
+      assert.equal(reader.isSpeaking(), true); assert.equal(reader.systemCurrentPcmBytes, Reader.SYSTEM_PCM_MAX_BYTES);
+      listener.onComplete(request, { type: 0 });
+    }
+    listener.onData(request, new ArrayBuffer(aggregate ? 2 : Reader.SYSTEM_PCM_MAX_BYTES + 2),
+      { sequence: aggregate ? 1 : 0, audioType: 'pcm' });
+    assert.equal(reader.isSpeaking(), false); assert.equal(reader.chunkIndex, 0);
+    assert.equal(reader.systemCurrentPcmBytes, 0); assert.equal(reader.systemCurrentPcmBuffers.length, 0);
+    assert.equal(reader.systemPcmSettleTimerId, -1); assert.equal(reader.systemPcmDeadlineTimerId, -1);
+    assert.equal(reader.pcmPlayer.stopped, true); assert.equal(reader.pcmPlayer.segments.length, 0);
+    assert.equal(calls.speaks.length, speakCount); assert.ok(calls.stops > stopCount);
+    assert.equal(finished, 0); assert.equal(errors.length, 1); assert.ok(errors[0].includes('音频数据过大'));
+    listener.onComplete(request, { type: 0 }); await emptyPcmGrace();
+    assert.equal(finished, 0); assert.equal(errors.length, 1); reader.stop();
+  }
+});
+
 await check('PCM 合成完成不提前完成章节，排空后完成且旧回调失效', async () => {
   let finished = 0; let highlighted = 0; let drained;
   const reader = new Reader();
@@ -212,6 +413,8 @@ await check('PCM 合成完成不提前完成章节，排空后完成且旧回调
   const samples = new Int16Array(1600).fill(3000).buffer;
   listener.onData(request, samples, { sequence: 0, audioType: 'pcm' });
   listener.onComplete(request, { type: 0 });
+  assert.equal(reader.pcmPlayer.segments.length, 0);
+  await settlePcm();
   await tick();
   assert.equal(finished, 0); assert.equal(highlighted, 0);
   assert.equal(reader.pcmPlayer.segments.length, 1);
@@ -234,9 +437,11 @@ await check('预取无 PCM 兜底先播完前序音频，错误数据停止输�
   engine.listener.onStart(request, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
   engine.listener.onData(request, new Int16Array(1600).fill(3000).buffer, { sequence: 0, audioType: 'pcm' });
   engine.listener.onComplete(request, { type: 0 });
+  await settlePcm();
   request = calls.speaks.at(-1).params.requestId;
   engine.listener.onData(request, new ArrayBuffer(0), { sequence: 0, audioType: 'pcm' });
   engine.listener.onComplete(request, { type: 0 }); await tick();
+  await emptyPcmGrace();
   assert.equal(reader.pcmPlayer.segments.length, 1);
   assert.equal(calls.speaks.at(-1).params.extraParams.playType, 0);
   reader.pcmPlayer.segments[0].cue(); releaseDrain(); await tick();
@@ -250,6 +455,7 @@ await check('预取无 PCM 兜底先播完前序音频，错误数据停止输�
   engine.listener.onStart(request, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
   engine.listener.onData(request, new ArrayBuffer(3), { sequence: 0, audioType: 'pcm' });
   engine.listener.onComplete(request, { type: 0 });
+  await settlePcm();
   assert.equal(invalid.isSpeaking(), false); assert.equal(invalid.pcmPlayer.stopped, true);
   assert.equal(calls.speaks.length, count); assert.equal(errors.length, 1);
   invalid.stop();
@@ -261,6 +467,7 @@ await check('无 PCM 单次直接播报兜底、完成类型与暂停恢复', as
   let request = calls.speaks.at(-1).params.requestId;
   const oldListener = engine.listener;
   oldListener.onComplete(request, { type: 0 }); await tick();
+  await emptyPcmGrace();
   const direct = calls.speaks.at(-1);
   assert.equal(direct.params.extraParams.playType, 1);
   assert.equal(direct.params.extraParams.soundChannel, 3);
@@ -282,6 +489,66 @@ await check('无 PCM 单次直接播报兜底、完成类型与暂停恢复', as
   reader.stop();
 });
 
+await check('PCM 合成使用通道1，设备回传输入通道时按单声道保留完整采样', async () => {
+  const reader = new Reader(); let finished = 0; const errors = [];
+  await reader.start('验证设备返回的单声道音频。', {
+    onFinished() { finished++; }, onError(message) { errors.push(message); }
+  });
+  const speech = calls.speaks.at(-1); const request = reader.currentRequestId;
+  const listener = reader.engine.listener;
+  assert.equal(speech.params.extraParams.playType, 0);
+  assert.equal(speech.params.extraParams.soundChannel, 1);
+  listener.onStart(request, { sampleRate: 16000, sampleBit: 16,
+    audioChannel: speech.params.extraParams.soundChannel, audioType: 'pcm' });
+  // 真机失败响应的总长度为290240字节，单声道完整，不能按三个声道缩混。
+  const pcm = new Int16Array(145120).fill(3000);
+  listener.onData(request, pcm.buffer, { sequence: 0, audioType: 'pcm' });
+  listener.onComplete(request, { type: 0 }); await settlePcm();
+  assert.equal(errors.length, 0); assert.equal(finished, 1);
+  assert.equal(reader.pcmPlayer.segments.length, 1);
+  const output = reader.pcmPlayer.segments[0].pcm;
+  assert.equal(output.byteLength, pcm.byteLength);
+  assert.equal(new Int16Array(output)[2000], pcm[2000]);
+  reader.stop();
+});
+
+await check('显式系统试听直接播报使用正常速度与音调，只由播报完成结束', async () => {
+  const reader = new Reader(); let finished = 0; let audioStarted = 0; const errors = [];
+  await reader.start('使用系统引擎直接试听。', { directPlayback: true, speed: 1,
+    onFinished() { finished++; }, onAudioStart() { audioStarted++; }, onError(message) { errors.push(message); } });
+  const speech = calls.speaks.at(-1); const request = reader.currentRequestId; const listener = reader.engine.listener;
+  const speakCount = calls.speaks.length;
+  assert.equal(speech.params.extraParams.playType, 1); assert.equal(speech.params.extraParams.speed, 1);
+  assert.equal(speech.params.extraParams.pitch, 1); assert.equal(speech.params.extraParams.soundChannel, 3);
+  listener.onStart(request, {}); assert.equal(audioStarted, 1);
+  listener.onComplete(request, { type: 0 });
+  await emptyPcmGrace();
+  assert.equal(reader.currentRequestId, request); assert.equal(calls.speaks.length, speakCount);
+  assert.equal(finished, 0); assert.equal(reader.pcmPlayer.segments.length, 0);
+  assert.equal(reader.systemPcmSettleTimerId, -1); assert.equal(reader.systemPcmDeadlineTimerId, -1);
+  listener.onData(request, new Int16Array(1600).buffer, { sequence: 0, audioType: 'pcm' });
+  assert.equal(reader.systemCurrentPcmBytes, 0);
+  listener.onComplete(request, { type: 1 }); await tick();
+  assert.equal(finished, 1); assert.equal(errors.length, 0); assert.equal(audioStarted, 1); reader.stop();
+});
+
+await check('系统 PCM 写入拒绝立即传播，不产生未观察拒绝或章节完成', async () => {
+  const reader = new Reader(); let finished = 0; const errors = []; const unhandled = [];
+  const onUnhandled = reason => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    reader.pcmPlayer.writeSegment = () => Promise.reject(Error('renderer write failed'));
+    await reader.start('音频写入失败的正文。', { onFinished() { finished++; }, onError(message) { errors.push(message); } });
+    const request = reader.currentRequestId; const listener = reader.engine.listener;
+    listener.onStart(request, { sampleRate: 16000, sampleBit: 16, audioChannel: 1, audioType: 'pcm' });
+    listener.onData(request, new Int16Array(1600).fill(3000).buffer, { sequence: 0, audioType: 'pcm' });
+    listener.onComplete(request, { type: 0 }); await settlePcm();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reader.isSpeaking(), false); assert.equal(finished, 0); assert.equal(reader.chunkIndex, 0);
+    assert.equal(errors.length, 1); assert.ok(errors[0].includes('写入失败')); assert.equal(unhandled.length, 0);
+  } finally { process.off('unhandledRejection', onUnhandled); reader.stop(); }
+});
+
 await check('直接播报完成超时停在当前块，不按估算时间跳块', async () => {
   const reader = new Reader(); let finished = 0; const errors = [];
   await reader.start('这是直接播报发生回调超时的句子。', {
@@ -289,6 +556,7 @@ await check('直接播报完成超时停在当前块，不按估算时间跳块'
   });
   const pcmRequest = calls.speaks.at(-1).params.requestId;
   engine.listener.onComplete(pcmRequest, { type: 0 }); await tick();
+  await emptyPcmGrace();
   const directRequest = calls.speaks.at(-1).params.requestId;
   engine.listener.onStart(directRequest, {});
   const count = calls.speaks.length;
@@ -476,6 +744,8 @@ await check('同一时刻多实例查询、下载和合成请求 ID 唯一', asy
   const ids = [...calls.queries, ...calls.downloads].map(call => call.requestId)
     .concat(calls.speaks.map(call => call.params.requestId));
   assert.equal(new Set(ids).size, ids.length);
+  const engineNames = calls.engines.map(params => params.extraParams.name);
+  assert.equal(new Set(engineNames).size, engineNames.length);
 });
 
 console.log(`System TTS checks passed: ${checks} groups.`);

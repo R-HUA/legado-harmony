@@ -30,6 +30,8 @@ export interface TtsReadOptions {
   style?: string;
   language?: string;
   speed?: number;
+  /** 系统音色试听使用引擎直接播报。 */
+  directPlayback?: boolean;
   cloudVoiceId?: string;
   cloudVoiceName?: string;
   cloudVoiceTier?: string;
@@ -123,6 +125,12 @@ export class SystemTtsReader {
   private static readonly SPEECH_TRAILING_CHARS: string = '」』）)】]》〉>。！？；;!?…，,、：:';
   private static readonly SYSTEM_TTS_START_BUFFER_SEGMENTS: number = 2;
   private static readonly SYSTEM_TTS_MAX_BUFFERED_SEGMENTS: number = 3;
+  // SDK没有末包标记；静默窗口及总等待上限是应用的收尾策略，并非服务端完整确认。
+  private static readonly SYSTEM_PCM_SETTLE_DELAY_MS: number = 300;
+  private static readonly SYSTEM_PCM_EMPTY_GRACE_MS: number = 1500;
+  private static readonly SYSTEM_PCM_COLLECTION_TIMEOUT_MS: number = 5000;
+  // 系统文本块最多60字符；4 MiB已容纳约131秒的16000 Hz、16位单声道音频。
+  private static readonly SYSTEM_PCM_MAX_BYTES: number = 4 * 1024 * 1024;
   private static readonly DIRECT_PLAY_COMPLETION_GRACE_MS: number = 5000;
   private static readonly MAX_ESTIMATED_CHUNK_DURATION_MS: number = 45000;
   private engine: textToSpeech.TextToSpeechEngine | null = null;
@@ -177,6 +185,11 @@ export class SystemTtsReader {
   private systemCurrentPcmBuffers: ArrayBuffer[] = [];
   private systemCurrentPcmSequences: number[] = [];
   private systemCurrentPcmBytes: number = 0;
+  private systemCurrentPcmSequenceSet: Set<number> = new Set<number>();
+  private systemCurrentPcmMaxSequence: number = -1;
+  private systemPcmSynthesisComplete: boolean = false;
+  private systemPcmSettleTimerId: number = -1;
+  private systemPcmDeadlineTimerId: number = -1;
   private systemReadySegments: SystemPcmSegment[] = [];
   private systemPlaybackStarted: boolean = false;
   private systemPlaybackChunkIndex: number = -1;
@@ -442,6 +455,7 @@ export class SystemTtsReader {
       this.speakCustomNext(generation, customVoice);
       return;
     }
+    this.ttsPcmPlayType = options?.directPlayback === true ? 1 : 0;
     this.resetSystemPcmPipeline();
     let engine: textToSpeech.TextToSpeechEngine;
     try {
@@ -492,6 +506,10 @@ export class SystemTtsReader {
         this.currentAudioSampleBit = response.sampleBit;
         this.currentAudioChannel = response.audioChannel;
         this.currentAudioType = response.audioType;
+        if (this.ttsPcmPlayType === 0 && this.currentFocusChunkIndex === 0) {
+          console.warn(`[TTS] initial pcm format: rate=${this.currentAudioSampleRate},` +
+            `bits=${this.currentAudioSampleBit},channel=${this.currentAudioChannel},type=${this.currentAudioType}`);
+        }
         console.info(`[TTS] speak start: audioType=${this.currentAudioType},` +
           `sampleRate=${this.currentAudioSampleRate},sampleBit=${this.currentAudioSampleBit},` +
           `channels=${this.currentAudioChannel},${this.pcmPlayer.debugState()}`);
@@ -513,11 +531,9 @@ export class SystemTtsReader {
           // in seconds.
           return;
         }
-        if (this.ttsPcmPlayType === 0 && !this.currentFocusAudioReceived) {
-          console.info(`[TTS] speak complete without pcm data: ${this.pcmPlayer.debugState()}`);
-          if (this.retryWithoutPcmData(generation)) {
-            return;
-          }
+        if (this.ttsPcmPlayType === 0) {
+          this.waitForSystemPcmData(generation, utteranceId);
+          return;
         }
         this.completeCurrentChunk(generation, utteranceId);
       },
@@ -541,22 +557,35 @@ export class SystemTtsReader {
       },
       onData: (utteranceId: string, audioData: ArrayBuffer, response: textToSpeech.SynthesisResponse) => {
         if (this.readGeneration !== generation || !this.active || utteranceId !== this.currentRequestId ||
-          !audioData || audioData.byteLength === 0) {
+          !audioData) {
           return;
         }
         if (this.ttsPcmPlayType !== 0) {
           return;
         }
         if (!response || response.audioType !== 'pcm' || !Number.isInteger(response.sequence) ||
-          response.sequence < 0 || response.sequence > 100000) {
+          response.sequence < 0 || response.sequence > 100000 ||
+          this.systemCurrentPcmSequenceSet.has(response.sequence)) {
           this.failSystemPcmPlayback('系统音色返回的音频数据无效，请重试当前段落');
           return;
         }
-        this.currentFocusAudioReceived = true;
+        if (this.systemCurrentPcmBytes + audioData.byteLength > SystemTtsReader.SYSTEM_PCM_MAX_BYTES) {
+          this.failSystemPcmPlayback('系统音频数据过大，请重试当前段落或更换音色');
+          return;
+        }
+        if (audioData.byteLength > 0) {
+          this.currentFocusAudioReceived = true;
+        }
         this.systemCurrentPcmBuffers.push(audioData.slice(0));
         this.systemCurrentPcmSequences.push(response.sequence);
         this.systemCurrentPcmBytes += audioData.byteLength;
-        this.armSpeakWatchdog(generation, this.currentFocusChunkIndex);
+        this.systemCurrentPcmSequenceSet.add(response.sequence);
+        this.systemCurrentPcmMaxSequence = Math.max(this.systemCurrentPcmMaxSequence, response.sequence);
+        if (this.systemPcmSynthesisComplete) {
+          this.scheduleSystemPcmSettle(generation, utteranceId);
+        } else {
+          this.armSpeakWatchdog(generation, this.currentFocusChunkIndex);
+        }
         console.info(`[TTS] pcm data buffered: sequence=${response ? response.sequence : -1},` +
           `bytes=${audioData.byteLength},total=${this.systemCurrentPcmBytes}`);
       }
@@ -746,8 +775,9 @@ export class SystemTtsReader {
     extraParams['languageContext'] = this.getTtsLanguage() as Object;
     extraParams['audioType'] = 'pcm' as Object;
     extraParams['isBackStage'] = true as Object;
-    // 系统直接播放使用通道3，避免媒体/通知通道在息屏后被截断。
-    extraParams['soundChannel'] = 3 as Object;
+    // 仅合成使用通道1，与单声道PCM输出一致；直接播报使用通道3，避免息屏截断。
+    // 实测设备会在audioChannel中回传此值，通道3不能作为三个PCM声道进行缩混。
+    extraParams['soundChannel'] = (this.ttsPcmPlayType === 0 ? 1 : 3) as Object;
     extraParams['playType'] = this.ttsPcmPlayType as Object;
     try {
       const requestId = this.createRequestId();
@@ -765,9 +795,7 @@ export class SystemTtsReader {
       this.currentAudioSampleBit = 16;
       this.currentAudioChannel = 1;
       this.currentAudioType = 'pcm';
-      this.systemCurrentPcmBuffers = [];
-      this.systemCurrentPcmSequences = [];
-      this.systemCurrentPcmBytes = 0;
+      this.resetSystemPcmCollection();
       this.armSpeakWatchdog(generation, index);
       this.engine.speak(speakText, {
         requestId: requestId,
@@ -1287,6 +1315,7 @@ export class SystemTtsReader {
     this.currentRequestId = '';
     this.completionPending = true;
     this.clearSpeakWatchdog();
+    this.clearSystemPcmCompletionWait();
     this.switchToDirectPlayback(generation, retryIndex);
     return true;
   }
@@ -1328,6 +1357,79 @@ export class SystemTtsReader {
     }
   }
 
+  private waitForSystemPcmData(generation: number, requestId: string): void {
+    if (this.systemPcmSynthesisComplete) {
+      return;
+    }
+    this.systemPcmSynthesisComplete = true;
+    this.clearSpeakWatchdog();
+    const timerId = setTimeout(() => {
+      if (this.systemPcmDeadlineTimerId !== timerId) {
+        return;
+      }
+      this.systemPcmDeadlineTimerId = -1;
+      if (this.readGeneration !== generation || !this.active || requestId !== this.currentRequestId ||
+        !this.systemPcmSynthesisComplete || this.completionPending) {
+        return;
+      }
+      if (!this.currentFocusAudioReceived && this.retryWithoutPcmData(generation)) {
+        return;
+      }
+      this.failSystemPcmPlayback('系统音频数据不完整，等待超时，请重试当前段落');
+    }, SystemTtsReader.SYSTEM_PCM_COLLECTION_TIMEOUT_MS);
+    this.systemPcmDeadlineTimerId = timerId;
+    this.scheduleSystemPcmSettle(generation, requestId);
+  }
+
+  private scheduleSystemPcmSettle(generation: number, requestId: string): void {
+    if (this.systemPcmSettleTimerId >= 0) {
+      clearTimeout(this.systemPcmSettleTimerId);
+    }
+    const delay = this.currentFocusAudioReceived ? SystemTtsReader.SYSTEM_PCM_SETTLE_DELAY_MS :
+      SystemTtsReader.SYSTEM_PCM_EMPTY_GRACE_MS;
+    const timerId = setTimeout(() => {
+      if (this.systemPcmSettleTimerId !== timerId) {
+        return;
+      }
+      this.systemPcmSettleTimerId = -1;
+      if (this.readGeneration !== generation || !this.active || requestId !== this.currentRequestId ||
+        !this.systemPcmSynthesisComplete || this.completionPending) {
+        return;
+      }
+      if (!this.currentFocusAudioReceived) {
+        this.retryWithoutPcmData(generation);
+        return;
+      }
+      // 序号从0连续增长；缺包时等待后续回调或总超时，不能提前合并或填补音频。
+      if (this.systemCurrentPcmSequenceSet.size !== this.systemCurrentPcmMaxSequence + 1) {
+        return;
+      }
+      this.completeCurrentChunk(generation, requestId);
+    }, delay);
+    this.systemPcmSettleTimerId = timerId;
+  }
+
+  private clearSystemPcmCompletionWait(): void {
+    if (this.systemPcmSettleTimerId >= 0) {
+      clearTimeout(this.systemPcmSettleTimerId);
+      this.systemPcmSettleTimerId = -1;
+    }
+    if (this.systemPcmDeadlineTimerId >= 0) {
+      clearTimeout(this.systemPcmDeadlineTimerId);
+      this.systemPcmDeadlineTimerId = -1;
+    }
+    this.systemPcmSynthesisComplete = false;
+  }
+
+  private resetSystemPcmCollection(): void {
+    this.clearSystemPcmCompletionWait();
+    this.systemCurrentPcmBuffers = [];
+    this.systemCurrentPcmSequences = [];
+    this.systemCurrentPcmBytes = 0;
+    this.systemCurrentPcmSequenceSet.clear();
+    this.systemCurrentPcmMaxSequence = -1;
+  }
+
   private completeSystemPcmChunk(generation: number, requestId: string): void {
     if (this.readGeneration !== generation || !this.active || requestId !== this.currentRequestId ||
       !this.currentFocusChunk || this.currentFocusChunkIndex < 0) {
@@ -1348,6 +1450,9 @@ export class SystemTtsReader {
         throw new Error('系统音色返回的PCM音频为空');
       }
     } catch (error) {
+      console.error(`[TTS] pcm validation metadata: rate=${this.currentAudioSampleRate},` +
+        `bits=${this.currentAudioSampleBit},channel=${this.currentAudioChannel},type=${this.currentAudioType},` +
+        `bytes=${this.systemCurrentPcmBytes},sequences=${this.systemCurrentPcmSequences.join(',')}`);
       this.failSystemPcmPlayback(`系统音频数据无效：${this.formatError(error as Object)}`);
       return;
     }
@@ -1463,15 +1568,11 @@ export class SystemTtsReader {
     this.currentFocusQueued = false;
     this.currentFocusAudioReceived = false;
     this.currentFocusAudioWritten = false;
-    this.systemCurrentPcmBuffers = [];
-    this.systemCurrentPcmSequences = [];
-    this.systemCurrentPcmBytes = 0;
+    this.resetSystemPcmCollection();
   }
 
   private resetSystemPcmPipeline(): void {
-    this.systemCurrentPcmBuffers = [];
-    this.systemCurrentPcmSequences = [];
-    this.systemCurrentPcmBytes = 0;
+    this.resetSystemPcmCollection();
     this.systemReadySegments = [];
     this.systemPlaybackStarted = false;
     this.systemPlaybackChunkIndex = -1;
@@ -2190,7 +2291,7 @@ export class SystemTtsReader {
     const extraParam: Record<string, Object> = {};
     extraParam['style'] = SystemTtsReader.SYSTEM_TTS_STYLE as Object;
     extraParam['locate'] = 'CN' as Object;
-    extraParam['name'] = 'LegadoReaderTts' as Object;
+    extraParam['name'] = SystemTtsReader.createGlobalRequestId('LegadoReaderTts') as Object;
     extraParam['isBackStage'] = true as Object;
     return extraParam;
   }
@@ -2413,7 +2514,7 @@ export class SystemTtsReader {
         end = this.findFirstCloudBreak(text, preferredEnd, limit, false);
       }
       if (end <= start) {
-        end = this.safeHardCutIndex(text, limit);
+        end = this.safeHardCutIndex(text, limit, start);
       }
       end = this.extendCloudBreak(text, end, limit);
       this.appendAbsoluteTextChunk(chunks, text, start, end);
@@ -2442,7 +2543,10 @@ export class SystemTtsReader {
         // middle of a sentence and used to add an audible pause on every page turn. Snap it
         // to the nearest sentence boundary; a boundary with no punctuation nearby keeps the
         // original offset, so behaviour is unchanged when snapping is not possible.
-        const breakOffset = this.snapPageBreakOffset(text, rawBreakOffset, partStart, chunk.end);
+        let breakOffset = this.snapPageBreakOffset(text, rawBreakOffset, partStart, chunk.end);
+        if (this.isHighSurrogate(text.charCodeAt(breakOffset - 1))) {
+          breakOffset--;
+        }
         if (breakOffset - partStart < minPart || chunk.end - breakOffset < minPart) {
           continue;
         }
@@ -2575,7 +2679,7 @@ export class SystemTtsReader {
       }
       if (end <= start) {
         breakPath = 'hard';
-        end = this.safeHardCutIndex(text, limit);
+        end = this.safeHardCutIndex(text, limit, start);
       }
       end = this.extendCloudBreak(text, end, limit);
       if (breakPath === 'weak' || breakPath === 'hard') {
@@ -2679,7 +2783,7 @@ export class SystemTtsReader {
     if (weakCandidate > 0) {
       return weakCandidate;
     }
-    return limit < text.length ? this.safeHardCutIndex(text, limit) : text.length;
+    return limit < text.length ? this.safeHardCutIndex(text, limit, start) : text.length;
   }
 
   private isStrongSentenceEnd(value: string): boolean {
@@ -2716,29 +2820,35 @@ export class SystemTtsReader {
    * A raw `start + maximumLength` cut can split a surrogate pair (emoji), split a value from
    * its unit ("3.5 米" / "80分" / "12%"), split an ASCII word, or leave a leading quote at the
    * head of the next chunk. Move the cut backwards until none of those apply.
+   * 回退不得越过当前块起点；超长词无完整切点时，按安全长度强制切分以保证前进。
    */
-  private safeHardCutIndex(text: string, index: number): number {
-    let cut = Math.max(1, Math.min(text.length, Math.round(index)));
-    if (cut >= text.length) {
+  private safeHardCutIndex(text: string, index: number, start: number = 0): number {
+    let hardCut = Math.max(1, Math.min(text.length, Math.round(index)));
+    if (hardCut >= text.length) {
       return text.length;
     }
-    while (cut > 1 && this.isHighSurrogate(text.charCodeAt(cut - 1))) {
+    while (hardCut > start && this.isHighSurrogate(text.charCodeAt(hardCut - 1))) {
+      hardCut--;
+    }
+    let cut = hardCut;
+    while (cut > start && SystemTtsReader.SPEECH_LEADING_CHARS.includes(text.charAt(cut))) {
       cut--;
     }
-    while (cut > 1 && SystemTtsReader.SPEECH_LEADING_CHARS.includes(text.charAt(cut))) {
+    while (cut > start && SystemTtsReader.SPEECH_TRAILING_CHARS.includes(text.charAt(cut - 1))) {
       cut--;
     }
-    while (cut > 1 && SystemTtsReader.SPEECH_TRAILING_CHARS.includes(text.charAt(cut - 1))) {
-      cut--;
-    }
-    while (cut > 1 && /[0-9]/.test(text.charAt(cut - 1)) &&
+    while (cut > start && /[0-9]/.test(text.charAt(cut - 1)) &&
       (SystemTtsReader.SPEECH_UNIT_CHARS.includes(text.charAt(cut)) || text.charAt(cut) === '.')) {
       cut--;
     }
-    while (cut > 1 && /[A-Za-z0-9]/.test(text.charAt(cut - 1)) && /[A-Za-z0-9]/.test(text.charAt(cut))) {
+    while (cut > start && /[A-Za-z0-9]/.test(text.charAt(cut - 1)) && /[A-Za-z0-9]/.test(text.charAt(cut))) {
       cut--;
     }
-    return Math.max(1, cut);
+    // 引号回退可能重新落到代理对中间，最终切点也需检查。
+    while (cut > start && this.isHighSurrogate(text.charCodeAt(cut - 1))) {
+      cut--;
+    }
+    return cut > start ? cut : hardCut;
   }
 
   /**

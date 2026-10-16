@@ -14,7 +14,7 @@ import { JavaRegexCompat } from '../rule/JavaRegexCompat';
 import { ReaderImageMarker } from './ReaderImageMarker';
 import { JsRuntime } from '../rule/JsRuntime';
 import { ScriptEngine, ScriptEngineContext } from '../rule/ScriptEngine';
-import { ComicImagePipeline } from './ComicImagePipeline';
+import { ComicImagePipeline, ComicImageRequestContext } from './ComicImagePipeline';
 import { BookSourceRuntimeRouter, SourceRuntimeStage } from './BookSourceRuntimeRouter';
 import { BookSourceStageWebRuntime, StageWebRuntimeRequest } from './BookSourceStageWebRuntime';
 import { ReaderActionMarker } from './ReaderActionMarker';
@@ -1189,10 +1189,14 @@ export class WebBookService {
 
   private async normalizeReaderContent(source: BookSource, content: string, baseUrl: string,
     imageRuleValues: string[] = []): Promise<string> {
+    // Artwork of a source that declares browser headers must be fetched with those same headers and
+    // the page URL as Referer; otherwise a protected image host answers the challenge page and every
+    // illustration fails even though the chapter text itself loaded fine.
+    const imageContext = ComicImagePipeline.contextFromSource(source, baseUrl);
     const explicitImages = this.collectReaderImageUrls(imageRuleValues, baseUrl, true);
     if (explicitImages.length > 0) {
       return await this.materializeReaderImageMarkers(source,
-        explicitImages.map((url: string): string => ReaderImageMarker.create(url)).join('\n\n'));
+        explicitImages.map((url: string): string => ReaderImageMarker.create(url)).join('\n\n'), imageContext);
     }
 
     let value = content || '';
@@ -1229,7 +1233,7 @@ export class WebBookService {
       .replace(/&amp;/g, '&')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
-    return await this.materializeReaderImageMarkers(source, ReaderActionMarker.limit(normalized));
+    return await this.materializeReaderImageMarkers(source, ReaderActionMarker.limit(normalized), imageContext);
   }
 
   private convertReaderNativeActions(_source: BookSource, content: string, _baseUrl: string): string {
@@ -1357,7 +1361,8 @@ export class WebBookService {
     return ReaderActionMarker.create(label, url, title);
   }
 
-  private async materializeReaderImageMarkers(source: BookSource, content: string): Promise<string> {
+  private async materializeReaderImageMarkers(source: BookSource, content: string,
+    context: ComicImageRequestContext | null = null): Promise<string> {
     if (!content || !content.includes(ReaderImageMarker.PREFIX)) return content;
     const pattern = new RegExp(`${this.escapeRegex(ReaderImageMarker.PREFIX)}([^\\]]+)` +
       `${this.escapeRegex(ReaderImageMarker.SUFFIX)}`, 'g');
@@ -1375,7 +1380,7 @@ export class WebBookService {
     for (let start = 0; start < values.length; start += 4) {
       const batch = values.slice(start, start + 4);
       const paths = await Promise.all(batch.map((value: string): Promise<string> =>
-        ComicImagePipeline.materialize(this.http, source, value)));
+        ComicImagePipeline.materialize(this.http, source, value, context)));
       for (let index = 0; index < batch.length; index++) {
         resolved[batch[index]] = paths[index] || batch[index];
       }

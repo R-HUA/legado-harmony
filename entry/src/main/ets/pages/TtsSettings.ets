@@ -1359,6 +1359,7 @@ struct TtsSettingsPage {
         style: this.ttsStyle,
         language: this.ttsLanguage,
         speed: this.ttsSpeed,
+        directPlayback: true,
         onFinished: () => {
           if (this.isPageSessionCurrent(session) && serial === this.previewSessionSerial) {
             this.isPreviewing = false;
