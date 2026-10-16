@@ -26,6 +26,16 @@
 
 本项目修改过的相关文件继续保留原始版权和许可证头；修改内容主要包括 QuickJS 运行时适配、句柄安全、受限执行和 HarmonyOS 应用集成。
 
+## OpenCC 繁简转换词典
+
+- 组件：OpenCC 中文转换词典数据（TSCharacters.txt / TSPhrases.txt / STCharacters.txt / STPhrases.txt）
+- 上游项目：https://github.com/BYVoid/OpenCC
+- 版本：ver.1.1.9
+- 许可证：Apache License 2.0
+- 版权所有：BYVoid 及 OpenCC 贡献者
+
+词典文本随 `rawfile/chinese/` 原样打包，用于阅读简繁转换（`ChineseConverter`）与规则引擎 `java.t2s` / `java.s2t`。完整许可文本见发行包内 [THIRD_PARTY_LICENSES.txt](entry/src/main/resources/rawfile/licenses/THIRD_PARTY_LICENSES.txt)。
+
 ## 完整许可文本
 
 为确保源码和二进制发行均携带必要声明，MIT 与 Apache-2.0 的完整许可文本统一存放于：

@@ -84,6 +84,7 @@ import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
 import { VirtualListScrollbar } from '../utils/VirtualListScrollbar';
 import { ReaderContentPreprocessor } from '../core/concurrency/ReaderContentPreprocessor';
+import { ChineseConverter } from '../utils/ChineseConverter';
 import { CooperativeScheduler } from '../core/concurrency/CooperativeScheduler';
 import {
   ReaderV2Document,
@@ -583,6 +584,7 @@ struct ReadBookPage {
   @StorageLink('readerParagraphSpacing') @Watch('onReadLayoutChanged') readerParagraphSpacing: number = 0;
   // 保留段首缩进：开启后分页/分块起点不再裁掉原文的全角空格缩进。
   @StorageLink('readerKeepParagraphIndent') @Watch('onReadLayoutChanged') keepParagraphIndent: boolean = false;
+  @StorageLink('readerChineseConverterType') @Watch('onChineseConverterTypeChanged') chineseConverterType: number = 0;
   @StorageLink('readerMarginLeft') @Watch('onReadLayoutChanged') readerMarginLeft: number = 18;
   @StorageLink('readerMarginRight') @Watch('onReadLayoutChanged') readerMarginRight: number = 18;
   @StorageLink('readerMarginTop') @Watch('onReadLayoutChanged') readerMarginTop: number = 18;
@@ -5536,7 +5538,9 @@ struct ReadBookPage {
     if (this.chapters.length === 0) return '暂无目录';
     const chapter = this.chapters[this.clampChapterIndex(chapterIndex)];
     const title = chapter ? this.cleanChapterTitle(chapter.title) : '';
-    return ReaderReplaceRuleStore.applyTitle(title, this.readerReplaceRules, this.book);
+    // 简繁转换先于替换净化，与正文处理顺序保持一致（参考 legado-with-MD3 ContentProcessor）。
+    const convertedTitle = ChineseConverter.convertText(title, this.chineseConverterType);
+    return ReaderReplaceRuleStore.applyTitle(convertedTitle, this.readerReplaceRules, this.book);
   }
 
   applyReaderContentRules(content: string): string {
@@ -5545,7 +5549,7 @@ struct ReadBookPage {
 
   readerPreparedContentKey(content: string, chapterIndex: number): string {
     return `${chapterIndex}_${content.length}_${this.hashText(content)}_${this.readerReplaceRules.length}_` +
-      `${this.readerReplaceRulesUpdateTime}`;
+      `${this.readerReplaceRulesUpdateTime}_${this.chineseConverterType}`;
   }
 
   getPreparedReaderContent(content: string, chapterIndex: number): string {
@@ -5558,8 +5562,14 @@ struct ReadBookPage {
     const cached = this.readerPreparedContentCache.get(key);
     if (cached !== undefined) return cached;
     const startedAt = Date.now();
+    // 简繁转换先于替换净化执行（词典就绪后为有界的单趟映射），转换结果仍交给
+    // TaskPool 预处理器做规则净化与 ReaderAction 标记保护。
+    if (this.chineseConverterType !== ChineseConverter.TYPE_OFF) {
+      await ChineseConverter.ensureLoaded(getContext(this), this.chineseConverterType);
+    }
+    const converted = ChineseConverter.convertText(content, this.chineseConverterType);
     const processed = ReaderActionMarker.limit(
-      await ReaderContentPreprocessor.apply(content, this.readerReplaceRules, this.book));
+      await ReaderContentPreprocessor.apply(converted, this.readerReplaceRules, this.book));
     const elapsedMs = Math.max(0, Date.now() - startedAt);
     if (elapsedMs >= CooperativeScheduler.DANGEROUS_OPERATION_MS) {
       console.info(`[ReaderPreprocessor] worker elapsed=${elapsedMs}ms input=${content.length}`);
@@ -5598,6 +5608,39 @@ struct ReadBookPage {
     this.pageTurnPreviewKey = '';
     this.pageTurnPreviewLoadingKey = '';
     if (!repaginate || !this.book || this.chapters.length === 0) {
+      return;
+    }
+    this.pendingRestorePageIndex = Math.max(this.pendingRestorePageIndex, this.currentPageIndex);
+    const raw = ReadBookEngine.get().getCachedContent(this.currentChapterIndex);
+    if (!raw) {
+      return;
+    }
+    const processed = await this.prepareReaderContentRules(raw, this.currentChapterIndex);
+    this.content = processed;
+    this.paginateContent(processed, this.currentChapterIndex);
+    this.refreshReaderTextRender();
+  }
+
+  onChineseConverterTypeChanged(): void {
+    if (this.readerEntryInitializing || !this.readerPageVisible) {
+      return;
+    }
+    this.reloadChineseConvertedContent().catch((error: Error) => {
+      console.warn('应用简繁转换设置失败:', error);
+    });
+  }
+
+  async reloadChineseConvertedContent(): Promise<void> {
+    const converterType = this.chineseConverterType;
+    if (converterType !== ChineseConverter.TYPE_OFF) {
+      await ChineseConverter.ensureLoaded(getContext(this), converterType);
+    }
+    this.readerPreparedContentCache.clear();
+    this.readerPaginationCache.clear();
+    this.adjacentPaginationPreloadSerial++;
+    this.pageTurnPreviewKey = '';
+    this.pageTurnPreviewLoadingKey = '';
+    if (!this.book || this.chapters.length === 0) {
       return;
     }
     this.pendingRestorePageIndex = Math.max(this.pendingRestorePageIndex, this.currentPageIndex);
@@ -7047,6 +7090,7 @@ struct ReadBookPage {
     this.readerLineHeight = settings.lineHeight;
     this.readerParagraphSpacing = settings.paragraphSpacing;
     this.keepParagraphIndent = settings.keepParagraphIndent;
+    this.chineseConverterType = settings.chineseConverterType;
     this.readerMarginLeft = settings.marginLeft;
     this.readerMarginRight = settings.marginRight;
     this.readerMarginTop = settings.marginTop;
@@ -10931,8 +10975,31 @@ struct ReadBookPage {
           this.setKeepParagraphIndent(checked);
         })
 
+      this.readerSelectSettingItem('简繁转换', '在繁体中文与简体中文之间转换正文',
+        this.chineseConverterOptions(), this.chineseConverterSelectedIndex(), (index: number) => {
+          this.setChineseConverterByIndex(index);
+        }, 'reader_chinese_converter_select')
+
     }
     .width('100%')
+  }
+
+  chineseConverterOptions(): SelectOption[] {
+    return [{ value: '不转换' }, { value: '繁体转简体' }, { value: '简体转繁体' }];
+  }
+
+  chineseConverterSelectedIndex(): number {
+    return this.chineseConverterType >= 1 && this.chineseConverterType <= 2 ? this.chineseConverterType : 0;
+  }
+
+  setChineseConverterByIndex(index: number): void {
+    const type = index === 1 ? ChineseConverter.TYPE_T2S :
+      (index === 2 ? ChineseConverter.TYPE_S2T : ChineseConverter.TYPE_OFF);
+    if (this.chineseConverterType === type) return;
+    this.chineseConverterType = type;
+    ReaderSettingsStore.saveChineseConverterType(getContext(this), type).catch((e: Error) => {
+      console.warn('保存简繁转换设置失败:', e);
+    });
   }
 
   readerTypographyOptions(): SelectOption[] {

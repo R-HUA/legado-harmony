@@ -4,6 +4,7 @@ import { CookieStore } from '../http/CookieStore';
 import { JsonPathEvaluator } from './JsonPathEvaluator';
 import { QuickJsScriptRuntime, QuickJsShadowComparator } from '../script/QuickJsScriptRuntime';
 import { QuickJsObservationContext } from '../script/QuickJsRuntimeStatus';
+import { ChineseConverter } from '../../utils/ChineseConverter';
 
 export class JsRuntime {
   private vars: Record<string, string> = {};
@@ -125,7 +126,10 @@ export class JsRuntime {
         (v: string) => this.timeFormatCall(v, false));
       expr = this.replaceFunctionCalls(expr, 'java.put', (v: string) => this.putVar(v));
       expr = this.replaceFunctionCalls(expr, 'java.get', (v: string) => this.getVarCall(v));
-      expr = this.replaceFunctionCalls(expr, 'java.t2s', (v: string) => this.evalStr(v));
+      expr = this.replaceFunctionCalls(expr, 'java.t2s',
+        (v: string) => ChineseConverter.convertText(this.evalStr(v), ChineseConverter.TYPE_T2S));
+      expr = this.replaceFunctionCalls(expr, 'java.s2t',
+        (v: string) => ChineseConverter.convertText(this.evalStr(v), ChineseConverter.TYPE_S2T));
       // All java.* value shims have run by this point, so a remaining `String("…").replace(…)`
       // chain is plain JavaScript over quoted literals. Evaluate it natively BEFORE the String
       // shim runs: that shim strips quotes eagerly and would corrupt the surrounding expression

@@ -6,6 +6,7 @@ import { CoverGalleryStore } from '../utils/CoverGalleryStore';
 import { BookshelfDisplaySettingsStore } from '../utils/BookshelfDisplaySettingsStore';
 import { SearchExploreSettingsStore } from '../utils/SearchExploreSettingsStore';
 import { ReaderSettingsStore } from '../utils/ReaderSettingsStore';
+import { ChineseConverter } from '../utils/ChineseConverter';
 import { AppThemeSettingsStore } from '../utils/AppThemeSettingsStore';
 import { GlassSettingsStore } from '../utils/GlassSettingsStore';
 import { AppThemeModeStore } from '../utils/AppThemeModeStore';
@@ -216,10 +217,17 @@ export default class EntryAbility extends UIAbility {
     // but do not make the first application content wait for them.
     this.readerBootstrapPromise = ReaderSettingsStore.load(this.context).then((settings) => {
       ReaderSettingsStore.applyToStorage(settings);
+      // 简繁词典与 MD3 的 ChineseUtils.preLoad 对齐：按当前转换方向在启动时后台预热，
+      // 正文预处理与规则引擎的 java.t2s/java.s2t 随后可直接同步转换。
+      const converterWarmup = settings.chineseConverterType !== ChineseConverter.TYPE_OFF ?
+        ChineseConverter.ensureLoaded(this.context, settings.chineseConverterType) :
+        Promise.resolve();
       if (AppStorage.get<boolean>('lanReaderEnabled')) {
-        return lanReaderServer.start(this.context);
+        return converterWarmup.then(() => {
+          return lanReaderServer.start(this.context);
+        });
       }
-      return Promise.resolve();
+      return converterWarmup;
     }).catch((e: Error) => {
       hilog.warn(0x0000, 'testTag', 'Sync reader settings failed: %{public}s', JSON.stringify(e));
     });

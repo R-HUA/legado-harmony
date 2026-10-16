@@ -8,6 +8,7 @@ import { ScriptEngine, ScriptEngineContext } from './ScriptEngine';
 import { BookUrlResolver } from '../book/BookUrlResolver';
 import { QuickJsObservationContext } from '../script/QuickJsRuntimeStatus';
 import { RuleExecutionTarget, RuleValue, RuleValueKind } from './RuleValue';
+import { ChineseConverter } from '../../utils/ChineseConverter';
 
 const MAX_HTML_PARSE_LENGTH = 4 * 1024 * 1024;
 
@@ -2252,7 +2253,8 @@ export class AnalyzeRule {
         return m && m[idx] !== undefined ? m[idx] : '';
       }
     }
-    if (jsCode.includes('java.t2s')) return value;
+    if (jsCode.includes('java.t2s')) return ChineseConverter.convertText(value, ChineseConverter.TYPE_T2S);
+    if (jsCode.includes('java.s2t')) return ChineseConverter.convertText(value, ChineseConverter.TYPE_S2T);
     if (/book\.origin\s*\+\s*result/.test(jsCode)) return this.resolveUrl(value);
     if (/\bjava\.(?:base64|hex|md5|sha|url|encodeURI|aes|des|getCookie)/.test(jsCode)) {
       this.js.setVar('baseUrl', this.baseUrl);
