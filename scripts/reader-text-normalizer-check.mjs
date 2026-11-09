@@ -5,7 +5,7 @@
 
 import { loadReaderModules } from './lib/load-reader-modules.mjs';
 
-const { ReaderTextNormalizer: N, ReaderPageOffsets: O, ReaderActionMarker, ReaderImageMarker, cleanup } =
+const { ReaderTextNormalizer: N, ReaderParagraphIndent: Indent, ReaderPageOffsets: O, ReaderActionMarker, ReaderImageMarker, cleanup } =
   await loadReaderModules();
 
 let failures = 0;
@@ -47,6 +47,25 @@ try {
   const image = ReaderImageMarker.create('images/a.png', 100, 50);
   equal(N.indentLine(`  ${image}  `), image, '图片标记不缩进');
   equal(N.indentChapterBody(''), '', '空正文');
+  for (let chars = 0; chars <= 4; chars++) {
+    const prefix = '　'.repeat(chars);
+    equal(N.indentChapterBody(`第一段。\n  第二段。\n　　　　第三段。\n\n${image}`, chars),
+      `${prefix}第一段。\n${prefix}第二段。\n${prefix}第三段。\n\n${image}`, `${chars} 字符缩进应用于各段，保留空行与插图`);
+    equal(N.indentLine('　　　　正文', chars), `${prefix}正文`, '已有缩进被替换而非叠加');
+    for (let nextChars = 0; nextChars <= 4; nextChars++) {
+      const before = `章节名\n\n${N.indentChapterBody('第一段。\n第二段。', chars)}`;
+      const after = `章节名\n\n${N.indentChapterBody('第一段。\n第二段。', nextChars)}`;
+      for (const token of ['章节名', '第一', '二段']) {
+        equal(Indent.remapOffset(before, after, before.indexOf(token)), after.indexOf(token),
+          `${chars} → ${nextChars} 字符后恢复 ${token} 的阅读位置`);
+      }
+      equal(Indent.remapOffset(before, after, before.length), after.length, '章末偏移恢复');
+    }
+  }
+  for (const [value, expected] of [[undefined, 2], [NaN, 2], [Infinity, 2], [-1, 0], [9, 4], [1.6, 2]]) {
+    equal(Indent.normalize(value), expected, '缺省或异常缩进值归一化');
+  }
+  equal(Indent.remapOffset('旧正文', '新正文', 2), 2, '正文改变时不做缩进偏移映射');
 
   // ---- 重复标题 ----
   equal(N.stripDuplicatedTitle('　　第一章 开端\n\n　　正文。', '第一章 开端'), '正文。', '首行与标题相同则剥离');
@@ -62,6 +81,39 @@ try {
   equal(N.stripDuplicatedTitle(`${cover}\n正文第一段。`, '第1章 戏鬼回家'), `${cover}\n正文第一段。`,
     '插图后不是标题时原样返回');
   equal(N.stripDuplicatedTitle('第一章开端了\n正文。', '第一章 开端'), '第一章开端了\n正文。', '忽略空白后仍不同则保留');
+  equal(N.stripDuplicatedTitle('第1272章：好好的，都好好的\n正文。', '第1272章 好好的，都好好的'), '正文。',
+    '带章节号的标题只差标点时剥离');
+  equal(N.stripDuplicatedTitle('好好的，都好好的\n正文。', '第1272章 好好的，都好好的'), '正文。',
+    '首行只差章节号时剥离');
+  equal(N.stripDuplicatedTitle('他笑了。\n正文。', '第3章 他笑了'), '他笑了。\n正文。', '去掉章节号后只差句号的首句保留');
+  equal(N.stripDuplicatedTitle('他笑了。\n正文。', '他笑了'), '他笑了。\n正文。', '不带章节号的标题不做宽松比较');
+  equal(N.stripDuplicatedTitle('夜\n正文。', '第5章 夜'), '夜\n正文。', '去掉章节号后太短不比较');
+  equal(N.stripDuplicatedTitle('第1272章 好好的，都好好的她扭脸，小眉头拧起，受屈感明显。\n下一段。',
+    '第1272章 好好的，都好好的'), '她扭脸，小眉头拧起，受屈感明显。\n下一段。', '标题后直接接正文时只去掉标题');
+  equal(N.stripDuplicatedTitle(`第1章${zwsp}戏鬼回家：“我……是谁？”${comment}`, '第1章 戏鬼回家'), `“我……是谁？”${comment}`,
+    '标题后接正文时保留正文上的段评');
+  equal(N.stripDuplicatedTitle('楔子开始的地方，很远。', '楔子'), '楔子开始的地方，很远。', '短标题不做前缀剥离');
+  equal(N.stripDuplicatedTitle('第一章 开端已过去很久\n正文。', '第一章 开端'), '第一章 开端已过去很久\n正文。',
+    '标题后剩下的不像正文句子时保留');
+
+  // ---- 标题被书源拆成多行 ----
+  equal(N.stripDuplicatedTitle('第235章\n猝不及防的人物\n这是一间人偶艺术馆。', '第235章 猝不及防的人物'),
+    '这是一间人偶艺术馆。', '章节号与标题名分两行时剥离');
+  equal(N.stripDuplicatedTitle(`${cover}\n\n　　第235章\n\n　　猝不及防的人物\n\n　　这是一间人偶艺术馆。`, '第235章 猝不及防的人物'),
+    `${cover}\n\n　　这是一间人偶艺术馆。`, '拆开的标题隔空行、前有插图时也剥离');
+  equal(N.stripDuplicatedTitle('第235章：\n猝不及防的人物\n正文。', '第235章 猝不及防的人物'), '正文。', '拆开的标题只差标点');
+  equal(N.stripDuplicatedTitle('第235章\n猝不及防的人物出现了。\n正文。', '第235章 猝不及防的人物'),
+    '第235章\n猝不及防的人物出现了。\n正文。', '第二行多出正文时不剥离');
+  equal(N.stripDuplicatedTitle('第235章\n他来了。', '第235章 猝不及防的人物'), '第235章\n他来了。', '第二行拼不成标题时不剥离');
+  equal(N.normalizeChapterBody('第235章\n\n猝不及防的人物\n\n这是一间人偶艺术馆，装修风格简约时尚。', '第235章 猝不及防的人物'),
+    '这是一间人偶艺术馆，装修风格简约时尚。', '整条流程剥离拆开的标题');
+
+  // ---- 剥离在软换行合并之前 ----
+  equal(N.mergeSoftWrappedLines('第十二章 归来\n他回来了'), '第十二章 归来\n他回来了', '标题行不与下一行合并');
+  equal(N.normalizeChapterBody('第1272章 好好的，都好好的\n她扭脸，小眉头拧起，受屈感明显……男人嘛。\n不要过分相信。',
+    '第1272章 好好的，都好好的'), '她扭脸，小眉头拧起，受屈感明显……男人嘛。\n不要过分相信。', '标题行与短首段不会先被合并');
+  equal(N.normalizeChapterBody('好好的，\n都好好的\n\n她扭脸。', '好好的，都好好的'), '她扭脸。', '标题被拆成两行时合并后再剥离');
+  equal(N.normalizeChapterBody('第一章 开端\n正文。'), '第一章 开端\n正文。', '不传标题时不剥离');
   equal(N.splitLeadingImages(`${cover}\n\n　　正文。`), [cover, '　　正文。'], '拆出开头的卷首插图');
   equal(N.splitLeadingImages(`\n${cover}\n\n${inlineImage}\n　　正文。`), [`${cover}\n\n${inlineImage}`, '　　正文。'],
     '连续多张插图一起拆出');
@@ -72,18 +124,17 @@ try {
   // ---- 分页起止裁剪 ----
   const source = '\n　　甲乙丙\n\n　　丁戊';
   let pages = [], starts = [], ends = [];
-  N.pushPage(source, 0, 7, pages, starts, ends, false);
-  N.pushPage(source, 7, source.length, pages, starts, ends, false);
-  equal([pages, starts, ends], [['甲乙丙', '丁戊'], [3, 10], [6, 12]], '默认裁掉页首缩进');
+  N.pushPage(source, 0, 7, pages, starts, ends);
+  N.pushPage(source, 7, source.length, pages, starts, ends);
+  equal([pages, starts, ends], [['　　甲乙丙', '　　丁戊'], [1, 8], [6, 12]], '页首只跳过换行，始终保留段落缩进');
   pages = []; starts = []; ends = [];
-  N.pushPage(source, 0, 7, pages, starts, ends, true);
-  N.pushPage(source, 7, source.length, pages, starts, ends, true);
-  equal([pages, starts, ends], [['　　甲乙丙', '　　丁戊'], [1, 8], [6, 12]], '保留段首缩进时只跳过换行');
+  N.pushPage(source, 4, 6, pages, starts, ends);
+  equal([pages, starts, ends], [['乙丙'], [4], [6]], '跨页续行不添加缩进');
   pages = []; starts = []; ends = [];
-  N.pushPage(source, 6, 8, pages, starts, ends, false);
+  N.pushPage(source, 6, 8, pages, starts, ends);
   equal(pages.length, 0, '裁完为空不产生空页');
-  N.pushPage(source, -5, 999, pages, starts, ends, false);
-  equal([starts[0], ends[0]], [3, 12], '越界区间被钳制');
+  N.pushPage(source, -5, 999, pages, starts, ends);
+  equal([starts[0], ends[0]], [1, 12], '越界区间被钳制');
   for (let i = 0; i < pages.length; i++) {
     equal(source.substring(starts[i], ends[i]), pages[i], `页文本与偏移一致 #${i}`);
   }

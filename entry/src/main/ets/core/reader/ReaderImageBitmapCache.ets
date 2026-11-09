@@ -1,3 +1,5 @@
+import { ReaderCacheCoordinator } from '../book/ReaderCacheCoordinator';
+import { ReaderImageCache } from '../book/ReaderImageCache';
 import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
 import image from '@ohos.multimedia.image';
@@ -120,7 +122,7 @@ export class ReaderImageBitmapCache {
 
   private static localPath(source: string): string {
     const value = (source || '').trim();
-    if (!value || /^(?:https?:|data:)/i.test(value)) return '';
+    if (!value || /^(?:https?:|data:|legado-image-error:)/i.test(value)) return '';
     if (/^file:/i.test(value)) {
       try {
         return new fileUri.FileUri(value).path;
@@ -138,6 +140,10 @@ export class ReaderImageBitmapCache {
     } else {
       ReaderImageBitmapCache.decodeCount++;
     }
+    // 本地插图解码期间登记占用，缓存清理不会删掉正在读取的文件；远程与 data: 地址无需登记。
+    const retainedPath = ReaderImageBitmapCache.localPath(uri);
+    const release = retainedPath ? ReaderCacheCoordinator.retainFile(retainedPath) : (): void => {};
+    if (retainedPath) ReaderImageCache.touch(retainedPath);
     let file: fs.File | null = null;
     let source: image.ImageSource | null = null;
     try {
@@ -174,6 +180,7 @@ export class ReaderImageBitmapCache {
       console.warn('[ReaderImageBitmap] 解码插图失败:', error);
       return null;
     } finally {
+      release();
       if (source) {
         try {
           await source.release();

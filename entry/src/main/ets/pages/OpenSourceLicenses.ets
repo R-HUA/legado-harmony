@@ -38,7 +38,7 @@ struct OpenSourceLicensesPage {
   pageContent() {
     Column() {
       Column() {
-        Text('开源轻页采用 GPL-3.0 许可证，并包含 ohos_quickjs、QuickJS 和部分 OpenHarmony/Huawei N-API 封装代码。以下源码信息、版权声明与完整许可文本随 HAP 一同分发。')
+        Text('开源轻页采用 GPL-3.0 许可证，并包含 ohos_quickjs、QuickJS、acorn、OpenCC 简繁字典、Manga-Colorizer 着色模型和部分 OpenHarmony/Huawei N-API 封装代码。以下源码信息、版权声明与完整许可文本随 HAP 一同分发。')
           .fontSize(AppFontSize.BODY)
           .fontColor(this.secondaryTextColor())
           .lineHeight(22)
@@ -78,10 +78,12 @@ struct OpenSourceLicensesPage {
         .getRawFileContent('licenses/THIRD_PARTY_LICENSES.txt');
       const projectNotice = 'OPEN SOURCE PROJECT INFORMATION\n' +
         '开源项目信息\n\n' +
-        'Project / 项目：开源轻页 / legado-harmony\n' +
+        'Project / 项目：开源轻页 / qingye-reader\n' +
         'Copyright (c) 2026 李其健\n' +
-        'Source / 源码：https://github.com/wip3l/legado-harmony\n' +
-        'License / 许可证：GNU General Public License version 3 (GPL-3.0)\n\n';
+        'Source / 源码：https://github.com/wip3l/qingye-reader\n' +
+        'Fork / 本分支：https://github.com/R-HUA/legado-harmony\n' +
+        'License / 许可证：GNU General Public License version 3 (GPL-3.0)\n' +
+        'aiengine：漫画文字识别与超分代码来自 qingye-reader 提交 8a783195（GPL-3.0）\n\n';
       const gplText = util.TextDecoder.create('utf-8').decodeWithStream(gplBytes, { stream: false });
       const thirdPartyText = util.TextDecoder.create('utf-8')
         .decodeWithStream(thirdPartyBytes, { stream: false });

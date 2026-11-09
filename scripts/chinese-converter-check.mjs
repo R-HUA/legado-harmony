@@ -63,11 +63,18 @@ function buildDictionary(charLines, phraseLines, excludedPhrases) {
 }
 
 // ChineseConverter 类内部的排除表与解析逻辑走同一套纯函数，这里直接复刻 t2s 方向。
-const excludeMatch = converterSource.match(/const T2S_EXCLUDED_PHRASES: string\[\] = \[([\s\S]*?)\];/);
-assert(excludeMatch !== null, 'MD3 排除词表必须存在');
-const excludedPhrases = JSON.parse(`[${excludeMatch[1].replace(/'/g, '"')}]`);
-assert(excludedPhrases.includes('明瞭') && excludedPhrases.includes('雪梨'),
-  '排除词表应保留 MD3 fixT2sDict 的条目');
+// 排除表已按 TSPhrases 审核：只允许留下真实存在于 t2s 词组表里的条目（否则排除无意义）；
+// 明瞭/明覆/沈船 是正确的繁→简词组，不得再被排除。
+const excludedPhrases = converter.T2S_EXCLUDED_PHRASES;
+assert(Array.isArray(excludedPhrases), 'T2S_EXCLUDED_PHRASES 必须导出');
+const t2sPhraseKeys = new Set(t2sPhraseLines.map((line) => line.split(/\s+/)[0]));
+for (const phrase of excludedPhrases) {
+  assert(t2sPhraseKeys.has(phrase), `排除词表条目不在 TSPhrases 中（无效排除）: ${phrase}`);
+}
+assert(new Set(excludedPhrases).size === excludedPhrases.length, '排除词表不得有重复条目');
+for (const phrase of ['明瞭', '明覆', '沈船']) {
+  assert(!excludedPhrases.includes(phrase), `${phrase} 是正确的繁→简词组，不得排除`);
+}
 
 const t2sDict = buildDictionary(t2sCharLines, t2sPhraseLines, excludedPhrases);
 const s2tDict = buildDictionary(s2tCharLines, s2tPhraseLines, null);
@@ -82,8 +89,9 @@ assert(t2s('龍的傳人') === '龙的传人', `t2s 组合失败: ${t2s('龍的�
 assert(t2s('皇后後面') === '皇后后面', `t2s 後→后 失败: ${t2s('皇后後面')}`);
 // 词组最长匹配优先
 assert(t2s('一目瞭然') === '一目了然', `t2s 词组匹配失败: ${t2s('一目瞭然')}`);
-// 排除表：词组级转换被跳过（瞭 无单字映射，保留原形）
-assert(t2s('明瞭') === '明瞭', `t2s 排除表失败: ${t2s('明瞭')}`);
+// 原先被排除的词组现在按 OpenCC 转换
+assert(t2s('明瞭') === '明了', `t2s 明瞭 应转为 明了: ${t2s('明瞭')}`);
+assert(t2s('沈船') === '沉船', `t2s 沈船 应转为 沉船: ${t2s('沈船')}`);
 // 非中文与增补平面字符直通
 assert(t2s('Hello 123 !?') === 'Hello 123 !?', 't2s ASCII 直通失败');
 assert(t2s('𠀀𠀁') === '𠀀𠀁', 't2s 增补平面直通失败');
@@ -102,6 +110,26 @@ assert(converter.ChineseConverter.normalizeType(Number.NaN) === 0, 'normalizeTyp
 // 未加载时同步转换必须原样返回（不得抛错、不得空字符串）
 assert(converter.ChineseConverter.convertText('頭髮', 1) === '頭髮',
   '词典未加载时 convertText 必须原样返回');
+
+// 等长转换：结果与原文逐位对齐
+const sameLength = (text) => converter.convertWithChineseDictionarySameLength(text, t2sDict);
+for (const sample of ['頭髮', '一目瞭然', '皇后後面', '他說：「這件事乾脆地講清楚。」', '𠀀龍']) {
+  assert(sameLength(sample).length === sample.length, `等长转换改变了长度: ${sample}`);
+}
+assert(sameLength('龍的傳人') === '龙的传人', `等长转换结果异常: ${sameLength('龍的傳人')}`);
+
+// 台湾用字（OpenCC TWVariants，搜索关键词简繁互转使用）
+const twLines = readLines(`${dictDir}/tw_variants.txt`);
+assert(twLines.length >= 30, `TWVariants 行数异常: ${twLines.length}`);
+const twDict = converter.createEmptyChineseDictionary();
+converter.applyChineseDictionaryLines(twDict, twLines, 0, twLines.length, false, null);
+converter.ChineseConverter.dictionaries[2] = s2tDict;
+converter.ChineseConverter.twVariants = twDict;
+assert(converter.ChineseConverter.isTaiwanLoaded(), 'Taiwan 词典应就绪');
+assert(converter.ChineseConverter.convertTaiwan('里面') === '裡面', `台湾用字失败: ${converter.ChineseConverter.convertTaiwan('里面')}`);
+assert(converter.ChineseConverter.convertTaiwan('为什么') === '為什麼', `台湾用字失败: ${converter.ChineseConverter.convertTaiwan('为什么')}`);
+converter.ChineseConverter.dictionaries[2] = undefined;
+converter.ChineseConverter.twVariants = null;
 
 // ---- 4. 性能上界：整章文本（约 4 万字符）单趟转换必须保持有界 ----
 const chapterSample = ('　　他望著窗外的雨，手中的書早已翻過一半。髮絲沾著水汽，乾燥的空氣裡混著墨香。\n' +
@@ -126,16 +154,42 @@ assert(settings.includes('normalizeChineseConverterType'), '缺少类型归一�
 
 const reader = read('entry/src/main/ets/pages/ReadBook.ets');
 assert(reader.includes("@StorageLink('readerChineseConverterType')"), 'ReadBook 缺少 StorageLink');
-assert(reader.includes('ChineseConverter.ensureLoaded(getContext(this), this.chineseConverterType)'),
-  '正文预处理前必须确保词典就绪');
-assert(reader.includes('ChineseConverter.convertText(content, this.chineseConverterType)'),
-  '正文预处理必须先做简繁转换');
-assert(/converted[^]*?ReaderContentPreprocessor\.apply\(converted/.test(reader),
-  '替换净化必须作用于转换后的文本');
-assert(reader.includes('ChineseConverter.convertText(title, this.chineseConverterType)'),
-  '章节标题必须随设置转换');
-assert(reader.includes('`${this.readerReplaceRulesUpdateTime}_${this.chineseConverterType}`'),
-  '正文预处理缓存键必须包含转换方向');
+assert(/effectiveChineseConverterType\(\): number \{\s*if \(this\.readerTextConvert\) return ChineseConverter\.TYPE_T2S;\s*return ChineseConverter\.normalizeType\(this\.chineseConverterType\);/.test(reader),
+  '全局方向是唯一来源，开书询问选的繁→简只覆盖本书');
+assert(/ReaderContentPreprocessor\.apply\(content[^]*?ReaderTextConvertRuntime\.convert\(getContext\(this\), replaced,\s*this\.effectiveChineseConverterType\(\)\)/.test(reader),
+  '正文必须先替换净化、再简繁转换');
+assert(/ReaderReplaceRuleStore\.applyTitle\(title[^]*?ReaderTextConvertRuntime\.convertNow\(replaced, this\.effectiveChineseConverterType\(\)\)/.test(reader),
+  '章节标题必须先替换、再转换');
+assert(reader.includes('`cc${this.effectiveChineseConverterType()}`'), '正文预处理缓存键必须包含转换方向');
+assert(reader.includes('offerReaderTextConvertLater(replaced, chapterIndex)'), '未转换时开书检测繁体并询问');
+
+// readerContentNeedsPreparation 行为：转换开启时原文与分页内容不同，同步路径不得直接分页原文
+// （修复前缺少这一条，相邻章节预分页与预览会显示未转换的文字）。
+function readerMethod(name) {
+  const start = reader.search(new RegExp(`^  ${name}\\(`, 'm'));
+  assert(start >= 0, `ReadBook 缺少 ${name}`);
+  return reader.slice(start, reader.indexOf('\n  }', start) + 4);
+}
+const Prep = vm.runInNewContext(stripTypeScriptTypes(`class Prep {
+  readerReplaceRules = []; readerTextConvert = false; chineseConverterType = 0; comic = false;
+  isReaderComicModeActive() { return this.comic; }
+  ${['readerContentNeedsPreparation', 'isReaderTextConvertActive', 'effectiveChineseConverterType'].map(readerMethod).join('\n')}
+}; Prep`, { mode: 'transform' }), {
+  ChineseConverter: converter.ChineseConverter,
+  ReaderContentPreprocessor: { hasActiveContentRules: (rules) => rules.length > 0 },
+  ReaderImageSizeResolver: { needsSizes: () => false }
+});
+const prep = new Prep();
+assert(prep.readerContentNeedsPreparation('正文') === false, '无规则、不转换时原文即可分页');
+prep.chineseConverterType = 1;
+assert(prep.readerContentNeedsPreparation('正文') === true, '全局繁→简时必须先预处理');
+prep.chineseConverterType = 2;
+assert(prep.readerContentNeedsPreparation('正文') === true, '全局简→繁时必须先预处理');
+prep.chineseConverterType = 0; prep.readerTextConvert = true;
+assert(prep.effectiveChineseConverterType() === 1, '本书覆盖为繁→简');
+assert(prep.readerContentNeedsPreparation('正文') === true, '本书覆盖繁→简时必须先预处理');
+prep.comic = true;
+assert(prep.readerContentNeedsPreparation('正文') === false, '漫画模式不做正文转换');
 
 const settingsPage = read('entry/src/main/ets/pages/Settings.ets');
 assert(settingsPage.includes("this.selectItem('简繁转换'"), '应用设置页缺少简繁转换项');
@@ -178,4 +232,5 @@ const scriptEngine = readEtsModule('core/rule/ScriptEngine.ts');
 assert(scriptEngine.includes("'java.t2s', 'java.s2t'"), 'ScriptEngine 运行时调用表缺少 java.s2t');
 
 console.log(`Chinese converter check passed (${assertions} assertions): OpenCC dictionaries, ` +
-  'phrase-first conversion, MD3 exclude list, settings/pipeline/rule-engine wiring, bounded per-chapter cost.');
+  'phrase-first conversion, audited exclude list, same-length/Taiwan conversion, convert-after-replace wiring, ' +
+  'per-book override, readerContentNeedsPreparation, rule-engine wiring, bounded per-chapter cost.');

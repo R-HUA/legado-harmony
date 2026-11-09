@@ -28,13 +28,26 @@
 
 ## OpenCC 繁简转换词典
 
-- 组件：OpenCC 中文转换词典数据（TSCharacters.txt / TSPhrases.txt / STCharacters.txt / STPhrases.txt）
-- 上游项目：https://github.com/BYVoid/OpenCC
+- 组件：OpenCC 中文转换词典数据（TSCharacters.txt / TSPhrases.txt / STCharacters.txt / STPhrases.txt / TWVariants.txt）
+- 上游项目：https://github.com/BYVoid/OpenCC/tree/ver.1.1.9
 - 版本：ver.1.1.9
 - 许可证：Apache License 2.0
 - 版权所有：BYVoid 及 OpenCC 贡献者
 
-词典文本随 `rawfile/chinese/` 原样打包，用于阅读简繁转换（`ChineseConverter`）与规则引擎 `java.t2s` / `java.s2t`。完整许可文本见发行包内 [THIRD_PARTY_LICENSES.txt](entry/src/main/resources/rawfile/licenses/THIRD_PARTY_LICENSES.txt)。
+词典文本随 `entry/src/main/resources/rawfile/chinese/` 原样打包（仅改文件名：`t2s_*`、`s2t_*`、`tw_variants.txt`），由应用唯一的简繁实现 `ChineseConverter` 使用：阅读正文与章节名的简繁转换、规则引擎 `java.t2s` / `java.s2t`、搜索关键词的简繁互转（台湾用字），以及 `aiengine` 漫画对白繁→简（经宿主接口）。应用自行实现词组最长匹配适配器，不包含完整 OpenCC 引擎。完整许可文本见发行包内 [THIRD_PARTY_LICENSES.txt](entry/src/main/resources/rawfile/licenses/THIRD_PARTY_LICENSES.txt)。
+
+## acorn
+
+- 组件：acorn JavaScript 解析器（压缩后内置于 `harmony-book-source-engine/sourceengine/src/main/ets/core/book/StageScriptParserSource.ts`，由 `harmony-book-source-engine/scripts/generate-stage-script-parser.mjs` 生成）
+- 上游项目：https://github.com/acornjs/acorn
+- 许可证：MIT
+- 版权所有：Copyright (C) 2012-2022 by various contributors
+
+用于在分阶段运行时里解析兼容书源脚本，使脚本返回值与 Android 端 Rhino 一致。
+
+## 本地 aiengine 模块
+
+`aiengine/` 中的漫画文字识别与超分代码来自 qingye-reader 提交 `8a783195b0da9191742e41f32086d084017439c3`（GPL-3.0），按 GPL-3.0 再分发，来源与改动见 [aiengine/NOTICE.md](aiengine/NOTICE.md)。本构建不包含上游的漫画着色模型（Manga-Colorizer / AlacGAN）。
 
 ## 完整许可文本
 

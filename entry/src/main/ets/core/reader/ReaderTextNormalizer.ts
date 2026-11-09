@@ -1,5 +1,6 @@
 import { ReaderActionMarker } from '@legado/sourceengine';
 import { ReaderImageMarker } from '../book/ReaderImageMarker';
+import { ReaderParagraphIndent } from './ReaderParagraphIndent';
 
 /**
  * 章节正文归一化（纯逻辑，不依赖 ArkUI）：换行与空白清理、软换行合并、段首缩进、重复标题剥离。
@@ -7,7 +8,16 @@ import { ReaderImageMarker } from '../book/ReaderImageMarker';
  * scripts/reader-text-normalizer-check.mjs。
  */
 export class ReaderTextNormalizer {
-  static readonly PARAGRAPH_INDENT: string = '　　';
+  /** 标题行开头的章节号：第N章/节/回/卷…或 Chapter N。 */
+  private static readonly HEADING_PREFIX: RegExp =
+    /^(?:第\s*[\d０-９一二三四五六七八九十百千万零〇两壹贰叁肆伍陆柒捌玖拾佰仟]+\s*[章节節回卷集部篇话話幕]|chapter\s*\d+)/i;
+  /** 宽松比较标题时忽略的标点。 */
+  private static readonly TITLE_PUNCTUATION: RegExp =
+    /[!-\/:-@\[-`{-~、。，．：；！？…—–―·‧・“”‘’「」『』《》〈〉【】〔〕（）［］｛｝＂＇｀〜～｜／＼]/g;
+  /** 首行以标题开头、后面直接接正文时，只有标题够长才剥离，免得“序”“楔子”截掉正文开头。 */
+  private static readonly MIN_PREFIX_TITLE_LENGTH: number = 4;
+  /** 标题被书源拆成多行时最多拼几行来比较。 */
+  private static readonly MAX_SPLIT_TITLE_LINES: number = 3;
 
   static isTrimChar(value: string): boolean {
     return value === ' ' || value === '\t' || value === '\n' || value === '\r' ||
@@ -15,8 +25,7 @@ export class ReaderTextNormalizer {
       value === '‌' || value === '‍' || value === '⁠';
   }
 
-  // "保留段首缩进"开启时分页/分块起点仍要跳过的字符：换行与零宽不可见字符。
-  // 空格类字符（全角空格、普通空格等）在此模式下保留，段首缩进因此不被裁掉。
+  // 分页/分块起点只跳过换行与零宽字符，保留正文按字符数设置生成的段首缩进。
   static isPageStartTrimChar(value: string): boolean {
     return value === '\n' || value === '\r' || value === '﻿' ||
       value === '​' || value === '‌' || value === '‍' || value === '⁠';
@@ -42,8 +51,18 @@ export class ReaderTextNormalizer {
       .replace(/\n{3,}/g, '\n\n'));
   }
 
-  static normalizeChapterBody(text: string): string {
-    return ReaderTextNormalizer.mergeSoftWrappedLines(ReaderTextNormalizer.normalizeText(text));
+  /**
+   * 传入 title 时同时剥离正文开头的重复标题。剥离放在软换行合并之前：标题行没有句末标点，又和较短的
+   * 首段一起不足 48 字时会被并成一段，之后就认不出来了。合并前没认出来（如书源把标题拆成了两行）再合并后试一次。
+   */
+  static normalizeChapterBody(text: string, title: string = ''): string {
+    const normalized = ReaderTextNormalizer.normalizeText(text);
+    if (!title) {
+      return ReaderTextNormalizer.mergeSoftWrappedLines(normalized);
+    }
+    const stripped = ReaderTextNormalizer.stripDuplicatedTitle(normalized, title);
+    const merged = ReaderTextNormalizer.mergeSoftWrappedLines(stripped);
+    return stripped !== normalized ? merged : ReaderTextNormalizer.stripDuplicatedTitle(merged, title);
   }
 
   static mergeSoftWrappedLines(text: string): string {
@@ -104,6 +123,10 @@ export class ReaderTextNormalizer {
     if (!prev || !next) {
       return false;
     }
+    // 章节标题行自成一段，不与下一行合并。
+    if (ReaderTextNormalizer.HEADING_PREFIX.test(prev)) {
+      return false;
+    }
     if (/^[　\s]/.test(nextRaw)) {
       return false;
     }
@@ -119,35 +142,36 @@ export class ReaderTextNormalizer {
     return prev.length < 48 && next.length < 48;
   }
 
-  static indentChapterBody(text: string): string {
+  static indentChapterBody(text: string, indentChars: number = ReaderParagraphIndent.DEFAULT): string {
     const normalized = ReaderTextNormalizer.normalizeChapterBody(text);
     if (!normalized) {
       return '';
     }
     return normalized
       .split('\n')
-      .map((line: string) => ReaderTextNormalizer.indentLine(line))
+      .map((line: string) => ReaderTextNormalizer.indentLine(line, indentChars))
       .join('\n');
   }
 
-  static indentLine(line: string): string {
+  static indentLine(line: string, indentChars: number = ReaderParagraphIndent.DEFAULT): string {
     if (!line || line.trim().length === 0) {
       return line;
     }
     const trimmed = line.trim();
-    // 图片标记是结构数据，不是正文段落；给它添加两个全角空格会被分页器拆成一张不可见的文本页。
+    // 图片标记是结构数据，不是正文段落；添加缩进会被分页器拆成一张不可见的文本页。
     if (ReaderImageMarker.isMarker(trimmed)) {
       return trimmed;
     }
-    if (line.startsWith(ReaderTextNormalizer.PARAGRAPH_INDENT)) {
-      return line;
-    }
-    return `${ReaderTextNormalizer.PARAGRAPH_INDENT}${line.replace(/^[　\s]+/g, '')}`;
+    const indent = '　'.repeat(ReaderParagraphIndent.normalize(indentChars));
+    return `${indent}${line.replace(/^[　\s]+/g, '')}`;
   }
 
   /**
-   * 正文开头重复章节名时剥离那一行。比较时忽略空白、零宽字符和行内交互标记：有的书源用零宽空格代替
-   * 章节名里的空格，或者在标题行上挂段评。标题行前面的图片行（如卷首插图）和空行会被跳过并保留。
+   * 正文开头重复章节名时剥离。比较时忽略空白、零宽字符和行内交互标记：有的书源用零宽空格代替章节名里的
+   * 空格，或者在标题行上挂段评。标题行前面的图片行（如卷首插图）和空行会被跳过并保留。
+   * 认作标题行的情况：与标题相同；标题带章节号时只差标点（“第1章：开端”）或只差章节号（“开端”）；
+   * 标题被拆成相邻几行（可隔空行）、拼起来符合前面的条件。
+   * 首行以标题开头、后面直接接着一句正文时只去掉标题部分，其余作为首段保留。
    */
   static stripDuplicatedTitle(body: string, title: string): string {
     if (!body || !title) {
@@ -162,14 +186,116 @@ export class ReaderTextNormalizer {
     while (index < lines.length && (!lines[index].trim() || ReaderImageMarker.isMarker(lines[index].trim()))) {
       index++;
     }
-    if (index >= lines.length || ReaderTextNormalizer.titleKey(lines[index]) !== wanted) {
+    if (index >= lines.length) {
       return body;
     }
-    const rest = lines.slice(index + 1).join('\n').replace(/^\n+/, '');
+    let titleEnd = index;
+    if (!ReaderTextNormalizer.isTitleLine(lines[index], title)) {
+      titleEnd = ReaderTextNormalizer.findSplitTitleEnd(lines, index, title);
+    }
+    if (titleEnd < 0) {
+      const rest = ReaderTextNormalizer.stripTitlePrefix(lines[index], wanted);
+      if (!rest) {
+        return body;
+      }
+      lines[index] = rest;
+      return ReaderTextNormalizer.trim(lines.join('\n'));
+    }
+    const rest = lines.slice(titleEnd + 1).join('\n').replace(/^\n+/, '');
     if (index === 0) {
       return ReaderTextNormalizer.trim(rest);
     }
     return ReaderTextNormalizer.trim(`${lines.slice(0, index).join('\n')}\n${rest}`);
+  }
+
+  /**
+   * 书源把标题拆成几行（如“第235章”一行、“猝不及防的人物”一行，中间可能夹空行）时，返回最后一个标题行的下标；
+   * 不是拆开的标题返回 -1。章节号行不会被软换行合并，所以这种情况要在这里认。
+   * 每多拼一行，已拼内容都必须是标题的开头部分，拼完还得整体认作标题行，正文首句拼不出完整标题，不会被误剥。
+   */
+  private static findSplitTitleEnd(lines: string[], start: number, title: string): number {
+    const titleKey = ReaderTextNormalizer.titleKey(title);
+    const loose = ReaderTextNormalizer.HEADING_PREFIX.test(titleKey);
+    const compareKey = (text: string): string => {
+      const key = ReaderTextNormalizer.titleKey(text);
+      return loose ? key.replace(ReaderTextNormalizer.TITLE_PUNCTUATION, '') : key;
+    };
+    const wanted = compareKey(title);
+    let joined = lines[start];
+    let end = start;
+    for (let count = 1; count < ReaderTextNormalizer.MAX_SPLIT_TITLE_LINES; count++) {
+      const joinedKey = compareKey(joined);
+      if (joinedKey.length < 2 || joinedKey.length >= wanted.length || !wanted.startsWith(joinedKey)) {
+        return -1;
+      }
+      let next = end + 1;
+      while (next < lines.length && !lines[next].trim()) {
+        next++;
+      }
+      if (next >= lines.length || ReaderImageMarker.isMarker(lines[next].trim())) {
+        return -1;
+      }
+      joined += ` ${lines[next]}`;
+      end = next;
+      if (ReaderTextNormalizer.isTitleLine(joined, title)) {
+        return end;
+      }
+    }
+    return -1;
+  }
+
+  private static isTitleLine(line: string, title: string): boolean {
+    const lineKey = ReaderTextNormalizer.titleKey(line);
+    const titleKey = ReaderTextNormalizer.titleKey(title);
+    if (lineKey === titleKey) {
+      return true;
+    }
+    // 宽松比较只用于带章节号的标题：不带章节号的标题可能本身就是一句话，只差句号的首行是正文。
+    const prefix = ReaderTextNormalizer.HEADING_PREFIX.exec(titleKey);
+    if (!prefix) {
+      return false;
+    }
+    const looseLine = lineKey.replace(ReaderTextNormalizer.TITLE_PUNCTUATION, '');
+    const looseTitle = titleKey.replace(ReaderTextNormalizer.TITLE_PUNCTUATION, '');
+    if (looseTitle.length > 0 && looseLine === looseTitle) {
+      return true;
+    }
+    // 只差章节号时要求逐字相同（含标点），“他笑了。”这样的首句不会被当成“第3章 他笑了”。
+    const bare = titleKey.substring(prefix[0].length).replace(/^[:：、,，.．·\-—_|｜]+/, '');
+    return bare.length >= 2 && lineKey === bare;
+  }
+
+  /** 行首是标题、后面紧接一句正文时返回去掉标题后的部分（保留其中的交互标记）；否则返回空串。 */
+  private static stripTitlePrefix(line: string, key: string): string {
+    if (key.length < ReaderTextNormalizer.MIN_PREFIX_TITLE_LENGTH) {
+      return '';
+    }
+    let marker = ReaderActionMarker.findFirstRawRange(line, 0);
+    let matched = 0;
+    let pos = 0;
+    while (pos < line.length && matched < key.length) {
+      if (marker.length === 2 && pos >= marker[0]) {
+        pos = Math.max(pos, marker[1]);
+        marker = ReaderActionMarker.findFirstRawRange(line, pos);
+        continue;
+      }
+      const char = line.charAt(pos);
+      pos++;
+      if (ReaderTextNormalizer.isTrimChar(char)) {
+        continue;
+      }
+      if (char !== key.charAt(matched)) {
+        return '';
+      }
+      matched++;
+    }
+    if (matched < key.length) {
+      return '';
+    }
+    const rest = line.substring(pos).replace(/^[\s　:：、,，.．·\-—_|｜]+/, '');
+    const plain = ReaderTextNormalizer.trim(ReaderActionMarker.strip(rest));
+    // 剩下的得像一句正文：够长且带标点。“第一章 开端了”剩个“了”，说明首行只是碰巧以标题开头。
+    return plain.length >= 6 && /[，。！？；…,.!?;]/.test(plain) ? rest : '';
   }
 
   /**
@@ -212,16 +338,14 @@ export class ReaderTextNormalizer {
   }
 
   /**
-   * 把 [rawStart, rawEnd) 裁掉首尾空白后追加为一页；裁完为空则不追加。
-   * keepIndent 为 true 时页首只跳过换行与零宽字符，保留空格类缩进。
+   * 把 [rawStart, rawEnd) 追加为一页；页首保留已有缩进，不给段落续行补缩进。
+   * 裁掉首部换行与零宽字符、尾部空白；裁完为空则不追加。
    */
   static pushPage(source: string, rawStart: number, rawEnd: number, pages: string[], starts: number[],
-    ends: number[], keepIndent: boolean): void {
+    ends: number[]): void {
     let pageStart = Math.max(0, Math.min(rawStart, source.length));
     let pageEnd = Math.max(pageStart, Math.min(rawEnd, source.length));
-    while (pageStart < pageEnd && (keepIndent ?
-      ReaderTextNormalizer.isPageStartTrimChar(source.charAt(pageStart)) :
-      ReaderTextNormalizer.isTrimChar(source.charAt(pageStart)))) {
+    while (pageStart < pageEnd && ReaderTextNormalizer.isPageStartTrimChar(source.charAt(pageStart))) {
       pageStart++;
     }
     while (pageEnd > pageStart && ReaderTextNormalizer.isTrimChar(source.charAt(pageEnd - 1))) {

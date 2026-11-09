@@ -10,6 +10,7 @@ import { ThemeRuntime } from '../theme/ThemeRuntime';
  */
 @Component
 export struct AdaptiveSwitch {
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   @Prop isOn: boolean = false;
   @Prop selectedColor?: ResourceColor;
   @Prop switchEnabled: boolean = true;
@@ -24,6 +25,8 @@ export struct AdaptiveSwitch {
         .selectedColor(this.checkedColor())
         .enabled(this.switchEnabled)
         .systemMaterial(this.material())
+        .borderRadius(999)
+        .border(ImmersiveMaterialRuntime.surfaceBorder(this.immersiveLightLevel, this.appDarkMode))
         .accessibilityText(this.accessibilityLabel)
         .onChange((isOn: boolean) => this.onChange(isOn));
     } else {
@@ -41,13 +44,15 @@ export struct AdaptiveSwitch {
     return this.themeRevision >= 0 ? ThemeRuntime.buttonColor(this.appDarkMode) : '';
   }
 
-  private material(): uiMaterial.ImmersiveMaterial {
-    return new uiMaterial.ImmersiveMaterial({
-      style: ImmersiveMaterialRuntime.materialStyle(),
+  private material(): uiMaterial.Material {
+    return ImmersiveMaterialRuntime.componentMaterial({
+      style: ImmersiveMaterialRuntime.materialStyle(this.immersiveLightLevel),
       materialColor: '#22FFFFFF',
       applyShadow: true,
-      interactive: ImmersiveMaterialRuntime.configuredLightLevel() !== 'weak',
-      lightEffect: ImmersiveMaterialRuntime.lightEffect()
-    });
+      // 开关的手势与动画由原生 Toggle 管理。通用材质只提供静态表面，
+      // 不叠加第二套触摸反馈，也不在触摸过程中替换材质、打断 Toggle 的切换。
+      interactive: false,
+      lightEffect: null
+    }, this.immersiveLightLevel);
   }
 }

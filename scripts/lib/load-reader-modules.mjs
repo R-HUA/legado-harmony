@@ -9,17 +9,29 @@ import { pathToFileURL } from 'node:url';
 import { ETS_ROOTS, readEtsModule, toNodeModuleSource } from './ets-module-staging.mjs';
 
 const MODULES = [
+  'utils/HexColor.ts',
   'core/book/ReaderImageMarker.ts',
   'core/book/ReaderActionMarker.ts',
+  'core/book/EpubNoteLink.ts',
   'core/book/EpubHtmlConverter.ts',
   'core/book/EpubChapterPlanner.ts',
+  'core/book/EpubTextOffsetMap.ts',
+  'core/book/EpubOriginalDocument.ts',
+  'core/book/EpubOriginalPosition.ts',
+  'core/reader/ReaderNightImage.ts',
+  'core/book/EpubOriginalScript.ts',
+  'core/book/ReaderCacheBudgetPolicy.ts',
+  'core/book/MobiBookParser.ts',
+  'core/book/ZipArchiveIndex.ts',
   'core/reader/ReaderMixedPageLayout.ts',
   'core/reader/ReaderTextNormalizer.ts',
+  'core/reader/ReaderParagraphIndent.ts',
   'core/reader/ReaderPageOffsets.ts',
   'core/reader/ReaderChunkPagination.ts',
   'core/reader/ReaderChapterRange.ts',
   'core/reader/ReaderPageTurnQueue.ts',
   'core/reader/ReaderInfoBarModel.ts',
+  'core/reader/ReaderContentSearchMatcher.ts',
 ];
 
 export async function loadReaderModules() {

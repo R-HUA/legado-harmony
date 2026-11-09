@@ -1,12 +1,24 @@
 import { SettingsSelect } from '../components/SettingsSelect';
 import { router } from '@kit.ArkUI';
+import { text } from '@kit.ArkGraphics2D';
+import { ReaderTitleSplit } from '../core/reader/ReaderTitleSplit';
+import { ReaderTitleStyleCodec, ReaderTitleStyleSettings } from '../model/reader/ReaderTitleStyle';
+import { ReaderFontWeightStepper } from '../components/reader/ReaderFontWeightStepper';
+import { ReaderWeightedText, ReaderWeightedTextSpan } from '../components/reader/ReaderWeightedText';
+import { ReaderTypographyPreview, ReaderTypographyPreviewConfig } from '../components/reader/ReaderTypographyPreview';
+import { ReaderV2DocumentParser } from '../core/reader/ReaderV2Document';
+import { ReaderV2Color, ReaderV2SpanStyleRange } from '../core/reader/ReaderV2Style';
+import { ReaderParagraphIndent } from '../core/reader/ReaderParagraphIndent';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ReaderSettings, ReaderSettingsStore } from '../utils/ReaderSettingsStore';
 import { ReaderFontHelper, ReaderFontItem } from '../utils/ReaderFontHelper';
 import { ReaderSystemFontHelper } from '../utils/ReaderSystemFontHelper';
+import { ReaderFontBootstrap } from '../utils/ReaderFontBootstrap';
 import { AdaptiveColorPicker } from '../components/AdaptiveColorPicker';
 import { AdaptiveIconButton } from '../components/AdaptiveIconButton';
 import { AdaptiveSwitch } from '../components/AdaptiveSwitch';
+import { MaterialSegmentTabs } from '../components/common/MaterialSegmentTabs';
+import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
 import {
   ReaderRegexBubbleStyleResolver,
   ReaderRegexEmphasisContext,
@@ -16,11 +28,18 @@ import {
   ReaderResolvedRegexEmphasis
 } from '../model/reader/ReaderRegexFontRule';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
+import { HdsFeedback } from '../utils/HdsFeedback';
+import { ListDissolve } from '../utils/ListDissolve';
+import { DeleteParticleBurst, DeleteParticleLayer } from '../components/common/DeleteParticles';
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
 import { ThemeAccessPolicy } from '../account/ThemeAccessPolicy';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
+import { CloudAutoSync, CloudRemoteFont } from '../account/CloudAutoSync';
+import { CloudFontMenu } from '../account/CloudFontMenu';
+import { ThemeTypographyDraft } from '../utils/ThemeTypographyDraft';
+import { ReaderTitlePreviewStore } from '../utils/ReaderTitlePreviewStore';
 
 class ReaderCustomFontItem {
   familyName: string = '';
@@ -38,6 +57,13 @@ class ReaderRegexPreviewSlice {
   key: string = '';
 }
 
+/** 字体设置分四段显示，顶部切换；默认停在正文字体。 */
+export const READER_FONT_SECTION_LABELS: string[] = ['自定义字体', '正文字体', '标题字体', '正则字体'];
+export const READER_FONT_SECTION_BODY: number = 1;
+
+/** 共用规则控件时，编辑页草稿用的下标（-1 已被标题强调占用）。 */
+const EDITING_REGEX_RULE_INDEX: number = -2;
+
 class ReaderBubbleStyleOption {
   styleId: string = '';
   label: string = '';
@@ -48,20 +74,42 @@ class ReaderBubbleStyleOption {
   }
 }
 
-@Entry
 @Component
-struct ReaderFontSettingsPage {
+export struct ReaderFontSettingsEditor {
+  @Prop embedded: boolean = false;
+  // 外层自己放切换栏时传入当前分段（小说设置的悬浮面板把切换栏固定在面板顶部）；-1 表示由本组件显示切换栏。
+  @Prop fontSection: number = -1;
+  @State ownFontSection: number = READER_FONT_SECTION_BODY;
+  @State editorWidth: number = 0;
+  private customFontPreviewFamilies: Map<string, string> = new Map<string, string>();
+  onStylePreviewChanged: (settings: ReaderSettings) => void = (_settings: ReaderSettings): void => {};
+  onCloseReady: (close: () => void) => void = (_close: () => void): void => {};
+  onShownReady: (show: () => void) => void = (_show: () => void): void => {};
+  @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('accountEntitlementsRevision') accountEntitlementsRevision: number = 0;
+  // 正文排版与阅读字体共用 fontWeight；主题草稿仍只提交到草稿。
+  @State readerFontWeight: number = 400;
   @State readerFontSize: number = 20;
   @State readerBodyFontMode: string = 'global';
   @State readerBodyFontFamily: string = '';
   @State readerTitleFontMode: string = 'global';
   @State readerTitleFontFamily: string = '';
   @State readerTitleFontSize: number = 22;
+  @State readerTitleFontWeight: number = 600;
+  @State titleStyle: ReaderTitleStyleSettings = new ReaderTitleStyleSettings();
+  @State titlePreviewText: string = ReaderTitlePreviewStore.DEFAULT_TEXT;
+  // 示例编辑框展开的位置：顶部标题预览 'preview'、标题分段 'split'，空串为收起。
+  @State titlePreviewEditingAt: string = '';
+  // 读出上次的示例之前用户已经改过，就不再用读到的值覆盖。
+  private titlePreviewTouched: boolean = false;
+  @State titleReadingPreview: boolean = false;
+  @State titleReadingPreviewHeight: number = 720;
+  @State previewLayoutSettings: ReaderSettings = new ReaderSettings();
   @State readerRegexFontEnabled: boolean = false;
   @State readerRegexFontPattern: string = '';
   @State readerRegexFontMode: string = 'global';
@@ -71,20 +119,60 @@ struct ReaderFontSettingsPage {
   @State readerRegexFontRulesRaw: string = '';
   @StorageLink('readerFontFamily') readerFontFamily: string = '';
   @StorageLink('readerSystemFontFamily') readerSystemFontFamily: string = '';
+  @StorageLink('readerFontMode') readerFontMode: string = 'device';
   @StorageLink('readerCustomFontsRaw') readerCustomFontsRaw: string = '';
+  @StorageLink('cloudRemoteFontsRaw') cloudRemoteFontsRaw: string = '';
+  private downloadingRemoteFont: boolean = false;
   @State regexRules: ReaderRegexFontRule[] = [];
+  /** 正在消散的正则规则 id，见 ListDissolve。 */
+  @State dissolvingRuleIds: string[] = [];
+  @State deleteParticleBursts: DeleteParticleBurst[] = [];
   @State regexHighlightRefreshKey: number = 0;
   @State activeRegexInputKey: string = '';
+  // 正则规则在单独的编辑页里改草稿，点保存才写回列表；新建规则的下标为 -1。
+  @State regexEditorShown: boolean = false;
+  @State editingRegexRule: ReaderRegexFontRule = new ReaderRegexFontRule();
+  private editingRegexRuleIndex: number = -1;
+  private editingRegexRuleSnapshot: string = '';
   private readerSettingsLoaded: boolean = false;
   private readerSettingsLoading: boolean = false;
   private closingReaderFontSettings: boolean = false;
   private latestReaderFontStyleSave: Promise<void> = Promise.resolve();
   private latestReaderFontStyleSettings: ReaderSettings | null = null;
   private readerFontStyleSaveTimerId: number = -1;
+  // 从主题排版页打开时只编辑那一页的草稿，保存与否由主题排版页决定。
+  private draftMode: boolean = false;
 
   aboutToAppear(): void {
+    this.onCloseReady(() => { this.closeReaderFontSettings(); });
+    this.onShownReady(() => { this.onPageShow(); });
+    const params = router.getParams() as Record<string, Object> | undefined;
+    this.draftMode = !!params && params[ThemeTypographyDraft.DRAFT_PARAM] === true &&
+      ThemeTypographyDraft.current() !== null;
     this.loadSettings();
+    this.loadTitlePreviewText();
     this.syncBars();
+  }
+
+  async loadTitlePreviewText(): Promise<void> {
+    try {
+      const text = await ReaderTitlePreviewStore.load(getContext(this));
+      if (!this.titlePreviewTouched) this.titlePreviewText = text;
+    } catch (e) {
+      console.warn('读取标题预览示例失败:', e);
+    }
+  }
+
+  setTitlePreviewText(text: string): void {
+    this.titlePreviewTouched = true;
+    this.titlePreviewText = text;
+    ReaderTitlePreviewStore.save(getContext(this), text).catch((e: Error) => {
+      console.warn('保存标题预览示例失败:', e);
+    });
+  }
+
+  aboutToDisappear(): void {
+    this.flushScheduledSettingsSave();
   }
 
   onPageShow(): void {
@@ -100,11 +188,19 @@ struct ReaderFontSettingsPage {
   }
 
   async closeReaderFontSettings(): Promise<void> {
+    if (this.regexEditorShown) {
+      this.leaveRegexRuleEditor();
+      return;
+    }
     if (this.closingReaderFontSettings) {
       return;
     }
     this.closingReaderFontSettings = true;
     this.flushScheduledSettingsSave();
+    if (this.draftMode) {
+      router.back();
+      return;
+    }
     // Every editing control saves its own updated snapshot. Re-encoding the component
     // state while the route is being removed can read a stale ForEach item and overwrite
     // the just-persisted regex switches, which is especially visible when this page was
@@ -131,13 +227,18 @@ struct ReaderFontSettingsPage {
     }
     this.readerSettingsLoading = true;
     try {
-      const settings = await ReaderSettingsStore.load(getContext(this));
+      const draft = this.draftMode ? ThemeTypographyDraft.current() : null;
+      const settings = draft ? draft : await ReaderSettingsStore.load(getContext(this));
+      this.previewLayoutSettings = settings;
       this.readerFontSize = settings.fontSize;
+      this.readerFontWeight = settings.fontWeight;
       this.readerBodyFontMode = settings.bodyFontMode;
       this.readerBodyFontFamily = settings.bodyFontFamily;
       this.readerTitleFontMode = settings.titleFontMode;
       this.readerTitleFontFamily = settings.titleFontFamily;
       this.readerTitleFontSize = settings.titleFontSize;
+      this.readerTitleFontWeight = settings.titleFontWeight;
+      this.titleStyle = ReaderTitleStyleCodec.decode(settings.titleStyleRaw);
       this.readerRegexFontEnabled = settings.regexFontEnabled;
       this.readerRegexFontPattern = settings.regexFontPattern;
       this.readerRegexFontMode = settings.regexFontMode;
@@ -148,6 +249,7 @@ struct ReaderFontSettingsPage {
       this.regexRules = this.parseRegexRules(settings);
       this.bumpRegexHighlightRefresh();
       this.readerSettingsLoaded = true;
+      this.onStylePreviewChanged(settings);
     } catch (e) {
       console.warn('加载阅读字体设置失败:', e);
     } finally {
@@ -156,19 +258,146 @@ struct ReaderFontSettingsPage {
   }
 
   build() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      PageScaffold({ title: '阅读字体', onBack: () => this.closeReaderFontSettings(), content: () => {
+    Column() {
+      if (this.embedded) {
         this.pageContent()
-      } })
+      } else {
+        PageScaffold({ title: this.draftMode ? '主题阅读字体' : '阅读字体', onBack: () => this.closeReaderFontSettings(), content: () => {
+          this.pageContent()
+        } })
+      }
+
+      // 同一节点只能挂一个模态，标题预览面板已占了根节点，规则编辑页单独挂在 1×1 节点上。
+      Column().width(1).height(1).position({ x: 0, y: 0 }).hitTestBehavior(HitTestMode.None)
+        .bindContentCover($$this.regexEditorShown, this.regexRuleEditorCover(), {
+          transition: this.regexEditorTransition(),
+          // 侧滑返回也走“是否保存？”，由 leaveRegexRuleEditor 决定关不关。
+          onWillDismiss: (_action: DismissContentCoverAction): void => this.leaveRegexRuleEditor()
+        })
     }
     .width('100%')
-    .height('100%')
-    .backgroundColor(this.pageColor())
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    .height(this.embedded ? 'auto' : '100%')
+    .onAreaChange((_previous: Area, current: Area) => {
+      const width = Number(current.width);
+      if (width > 0 && Math.abs(width - this.editorWidth) >= 1) this.editorWidth = width;
+    })
+    .backgroundColor(this.embedded ? Color.Transparent : this.pageColor())
+    .expandSafeArea(this.embedded ? [] : [SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    .bindSheet($$this.titleReadingPreview, this.titleReadingPreviewSheet, {
+      height: SheetSize.LARGE, dragBar: true, showClose: true,
+      backgroundColor: ThemeRuntime.readerBackgroundColor(this.appDarkMode)
+    })
+  }
+
+  regexEditorTransition(): TransitionEffect {
+    const appear = TransitionEffect.translate({ x: 48 })
+      .combine(TransitionEffect.opacity(0))
+      .animation({ duration: 260, curve: Curve.Friction });
+    const disappear = TransitionEffect.translate({ x: 48 })
+      .combine(TransitionEffect.opacity(0))
+      .animation({ duration: 180, curve: Curve.EaseIn });
+    return TransitionEffect.asymmetric(appear, disappear);
+  }
+
+  activeFontSection(): number {
+    return this.fontSection >= 0 ? this.fontSection : this.ownFontSection;
   }
 
   @Builder
   pageContent() {
+    if (this.fontSection < 0) {
+      Row() {
+        MaterialSegmentTabs({ labels: READER_FONT_SECTION_LABELS, selectedIndex: this.ownFontSection,
+          tabsWidth: Math.max(1, (this.editorWidth || 360) - AppSpacing.LG * 2), idPrefix: 'reader_font_section',
+          onSelect: (index: number) => { this.ownFontSection = index; } })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Center)
+      .padding({ top: AppSpacing.SM })
+    }
+    if (this.activeFontSection() === 0) {
+      this.customFontSection()
+    } else if (this.activeFontSection() === 1) {
+      this.bodyFontSection()
+    } else if (this.activeFontSection() === 2) {
+      this.titleFontSection()
+    } else {
+      this.regexFontSection()
+    }
+  }
+
+  @Builder
+  customFontSection() {
+    this.customFontEntryItem()
+    this.sectionTitle('已上传的字体')
+    Column() {
+      if (this.customFonts().length === 0) {
+        Text('还没有上传字体，点上方“上传 / 管理”添加 ttf、otf、ttc 字体文件。')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.subTextColor())
+          .width('100%')
+          .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
+      }
+      ForEach(this.customFonts(), (font: ReaderCustomFontItem, index: number) => {
+        this.customFontRow(font, index)
+      }, (font: ReaderCustomFontItem) => font.filePath || font.familyName)
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.embedded ? Color.Transparent : this.cardColor())
+  }
+
+  @Builder
+  customFontRow(font: ReaderCustomFontItem, index: number) {
+    Row({ space: AppSpacing.MD }) {
+      Text(font.sourceName || font.familyName)
+        .fontSize(AppFontSize.BODY_LARGE)
+        .fontColor(this.primaryTextColor())
+        .fontFamily(this.customFontPreviewFamily(font))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      if (this.customFontUsage(index)) {
+        Text(this.customFontUsage(index))
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.accentColor())
+      }
+    }
+    .width('calc(100% - 32vp)')
+    .constraintSize({ minHeight: 52 })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
+    .border({ width: { bottom: index < this.customFonts().length - 1 ? 0.5 : 0 }, color: this.settingsDividerColor() })
+    .alignItems(VerticalAlign.Center)
+  }
+
+  /** 列表里用字体本身显示名字；注册结果按文件缓存，避免每次重绘都重新注册。 */
+  customFontPreviewFamily(font: ReaderCustomFontItem): string {
+    const key = font.filePath || font.familyName;
+    let family = this.customFontPreviewFamilies.get(key);
+    if (family === undefined) {
+      family = this.registerCustomFont(font);
+      this.customFontPreviewFamilies.set(key, family);
+    }
+    return family || this.applicationFontFamily;
+  }
+
+  /** 这款字体正被正文或标题使用时，在列表里标出来。 */
+  customFontUsage(index: number): string {
+    const optionIndex = index + 2;
+    const uses: string[] = [];
+    if (this.selectedFontIndex(this.readerBodyFontMode, this.readerBodyFontFamily) === optionIndex) {
+      uses.push('正文');
+    }
+    if (this.selectedFontIndex(this.readerTitleFontMode, this.readerTitleFontFamily) === optionIndex) {
+      uses.push('标题');
+    }
+    return uses.length > 0 ? `${uses.join('、')}在用` : '';
+  }
+
+  @Builder
+  bodyFontSection() {
     this.sectionTitle('正文字体设置')
     Column() {
       this.fontModeItem('字体类型', this.readerBodyFontMode, this.readerBodyFontFamily, (mode: string, family: string) => {
@@ -177,31 +406,58 @@ struct ReaderFontSettingsPage {
         this.saveSettings();
       })
       this.bodyFontSizeStepper()
-      this.bodyPreviewItem()
+      ReaderFontWeightStepper({ value: this.readerFontWeight, scope: '正文',
+        textColor: this.primaryTextColor(), disabledColor: this.subTextColor(), dividerColor: this.settingsDividerColor(),
+        onChange: (value: number) => {
+          this.readerFontWeight = value;
+          this.saveSettings();
+        } })
+      if (!this.embedded) {
+        this.bodyPreviewItem()
+      }
     }
     .width('calc(100% - 24vp)')
     .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
     .borderRadius(ThemeRuntime.cardRadius())
     .clip(true)
-    .backgroundColor(this.cardColor())
+    .backgroundColor(this.embedded ? Color.Transparent : this.cardColor())
+  }
 
+  @Builder
+  titleFontSection() {
     this.sectionTitle('标题字体设置')
     Column() {
+      if (!this.embedded) {
+        this.titlePreviewItem()
+      }
       this.fontModeItem('字体类型', this.readerTitleFontMode, this.readerTitleFontFamily, (mode: string, family: string) => {
         this.readerTitleFontMode = mode;
         this.readerTitleFontFamily = family;
         this.saveSettings();
       })
       this.titleFontSizeStepper()
-      this.titlePreviewItem()
+      ReaderFontWeightStepper({ value: this.readerTitleFontWeight, scope: '标题',
+        textColor: this.primaryTextColor(), disabledColor: this.subTextColor(), dividerColor: this.settingsDividerColor(),
+        onChange: (value: number) => {
+          this.readerTitleFontWeight = value;
+          this.saveSettings();
+        } })
+      this.titleLayoutSettings()
+      this.titleSplitSettings()
+      this.titleEmphasisSettings()
     }
     .width('calc(100% - 24vp)')
     .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
     .borderRadius(ThemeRuntime.cardRadius())
     .clip(true)
-    .backgroundColor(this.cardColor())
+    .backgroundColor(this.embedded ? Color.Transparent : this.cardColor())
+  }
 
+  @Builder
+  regexFontSection() {
     this.sectionTitle('正则字体设置')
+    // 编辑器可能嵌在主题编辑器里、没有统一的根层，粒子层套在规则卡片外面（外层不裁切，颗粒能飘出卡片）。
+    Stack() {
     Column() {
       this.regexEnableSwitchItem()
       if (this.readerRegexFontEnabled) {
@@ -210,15 +466,22 @@ struct ReaderFontSettingsPage {
           this.emptyRegexRule()
         }
         ForEach(this.regexRules, (rule: ReaderRegexFontRule, index: number) => {
-          this.regexRulePanel(rule, index, this.regexHighlightRefreshKey)
-        }, (rule: ReaderRegexFontRule) => rule.id)
+          this.regexRuleRow(rule, index)
+        }, (rule: ReaderRegexFontRule) => `${rule.id}|${rule.name}|${rule.pattern}`)
       }
     }
-    .width('calc(100% - 24vp)')
-    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .width('100%')
     .borderRadius(ThemeRuntime.cardRadius())
     .clip(true)
-    .backgroundColor(this.cardColor())
+    .backgroundColor(this.embedded ? Color.Transparent : this.cardColor())
+
+    if (this.deleteParticleBursts.length > 0) {
+      DeleteParticleLayer({ bursts: this.deleteParticleBursts })
+    }
+    }
+    .id('reader_regex_rules_root')
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
   }
 
   saveSettings(regexRules: ReaderRegexFontRule[] = this.regexRules): void {
@@ -227,11 +490,14 @@ struct ReaderFontSettingsPage {
     }
     const settings = new ReaderSettings();
     settings.fontSize = this.readerFontSize;
+    settings.fontWeight = this.readerFontWeight;
     settings.bodyFontMode = this.normalizeFontMode(this.readerBodyFontMode);
     settings.bodyFontFamily = this.readerBodyFontFamily;
     settings.titleFontMode = this.normalizeFontMode(this.readerTitleFontMode);
     settings.titleFontFamily = this.readerTitleFontFamily;
     settings.titleFontSize = this.readerTitleFontSize;
+    settings.titleFontWeight = this.readerTitleFontWeight;
+    settings.titleStyleRaw = ReaderTitleStyleCodec.encode(this.titleStyle);
     settings.regexFontEnabled = this.readerRegexFontEnabled;
     settings.regexFontPattern = this.readerRegexFontPattern;
     settings.regexFontMode = this.normalizeFontMode(this.readerRegexFontMode);
@@ -242,6 +508,7 @@ struct ReaderFontSettingsPage {
     this.readerRegexFontRulesRaw = rulesRaw;
     settings.regexFontRulesRaw = rulesRaw;
     this.latestReaderFontStyleSettings = settings;
+    this.onStylePreviewChanged(settings);
     this.scheduleSettingsSave();
   }
 
@@ -265,6 +532,10 @@ struct ReaderFontSettingsPage {
 
   persistLatestSettings(): void {
     if (!this.latestReaderFontStyleSettings) return;
+    if (this.draftMode) {
+      ThemeTypographyDraft.applyFontStyle(this.latestReaderFontStyleSettings);
+      return;
+    }
     this.latestReaderFontStyleSave = ReaderSettingsStore.saveReaderFontStyleSettings(
       getContext(this), this.latestReaderFontStyleSettings);
     this.latestReaderFontStyleSave.catch((e: Error) => {
@@ -300,6 +571,7 @@ struct ReaderFontSettingsPage {
     return ReaderRegexFontCodec.newRuleId();
   }
 
+  /** 模板按钮直接进新建页，保存后才加入列表。 */
   addRegexRule(name: string, pattern: string): void {
     const rule = new ReaderRegexFontRule();
     rule.id = this.newRuleId();
@@ -312,13 +584,114 @@ struct ReaderFontSettingsPage {
     rule.emphasisColor = '';
     rule.highlightColorEnabled = false;
     rule.shadowColor = '';
-    rule.expanded = true;
-    this.regexRules = [...this.regexRules, rule];
+    this.openRegexRuleEditor(-1, rule);
+  }
+
+  openRegexRuleEditor(index: number, rule: ReaderRegexFontRule): void {
+    this.editingRegexRuleIndex = index;
+    this.editingRegexRule = ReaderRegexFontCodec.cloneRule(rule);
+    this.editingRegexRuleSnapshot = this.encodeRegexRules([this.editingRegexRule]);
+    this.activeRegexInputKey = '';
     this.bumpRegexHighlightRefresh();
-    this.saveSettings();
+    this.regexEditorShown = true;
+  }
+
+  isEditingNewRegexRule(): boolean {
+    return this.editingRegexRuleIndex < 0;
+  }
+
+  editingRegexRuleListIndex(): number {
+    for (let i = 0; i < this.regexRules.length; i++) {
+      if (this.regexRules[i].id === this.editingRegexRule.id) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  saveRegexRuleEditor(): void {
+    if (!this.regexEditorShown) return;
+    const rule = ReaderRegexFontCodec.cloneRule(this.editingRegexRule);
+    const next = this.regexRules.slice();
+    const index = this.editingRegexRuleListIndex();
+    if (index >= 0) {
+      next[index] = rule;
+    } else {
+      next.push(rule);
+    }
+    this.regexRules = next;
+    this.bumpRegexHighlightRefresh();
+    this.saveSettings(next);
+    this.closeRegexRuleEditor();
+  }
+
+  /** 返回时有改动（新建的规则总算有改动）就问是否保存。 */
+  leaveRegexRuleEditor(): void {
+    if (!this.regexEditorShown) return;
+    const changed = this.isEditingNewRegexRule() ||
+      this.encodeRegexRules([this.editingRegexRule]) !== this.editingRegexRuleSnapshot;
+    if (!changed) {
+      this.closeRegexRuleEditor();
+      return;
+    }
+    this.getUIContext().showAlertDialog({
+      title: '是否保存？',
+      message: this.isEditingNewRegexRule() ? '这条新规则还没有保存。' : '这条规则的修改还没有保存。',
+      primaryButton: { value: '不保存', action: () => this.closeRegexRuleEditor() },
+      secondaryButton: { value: '保存', action: () => this.saveRegexRuleEditor() }
+    });
+  }
+
+  async deleteEditingRegexRule(): Promise<void> {
+    const index = this.editingRegexRuleListIndex();
+    this.closeRegexRuleEditor();
+    if (index < 0 || index >= this.regexRules.length) return;
+    // 编辑面板滑走后这一条再消散，播完在补位动画里删掉。
+    const ruleId = `${this.regexRules[index].id}`;
+    const keys = [ruleId];
+    await ListDissolve.fadeOut(this.getUIContext(), keys, (key: string) => {
+      this.dissolvingRuleIds = [...this.dissolvingRuleIds, key];
+    }, ListDissolve.particles('reader_regex_rules_root', [this.accentColor(), this.primaryTextColor(), this.subTextColor()],
+      (key: string): string => this.regexRuleElementId(key), (): DeleteParticleBurst[] => this.deleteParticleBursts,
+      (bursts: DeleteParticleBurst[]): void => { this.deleteParticleBursts = bursts; }), ListDissolve.AFTER_DIALOG_MS);
+    ListDissolve.commit(this.getUIContext(), () => {
+      const current = this.regexRules.findIndex((rule: ReaderRegexFontRule) => `${rule.id}` === ruleId);
+      if (current >= 0) this.removeRegexRule(current);
+    }, () => {
+      this.dissolvingRuleIds = ListDissolve.without(this.dissolvingRuleIds, keys);
+    });
+  }
+
+  regexRuleElementId(key: string): string {
+    return `reader_regex_rule_${encodeURIComponent(key)}`;
+  }
+
+  isRegexRuleDissolving(rule: ReaderRegexFontRule): boolean {
+    return this.dissolvingRuleIds.length > 0 && this.dissolvingRuleIds.indexOf(`${rule.id}`) >= 0;
+  }
+
+  closeRegexRuleEditor(): void {
+    this.activeRegexInputKey = '';
+    this.regexEditorShown = false;
   }
 
   updateRegexRule(index: number, updater: (rule: ReaderRegexFontRule) => void): void {
+    if (index === EDITING_REGEX_RULE_INDEX) {
+      const draft = ReaderRegexFontCodec.cloneRule(this.editingRegexRule);
+      updater(draft);
+      this.editingRegexRule = draft;
+      this.bumpRegexHighlightRefresh();
+      return;
+    }
+    // Title emphasis uses the same controls and resolver without joining the regex rule list.
+    if (index === -1) {
+      const title = ReaderTitleStyleCodec.decode(ReaderTitleStyleCodec.encode(this.titleStyle));
+      updater(title.emphasis);
+      this.titleStyle = title;
+      this.bumpRegexHighlightRefresh();
+      this.saveSettings();
+      return;
+    }
     const next = this.regexRules.slice();
     if (index < 0 || index >= next.length) {
       return;
@@ -387,8 +760,37 @@ struct ReaderFontSettingsPage {
     for (const item of this.customFonts()) {
       options.push({ value: item.sourceName || item.familyName || '自定义字体' });
     }
+    for (const font of this.remoteFonts()) {
+      options.push(CloudFontMenu.option(font));
+    }
     return options;
   }
+
+  /** 云端有、本机未下载的字体（终身超级会员字体云同步），排在本机字体之后。 */
+  remoteFonts(): CloudRemoteFont[] {
+    return CloudAutoSync.parseRemoteFonts(this.cloudRemoteFontsRaw);
+  }
+
+  remoteFontStart(): number {
+    return 2 + this.customFonts().length;
+  }
+
+  /** 选中云端字体：静默下载导入，完成后按本机字体应用。 */
+  async selectRemoteFont(remoteIndex: number, apply: (customIndex: number) => void): Promise<void> {
+    const font = this.remoteFonts()[remoteIndex];
+    if (!font || this.downloadingRemoteFont) return;
+    this.downloadingRemoteFont = true;
+    try {
+      const filePath = await CloudAutoSync.ensureFontDownloaded(getContext(this), font);
+      const index = this.customFonts().findIndex((item: ReaderCustomFontItem) => item.filePath === filePath);
+      if (index >= 0) apply(index);
+    } catch (e) {
+      HdsFeedback.showToast(e instanceof Error && e.message ? e.message : '云端字体下载失败，请稍后重试');
+    } finally {
+      this.downloadingRemoteFont = false;
+    }
+  }
+
 
   selectedFontIndex(mode: string, family: string): number {
     if (mode === 'system') {
@@ -426,7 +828,7 @@ struct ReaderFontSettingsPage {
       const source = Array.isArray(parsed) ? parsed as ReaderCustomFontItem[] : ((parsed as ReaderCustomFontData).fonts || []);
       const result: ReaderCustomFontItem[] = [];
       for (const item of source) {
-        if (!item || !item.familyName) {
+        if (!item || !item.familyName || !ReaderFontHelper.fontFileExists(item.filePath)) {
           continue;
         }
         const font = new ReaderCustomFontItem();
@@ -450,7 +852,12 @@ struct ReaderFontSettingsPage {
       const fonts = this.customFonts();
       const fontIndex = index - 2;
       if (fontIndex >= 0 && fontIndex < fonts.length) {
-        return ['custom', this.registerCustomFont(fonts[fontIndex]) || fonts[fontIndex].familyName];
+        const family = this.registerCustomFont(fonts[fontIndex]);
+        if (!family) {
+          HdsFeedback.showToast('字体注册失败，请更换字体文件');
+          return [];
+        }
+        return ['custom', family];
       }
     }
     return ['global', ''];
@@ -458,14 +865,14 @@ struct ReaderFontSettingsPage {
 
   registerCustomFont(font: ReaderCustomFontItem): string {
     if (!font || !font.filePath) {
-      return font ? font.familyName : '';
+      return '';
     }
     const item = new ReaderFontItem();
     item.familyName = font.familyName || ReaderFontHelper.normalizeFontFamily(font.filePath);
     item.filePath = font.filePath;
     item.sourceName = ReaderFontHelper.resolveDisplayName(font.sourceName, font.filePath);
     const result = ReaderFontHelper.registerFont(this.getUIContext(), item);
-    return result.registered ? result.familyName : item.familyName;
+    return result.registered ? result.familyName : '';
   }
 
   resolveCustomFontFamily(family: string): string {
@@ -516,7 +923,35 @@ struct ReaderFontSettingsPage {
    * the top-level font rows and the nested regex rule rows.
    */
   syncBars(): void {
+    if (this.embedded) return;
     syncSystemBars(getContext(this), this.appDarkMode, this.pageColor());
+  }
+
+  @Builder
+  customFontEntryItem() {
+    Row() {
+      Text('自定义字体')
+        .fontSize(AppFontSize.BODY_LARGE)
+        .fontColor(this.primaryTextColor())
+        .layoutWeight(1)
+      Text('上传 / 管理')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.subTextColor())
+        .margin({ right: AppSpacing.MD })
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(18)
+        .fontColor([this.subTextColor()])
+    }
+    .width('calc(100% - 24vp)')
+    .constraintSize({ minHeight: 56 })
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .backgroundColor(this.cardColor())
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => {
+      router.pushUrl({ url: 'pages/CustomFontManager' });
+    })
   }
 
   @Builder
@@ -543,8 +978,15 @@ struct ReaderFontSettingsPage {
         textSize: AppFontSize.BODY,
         textColor: this.subTextColor(),
         onSelected: (index: number) => {
+          if (index >= this.remoteFontStart()) {
+            this.selectRemoteFont(index - this.remoteFontStart(), (customIndex: number) => {
+              const downloaded = this.modeAndFamilyByIndex(customIndex + 2);
+              if (downloaded.length === 2) onChange(downloaded[0], downloaded[1]);
+            });
+            return;
+          }
           const result = this.modeAndFamilyByIndex(index);
-          onChange(result[0], result[1]);
+          if (result.length === 2) onChange(result[0], result[1]);
         }
       })
     }
@@ -564,7 +1006,7 @@ struct ReaderFontSettingsPage {
         .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
-      this.fontSizeStepButton($r('sys.symbol.minus'), '减小正文字体', this.readerFontSize > 14, () => {
+      this.fontSizeStepButton($r('sys.symbol.minus'), '减小正文字体', () => this.readerFontSize > 14, () => {
         this.setBodyFontSize(this.readerFontSize - 1);
       })
       Text(`${this.readerFontSize}sp`)
@@ -573,7 +1015,7 @@ struct ReaderFontSettingsPage {
         .width(52)
         .height(36)
         .textAlign(TextAlign.Center)
-      this.fontSizeStepButton($r('sys.symbol.plus'), '增大正文字体', this.readerFontSize !== 50, () => {
+      this.fontSizeStepButton($r('sys.symbol.plus'), '增大正文字体', () => this.readerFontSize < 50, () => {
         this.setBodyFontSize(this.readerFontSize + 1);
       })
     }
@@ -593,7 +1035,7 @@ struct ReaderFontSettingsPage {
         .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
-      this.fontSizeStepButton($r('sys.symbol.minus'), '减小标题字体', this.readerTitleFontSize > 14, () => {
+      this.fontSizeStepButton($r('sys.symbol.minus'), '减小标题字体', () => this.readerTitleFontSize > 14, () => {
         this.setTitleFontSize(this.readerTitleFontSize - 1);
       })
       Text(`${this.readerTitleFontSize}sp`)
@@ -602,7 +1044,7 @@ struct ReaderFontSettingsPage {
         .width(52)
         .height(36)
         .textAlign(TextAlign.Center)
-      this.fontSizeStepButton($r('sys.symbol.plus'), '增大标题字体', this.readerTitleFontSize !== 50, () => {
+      this.fontSizeStepButton($r('sys.symbol.plus'), '增大标题字体', () => this.readerTitleFontSize < 50, () => {
         this.setTitleFontSize(this.readerTitleFontSize + 1);
       })
     }
@@ -616,11 +1058,13 @@ struct ReaderFontSettingsPage {
   }
 
   @Builder
-  fontSizeStepButton(icon: Resource, accessibilityText: string, enabled: boolean, action: () => void) {
+  fontSizeStepButton(icon: Resource, accessibilityText: string, enabled: () => boolean, action: () => void) {
+    // enabled 必须是取值函数：@Builder 多参数按值传递，直接传 boolean 只取首次建出时的值，
+    // 到过上下限再回来按钮会一直灰着点不了；在绑定里调用才会跟着状态刷新。
     AdaptiveIconButton({
       icon: icon,
       accessibilityLabel: accessibilityText,
-      buttonEnabled: enabled,
+      buttonEnabled: enabled(),
       buttonSize: 34,
       iconSize: 17,
       fillColor: this.inputColor(),
@@ -682,100 +1126,151 @@ struct ReaderFontSettingsPage {
   }
 
   @Builder
-  regexRulePanel(rule: ReaderRegexFontRule, index: number, refreshKey: number) {
-    Column({ space: AppSpacing.MD }) {
-      Row() {
-        Column({ space: AppSpacing.XS }) {
-          Text(rule.name || `规则${index + 1}`)
-            .fontSize(AppFontSize.BODY_LARGE)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.primaryTextColor())
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(rule.pattern || '未设置正则表达式')
-            .fontSize(AppFontSize.CAPTION)
-            .fontColor(this.subTextColor())
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
-        Button(this.isRegexRuleExpanded(index, refreshKey) ? '收起' : '展开')
-          .fontSize(AppFontSize.BODY)
+  regexRuleRow(rule: ReaderRegexFontRule, index: number) {
+    Row({ space: AppSpacing.MD }) {
+      Column({ space: AppSpacing.XS }) {
+        Text(rule.name || `规则${index + 1}`)
+          .fontSize(AppFontSize.BODY_LARGE)
+          .fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor())
-          .backgroundColor(this.inputColor())
-          .height(32)
-          .onClick(() => {
-            this.updateRegexRule(index, (target: ReaderRegexFontRule) => {
-              target.expanded = !target.expanded;
-            });
-          })
-        Button('删除')
-          .fontSize(AppFontSize.BODY)
-          .fontColor(ThemeRuntime.dangerColor(this.appDarkMode))
-          .backgroundColor(this.inputColor())
-          .height(32)
-          .onClick(() => {
-            this.removeRegexRule(index);
-          })
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(rule.pattern || '未设置正则表达式')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.subTextColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
-      .width('100%')
-
-      if (this.isRegexRuleExpanded(index, refreshKey)) {
-        TextInput({ text: rule.name, placeholder: '规则名称' })
-          .fontSize(AppFontSize.BODY)
-          .fontColor(this.primaryTextColor())
-          .placeholderColor(this.subTextColor())
-          .backgroundColor(this.inputColor())
-          .borderRadius(ThemeRuntime.mediumRadius())
-          .onEditChange((isEditing: boolean) => {
-            this.setRegexInputEditing(rule.id, 'name', isEditing);
-          })
-          .onChange((value: string) => {
-            if (!this.isRegexInputEditing(rule.id, 'name')) {
-              return;
-            }
-            this.updateRegexRuleById(rule.id, (target: ReaderRegexFontRule) => {
-              target.name = value;
-            });
-          })
-
-        TextInput({ text: rule.pattern, placeholder: '正则表达式' })
-          .fontSize(AppFontSize.BODY)
-          .fontColor(this.primaryTextColor())
-          .placeholderColor(this.subTextColor())
-          .backgroundColor(this.inputColor())
-          .borderRadius(ThemeRuntime.mediumRadius())
-          .onEditChange((isEditing: boolean) => {
-            this.setRegexInputEditing(rule.id, 'pattern', isEditing);
-          })
-          .onChange((value: string) => {
-            if (!this.isRegexInputEditing(rule.id, 'pattern')) {
-              return;
-            }
-            this.updateRegexRuleById(rule.id, (target: ReaderRegexFontRule) => {
-              target.pattern = value;
-            });
-          })
-
-        this.compactFontModeItem('字体类型', rule.fontMode, rule.fontFamily, (mode: string, family: string) => {
-          this.updateRegexRule(index, (target: ReaderRegexFontRule) => {
-            target.fontMode = mode;
-            target.fontFamily = family;
-          });
-        })
-        this.regexFontSizeStepper(index)
-
-        this.regexEmphasisSettings(index, refreshKey)
-
-        this.regexRulePreviewItem(index, refreshKey)
-      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(18)
+        .fontColor([this.subTextColor()])
     }
     .width('calc(100% - 32vp)')
     .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
     .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
+    .alignItems(VerticalAlign.Center)
+    .opacity(ListDissolve.opacity(this.isRegexRuleDissolving(rule)))
+    .scale(ListDissolve.scale(this.isRegexRuleDissolving(rule)))
+    .blur(ListDissolve.blur(this.isRegexRuleDissolving(rule)))
+    .hitTestBehavior(this.isRegexRuleDissolving(rule) ? HitTestMode.None : HitTestMode.Default)
+    .id(this.regexRuleElementId(`${rule.id}`))
+    .onClick(() => {
+      for (let i = 0; i < this.regexRules.length; i++) {
+        if (this.regexRules[i].id === rule.id) {
+          this.openRegexRuleEditor(i, this.regexRules[i]);
+          return;
+        }
+      }
+    })
+  }
+
+  @Builder
+  regexRuleEditorCover() {
+    PageScaffold({ title: this.isEditingNewRegexRule() ? '新建规则' : '编辑规则',
+      onBack: () => this.leaveRegexRuleEditor(),
+      actions: () => {
+        this.regexRuleEditorActions()
+      },
+      content: () => {
+        this.regexRuleEditorContent(this.regexHighlightRefreshKey)
+      } })
+  }
+
+  @Builder
+  regexRuleEditorActions() {
+    ImmersiveHeaderAction({
+      label: '保存',
+      tint: ThemeRuntime.buttonColor(this.appDarkMode),
+      onTap: () => this.saveRegexRuleEditor()
+    })
+      .margin({ right: AppSpacing.XL })
+  }
+
+  @Builder
+  regexRuleEditorContent(refreshKey: number) {
+    Column() {
+      Column({ space: AppSpacing.MD }) {
+        TextInput({ text: this.editingRegexRule.name, placeholder: '规则名称' })
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.primaryTextColor())
+          .placeholderColor(this.subTextColor())
+          .backgroundColor(this.inputColor())
+          .borderRadius(ThemeRuntime.mediumRadius())
+          .onEditChange((isEditing: boolean) => {
+            this.setRegexInputEditing(this.editingRegexRule.id, 'name', isEditing);
+          })
+          .onChange((value: string) => {
+            if (!this.isRegexInputEditing(this.editingRegexRule.id, 'name')) {
+              return;
+            }
+            this.updateRegexRule(EDITING_REGEX_RULE_INDEX, (target: ReaderRegexFontRule) => {
+              target.name = value;
+            });
+          })
+
+        TextInput({ text: this.editingRegexRule.pattern, placeholder: '正则表达式' })
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.primaryTextColor())
+          .placeholderColor(this.subTextColor())
+          .backgroundColor(this.inputColor())
+          .borderRadius(ThemeRuntime.mediumRadius())
+          .onEditChange((isEditing: boolean) => {
+            this.setRegexInputEditing(this.editingRegexRule.id, 'pattern', isEditing);
+          })
+          .onChange((value: string) => {
+            if (!this.isRegexInputEditing(this.editingRegexRule.id, 'pattern')) {
+              return;
+            }
+            this.updateRegexRule(EDITING_REGEX_RULE_INDEX, (target: ReaderRegexFontRule) => {
+              target.pattern = value;
+            });
+          })
+
+        this.compactFontModeItem('字体类型', this.editingRegexRule.fontMode, this.editingRegexRule.fontFamily,
+          (mode: string, family: string) => {
+            this.updateRegexRule(EDITING_REGEX_RULE_INDEX, (target: ReaderRegexFontRule) => {
+              target.fontMode = mode;
+              target.fontFamily = family;
+            });
+          })
+        this.regexFontSizeStepper(EDITING_REGEX_RULE_INDEX)
+        ReaderFontWeightStepper({ value: this.editingRegexRule.fontWeight, scope: '规则', nested: true,
+          textColor: this.primaryTextColor(), disabledColor: this.subTextColor(), dividerColor: this.settingsDividerColor(),
+          onChange: (value: number) => {
+            this.updateRegexRule(EDITING_REGEX_RULE_INDEX, (target: ReaderRegexFontRule) => { target.fontWeight = value; });
+          } })
+
+        this.regexEmphasisSettings(EDITING_REGEX_RULE_INDEX, refreshKey)
+
+        // 编辑页盖住了设置页顶部的实时预览，嵌入时也显示规则预览。
+        this.regexRulePreviewItem(EDITING_REGEX_RULE_INDEX, refreshKey)
+      }
+      .width('calc(100% - 32vp)')
+      .padding({ left: 0, right: 0, top: AppSpacing.LG, bottom: AppSpacing.LG })
+      .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    if (!this.isEditingNewRegexRule()) {
+      Button('删除规则')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(ThemeRuntime.dangerColor(this.appDarkMode))
+        .backgroundColor(this.cardColor())
+        .width('calc(100% - 24vp)')
+        .height(44)
+        .margin({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.XXL })
+        .onClick(() => {
+          this.deleteEditingRegexRule();
+        })
+    }
   }
 
   @Builder
@@ -785,13 +1280,10 @@ struct ReaderFontSettingsPage {
         .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
         .width('100%')
-      Text('这是一段阅读正文预览，文字会跟随当前正文字体设置显示。')
-        .fontSize(this.readerFontSize)
-        .fontFamily(this.bodyPreviewFontFamily())
-        .fontColor(this.primaryTextColor())
+      ReaderWeightedText({ spans: [ReaderWeightedTextSpan.create(this.getUIContext(),
+        '这是一段阅读正文预览，文字会跟随当前正文字体设置显示。', this.readerFontSize,
+        this.bodyPreviewFontFamily(), this.primaryTextColor())], weight: this.readerFontWeight, maxLines: 2 })
         .width('100%')
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('calc(100% - 32vp)')
     .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
@@ -800,23 +1292,555 @@ struct ReaderFontSettingsPage {
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
   }
 
+  /** 子分组标题：布局、分段、强调各占一组，组内控件直接可见。 */
+  @Builder
+  titleGroupTitle(title: string, hint: string) {
+    Column({ space: AppSpacing.XXS }) {
+      Text(title).fontSize(AppFontSize.CAPTION).fontWeight(FontWeight.Medium).fontColor(this.subTextColor())
+      if (hint) {
+        Text(hint).fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).opacity(0.8)
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  titleSegmentOptions(kind: string): string[] {
+    return kind === 'alignment' ? ['左对齐', '居中', '右对齐'] : ['关闭', '按位置', '按标记', '按正则'];
+  }
+
+  titleSegmentSelected(kind: string): number {
+    return kind === 'alignment' ? this.titleAlignmentIndex() : this.titleSplitModeIndex();
+  }
+
+  selectTitleSegment(kind: string, index: number): void {
+    if (kind === 'alignment') this.updateTitleSplit('alignment', ['left', 'center', 'right'][index] || 'center');
+    else this.updateTitleSplit('mode', ['off', 'position', 'marker', 'regex'][index] || 'off');
+  }
+
+  // Reads the selection from state inside the builder: by-value builder arguments would not refresh.
+  @Builder
+  titleSegmented(kind: string, label: string) {
+    Stack({ alignContent: Alignment.Start }) {
+      Row()
+        .id(`reader_title_${kind}_indicator`)
+        .width(`${100 / this.titleSegmentOptions(kind).length}%`)
+        .height(32)
+        .borderRadius(16)
+        .backgroundColor(this.cardColor())
+        .shadow({ radius: 4, color: '#1A000000', offsetX: 0, offsetY: 1 })
+        .translate({ x: `${this.titleSegmentSelected(kind) * 100}%` })
+        .animation({ duration: 180, curve: Curve.EaseOut })
+        .hitTestBehavior(HitTestMode.None)
+        .accessibilityLevel('no')
+      Row() {
+        ForEach(this.titleSegmentOptions(kind), (option: string, index: number) => {
+          Button(option, { type: ButtonType.Capsule, stateEffect: true })
+            .id(`reader_title_${kind}_${index}`)
+            .layoutWeight(1)
+            .height(32)
+            .padding({ left: 4, right: 4 })
+            .fontSize(AppFontSize.BODY)
+            .fontWeight(index === this.titleSegmentSelected(kind) ? FontWeight.Medium : FontWeight.Normal)
+            .fontColor(index === this.titleSegmentSelected(kind) ? this.primaryTextColor() : this.subTextColor())
+            .backgroundColor(Color.Transparent)
+            .accessibilitySelected(index === this.titleSegmentSelected(kind))
+            .accessibilityText(`${label}：${option}${index === this.titleSegmentSelected(kind) ? '，已选中' : ''}`)
+            .onClick(() => this.selectTitleSegment(kind, index))
+        }, (option: string) => `${kind}_${option}`)
+      }.width('100%')
+    }
+    .width('100%')
+    .height(40)
+    .padding(4)
+    .borderRadius(20)
+    .backgroundColor(this.inputColor())
+  }
+
+  @Builder
+  titleLayoutSettings() {
+    Column({ space: AppSpacing.MD }) {
+      this.titleGroupTitle('标题布局', '')
+      Row({ space: AppSpacing.LG }) {
+        Text('对齐方式')
+          .fontSize(AppFontSize.BODY_LARGE)
+          .fontColor(this.primaryTextColor())
+          .layoutWeight(1)
+        Column() {
+          this.titleSegmented('alignment', '标题对齐方式')
+        }.width(216)
+      }.width('100%').constraintSize({ minHeight: 48 })
+      Row({ space: AppSpacing.LG }) {
+        Column({ space: AppSpacing.XS }) {
+          Text('标题单页').fontSize(AppFontSize.BODY_LARGE).fontColor(this.primaryTextColor())
+          Text('每章标题单独成页，正文从下一页开始')
+            .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        AdaptiveSwitch({ isOn: this.titleStyle.singlePage,
+          onChange: (checked: boolean) => this.updateTitleSplit('singlePage', `${checked}`) })
+      }.width('100%').constraintSize({ minHeight: 56 })
+      this.titleMarginSlider('上边距', true)
+      this.titleMarginSlider('下边距', false)
+    }
+    .width('calc(100% - 32vp)')
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
+    .padding({ top: AppSpacing.XL, bottom: AppSpacing.LG })
+    .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
+  }
+
+  @Builder
+  titleMarginSlider(label: string, top: boolean) {
+    Column({ space: AppSpacing.XS }) {
+      Row() {
+        Text(label).fontSize(AppFontSize.BODY).fontColor(this.primaryTextColor()).layoutWeight(1)
+        Text(`${top ? this.titleStyle.marginTop : this.titleStyle.marginBottom} vp`)
+          .fontSize(AppFontSize.BODY).fontColor(this.accentColor())
+      }.width('100%')
+      Row({ space: AppSpacing.MD }) {
+        this.fontSizeStepButton($r('sys.symbol.minus'), `减小标题${label}`,
+          () => (top ? this.titleStyle.marginTop : this.titleStyle.marginBottom) > 0,
+          () => this.adjustTitleMargin(top, -1))
+        Slider({ value: top ? this.titleStyle.marginTop : this.titleStyle.marginBottom, min: 0,
+          max: ReaderTitleSplit.MAX_MARGIN, step: 1 })
+          .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
+          .layoutWeight(1)
+          .selectedColor(this.accentColor())
+          .blockColor(this.accentColor())
+          .trackColor(this.inputColor())
+          // 只能拖动滑块调整，点到条上不跳值，防止滑动面板时误触。
+          .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
+          .onChange((current: number) => this.updateTitleSplit(top ? 'marginTop' : 'marginBottom', `${current}`))
+          .accessibilityText(`标题${label}`)
+        this.fontSizeStepButton($r('sys.symbol.plus'), `增大标题${label}`,
+          () => (top ? this.titleStyle.marginTop : this.titleStyle.marginBottom) < ReaderTitleSplit.MAX_MARGIN,
+          () => this.adjustTitleMargin(top, 1))
+      }.width('100%')
+    }.width('100%')
+  }
+
+  adjustTitleMargin(top: boolean, direction: number): void {
+    this.updateTitleSplit(top ? 'marginTop' : 'marginBottom',
+      `${(top ? this.titleStyle.marginTop : this.titleStyle.marginBottom) + direction}`);
+  }
+
+  titleAlignmentIndex(): number {
+    return Math.max(0, ['left', 'center', 'right'].indexOf(this.titleStyle.alignment));
+  }
+
+  titlePreviewAlignment(): text.TextAlign {
+    if (this.titleStyle.alignment === 'left') return text.TextAlign.LEFT;
+    if (this.titleStyle.alignment === 'right') return text.TextAlign.RIGHT;
+    return text.TextAlign.CENTER;
+  }
+
+  @Builder
+  titleSplitSettings() {
+    Column({ space: AppSpacing.MD }) {
+      this.titleGroupTitle('标题分段', '把标题拆成两行，第二行可单独放大；只改排版，不改原文')
+      this.titleSegmented('splitMode', '标题分段方式')
+      if (this.titleStyle.mode !== 'off') {
+        this.titleSplitInput()
+        Text(this.titleSplitHelp())
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.subTextColor())
+          .width('100%')
+        // 阅读页里的字体面板不显示顶部标题预览，分段结果旁边也能看到并更换示例。
+        Row({ space: AppSpacing.XS }) {
+          Text(`示例：${this.titlePreviewText}`)
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.subTextColor())
+            .layoutWeight(1)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          this.titlePreviewEditButton('split')
+        }.width('100%')
+        if (this.titlePreviewEditingAt === 'split') {
+          this.titlePreviewEditor()
+        }
+        this.titleSplitResult()
+        this.titleSplitSlider('第二段字号', true)
+        this.titleSplitSlider('标题行距', false)
+      }
+    }
+    .width('calc(100% - 32vp)')
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
+    .padding({ top: AppSpacing.XL, bottom: AppSpacing.LG })
+    .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
+  }
+
+  @Builder
+  titleSplitInput() {
+    if (this.titleStyle.mode === 'position') {
+      Row({ space: AppSpacing.SM }) {
+        Text('在第').fontSize(AppFontSize.BODY_LARGE).fontColor(this.primaryTextColor())
+        TextInput({ text: this.titleStyle.position, placeholder: '6' })
+          .type(InputType.Number)
+          .maxLength(3)
+          .width(76)
+          .height(40)
+          .textAlign(TextAlign.Center)
+          .fontSize(AppFontSize.BODY_LARGE)
+          .fontColor(this.primaryTextColor())
+          .placeholderColor(this.subTextColor())
+          .backgroundColor(this.inputColor())
+          .borderRadius(ThemeRuntime.mediumRadius())
+          .onChange((content: string) => this.updateTitleSplit('position', content))
+          .accessibilityText('分段位置，第几个字之后')
+        Text('个字后换行').fontSize(AppFontSize.BODY_LARGE).fontColor(this.primaryTextColor())
+      }.width('100%').constraintSize({ minHeight: 44 })
+    } else {
+      TextInput({ text: this.titleSplitContent(), placeholder: this.titleSplitContentLabel() })
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.primaryTextColor())
+        .placeholderColor(this.subTextColor())
+        .backgroundColor(this.inputColor())
+        .borderRadius(ThemeRuntime.mediumRadius())
+        .maxLength(180)
+        .onChange((content: string) => this.updateTitleSplit(this.titleStyle.mode, content))
+        .accessibilityText(this.titleSplitContentLabel())
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(this.titleSplitPresets(), (preset: string[]) => {
+          Button(preset[0], { type: ButtonType.Capsule, stateEffect: true })
+            .height(30)
+            .padding({ left: 12, right: 12 })
+            .margin({ right: AppSpacing.SM, bottom: AppSpacing.SM })
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.titleSplitContent() === preset[1] ? this.accentColor() : this.primaryTextColor())
+            .backgroundColor(this.titleSplitContent() === preset[1] ?
+              ThemeRuntime.accentSurfaceColor(this.appDarkMode) : this.inputColor())
+            .accessibilityText(`使用${preset[0]}分段`)
+            .onClick(() => this.updateTitleSplit(this.titleStyle.mode, preset[1]))
+        }, (preset: string[]) => `${this.titleStyle.mode}_${preset[0]}`)
+      }.width('100%')
+    }
+  }
+
+  /** 常用标记与正则，点一下即可套用；每项为 [显示文字, 实际值]。 */
+  titleSplitPresets(): string[][] {
+    if (this.titleStyle.mode === 'marker') {
+      return [['：', '：'], [':', ':'], ['空格', ' '], ['全角空格', String.fromCharCode(0x3000)], ['——', '——']];
+    }
+    return [['第N章', '^第[零一二三四五六七八九十百千万0-9]+章[：: ]*'],
+      ['第N回', '^第[零一二三四五六七八九十百千万0-9]+回[：: ]*'],
+      ['第N节', '^第[零一二三四五六七八九十百千万0-9]+节[：: ]*'],
+      ['Chapter N', '^Chapter *[0-9]+[:.：]? *']];
+  }
+
+  /** 用示例标题即时说明分段结果；输入有误时直接给出原因。 */
+  @Builder
+  titleSplitResult() {
+    if (ReaderTitleSplit.validationError(this.titleStyle)) {
+      Text(ReaderTitleSplit.validationError(this.titleStyle))
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(ThemeRuntime.dangerColor(this.appDarkMode))
+        .width('100%')
+    } else if (this.titlePreviewParts().length > 1) {
+      Column({ space: AppSpacing.XS }) {
+        ForEach(this.titlePreviewParts(), (part: string, index: number) => {
+          Row({ space: AppSpacing.MD }) {
+            Text(index === 0 ? '第一段' : '第二段')
+              .fontSize(AppFontSize.CAPTION)
+              .fontColor(this.subTextColor())
+            Text(part)
+              .fontSize(AppFontSize.BODY)
+              .fontColor(this.primaryTextColor())
+              .layoutWeight(1)
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.width('100%')
+        }, (part: string, index: number) => `${index}_${part}`)
+      }
+      .width('100%')
+      .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.SM, bottom: AppSpacing.SM })
+      .borderRadius(ThemeRuntime.mediumRadius())
+      .backgroundColor(this.inputColor())
+    } else {
+      Text('示例标题里没有找到分段位置，这类标题阅读时保持原样')
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.subTextColor())
+        .width('100%')
+    }
+  }
+
+  @Builder
+  titleSplitSlider(label: string, secondary: boolean) {
+    Column({ space: AppSpacing.XS }) {
+      Row() {
+        Text(label).fontSize(AppFontSize.BODY).fontColor(this.primaryTextColor()).layoutWeight(1)
+        Text(secondary ? `${this.titleStyle.secondaryScale.toFixed(1)} 倍` : `${this.titleStyle.lineGap} vp`)
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.accentColor())
+      }.width('100%')
+      Row({ space: AppSpacing.MD }) {
+        this.fontSizeStepButton($r('sys.symbol.minus'), `减小${label}`,
+          () => secondary ? this.titleStyle.secondaryScale > 0.5 : this.titleStyle.lineGap > 0,
+          () => this.adjustTitleSplit(secondary, -1))
+        Slider({ value: secondary ? this.titleStyle.secondaryScale : this.titleStyle.lineGap,
+          min: secondary ? 0.5 : 0, max: secondary ? 2 : 40, step: secondary ? 0.1 : 1 })
+          .layoutWeight(1)
+          .selectedColor(this.accentColor())
+          .blockColor(this.accentColor())
+          .trackColor(this.inputColor())
+          .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
+          .onChange((current: number) => {
+            this.updateTitleSplit(secondary ? 'secondaryScale' : 'lineGap', `${current}`);
+          })
+          .accessibilityText(label)
+        this.fontSizeStepButton($r('sys.symbol.plus'), `增大${label}`,
+          () => secondary ? this.titleStyle.secondaryScale < 2 : this.titleStyle.lineGap < 40,
+          () => this.adjustTitleSplit(secondary, 1))
+      }.width('100%')
+    }.width('100%').padding({ top: AppSpacing.XS })
+  }
+
+  titleSplitModeIndex(): number {
+    return Math.max(0, ['off', 'position', 'marker', 'regex'].indexOf(this.titleStyle.mode));
+  }
+
+  titleSplitContentLabel(): string {
+    if (this.titleStyle.mode === 'position') return '分段位置';
+    return this.titleStyle.mode === 'regex' ? '分段正则' : '分段标记';
+  }
+
+  titleSplitContent(): string {
+    if (this.titleStyle.mode === 'position') return this.titleStyle.position;
+    return this.titleStyle.mode === 'regex' ? this.titleStyle.regex : this.titleStyle.marker;
+  }
+
+  titleSplitHelp(): string {
+    if (this.titleStyle.mode === 'position') return '汉字、标点和空格都算一个字。';
+    return this.titleStyle.mode === 'regex' ? '在第一次匹配的末尾换行，匹配内容留在第一段。' :
+      '在第一个标记后换行，标记留在第一段。';
+  }
+
+  updateTitleSplit(field: string, content: string): void {
+    const next = ReaderTitleStyleCodec.decode(ReaderTitleStyleCodec.encode(this.titleStyle));
+    if (field === 'mode') next.mode = ReaderTitleSplit.normalizeMode(content);
+    else if (field === 'position') next.position = content;
+    else if (field === 'marker') next.marker = content;
+    else if (field === 'regex') next.regex = content;
+    else if (field === 'secondaryScale') next.secondaryScale = ReaderTitleSplit.normalizeScale(Number(content));
+    else if (field === 'lineGap') next.lineGap = ReaderTitleSplit.normalizeGap(Number(content));
+    else if (field === 'alignment') next.alignment = ReaderTitleSplit.normalizeAlignment(content);
+    else if (field === 'marginTop') next.marginTop = ReaderTitleSplit.normalizeMargin(Number(content));
+    else if (field === 'marginBottom') next.marginBottom = ReaderTitleSplit.normalizeMargin(Number(content));
+    else if (field === 'singlePage') next.singlePage = content === 'true';
+    this.titleStyle = next;
+    this.saveSettings();
+  }
+
+  adjustTitleSplit(secondary: boolean, direction: number): void {
+    this.updateTitleSplit(secondary ? 'secondaryScale' : 'lineGap', secondary ?
+      `${this.titleStyle.secondaryScale + direction * 0.1}` : `${this.titleStyle.lineGap + direction}`);
+  }
+
+  @Builder
+  titleEmphasisSettings() {
+    Column({ space: AppSpacing.MD }) {
+      this.titleGroupTitle('标题强调', '不受“正则字体”开关影响；选“无强调”时标题沿用正则规则的效果')
+      this.regexEmphasisSettings(-1, this.regexHighlightRefreshKey)
+    }
+    .width('calc(100% - 32vp)')
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
+    .padding({ top: AppSpacing.XL, bottom: AppSpacing.LG })
+  }
+
+  titlePreviewParts(): string[] {
+    return ReaderTitleSplit.parts(this.titlePreviewText, this.titleStyle);
+  }
+
+  typographyPreviewConfig(withBody: boolean): ReaderTypographyPreviewConfig {
+    const config = new ReaderTypographyPreviewConfig();
+    const layout = this.previewLayoutSettings;
+    const context = this.getUIContext();
+    const input = config.input;
+    input.fontSizePx = context.fp2px(this.readerFontSize);
+    input.fontWeight = this.readerFontWeight;
+    input.titleFontSizePx = context.fp2px(this.readerTitleFontSize);
+    input.titleFontWeight = this.readerTitleFontWeight;
+    input.titleSecondaryScale = this.titleStyle.secondaryScale;
+    input.titleLineGapPx = context.vp2px(this.titleStyle.mode === 'off' ? layout.lineHeight : this.titleStyle.lineGap);
+    input.titleAlignment = this.titleStyle.alignment;
+    input.titleMarginTopPx = context.vp2px(this.titleStyle.marginTop);
+    input.titleMarginBottomPx = context.vp2px(this.titleStyle.marginBottom);
+    input.titleSinglePage = withBody && this.titleStyle.singlePage;
+    input.lineSpacingPx = context.vp2px(layout.lineHeight);
+    input.paragraphSpacingPx = context.vp2px(layout.paragraphSpacing);
+    input.letterSpacingPx = context.fp2px(layout.letterSpacing);
+    input.textAlign = layout.textAlign;
+    input.marginLeftPx = context.vp2px(layout.marginLeft);
+    input.marginRightPx = context.vp2px(layout.marginRight);
+    input.marginTopPx = context.vp2px(withBody ? layout.marginTop : 0);
+    input.marginBottomPx = context.vp2px(withBody ? layout.marginBottom : 0);
+    input.bodyFontFamily = this.bodyPreviewFontFamily();
+    input.titleFontFamily = this.titlePreviewFontFamily();
+    input.textColor = ReaderV2Color.parse(ThemeRuntime.readerTextColor(this.appDarkMode), 0xFF202124);
+    input.commentsEnabled = false;
+    config.fontSizeVp = this.readerFontSize;
+    config.viewportHeightVp = this.titleReadingPreviewHeight;
+    const indent = '　'.repeat(ReaderParagraphIndent.normalize(layout.paragraphIndent));
+    const body = withBody ? '\n' + indent +
+      '清晨的风穿过长街，带来一阵粽叶的清香。街角的小摊刚刚支起，竹篮里整整齐齐地码着新煮好的粽子。\n' +
+      indent + '“卖鸭蛋，卖粽子喽——”一声吆喝，把沉睡的小城轻轻唤醒。' : '';
+    config.document = ReaderV2DocumentParser.parse(this.titlePreviewText + body, 0, this.titlePreviewText, [], this.titleStyle);
+    if (this.titleStyle.emphasis.emphasisMode !== 'none') {
+      for (const block of config.document.blocks) {
+        if (!block.title) continue;
+        const size = this.readerTitleFontSize * (block.titleSegment > 0 ? this.titleStyle.secondaryScale : 1);
+        const style = this.typographyPreviewEmphasis(this.titleStyle.emphasis, size,
+          input.titleFontFamily, this.readerTitleFontWeight);
+        style.start = block.displayStart;
+        style.end = block.displayEnd;
+        style.repeatCaps = true;
+        config.styles.push(style);
+      }
+    }
+    this.typographyPreviewRegexStyles(config);
+    return config;
+  }
+
+  typographyPreviewRegexStyles(config: ReaderTypographyPreviewConfig): void {
+    if (!this.readerRegexFontEnabled) return;
+    const matches: ReaderV2SpanStyleRange[] = [];
+    const titleStyles = config.styles.slice();
+    const content = config.document.displayText;
+    for (const rule of this.regexRules) {
+      if (!rule.pattern.trim()) continue;
+      let regex: RegExp;
+      try { regex = new RegExp(rule.pattern, 'g'); } catch (_) { continue; }
+      let match = regex.exec(content);
+      while (match) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (end > start && !matches.some((item: ReaderV2SpanStyleRange): boolean => start < item.end && end > item.start)) {
+          matches.push(new ReaderV2SpanStyleRange(start, end));
+          // Explicit title emphasis takes precedence; regex fonts still apply outside its ranges.
+          let ranges: number[][] = [[start, end]];
+          for (const title of titleStyles) {
+            const next: number[][] = [];
+            for (const range of ranges) {
+              if (range[1] <= title.start || range[0] >= title.end) next.push(range);
+              else {
+                if (range[0] < title.start) next.push([range[0], title.start]);
+                if (range[1] > title.end) next.push([title.end, range[1]]);
+              }
+            }
+            ranges = next;
+          }
+          for (const range of ranges) {
+            const style = this.typographyPreviewEmphasis(rule, rule.fontSize,
+              this.previewFontFamily(rule.fontMode, rule.fontFamily), rule.fontWeight);
+            style.start = range[0];
+            style.end = range[1];
+            config.styles.push(style);
+          }
+        }
+        if (end <= start) {
+          if (start >= content.length) break;
+          regex.lastIndex = Math.max(regex.lastIndex + 1, start + 1);
+        }
+        match = regex.exec(content);
+      }
+    }
+  }
+
+  typographyPreviewEmphasis(rule: ReaderRegexFontRule, size: number, family: string,
+    weight: number): ReaderV2SpanStyleRange {
+    const context = this.regexEmphasisContext();
+    context.surfaceColor = ThemeRuntime.readerBackgroundColor(this.appDarkMode);
+    context.normalTextColor = ThemeRuntime.readerTextColor(this.appDarkMode);
+    const resolved = ReaderRegexBubbleStyleResolver.resolve(rule, context);
+    const uiContext = this.getUIContext();
+    const style = new ReaderV2SpanStyleRange();
+    style.fontSizePx = uiContext.fp2px(size);
+    style.fontFamily = family;
+    style.fontWeight = weight;
+    style.colorEnabled = true;
+    style.color = ReaderV2Color.parse(resolved.textColor, 0xFF202124);
+    style.backgroundEnabled = resolved.backgroundEnabled;
+    style.backgroundColor = ReaderV2Color.parse(resolved.backgroundColor, 0x00000000);
+    style.radiusTopLeftPx = Math.max(1, uiContext.vp2px(resolved.radiusTopLeft));
+    style.radiusTopRightPx = Math.max(1, uiContext.vp2px(resolved.radiusTopRight));
+    style.radiusBottomLeftPx = Math.max(1, uiContext.vp2px(resolved.radiusBottomLeft));
+    style.radiusBottomRightPx = Math.max(1, uiContext.vp2px(resolved.radiusBottomRight));
+    style.shadowEnabled = resolved.textShadowRadius > 0;
+    style.shadowColor = ReaderV2Color.parse(resolved.textShadowColor, 0x00000000);
+    style.shadowRadiusPx = Math.max(1, uiContext.vp2px(Math.max(0, resolved.textShadowRadius)));
+    style.shadowOffsetXPx = Math.max(1, uiContext.vp2px(Math.max(0, resolved.textShadowOffsetX)));
+    style.shadowOffsetYPx = Math.max(1, uiContext.vp2px(Math.max(0, resolved.textShadowOffsetY)));
+    style.decorationEnabled = resolved.bubbleDecorationEnabled && ThemeAssetRegistry.hasRegexBubbleCap(resolved.bubbleStyleId);
+    style.decorationStyleId = style.decorationEnabled ? resolved.bubbleStyleId : '';
+    style.decorationSizePx = style.decorationEnabled ? uiContext.vp2px(Math.max(15, Math.min(22, size * 0.72))) : 0;
+    return style;
+  }
+
+  @Builder
+  titlePreviewContent() {
+    ReaderTypographyPreview({ config: this.typographyPreviewConfig(false) })
+  }
+
+  @Builder
+  titleReadingPreviewSheet() {
+    Column() {
+      Text('阅读预览').fontSize(AppFontSize.SUBTITLE).fontColor(ThemeRuntime.readerTextColor(this.appDarkMode))
+        .margin({ top: 48, bottom: AppSpacing.LG })
+      Scroll() {
+        ReaderTypographyPreview({ config: this.typographyPreviewConfig(true) })
+      }.width('100%').layoutWeight(1)
+        .onAreaChange((_oldArea: Area, area: Area) => {
+          const height = Number(area.height);
+          if (height > 0 && Math.abs(height - this.titleReadingPreviewHeight) > 0.5) this.titleReadingPreviewHeight = height;
+        })
+    }.width('100%').height('100%')
+  }
+
+  @Builder
+  titlePreviewEditButton(at: string) {
+    Button(this.titlePreviewEditingAt === at ? '完成' : '换示例')
+      .fontSize(AppFontSize.CAPTION).fontColor(this.accentColor()).backgroundColor(Color.Transparent)
+      .height(32).padding({ left: 8, right: 8 })
+      .onClick(() => { this.titlePreviewEditingAt = this.titlePreviewEditingAt === at ? '' : at; })
+  }
+
+  @Builder
+  titlePreviewEditor() {
+    TextInput({ text: this.titlePreviewText, placeholder: '输入示例标题' })
+      .fontColor(this.primaryTextColor()).fontSize(AppFontSize.BODY)
+      .backgroundColor(this.inputColor()).maxLength(160)
+      .onChange((content: string) => { this.setTitlePreviewText(content); })
+    Row({ space: AppSpacing.SM }) {
+      Button('短标题')
+        .fontSize(AppFontSize.CAPTION).fontColor(this.primaryTextColor()).backgroundColor(this.inputColor())
+        .height(30).padding({ left: 12, right: 12 })
+        .onClick(() => { this.setTitlePreviewText(ReaderTitlePreviewStore.DEFAULT_TEXT); })
+      Button('长标题')
+        .fontSize(AppFontSize.CAPTION).fontColor(this.primaryTextColor()).backgroundColor(this.inputColor())
+        .height(30).padding({ left: 12, right: 12 })
+        .onClick(() => { this.setTitlePreviewText('第494章：天下承平，一世长安，人间烟火寻常巷陌'); })
+    }.width('100%')
+  }
+
+  /** 预览放在标题设置的最前面，调整下面任一项都能直接看到效果。 */
   @Builder
   titlePreviewItem() {
     Column({ space: AppSpacing.MD }) {
-      Text('标题预览')
-        .fontSize(AppFontSize.BODY)
-        .fontColor(this.subTextColor())
-        .width('100%')
-      Text('第一章 风起时')
-        .fontSize(this.readerTitleFontSize)
-        .fontFamily(this.titlePreviewFontFamily())
-        .fontColor(this.primaryTextColor())
-        .width('100%')
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      Row({ space: AppSpacing.XS }) {
+        Text('标题预览').fontSize(AppFontSize.BODY).fontColor(this.subTextColor()).layoutWeight(1)
+        this.titlePreviewEditButton('preview')
+        Button('阅读预览')
+          .fontSize(AppFontSize.CAPTION).fontColor(this.accentColor()).backgroundColor(Color.Transparent)
+          .height(32).padding({ left: 8, right: 8 })
+          .onClick(() => { this.titleReadingPreview = true; })
+      }.width('100%')
+      Column() {
+        this.titlePreviewContent()
+      }.width('100%').padding({ top: AppSpacing.XXL, bottom: AppSpacing.XXL })
+        .backgroundColor(ThemeRuntime.readerBackgroundColor(this.appDarkMode))
+        .borderRadius(ThemeRuntime.mediumRadius())
+      if (this.titlePreviewEditingAt === 'preview') {
+        this.titlePreviewEditor()
+      }
     }
     .width('calc(100% - 32vp)')
-    .padding({ left: 0, right: 0, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .padding({ left: 0, right: 0, top: AppSpacing.LG, bottom: AppSpacing.LG })
     .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
     .backgroundColor(Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: this.settingsDividerColor() })
@@ -829,7 +1853,8 @@ struct ReaderFontSettingsPage {
     if (mode === 'custom' && family) {
       return this.resolveCustomFontFamily(family);
     }
-    return this.readerFontFamily || ThemeRuntime.fontFamily() || this.systemPreviewFontFamily();
+    return this.readerFontFamily ||
+      ReaderFontBootstrap.defaultFontFamily(this.readerFontMode, this.systemPreviewFontFamily());
   }
 
   bodyPreviewFontFamily(): string {
@@ -848,26 +1873,16 @@ struct ReaderFontSettingsPage {
   }
 
   normalizeColorInput(color: string, fallback: string): string {
-    const value = (color || '').trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(value)) {
-      return value.toUpperCase();
-    }
-    if (/^[0-9a-fA-F]{6}$/.test(value)) {
-      return `#${value}`.toUpperCase();
-    }
-    return fallback;
+    return ReaderRegexBubbleStyleResolver.normalizeColor(color, fallback);
   }
 
   regexRuleAt(index: number): ReaderRegexFontRule {
+    if (index === -1) return this.titleStyle.emphasis;
+    if (index === EDITING_REGEX_RULE_INDEX) return this.editingRegexRule;
     if (index >= 0 && index < this.regexRules.length) {
       return this.regexRules[index];
     }
     return new ReaderRegexFontRule();
-  }
-
-  isRegexRuleExpanded(index: number, refreshKey: number): boolean {
-    const key = refreshKey >= 0 ? true : true;
-    return this.regexRuleAt(index).expanded && key;
   }
 
   regexPreviewText(rule: ReaderRegexFontRule): string {
@@ -1054,59 +2069,35 @@ struct ReaderFontSettingsPage {
   }
 
   @Builder
-  regexPreviewSliceItem(slice: ReaderRegexPreviewSlice, index: number) {
-    if (this.shouldUseRegexPreviewDecoration(slice, index)) {
-      ContainerSpan() {
-        ImageSpan(ThemeAssetRegistry.regexBubbleCap(this.regexPreviewBubbleStyleId(index)))
-          .width(this.regexPreviewBubbleCapSize(index))
-          .height(this.regexPreviewBubbleCapSize(index))
-          .objectFit(ImageFit.Contain)
-          .verticalAlign(ImageSpanAlignment.CENTER)
-        Span(slice.text)
-          .fontSize(this.regexRuleAt(index).fontSize)
-          .fontFamily(this.previewFontFamily(this.regexRuleAt(index).fontMode, this.regexRuleAt(index).fontFamily))
-          .fontColor(this.regexPreviewTextColor(true, index))
-          .textShadow(this.regexPreviewTextShadow(true, index))
-          .decoration(this.regexPreviewDecoration(true, index))
-        ImageSpan(ThemeAssetRegistry.regexBubbleCap(this.regexPreviewBubbleStyleId(index)))
-          .width(this.regexPreviewBubbleCapSize(index))
-          .height(this.regexPreviewBubbleCapSize(index))
-          .objectFit(ImageFit.Contain)
-          .verticalAlign(ImageSpanAlignment.CENTER)
-          .rotate({ angle: 180 })
-      }
-      .textBackgroundStyle(this.regexPreviewBackgroundStyle(true, index))
-    } else {
-      Span(slice.text)
-        .fontSize(slice.highlighted ? this.regexRuleAt(index).fontSize : this.readerFontSize)
-        .fontFamily(slice.highlighted ?
-          this.previewFontFamily(this.regexRuleAt(index).fontMode, this.regexRuleAt(index).fontFamily) :
-          this.previewFontFamily(this.readerBodyFontMode, this.readerBodyFontFamily))
-        .fontColor(this.regexPreviewTextColor(slice.highlighted, index))
-        .textBackgroundStyle(this.regexPreviewBackgroundStyle(slice.highlighted, index))
-        .textShadow(this.regexPreviewTextShadow(slice.highlighted, index))
-        .decoration(this.regexPreviewDecoration(slice.highlighted, index))
-    }
-  }
-
-  @Builder
   regexRulePreviewItem(index: number, refreshKey: number) {
     Column({ space: AppSpacing.SM }) {
       Text('规则预览')
         .fontSize(AppFontSize.BODY)
         .fontColor(this.subTextColor())
         .width('100%')
-      Text() {
-        ForEach(this.regexPreviewSlices(index, refreshKey), (slice: ReaderRegexPreviewSlice) => {
-          this.regexPreviewSliceItem(slice, index)
-        }, (slice: ReaderRegexPreviewSlice) => slice.key)
-      }
+      ReaderWeightedText({ spans: this.weightedRegexPreviewSpans(index, refreshKey),
+        weight: this.readerFontWeight, maxLines: 3 })
       .width('100%')
-      .maxLines(3)
-      .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('100%')
     .padding({ top: AppSpacing.XS, bottom: AppSpacing.XXS })
+  }
+
+  weightedRegexPreviewSpans(index: number, refreshKey: number): ReaderWeightedTextSpan[] {
+    const rule = this.regexRuleAt(index);
+    return this.regexPreviewSlices(index, refreshKey).map((slice: ReaderRegexPreviewSlice): ReaderWeightedTextSpan => {
+      const span = ReaderWeightedTextSpan.create(this.getUIContext(), slice.text,
+        slice.highlighted ? rule.fontSize : this.readerFontSize,
+        slice.highlighted ? this.previewFontFamily(rule.fontMode, rule.fontFamily) : this.bodyPreviewFontFamily(),
+        this.regexPreviewTextColor(slice.highlighted, index), 0, 0,
+        slice.highlighted ? this.resolvedRegexEmphasis(index) : undefined);
+      span.weight = slice.highlighted ? rule.fontWeight : this.readerFontWeight;
+      if (this.shouldUseRegexPreviewDecoration(slice, index)) {
+        span.capStyleId = this.regexPreviewBubbleStyleId(index);
+        span.capSizePx = this.getUIContext().vp2px(this.regexPreviewBubbleCapSize(index));
+      }
+      return span;
+    });
   }
 
   emphasisModeOptions(): SelectOption[] {
@@ -1176,6 +2167,9 @@ struct ReaderFontSettingsPage {
     this.appendAccessibleBubbleStyle(options, 'mecha-comm', '通讯频道', revision);
     this.appendAccessibleBubbleStyle(options, 'starwish-ribbon', '星愿丝带', revision);
     this.appendAccessibleBubbleStyle(options, 'pencil-mark', '铅笔划线', revision);
+    this.appendAccessibleBubbleStyle(options, 'gilded-orbit', '曜金藏签', revision);
+    this.appendAccessibleBubbleStyle(options, 'harbor-postcard', '港湾邮笺', revision);
+    this.appendAccessibleBubbleStyle(options, 'celestial-orbit', '星穹御签', revision);
     return options;
   }
 
@@ -1243,6 +2237,7 @@ struct ReaderFontSettingsPage {
         })
         if (this.regexRuleAt(index).customTextColorEnabled) {
           AdaptiveColorPicker({
+            allowAlpha: true,
             value: this.regexRuleAt(index).customTextColor,
             placeholder: this.accentColor(),
             appDarkMode: this.appDarkMode,
@@ -1268,6 +2263,7 @@ struct ReaderFontSettingsPage {
           })
         if (this.regexRuleAt(index).customHighlightEnabled) {
           AdaptiveColorPicker({
+            allowAlpha: true,
             value: this.regexRuleAt(index).customHighlightColor,
             placeholder: this.accentColor(),
             appDarkMode: this.appDarkMode,
@@ -1316,6 +2312,7 @@ struct ReaderFontSettingsPage {
           .width('100%')
           .alignItems(VerticalAlign.Center)
           AdaptiveColorPicker({
+            allowAlpha: true,
             value: this.regexRuleAt(index).customBubbleColor,
             placeholder: this.accentColor(),
             appDarkMode: this.appDarkMode,
@@ -1369,8 +2366,15 @@ struct ReaderFontSettingsPage {
         textSize: AppFontSize.BODY,
         textColor: this.subTextColor(),
         onSelected: (index: number) => {
+          if (index >= this.remoteFontStart()) {
+            this.selectRemoteFont(index - this.remoteFontStart(), (customIndex: number) => {
+              const downloaded = this.modeAndFamilyByIndex(customIndex + 2);
+              if (downloaded.length === 2) onChange(downloaded[0], downloaded[1]);
+            });
+            return;
+          }
           const result = this.modeAndFamilyByIndex(index);
-          onChange(result[0], result[1]);
+          if (result.length === 2) onChange(result[0], result[1]);
         }
       })
     }
@@ -1389,7 +2393,7 @@ struct ReaderFontSettingsPage {
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
       this.fontSizeStepButton($r('sys.symbol.minus'), '减小规则字体',
-        this.regexRuleAt(index).fontSize > 14, () => {
+        () => Math.round(this.regexRuleAt(index).fontSize) > 14, () => {
         this.updateRegexRule(index, (target: ReaderRegexFontRule) => {
           target.fontSize = Math.max(14, Math.round(target.fontSize) - 1);
         });
@@ -1401,7 +2405,7 @@ struct ReaderFontSettingsPage {
         .height(36)
         .textAlign(TextAlign.Center)
       this.fontSizeStepButton($r('sys.symbol.plus'), '增大规则字体',
-        this.regexRuleAt(index).fontSize !== 50, () => {
+        () => Math.round(this.regexRuleAt(index).fontSize) < 50, () => {
         this.updateRegexRule(index, (target: ReaderRegexFontRule) => {
           target.fontSize = Math.min(50, Math.round(target.fontSize) + 1);
         });
@@ -1437,4 +2441,30 @@ struct ReaderFontSettingsPage {
     .alignItems(VerticalAlign.Center)
   }
 
+}
+
+/** 路由页面与样式悬浮框复用同一套字体控件和保存队列。 */
+@Entry
+@Component
+struct ReaderFontSettingsPage {
+  private closeEditor: () => void = () => { router.back(); };
+  private showEditor: () => void = () => {};
+
+  onPageShow(): void {
+    this.showEditor();
+  }
+
+  onBackPress(): boolean {
+    this.closeEditor();
+    return true;
+  }
+
+  build() {
+    Stack() {
+      ReaderFontSettingsEditor({ onCloseReady: (close: () => void) => { this.closeEditor = close; },
+        onShownReady: (show: () => void) => { this.showEditor = show; } })
+    }
+    .width('100%')
+    .height('100%')
+  }
 }

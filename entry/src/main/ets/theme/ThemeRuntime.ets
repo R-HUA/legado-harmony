@@ -1,4 +1,6 @@
 import { BuiltinThemeRegistry } from './BuiltinThemeRegistry';
+import { ThemePackRegistry } from './ThemePackRegistry';
+import { ThemeAssetRegistry } from './ThemeAssetRegistry';
 import {
   ThemeBubbleStyles,
   ThemeBookTokens,
@@ -14,27 +16,9 @@ import {
 import { HexColor } from '../utils/HexColor';
 
 export class ThemeRuntime {
-  static readonly KEY_GLASS_ENABLED: string = 'glassEnabled';
-  static readonly KEY_GLASS_PANEL_BLUR: string = 'glassPanelBlur';
-  static readonly KEY_GLASS_POPOVER_BLUR: string = 'glassPopoverBlur';
-  static readonly KEY_GLASS_BUTTON_BLUR: string = 'glassButtonBlur';
-  static readonly KEY_GLASS_OVERLAY_BLUR: string = 'glassOverlayBlur';
-  static readonly KEY_GLASS_MENU_BLUR: string = 'glassMenuBlur';
-  static readonly KEY_GLASS_LIGHT_TINT_OPACITY: string = 'glassLightTintOpacity';
-  static readonly KEY_GLASS_DARK_TINT_OPACITY: string = 'glassDarkTintOpacity';
-  static readonly KEY_GLASS_LIGHT_BORDER_OPACITY: string = 'glassLightBorderOpacity';
-  static readonly KEY_GLASS_DARK_BORDER_OPACITY: string = 'glassDarkBorderOpacity';
-  static readonly KEY_GLASS_BORDER_WIDTH: string = 'glassBorderWidth';
-  static readonly KEY_GLASS_SHADOW_ENABLED: string = 'glassShadowEnabled';
-  static readonly KEY_GLASS_LIGHT_SHADOW_OPACITY: string = 'glassLightShadowOpacity';
-  static readonly KEY_GLASS_DARK_SHADOW_OPACITY: string = 'glassDarkShadowOpacity';
-  static readonly KEY_GLASS_SHADOW_RADIUS: string = 'glassShadowRadius';
-  static readonly KEY_GLASS_SHADOW_OFFSET_X: string = 'glassShadowOffsetX';
-  static readonly KEY_GLASS_SHADOW_OFFSET_Y: string = 'glassShadowOffsetY';
-  static readonly KEY_GLASS_CORNER_RADIUS: string = 'glassCornerRadius';
-  static readonly KEY_GLASS_LOW_PERFORMANCE: string = 'glassLowPerformance';
   static readonly KEY_THEME_ID: string = 'appThemeId';
   static readonly KEY_THEME_REVISION: string = 'themeRevision';
+  static readonly KEY_HOME_BACKDROP_ENABLED: string = 'homeBackdropEnabled';
   static readonly KEY_FONT_FAMILY: string = 'themeFontFamily';
   static readonly KEY_ICON_PACK_ID: string = 'themeIconPackId';
   static readonly KEY_CUSTOM_BASE_THEME_ID: string = 'appCustomBaseThemeId';
@@ -160,20 +144,34 @@ export class ThemeRuntime {
       ThemeRuntime.KEY_LIGHT_PAGE_COLOR, fallback);
   }
 
+  /** 首页三个页签顶部的主题背景图；当前主题（自定义方案按“首页背景”来源）没有或用户在“其他设置”里关掉时为 null。 */
+  static homeBackdrop(darkMode: boolean): ResourceStr | null {
+    if (AppStorage.get<boolean>(ThemeRuntime.KEY_HOME_BACKDROP_ENABLED) === false) return null;
+    return ThemeAssetRegistry.homeBackdrop(ThemeRuntime.homeBackdropThemeId(darkMode), darkMode);
+  }
+
+  static homeBackdropThemeId(darkMode: boolean): string {
+    if (ThemeRuntime.currentThemeId() !== ThemeIds.CUSTOM) return ThemeRuntime.currentThemeId();
+    const fallback = AppStorage.get<string>(ThemeRuntime.KEY_CUSTOM_BASE_THEME_ID) ||
+      BuiltinThemeRegistry.DEFAULT_THEME_ID;
+    return ThemeRuntime.customSources(darkMode, fallback).homeBackdropThemeId;
+  }
+
+  /** 首页列表、滚动区等铺满整页的层：有主题背景图时透明，让页面根部铺的背景透上来。 */
+  static homeSurfaceColor(darkMode: boolean): string {
+    return ThemeRuntime.homeBackdrop(darkMode) ? '#00000000' : ThemeRuntime.pageColor(darkMode);
+  }
+
   static cardColor(darkMode: boolean): string {
     const fallback = ThemeRuntime.fallbackVariant(darkMode).colors.cardColor;
     return ThemeRuntime.colorFromStorage(darkMode ? ThemeRuntime.KEY_DARK_CARD_COLOR :
       ThemeRuntime.KEY_LIGHT_CARD_COLOR, fallback);
   }
 
+  /** 顶栏与页面同色且不透明，不再用模糊和半透明，也不做成一条单独的白条。 */
   static topBarColor(darkMode: boolean): string {
-    const fallback = ThemeRuntime.fallbackVariant(darkMode).colors.cardColor;
-    const color = ThemeRuntime.normalizeColor(ThemeRuntime.cardColor(darkMode), fallback);
-    return ThemeRuntime.dropdownPanelColor(darkMode, color, 'overlay');
-  }
-
-  static topBarBlur(): number {
-    return ThemeRuntime.glassBlur('overlay', 18);
+    const fallback = ThemeRuntime.fallbackVariant(darkMode).colors.pageColor;
+    return ThemeRuntime.normalizeColor(ThemeRuntime.pageColor(darkMode), fallback);
   }
 
   static inputColor(darkMode: boolean): string {
@@ -212,6 +210,9 @@ export class ThemeRuntime {
     return `#${darkMode ? '33' : '1F'}${accent.substring(1)}`;
   }
 
+  /**
+   * 列表卡片等常驻表面的玻璃色调，取当前主题包的玻璃参数（磨砂玻璃设置已移除，浮层面板改用系统沉浸光感材质）。
+   */
   static glassPanelColor(darkMode: boolean, baseColor: string = '', surface: string = 'panel'): string {
     const fallback = ThemeRuntime.cardColor(darkMode);
     const color = ThemeRuntime.normalizeColor(baseColor || fallback, fallback);
@@ -219,10 +220,7 @@ export class ThemeRuntime {
       return color;
     }
     const glass = ThemeRuntime.currentGlass();
-    const opacity = ThemeRuntime.usesThemeGlassDefaults() ?
-      (darkMode ? glass.darkTintOpacity : glass.lightTintOpacity) :
-      ThemeRuntime.numberFromStorage(darkMode ? ThemeRuntime.KEY_GLASS_DARK_TINT_OPACITY :
-        ThemeRuntime.KEY_GLASS_LIGHT_TINT_OPACITY, darkMode ? 78 : 85, 0, 100);
+    const opacity = darkMode ? glass.darkTintOpacity : glass.lightTintOpacity;
     return `#${ThemeRuntime.opacityHex(opacity)}${color.substring(1)}`;
   }
 
@@ -232,20 +230,13 @@ export class ThemeRuntime {
     if (!ThemeRuntime.glassEnabled()) {
       return color;
     }
-    const glass = ThemeRuntime.currentGlass();
-    const panelOpacity = ThemeRuntime.usesThemeGlassDefaults() ?
-      (darkMode ? glass.darkTintOpacity : glass.lightTintOpacity) :
-      ThemeRuntime.numberFromStorage(darkMode ? ThemeRuntime.KEY_GLASS_DARK_TINT_OPACITY :
-        ThemeRuntime.KEY_GLASS_LIGHT_TINT_OPACITY, darkMode ? 78 : 85, 0, 100);
-    return `#${ThemeRuntime.opacityHex(Math.round(panelOpacity * 0.47))}${color.substring(1)}`;
+    // 菜单比大面板更通透：浅色 30%、深色 45% 底色。
+    return `#${darkMode ? '73' : '4D'}${color.substring(1)}`;
   }
 
   static glassBorderColor(darkMode: boolean, surface: string = 'panel'): string {
     const glass = ThemeRuntime.currentGlass();
-    const opacity = ThemeRuntime.usesThemeGlassDefaults() ?
-      (darkMode ? glass.darkBorderOpacity : glass.lightBorderOpacity) :
-      ThemeRuntime.numberFromStorage(darkMode ? ThemeRuntime.KEY_GLASS_DARK_BORDER_OPACITY :
-        ThemeRuntime.KEY_GLASS_LIGHT_BORDER_OPACITY, darkMode ? 22 : 65, 0, 100);
+    const opacity = darkMode ? glass.darkBorderOpacity : glass.lightBorderOpacity;
     return `#${ThemeRuntime.opacityHex(opacity)}FFFFFF`;
   }
 
@@ -254,88 +245,44 @@ export class ThemeRuntime {
       return '#00000000';
     }
     const glass = ThemeRuntime.currentGlass();
-    const opacity = ThemeRuntime.usesThemeGlassDefaults() ?
-      (darkMode ? glass.darkShadowOpacity : glass.lightShadowOpacity) :
-      ThemeRuntime.numberFromStorage(darkMode ? ThemeRuntime.KEY_GLASS_DARK_SHADOW_OPACITY :
-        ThemeRuntime.KEY_GLASS_LIGHT_SHADOW_OPACITY, darkMode ? 44 : 17, 0, 100);
+    const opacity = darkMode ? glass.darkShadowOpacity : glass.lightShadowOpacity;
     return `#${ThemeRuntime.opacityHex(opacity)}000000`;
   }
 
   static glassEnabled(): boolean {
-    return ThemeRuntime.currentGlass().enabled &&
-      (AppStorage.get<boolean>(ThemeRuntime.KEY_GLASS_ENABLED) ?? true) &&
-      !(AppStorage.get<boolean>(ThemeRuntime.KEY_GLASS_LOW_PERFORMANCE) ?? false);
+    return ThemeRuntime.currentGlass().enabled;
   }
 
   static glassShadowEnabled(surface: string = 'panel'): boolean {
-    return ThemeRuntime.glassEnabled() &&
-      ThemeRuntime.currentGlass().shadowEnabled &&
-      (AppStorage.get<boolean>(ThemeRuntime.KEY_GLASS_SHADOW_ENABLED) ?? true);
-  }
-
-  static glassBlur(surface: string = 'panel', fallback: number = 22): number {
-    if (!ThemeRuntime.glassEnabled()) {
-      return 0;
-    }
-    if (ThemeRuntime.usesThemeGlassDefaults()) {
-      const glass = ThemeRuntime.currentGlass();
-      return ThemeRuntime.clampNumber(ThemeRuntime.glassSurface(glass, surface).blurRadius * glass.materialScale,
-        0, 40);
-    }
-    return ThemeRuntime.numberFromStorage(ThemeRuntime.glassBlurStorageKey(surface), fallback, 0, 40);
+    return ThemeRuntime.glassEnabled() && ThemeRuntime.currentGlass().shadowEnabled;
   }
 
   static glassBorderWidth(surface: string = 'panel'): number {
-    if (ThemeRuntime.usesThemeGlassDefaults()) {
-      return ThemeRuntime.clampNumber(ThemeRuntime.currentGlass().borderWidth, 0, 2);
-    }
-    return ThemeRuntime.numberFromStorage(ThemeRuntime.KEY_GLASS_BORDER_WIDTH, 1, 0, 2);
+    return ThemeRuntime.clampNumber(ThemeRuntime.currentGlass().borderWidth, 0, 2);
   }
 
   static glassCornerRadius(fallback: number = 16, surface: string = 'panel'): number {
-    if (ThemeRuntime.usesThemeGlassDefaults()) {
-      return ThemeRuntime.clampNumber(ThemeRuntime.glassSurface(ThemeRuntime.currentGlass(), surface).cornerRadius,
-        0, 32);
-    }
-    return ThemeRuntime.numberFromStorage(ThemeRuntime.KEY_GLASS_CORNER_RADIUS, fallback, 0, 32);
+    return ThemeRuntime.clampNumber(ThemeRuntime.glassSurface(ThemeRuntime.currentGlass(), surface).cornerRadius,
+      0, 32);
   }
 
   static glassShadowRadius(surface: string = 'panel'): number {
     if (!ThemeRuntime.glassShadowEnabled()) {
       return 0;
     }
-    if (ThemeRuntime.usesThemeGlassDefaults()) {
-      return ThemeRuntime.clampNumber(ThemeRuntime.currentGlass().shadowRadius, 0, 30);
-    }
-    return ThemeRuntime.numberFromStorage(ThemeRuntime.KEY_GLASS_SHADOW_RADIUS, 18, 0, 30);
+    return ThemeRuntime.clampNumber(ThemeRuntime.currentGlass().shadowRadius, 0, 30);
   }
 
   static glassShadowOffsetX(surface: string = 'panel'): number {
-    if (ThemeRuntime.usesThemeGlassDefaults()) {
-      return ThemeRuntime.clampNumber(ThemeRuntime.currentGlass().shadowOffsetX, -12, 12);
-    }
-    return ThemeRuntime.numberFromStorage(ThemeRuntime.KEY_GLASS_SHADOW_OFFSET_X, 0, -12, 12);
+    return ThemeRuntime.clampNumber(ThemeRuntime.currentGlass().shadowOffsetX, -12, 12);
   }
 
   static glassShadowOffsetY(surface: string = 'panel'): number {
-    if (ThemeRuntime.usesThemeGlassDefaults()) {
-      return ThemeRuntime.clampNumber(ThemeRuntime.currentGlass().shadowOffsetY, -12, 12);
-    }
-    return ThemeRuntime.numberFromStorage(ThemeRuntime.KEY_GLASS_SHADOW_OFFSET_Y, 6, -12, 12);
-  }
-
-  private static numberFromStorage(key: string, fallback: number, min: number, max: number): number {
-    const value = AppStorage.get<number>(key) ?? fallback;
-    return Math.max(min, Math.min(max, value));
+    return ThemeRuntime.clampNumber(ThemeRuntime.currentGlass().shadowOffsetY, -12, 12);
   }
 
   private static clampNumber(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
-  }
-
-  private static usesThemeGlassDefaults(): boolean {
-    const preset = (AppStorage.get<string>('glassPreset') || 'standard').trim().toLowerCase();
-    return preset === 'standard';
   }
 
   private static currentGlass(): ThemeGlassTokens {
@@ -352,15 +299,6 @@ export class ThemeRuntime {
     if (normalized === 'overlay') return glass.overlay;
     if (normalized === 'menu') return glass.menu;
     return glass.panel;
-  }
-
-  private static glassBlurStorageKey(surface: string): string {
-    const normalized = (surface || '').trim().toLowerCase();
-    if (normalized === 'popover') return ThemeRuntime.KEY_GLASS_POPOVER_BLUR;
-    if (normalized === 'button') return ThemeRuntime.KEY_GLASS_BUTTON_BLUR;
-    if (normalized === 'overlay') return ThemeRuntime.KEY_GLASS_OVERLAY_BLUR;
-    if (normalized === 'menu') return ThemeRuntime.KEY_GLASS_MENU_BLUR;
-    return ThemeRuntime.KEY_GLASS_PANEL_BLUR;
   }
 
   private static opacityHex(opacity: number): string {
@@ -398,7 +336,17 @@ export class ThemeRuntime {
   }
 
   /** 强调色、按钮色、危险色等实色背景上的文字。 */
-  static onAccentColor(): string {
+  static onAccentColor(backgroundColor: string = ''): string {
+    // Detail previews may use another theme's champagne accent before that theme is applied.
+    // Preserve the legacy default; callers painting a light fill can supply its actual color.
+    if (/^#[0-9a-fA-F]{6}$/.test(backgroundColor)) {
+      const channels: number[] = [1, 3, 5].map((start: number): number => {
+        const value = Number.parseInt(backgroundColor.slice(start, start + 2), 16) / 255;
+        return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+      });
+      const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+      return luminance > 0.179 ? '#000000' : '#FFFFFF';
+    }
     return '#FFFFFF';
   }
 
@@ -412,9 +360,27 @@ export class ThemeRuntime {
     return darkMode ? '#24FFFFFF' : '#14000000';
   }
 
+  /** 首页顶部白色胶囊、圆形按钮等悬浮控件的浅投影；深色模式靠底色区分，不加投影。 */
+  static floatingControlShadow(darkMode: boolean): ShadowOptions {
+    return {
+      radius: darkMode ? 0 : 12,
+      color: darkMode ? Color.Transparent : '#14000000',
+      offsetX: 0,
+      offsetY: darkMode ? 0 : 2
+    };
+  }
+
   /** 叠在任意底色上的浅色填充，用于次要按钮、选中行、占位块。 */
   static softFillColor(darkMode: boolean): string {
     return darkMode ? '#1FFFFFFF' : '#0D000000';
+  }
+
+  /**
+   * 选中的筛选小块底色。浅色下 10% 的低饱和强调色与 softFillColor 的灰底几乎一样，提到 16%；
+   * 深色下未选中是白色叠加，10% 已能区分。
+   */
+  static selectedFillColor(darkMode: boolean): string {
+    return `#${darkMode ? '1A' : '29'}${ThemeRuntime.accentColor(darkMode).substring(1)}`;
   }
 
   static fontFamily(): string {
@@ -677,7 +643,8 @@ export class ThemeRuntime {
     else if (category === 'typography') themeId = sources.typographyThemeId;
     else if (category === 'layout') themeId = sources.layoutThemeId;
     else if (category === 'radius') themeId = sources.radiusThemeId;
-    else if (category === 'glass') themeId = sources.glassThemeId;
+    // 磨砂参数不再单独选来源：面板着色、边框和阴影跟随完整配色所属的主题。
+    else if (category === 'glass') themeId = sources.paletteThemeId;
     return BuiltinThemeRegistry.findById(themeId);
   }
 
@@ -702,6 +669,8 @@ export class ThemeRuntime {
     normalized.bubbleThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.bubbleThemeId || fallback);
     normalized.navigationThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.navigationThemeId || fallback);
     normalized.bookThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.bookThemeId || fallback);
+    normalized.homeBackdropThemeId = BuiltinThemeRegistry.normalizeBuiltinId(
+      source.homeBackdropThemeId || source.startupThemeId || fallback);
     normalized.typographyThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.typographyThemeId || fallback);
     normalized.layoutThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.layoutThemeId || fallback);
     normalized.radiusThemeId = BuiltinThemeRegistry.normalizeBuiltinId(source.radiusThemeId || fallback);
@@ -734,6 +703,11 @@ export class ThemeRuntime {
 
   private static normalizeBubbleStyle(value: string, fallback: string): string {
     const style = (value || '').trim();
+    if (ThemePackRegistry.isPackId(style)) {
+      const pack = ThemePackRegistry.get(style);
+      if (pack && pack.hasBubble()) return style;
+      return ThemeRuntime.normalizeBubbleStyle(fallback, ThemeBubbleStyles.QQ_SOFT);
+    }
     if (style === ThemeBubbleStyles.QQ_SOFT || style === ThemeBubbleStyles.QQ_SOLID ||
       style === ThemeBubbleStyles.CAPSULE || style === ThemeBubbleStyles.PAPER ||
       style === ThemeBubbleStyles.NEON || style === ThemeBubbleStyles.CLASSIC_GLASS ||
@@ -744,7 +718,9 @@ export class ThemeRuntime {
       style === ThemeBubbleStyles.ROSE_FRAME || style === ThemeBubbleStyles.MOON_HALO ||
       style === ThemeBubbleStyles.SWORD_TALISMAN || style === ThemeBubbleStyles.QINGLUAN_JADE ||
       style === ThemeBubbleStyles.PIPI_SOFT_PAW || style === ThemeBubbleStyles.MECHA_COMM ||
-      style === ThemeBubbleStyles.STARWISH_RIBBON || style === ThemeBubbleStyles.PENCIL_MARK) {
+      style === ThemeBubbleStyles.STARWISH_RIBBON || style === ThemeBubbleStyles.PENCIL_MARK ||
+      style === ThemeBubbleStyles.GILDED_ORBIT || style === ThemeBubbleStyles.HARBOR_POSTCARD ||
+      style === ThemeBubbleStyles.CELESTIAL_ORBIT) {
       return style;
     }
     const fallbackStyle = (fallback || '').trim();
@@ -761,7 +737,9 @@ export class ThemeRuntime {
       fallbackStyle === ThemeBubbleStyles.PIPI_SOFT_PAW ||
       fallbackStyle === ThemeBubbleStyles.MECHA_COMM ||
       fallbackStyle === ThemeBubbleStyles.STARWISH_RIBBON ||
-      fallbackStyle === ThemeBubbleStyles.PENCIL_MARK) {
+      fallbackStyle === ThemeBubbleStyles.PENCIL_MARK ||
+      fallbackStyle === ThemeBubbleStyles.GILDED_ORBIT || fallbackStyle === ThemeBubbleStyles.HARBOR_POSTCARD ||
+      fallbackStyle === ThemeBubbleStyles.CELESTIAL_ORBIT) {
       return fallbackStyle;
     }
     return ThemeBubbleStyles.QQ_SOFT;

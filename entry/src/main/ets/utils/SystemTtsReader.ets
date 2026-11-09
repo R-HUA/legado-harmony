@@ -5,6 +5,13 @@ import { HttpTTS } from '@legado/sourceengine';
 import { HttpTtsAudio, HttpTtsReader } from './HttpTtsReader';
 import { TtsAudioSession } from './TtsAudioSession';
 import { PcmPlaybackCue, TtsPcmAudioPlayer } from './TtsPcmAudioPlayer';
+import { MimoReadingSession } from './mimo/MimoReadingSession';
+import { MimoUnit } from '../core/mimo/MimoPolicy';
+import { TtsCustomVoices, TtsVoiceOption } from './TtsVoiceModels';
+import { PlaybackLoudnessGain } from './PlaybackLoudnessGain';
+import { LocalTtsModel } from './localtts/LocalTtsModels';
+import { LocalTtsSelection } from './localtts/LocalTtsSelection';
+import { LocalTtsEngine } from './localtts/LocalTtsEngine';
 
 export interface TtsChunk {
   text: string;
@@ -13,6 +20,11 @@ export interface TtsChunk {
 }
 
 export interface TtsReadOptions {
+  mimo?: boolean;
+  mimoBook?: string;
+  mimoBookName?: string;
+  mimoChapter?: string;
+  mimoSourceOffset?: number;
   onFinished?: () => void;
   /**
    * Fired instead of synthesis when the requested text has no audible content
@@ -34,6 +46,8 @@ export interface TtsReadOptions {
   cloudVoiceId?: string;
   cloudVoiceName?: string;
   cloudVoiceTier?: string;
+  /** 指定离线音色，不用当前选中的（音色管理里试听还没添加的说话人用）。 */
+  localVoice?: LocalTtsModel;
   focusBreakOffsets?: number[];
   keepAudioOutputOnFinish?: boolean;
 }
@@ -80,28 +94,24 @@ interface SystemPcmSegment {
   sampleRate: number;
 }
 
-export class TtsVoiceOption {
-  id: number = 13;
-  name: string = '聆小珊';
-  online: number = 1;
-  status: string = '';
-  systemStatus: string = '';
-  style: string = '';
-  language: string = 'zh-CN';
-  downloadLanguage: string = '';
-  downloadPerson: number = -1;
-  gender: string = '';
-  available: boolean = true;
-  downloadable: boolean = false;
-}
-
 export class SystemTtsReader {
+  /** Max punctuation characters a sentence tail may add beyond a chunk's length target. */
+  private static readonly TTS_TAIL_SLACK: number = 8;
   private static audioSessionOwnerSerial: number = 0;
   private static requestSerial: number = 0;
   private static readonly OFFLINE_MODE: number = 1;
   private static readonly SYSTEM_TTS_STYLE: string = 'interaction-broadcast';
   private static readonly CUSTOM_TTS_PREFETCH_WINDOW: number = 3;
+  private static readonly LOCAL_TTS_PREFETCH_WINDOW: number = 2;
   private static readonly CUSTOM_TTS_HIDDEN_GAP_LENGTH: number = 8;
+  // Custom voices return the whole clip only after synthesizing it, so the wait before the first sound grows
+  // with the first chunk (a 60-character WAV is ~430KB and 1-2s on Baidu). A shorter opening chunk starts
+  // speech sooner; later chunks keep the normal length because they are prefetched behind playback.
+  private static readonly CUSTOM_TTS_CHUNK_LENGTH: number = 64;
+  private static readonly CUSTOM_TTS_FIRST_CHUNK_LENGTH: number = 32;
+  // The opening request is sent alone for this long (or until it settles) before the prefetch requests
+  // follow, so it does not share bandwidth with them or trip per-IP rate limits with a burst.
+  private static readonly CUSTOM_TTS_FIRST_REQUEST_HEAD_START_MS: number = 600;
   private static readonly CLOUD_TTS_WIFI_PREFETCH_WINDOW: number = 2;
   private static readonly CLOUD_TTS_MOBILE_PREFETCH_WINDOW: number = 1;
   // Fallback highlight granularity only. Cloud highlight normally follows the server
@@ -136,6 +146,7 @@ export class SystemTtsReader {
   private pcmPlayer: TtsPcmAudioPlayer = new TtsPcmAudioPlayer();
   private httpReader: HttpTtsReader = new HttpTtsReader();
   private cloudReader: CloudTtsClient = new CloudTtsClient();
+  private mimoReader: MimoReadingSession = new MimoReadingSession();
   private chunks: TtsChunk[] = [];
   // Normalized source text the current chunks were derived from. Used to tell a real
   // chunk boundary (keep the trailing comma so the engine hears "sentence continues")
@@ -318,7 +329,7 @@ export class SystemTtsReader {
   }
 
   audioDebugState(): string {
-    return (this.getCurrentCustomVoice() || this.optionCloudVoiceId) ?
+    return (LocalTtsSelection.current() || this.getCurrentCustomVoice() || this.optionCloudVoiceId) ?
       this.httpReader.debugState() : this.pcmPlayer.debugState();
   }
 
@@ -391,8 +402,11 @@ export class SystemTtsReader {
     this.optionFocusBreakOffsets = this.normalizeFocusBreakOffsets(options?.focusBreakOffsets, cleanText.length);
     this.keepAudioOutputOnFinish = options?.keepAudioOutputOnFinish === true;
     const customVoice = this.getCurrentCustomVoice();
+    // 选了离线音色时它优先于自定义音色；云端音色由调用方显式传入，选离线音色时调用方不会传。
+    const localVoice = this.optionCloudVoiceId || options?.mimo ? undefined :
+      (options?.localVoice || LocalTtsSelection.current());
     const splitChunks = this.optionCloudVoiceId ? this.splitCloudText(cleanText) :
-      (customVoice ? this.splitCustomText(cleanText, 64) :
+      ((localVoice || customVoice) ? this.splitCustomText(cleanText, SystemTtsReader.CUSTOM_TTS_CHUNK_LENGTH) :
         this.splitSystemText(cleanText, this.optionFocusBreakOffsets));
     // A run of trailing punctuation (for example "......" or "……") can be split into a
     // punctuation-only chunk. Some Harmony TTS engines return no PCM/onStart for such a
@@ -422,6 +436,32 @@ export class SystemTtsReader {
     }
     this.chunkIndex = 0;
     this.active = true;
+    if (options?.mimo) {
+      this.mimoReader.read(cleanText, {
+        book: options.mimoBook || 'preview', bookName: options.mimoBookName || '',
+        chapter: options.mimoChapter || 'preview',
+        sourceOffset: options.mimoSourceOffset || 0, speed: options.speed || 1,
+        onFocus: (unit: MimoUnit, index: number): void => {
+          if (generation !== this.readGeneration || !this.active) return;
+          const chunk: TtsChunk = { text: unit.text, start: unit.start, end: unit.end };
+          this.currentFocusChunk = chunk;
+          this.currentFocusChunkIndex = index;
+          if (this.onChunkStart) this.onChunkStart(chunk, index);
+        },
+        onAudio: (): void => {
+          if (generation !== this.readGeneration || !this.active || this.audioStarted) return;
+          this.audioStarted = true;
+          if (this.onAudioStart) this.onAudioStart();
+        }
+      }).then((): void => {
+        if (generation === this.readGeneration && this.active) this.finish(true);
+      }).catch((error: Error): void => {
+        if (generation !== this.readGeneration || !this.active) return;
+        this.active = false;
+        if (this.onError) this.onError(error.message);
+      });
+      return;
+    }
     if (this.optionCloudVoiceId) {
       if (this.engine) {
         try {
@@ -431,6 +471,17 @@ export class SystemTtsReader {
         this.engine = null;
       }
       this.speakCloudNext(generation, this.optionCloudVoiceId);
+      return;
+    }
+    if (localVoice) {
+      if (this.engine) {
+        try {
+          this.engine.shutdown();
+        } catch (_) {
+        }
+        this.engine = null;
+      }
+      this.speakLocalNext(generation, localVoice);
       return;
     }
     if (customVoice) {
@@ -589,6 +640,7 @@ export class SystemTtsReader {
     }
     this.paused = true;
     const generation = this.readGeneration;
+    await this.mimoReader.pause();
     if (this.ttsPcmPlayType === 1 && this.engine) {
       const resumeIndex = this.currentFocusChunkIndex;
       if (resumeIndex >= 0) {
@@ -621,6 +673,7 @@ export class SystemTtsReader {
     if (this.readGeneration !== generation || !this.active || this.paused) {
       return false;
     }
+    await this.mimoReader.resume();
     await this.httpReader.resume();
     if (this.readGeneration !== generation || !this.active || this.paused) {
       return false;
@@ -670,7 +723,9 @@ export class SystemTtsReader {
     this.resetSystemPcmPipeline();
     this.clearSpeakWatchdog();
     this.httpReader.stop();
+    LocalTtsEngine.cancelAll();
     this.cloudReader.stop();
+    this.mimoReader.stop();
     this.pcmPlayer.stop();
     this.releaseSystemAudioSession();
     this.stopEngineOutput();
@@ -702,6 +757,7 @@ export class SystemTtsReader {
     }
     this.pcmPlayer.release();
     this.httpReader.release();
+    this.mimoReader.release();
     this.engine = null;
   }
 
@@ -889,7 +945,8 @@ export class SystemTtsReader {
 
   private async playCloudQueue(generation: number, voiceId: string): Promise<void> {
     const jobs: CloudTtsAudioJob[] = [];
-    this.fillCloudAudioJobs(generation, voiceId, jobs);
+    // Let the first audible segment obtain the user's synthesis slot before speculative prefetch.
+    this.fillCloudAudioJobs(generation, voiceId, jobs, 1);
     while (this.readGeneration === generation && this.active) {
       if (jobs.length === 0) {
         await this.httpReader.drain();
@@ -937,8 +994,8 @@ export class SystemTtsReader {
     }
   }
 
-  private fillCloudAudioJobs(generation: number, voiceId: string, jobs: CloudTtsAudioJob[]): void {
-    const prefetchWindow = this.cloudTtsPrefetchWindow();
+  private fillCloudAudioJobs(generation: number, voiceId: string, jobs: CloudTtsAudioJob[], limit: number = 0): void {
+    const prefetchWindow = limit > 0 ? limit : this.cloudTtsPrefetchWindow();
     while (this.readGeneration === generation && this.active &&
       jobs.length < prefetchWindow && this.chunkIndex < this.chunks.length) {
       const index = this.chunkIndex;
@@ -1069,6 +1126,10 @@ export class SystemTtsReader {
     }
     sourceStart = Math.max(0, Math.min(speechLength, sourceStart));
     sourceEnd = Math.max(sourceStart, Math.min(speechLength, sourceEnd));
+    // Normalize both sides identically: a quote omitted by one timing range belongs
+    // to that range, not to the next spoken sentence. Audio timestamps stay unchanged.
+    sourceStart = this.extendTtsBreak(job.chunk.text, sourceStart, speechLength);
+    sourceEnd = this.extendTtsBreak(job.chunk.text, sourceEnd, speechLength);
     if (sourceEnd <= sourceStart) {
       return null;
     }
@@ -1186,7 +1247,8 @@ export class SystemTtsReader {
 
   private async playCustomQueue(generation: number, voice: HttpTTS): Promise<void> {
     const jobs: CustomTtsAudioJob[] = [];
-    this.fillCustomAudioJobs(generation, voice, jobs);
+    this.fillCustomAudioJobs(generation, voice, jobs, 1);
+    this.prefetchCustomAudioAfterHeadStart(generation, voice, jobs);
     while (this.readGeneration === generation && this.active) {
       if (jobs.length === 0) {
         await this.httpReader.drain();
@@ -1241,8 +1303,41 @@ export class SystemTtsReader {
     }
   }
 
-  private fillCustomAudioJobs(generation: number, voice: HttpTTS, jobs: CustomTtsAudioJob[]): void {
-    const prefetchWindow = this.customTtsPrefetchWindow(voice);
+  // Lets the opening request run alone briefly, then fills the rest of the prefetch window. The playback loop
+  // takes the opening job out of `jobs` while it is still in flight, so it is counted against the window here.
+  private prefetchCustomAudioAfterHeadStart(generation: number, voice: HttpTTS, jobs: CustomTtsAudioJob[]): void {
+    if (jobs.length === 0) {
+      return;
+    }
+    const firstPromise = jobs[0].promise;
+    let firstSettled = false;
+    let released = false;
+    let timer = -1;
+    const release = (): void => {
+      if (released) {
+        return;
+      }
+      released = true;
+      clearTimeout(timer);
+      const prefetchWindow = this.customTtsPrefetchWindow(voice);
+      this.fillCustomAudioJobs(generation, voice, jobs, firstSettled ? prefetchWindow : prefetchWindow - 1);
+    };
+    timer = setTimeout(release, SystemTtsReader.CUSTOM_TTS_FIRST_REQUEST_HEAD_START_MS);
+    firstPromise.then((result: CustomTtsAudioResult): void => {
+      if (!result.audio) {
+        // The playback loop reports this failure and stops; do not start requests it will never play.
+        released = true;
+        clearTimeout(timer);
+        return;
+      }
+      firstSettled = true;
+      release();
+    });
+  }
+
+  private fillCustomAudioJobs(generation: number, voice: HttpTTS, jobs: CustomTtsAudioJob[],
+    limit?: number): void {
+    const prefetchWindow = limit === undefined ? this.customTtsPrefetchWindow(voice) : limit;
     while (this.readGeneration === generation && this.active &&
       jobs.length < prefetchWindow && this.chunkIndex < this.chunks.length) {
       const index = this.chunkIndex;
@@ -1294,6 +1389,93 @@ export class SystemTtsReader {
     };
   }
 
+  private speakLocalNext(generation: number, voice: LocalTtsModel): void {
+    this.playLocalQueue(generation, voice).catch((error: Error) => {
+      if (this.readGeneration !== generation || !this.active || LocalTtsEngine.isCancelled(error)) {
+        return;
+      }
+      this.currentRequestId = '';
+      this.active = false;
+      const message = `离线音色朗读失败：${error.message || error}`;
+      console.error('[TTS] local voice failed:', message);
+      if (this.onError) this.onError(message);
+    });
+  }
+
+  /**
+   * 离线音色与自定义音色同样是“整段合成后交给 PCM 播放器”，所以沿用自定义音色的分段与焦点节奏；
+   * 区别是合成在本机后台线程里排队进行，预取两段就足够填满播放间隙（合成约为实时的 5 倍速）。
+   */
+  private async playLocalQueue(generation: number, voice: LocalTtsModel): Promise<void> {
+    const jobs: CustomTtsAudioJob[] = [];
+    this.fillLocalAudioJobs(generation, voice, jobs);
+    while (this.readGeneration === generation && this.active) {
+      if (jobs.length === 0) {
+        await this.httpReader.drain();
+        if (this.readGeneration === generation && this.active) {
+          this.finish(true);
+        }
+        return;
+      }
+      const job = jobs.shift() as CustomTtsAudioJob;
+      this.currentRequestId = this.createRequestId();
+      this.currentSpeakStartedAt = Date.now();
+      this.currentSpeakMinDuration = this.estimateSpeakDuration(job.text);
+      this.completionPending = false;
+      this.currentFocusChunk = job.chunk;
+      this.currentFocusChunkIndex = job.index;
+      this.currentFocusDuration = this.currentSpeakMinDuration;
+      this.currentFocusQueued = false;
+      this.currentFocusAudioReceived = false;
+      this.currentFocusAudioWritten = false;
+      const result = await job.promise;
+      if (this.readGeneration !== generation || !this.active) {
+        return;
+      }
+      if (result.error || !result.audio) {
+        throw result.error || new Error('离线合成失败');
+      }
+      this.fillLocalAudioJobs(generation, voice, jobs);
+      this.currentFocusAudioReceived = true;
+      await this.httpReader.writeAudio(result.audio, (durationMs: number): void => {
+        if (durationMs > 0) this.currentFocusDuration = durationMs;
+        this.emitCurrentCustomChunkFocus(generation);
+      });
+      if (this.readGeneration !== generation || !this.active) {
+        return;
+      }
+      this.emitCurrentCustomChunkFocus(generation);
+      this.currentFocusAudioWritten = true;
+      this.notifyAudioStarted();
+      this.currentRequestId = '';
+      this.currentSpeakStartedAt = 0;
+      this.currentSpeakMinDuration = 0;
+      this.completionPending = false;
+      this.currentFocusChunk = null;
+      this.currentFocusChunkIndex = -1;
+      this.currentFocusDuration = 0;
+      this.currentFocusQueued = false;
+      this.currentFocusAudioReceived = false;
+      this.currentFocusAudioWritten = false;
+    }
+  }
+
+  private fillLocalAudioJobs(generation: number, voice: LocalTtsModel, jobs: CustomTtsAudioJob[]): void {
+    while (this.readGeneration === generation && this.active &&
+      jobs.length < SystemTtsReader.LOCAL_TTS_PREFETCH_WINDOW && this.chunkIndex < this.chunks.length) {
+      const index = this.chunkIndex;
+      const chunk = this.chunks[this.chunkIndex++];
+      const speakText = this.normalizeChunkForSpeech(chunk.text);
+      if (!speakText) {
+        continue;
+      }
+      const promise = LocalTtsEngine.synthesize(voice, speakText, this.getTtsSpeed())
+        .then((audio: HttpTtsAudio): CustomTtsAudioResult => ({ audio }))
+        .catch((error: Error): CustomTtsAudioResult => ({ error }));
+      jobs.push({ index, chunk, text: speakText, promise });
+    }
+  }
+
   private handleCustomVoiceError(generation: number, voice: HttpTTS, error: Error): void {
     if (this.readGeneration !== generation || !this.active) {
       return;
@@ -1338,6 +1520,8 @@ export class SystemTtsReader {
       this.resetSystemPcmPipeline();
       this.pcmPlayer.stop();
       this.ttsPcmPlayType = 1;
+      // 引擎自己出声，拿不到音频流，增益不起作用；回到 PCM 输出时渲染器启动会重新标记可用。
+      PlaybackLoudnessGain.markSupported(PlaybackLoudnessGain.TTS, false);
       this.chunkIndex = retryIndex;
       this.resetCurrentSystemRequestState();
       this.speakNext(generation);
@@ -1846,8 +2030,10 @@ export class SystemTtsReader {
         if (breakOffset >= absoluteEnd) {
           break;
         }
-        this.appendFocusChunk(result, chunk, partStart, breakOffset);
-        partStart = breakOffset;
+        const partEnd = this.extendTtsBreak(chunk.text, breakOffset - chunk.start,
+          absoluteEnd - chunk.start) + chunk.start;
+        this.appendFocusChunk(result, chunk, partStart, partEnd);
+        partStart = partEnd;
       }
       this.appendFocusChunk(result, chunk, partStart, absoluteEnd);
     }
@@ -2190,6 +2376,10 @@ export class SystemTtsReader {
   }
 
   private currentVoiceLabel(): string {
+    const localVoice = LocalTtsSelection.current();
+    if (localVoice) {
+      return `离线音色 ${localVoice.name}`;
+    }
     const customVoice = this.getCurrentCustomVoice();
     if (customVoice) {
       return `自定义音色 ${customVoice.name || customVoice.id}`;
@@ -2208,62 +2398,11 @@ export class SystemTtsReader {
   }
 
   static parseCustomVoices(raw: string): HttpTTS[] {
-    const value = (raw || '').trim();
-    if (!value) {
-      return [];
-    }
-    try {
-      const parsed = JSON.parse(value) as Object;
-      const items = Array.isArray(parsed) ? parsed as Object[] : [parsed];
-      const result: HttpTTS[] = [];
-      for (const item of items) {
-        const voice = SystemTtsReader.parseCustomVoice(item as Record<string, Object>);
-        if (voice.name && voice.url) {
-          result.push(voice);
-        }
-      }
-      return result;
-    } catch (_) {
-      return [];
-    }
+    return TtsCustomVoices.parse(raw);
   }
 
   static serializeCustomVoices(voices: HttpTTS[]): string {
     return JSON.stringify(voices);
-  }
-
-  private static parseCustomVoice(item: Record<string, Object>): HttpTTS {
-    const voice = new HttpTTS();
-    voice.id = SystemTtsReader.parseCustomVoiceNumber(item['id'], Date.now());
-    voice.name = SystemTtsReader.parseCustomVoiceString(item['name']);
-    voice.url = SystemTtsReader.parseCustomVoiceString(item['url']);
-    voice.contentType = SystemTtsReader.parseCustomVoiceString(item['contentType']);
-    voice.concurrentRate = SystemTtsReader.parseCustomVoiceString(item['concurrentRate']);
-    voice.loginUrl = SystemTtsReader.parseCustomVoiceString(item['loginUrl']);
-    voice.loginUi = SystemTtsReader.parseCustomVoiceString(item['loginUi']);
-    voice.loginCheckJs = SystemTtsReader.parseCustomVoiceString(item['loginCheckJs']);
-    voice.header = SystemTtsReader.parseCustomVoiceString(item['header']);
-    voice.jsLib = SystemTtsReader.parseCustomVoiceString(item['jsLib']);
-    voice.jsEngine = SystemTtsReader.parseCustomVoiceString(item['jsEngine']) || voice.jsLib;
-    const enabledCookieJar = item['enabledCookieJar'];
-    voice.enabledCookieJar = enabledCookieJar === true || String(enabledCookieJar) === 'true';
-    voice.customOrder = SystemTtsReader.parseCustomVoiceNumber(item['customOrder'], 0);
-    voice.lastUpdateTime = SystemTtsReader.parseCustomVoiceNumber(item['lastUpdateTime'], 0);
-    const enabled = item['enabled'];
-    voice.enabled = enabled === undefined || enabled === null ? true : enabled !== false && String(enabled) !== 'false';
-    return voice;
-  }
-
-  private static parseCustomVoiceString(value: Object | undefined): string {
-    return value === undefined || value === null ? '' : String(value);
-  }
-
-  private static parseCustomVoiceNumber(value: Object | undefined, fallback: number): number {
-    if (typeof value === 'number') {
-      return Math.round(value);
-    }
-    const parsed = Number(value === undefined || value === null ? '' : String(value));
-    return Number.isNaN(parsed) ? fallback : Math.round(parsed);
   }
 
   private formatError(error: Object | undefined): string {
@@ -2503,7 +2642,8 @@ export class SystemTtsReader {
       if (end <= start) {
         end = this.safeHardCutIndex(text, limit, start);
       }
-      end = this.extendCloudBreak(text, end, limit);
+      // A short sentence tail (closing quotes/brackets, ？！) joins its sentence; a run of them is still bounded.
+      end = this.extendTtsBreak(text, end, Math.min(text.length, limit + SystemTtsReader.TTS_TAIL_SLACK));
       this.appendAbsoluteTextChunk(chunks, text, start, end);
       start = end;
     }
@@ -2530,7 +2670,9 @@ export class SystemTtsReader {
         // middle of a sentence and used to add an audible pause on every page turn. Snap it
         // to the nearest sentence boundary; a boundary with no punctuation nearby keeps the
         // original offset, so behaviour is unchanged when snapping is not possible.
-        let breakOffset = this.snapPageBreakOffset(text, rawBreakOffset, partStart, chunk.end);
+        let breakOffset = this.extendTtsBreak(text,
+          this.snapPageBreakOffset(text, rawBreakOffset, partStart, chunk.end), chunk.end);
+        // Never split a surrogate pair (emoji) across two utterances.
         if (this.isHighSurrogate(text.charCodeAt(breakOffset - 1))) {
           breakOffset--;
         }
@@ -2573,6 +2715,7 @@ export class SystemTtsReader {
       if (sentence > start) {
         end = sentence;
       }
+      end = this.extendTtsBreak(text, end, Math.min(text.length, start + maxLength + SystemTtsReader.TTS_TAIL_SLACK));
       let chunkStart = start;
       let chunkEnd = end;
       while (chunkStart < chunkEnd && this.isTrimChar(text.charAt(chunkStart))) {
@@ -2621,11 +2764,14 @@ export class SystemTtsReader {
     let start = Math.max(0, Math.min(rangeStart, text.length));
     const safeRangeEnd = Math.max(start, Math.min(rangeEnd, text.length));
     while (start < safeRangeEnd) {
-      let end = Math.min(safeRangeEnd, start + maxLength);
-      const sentence = this.findSentenceBreak(text, start, end, maxLength);
+      const chunkLength = result.length === 0 ?
+        Math.min(maxLength, SystemTtsReader.CUSTOM_TTS_FIRST_CHUNK_LENGTH) : maxLength;
+      let end = Math.min(safeRangeEnd, start + chunkLength);
+      const sentence = this.findSentenceBreak(text, start, end, chunkLength);
       if (sentence > start && sentence <= safeRangeEnd) {
         end = sentence;
       }
+      end = this.extendTtsBreak(text, end, Math.min(safeRangeEnd, start + chunkLength + SystemTtsReader.TTS_TAIL_SLACK));
       this.appendAbsoluteTextChunk(result, text, start, end);
       start = end;
     }
@@ -2668,7 +2814,7 @@ export class SystemTtsReader {
         breakPath = 'hard';
         end = this.safeHardCutIndex(text, limit, start);
       }
-      end = this.extendCloudBreak(text, end, limit);
+      end = this.extendTtsBreak(text, end, Math.min(text.length, limit + SystemTtsReader.TTS_TAIL_SLACK));
       if (breakPath === 'weak' || breakPath === 'hard') {
         // Only the two degraded paths are worth surfacing: a comma-ended chunk and a hard cut
         // are exactly the cases that sound unnatural, and logging every chunk drowns hilog.
@@ -2724,12 +2870,54 @@ export class SystemTtsReader {
       value === '：' || value === ':' || value === '—' || value === '–';
   }
 
-  private extendCloudBreak(text: string, end: number, limit: number): number {
+  /** Keep a punctuation run and its closing quotes/brackets on the preceding range.
+   * Length targets are soft; limit is the actual source range (never a page/chunk target).
+   * Do not cross whitespace, consume an opening Chinese quote, or split a decimal.
+   */
+  private extendTtsBreak(text: string, end: number, limit: number): number {
     let result = end;
-    while (result < Math.min(text.length, limit) && this.isClosingPunctuation(text.charAt(result))) {
+    if (result <= 0 || this.isTrimChar(text.charAt(result - 1))) {
+      return result;
+    }
+    while (result < Math.min(text.length, limit)) {
+      const value = text.charAt(result);
+      if ((!this.isClosingPunctuationAt(text, result) && !this.isSentenceEnd(value)) ||
+        this.isNumericDecimalPoint(text, result)) {
+        break;
+      }
       result++;
     }
     return result;
+  }
+
+  private isClosingPunctuationAt(text: string, index: number): boolean {
+    const value = text.charAt(index);
+    if (!this.isClosingPunctuation(value)) return false;
+    if (value !== '"' && value !== '\'') return true;
+    // Straight quotes can also open the next sentence. Count matching, unescaped
+    // quotes, ignoring apostrophes inside English words (don't / reader's).
+    let quoteCount = 0;
+    let escaped = false;
+    for (let cursor = 0; cursor <= index; cursor++) {
+      const current = text.charAt(cursor);
+      if (escaped) {
+        escaped = false;
+        if (cursor === index) return false;
+        continue;
+      }
+      if (current === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (current !== value) continue;
+      if (value === '\'' && /[A-Za-z0-9]/.test(text.charAt(cursor - 1)) &&
+        /[A-Za-z0-9]/.test(text.charAt(cursor + 1))) {
+        if (cursor === index) return false;
+        continue;
+      }
+      quoteCount++;
+    }
+    return quoteCount % 2 === 0;
   }
 
   private isClosingPunctuation(value: string): boolean {

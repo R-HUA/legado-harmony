@@ -7,6 +7,8 @@ import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 @Component
 export struct SettingsSelect {
   @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  // 与上游 Select 一致：下拉框文字跟随全局字体。
+  @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
   @Prop options: SelectOption[] = [];
   @Prop selectedIndex: number = 0;
   @Prop selectedLabel: ResourceStr = '';
@@ -15,6 +17,7 @@ export struct SettingsSelect {
   @Prop textColor: ResourceColor = $r('sys.color.font_secondary');
   @Prop arrowPosition: ArrowPosition = ArrowPosition.END;
   @Prop controlId: string = '';
+  @Prop selectEnabled: boolean = true;
   onSelected: (index: number) => void = () => {};
 
   build() {
@@ -25,7 +28,10 @@ export struct SettingsSelect {
           .id(this.controlId)
           .selected(this.selectedIndex)
           .value(this.selectedLabel)
-          .font({ size: this.textSize })
+          .enabled(this.selectEnabled)
+          .font({ size: this.textSize, family: this.applicationFontFamily })
+          .optionFont({ family: this.applicationFontFamily })
+          .selectedOptionFont({ family: this.applicationFontFamily })
           .fontColor(this.textColor)
           .backgroundColor(Color.Transparent)
           .padding({ left: 0, right: 0 })
@@ -35,14 +41,17 @@ export struct SettingsSelect {
           .selectedOptionFontColor(ThemeRuntime.primaryTextColor(this.darkMode))
           .showDefaultSelectedIcon(true)
           .systemMaterial(uiMaterial.Material.empty)
-          .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial(this.immersiveLightLevel))
+          .menuSystemMaterial(ImmersiveMaterialRuntime.selectMenuMaterial(this.immersiveLightLevel, this.darkMode))
           .onSelect((index: number) => this.onSelected(index))
       } else if (deviceInfo.sdkApiVersion >= 20) {
         Select(this.options)
           .id(this.controlId)
           .selected(this.selectedIndex)
           .value(this.selectedLabel)
-          .font({ size: this.textSize })
+          .enabled(this.selectEnabled)
+          .font({ size: this.textSize, family: this.applicationFontFamily })
+          .optionFont({ family: this.applicationFontFamily })
+          .selectedOptionFont({ family: this.applicationFontFamily })
           .fontColor(this.textColor)
           .backgroundColor(Color.Transparent)
           .padding({ left: 0, right: 0 })
@@ -58,7 +67,10 @@ export struct SettingsSelect {
           .id(this.controlId)
           .selected(this.selectedIndex)
           .value(this.selectedLabel)
-          .font({ size: this.textSize })
+          .enabled(this.selectEnabled)
+          .font({ size: this.textSize, family: this.applicationFontFamily })
+          .optionFont({ family: this.applicationFontFamily })
+          .selectedOptionFont({ family: this.applicationFontFamily })
           .fontColor(this.textColor)
           .backgroundColor(Color.Transparent)
           .padding({ left: 0, right: 0 })

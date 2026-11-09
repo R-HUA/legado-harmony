@@ -1,21 +1,199 @@
 import { Context } from '@kit.AbilityKit';
 import { UIContext } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import graphicsText from '@ohos.graphics.text';
 import { ReaderFontHelper, ReaderFontItem } from './ReaderFontHelper';
 import { ReaderSettings, ReaderSettingsStore } from './ReaderSettingsStore';
 import { ReaderSystemFontHelper } from './ReaderSystemFontHelper';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
+import { ReaderRegexFontCodec, ReaderRegexLegacySettings } from '../model/reader/ReaderRegexFontRule';
+import { ReaderCustomFontData, ReaderCustomFontItem } from '../core/reader/ReaderSettingsModels';
 
 export class ReaderFontBootstrap {
+  /**
+   * 全局字体模式 readerFontMode：custom 为自定义字体；device 为跟随系统，不看主题包，也是默认值；
+   * system 是历史名，实际表示跟随主题（主题包没写字体时也就是系统字体）。
+   */
+  static readonly FONT_MODE_DEVICE: string = ReaderSettingsStore.FONT_MODE_DEVICE;
+  static readonly FONT_MODE_THEME: string = ReaderSettingsStore.FONT_MODE_THEME;
+
+  // 本进程上一次 setFont 设下的族名，空表示还没设过。ArkUI 只在应用没设过自定义字体时，才会在系统换主题字体后
+  // 重新加载它；setFont 没法撤销，所以能不设就不设。另外每次 setFont 都被系统当成一次配置更新，ArkUI 会把整棵
+  // 组件树（连同栈里的书架页）强制重建一遍，主线程约 100ms；开书路径上会按设置注册、onPageShow 又补两次，族名
+  // 相同时再设只是白白重建三次，还会把翻开动画的首帧往后推，所以族名没变就不再调。
+  private static appliedFontFamily: string = '';
+
+  /** 没选自定义字体时的默认字体：只有明确选了跟随主题才用主题字体，其余都用系统字体。 */
+  static defaultFontFamily(fontMode: string, systemFontFamily: string): string {
+    if (fontMode === ReaderFontBootstrap.FONT_MODE_THEME) {
+      return ThemeRuntime.fontFamily() || systemFontFamily;
+    }
+    return systemFontFamily;
+  }
+
+  // The user's global font wins over the theme font; the theme font only applies while "跟随主题" is selected.
+  static applicationFontFamily(): string {
+    const activeFamily = AppStorage.get<string>('readerActiveFontFamily') || '';
+    if (activeFamily && AppStorage.get<boolean>('readerFontRegistered')) {
+      return activeFamily;
+    }
+    if (AppStorage.get<string>('readerFontMode') === ReaderFontBootstrap.FONT_MODE_THEME) {
+      return ThemeRuntime.fontFamily() || AppStorage.get<string>('readerSystemFontFamily') || '';
+    }
+    return ReaderSystemFontHelper.FALLBACK_SYSTEM_FONT_FAMILY;
+  }
+
+  /** 所有设置应用全局字体的地方都走这里，按 applicationFontFamily() 的同一套优先级取字体。 */
+  static applyApplicationFont(context: Context, source: string): void {
+    const family = ReaderFontBootstrap.applicationFontFamily();
+    if (family === ReaderSystemFontHelper.FALLBACK_SYSTEM_FONT_FAMILY && !ReaderFontBootstrap.appliedFontFamily) {
+      // 用系统字体且本进程还没设过字体时保持不设，交给 ArkUI 跟随系统主题字体。
+      AppStorage.setOrCreate<string>('applicationFontFamily', family);
+      return;
+    }
+    ReaderFontBootstrap.setApplicationFont(context, family, source);
+  }
+
+  private static setApplicationFont(context: Context, family: string, source: string): void {
+    // Select 的收起文本需要显式 font.family；发布可观察的字体供所有下拉控件同步更新。
+    AppStorage.setOrCreate<string>('applicationFontFamily', family);
+    if (family === ReaderFontBootstrap.appliedFontFamily) {
+      return;
+    }
+    try {
+      context.getApplicationContext().setFont(family);
+      ReaderFontBootstrap.appliedFontFamily = family;
+    } catch (err) {
+      hilog.warn(0x0000, 'testTag', 'Apply application font failed source=%{public}s family=%{public}s err=%{public}s',
+        source, family, JSON.stringify(err));
+    }
+  }
+
+  /**
+   * 应用在后台时系统换了全局字体：清掉排版缓存、重新探测系统字体并记下，
+   * 没选自定义字体时重设应用字体，再发 systemFontRevision 让阅读器重新分页。
+   * 调用方要等 ArkUI 处理完这次配置变化（它会重新加载主题字体）再调这里。
+   */
+  static onSystemFontChanged(context: Context, uiContext: UIContext | null, source: string): void {
+    try {
+      graphicsText.FontCollection.getGlobalInstance().clearCaches();
+    } catch (err) {
+      hilog.warn(0x0000, 'testTag', 'Clear font caches failed source=%{public}s err=%{public}s',
+        source, JSON.stringify(err));
+    }
+    const systemFontFamily = ReaderSystemFontHelper.applyToStorage(uiContext);
+    const customFontActive = !!AppStorage.get<string>('readerActiveFontFamily') &&
+      !!AppStorage.get<boolean>('readerFontRegistered');
+    if (!customFontActive) {
+      ReaderFontBootstrap.applyApplicationFont(context, source);
+    }
+    AppStorage.setOrCreate<number>('systemFontRevision', (AppStorage.get<number>('systemFontRevision') || 0) + 1);
+    hilog.info(0x0000, 'testTag',
+      'System font changed source=%{public}s family=%{public}s custom=%{public}s appFontSet=%{public}s',
+      source, systemFontFamily, String(customFontActive), String(!!ReaderFontBootstrap.appliedFontFamily));
+    ReaderSettingsStore.load(context).then((settings: ReaderSettings) => {
+      if (settings.systemFontFamily === systemFontFamily) {
+        return;
+      }
+      return ReaderSettingsStore.saveFontSettings(
+        context,
+        settings.fontFamily,
+        settings.fontFilePath,
+        settings.fontSourceName,
+        settings.fontMode,
+        systemFontFamily,
+        settings.customFontsRaw
+      );
+    }).catch((err: Error) => {
+      hilog.warn(0x0000, 'testTag', 'Save changed system font failed source=%{public}s err=%{public}s',
+        source, JSON.stringify(err));
+    });
+  }
+
   static async registerFromSettings(context: Context, uiContext: UIContext | null, source: string): Promise<boolean> {
     try {
       const settings = await ReaderSettingsStore.load(context);
+      ReaderFontBootstrap.registerThemeFont(uiContext, settings);
       return ReaderFontBootstrap.registerSettings(context, uiContext, settings, source);
     } catch (err) {
       hilog.warn(0x0000, 'testTag', 'Reader font bootstrap load failed source=%{public}s err=%{public}s',
         source, JSON.stringify(err));
       return false;
     }
+  }
+
+  /**
+   * 主题（自定义方案绑定的字体库字体）作为界面字体时需要先注册；内置主题的字体族名是系统字体，直接跳过。
+   * 换主题后也要调一次：方案的字体可能还没注册过。
+   */
+  static registerThemeFont(uiContext: UIContext | null, settings: ReaderSettings): void {
+    const family = ThemeRuntime.fontFamily();
+    if (!family) return;
+    const paths = ReaderFontBootstrap.customFontPaths(settings.customFontsRaw, [family]);
+    if (paths.length === 0) return;
+    const item = new ReaderFontItem();
+    item.familyName = family;
+    item.filePath = paths[0];
+    item.sourceName = ReaderFontHelper.resolveDisplayName('', paths[0]);
+    const result = ReaderFontHelper.registerFont(uiContext, item);
+    if (!result.registered) {
+      hilog.warn(0x0000, 'testTag', 'Theme font register failed family=%{public}s errors=%{public}s',
+        family, result.errorSummary);
+    }
+  }
+
+  static async registerThemeFontFromSettings(context: Context, uiContext: UIContext | null): Promise<void> {
+    try {
+      ReaderFontBootstrap.registerThemeFont(uiContext, await ReaderSettingsStore.load(context));
+    } catch (err) {
+      hilog.warn(0x0000, 'testTag', 'Theme font load failed err=%{public}s', JSON.stringify(err));
+    }
+  }
+
+  /**
+   * 正文、标题、正则规则单独选的自定义字体，阅读页要到开书时才注册（registerStyledCustomReaderFonts），
+   * 冷启动时这一步在主线程约 47ms。启动后先把它们预载好，开书时就只剩登记。挑字体的规则须与阅读页一致。
+   */
+  static async preloadStyledFonts(context: Context): Promise<void> {
+    const settings = await ReaderSettingsStore.load(context);
+    const families: string[] = [];
+    if (settings.bodyFontMode === 'custom') families.push(settings.bodyFontFamily);
+    if (settings.titleFontMode === 'custom') families.push(settings.titleFontFamily);
+    if (settings.regexFontMode === 'custom') families.push(settings.regexFontFamily);
+    const legacy = new ReaderRegexLegacySettings();
+    legacy.pattern = settings.regexFontPattern;
+    legacy.fontMode = settings.regexFontMode || 'global';
+    legacy.fontFamily = settings.regexFontFamily;
+    legacy.fontSize = settings.regexFontSize || 20;
+    legacy.shadowColor = settings.regexShadowColor;
+    for (const rule of ReaderRegexFontCodec.decode(settings.regexFontRulesRaw, legacy)) {
+      if (rule.fontMode === 'custom') families.push(rule.fontFamily);
+    }
+    const paths = ReaderFontBootstrap.customFontPaths(settings.customFontsRaw, families);
+    for (const path of paths) {
+      await ReaderFontHelper.preloadGraphicsTextFont(path);
+    }
+  }
+
+  private static customFontPaths(raw: string, families: string[]): string[] {
+    const wanted = families.filter((family: string): boolean => !!family);
+    if (wanted.length === 0 || !(raw || '').trim()) {
+      return [];
+    }
+    const paths: string[] = [];
+    try {
+      const parsed = JSON.parse(raw) as ReaderCustomFontData | ReaderCustomFontItem[];
+      const items = Array.isArray(parsed) ? parsed as ReaderCustomFontItem[] :
+        ((parsed as ReaderCustomFontData).fonts || []);
+      for (const family of wanted) {
+        const item = items.find((candidate: ReaderCustomFontItem): boolean => !!candidate && !!candidate.filePath &&
+          (candidate.familyName === family || ReaderFontHelper.normalizeFontFamily(candidate.filePath) === family));
+        if (item && paths.indexOf(item.filePath) < 0) paths.push(item.filePath);
+      }
+    } catch (err) {
+      hilog.warn(0x0000, 'testTag', 'Reader styled font preload parse failed err=%{public}s', JSON.stringify(err));
+    }
+    return paths;
   }
 
   private static registerSettings(
@@ -26,15 +204,9 @@ export class ReaderFontBootstrap {
   ): boolean {
     if (!settings.fontFilePath) {
       const systemFontFamily = ReaderSystemFontHelper.applyToStorage(uiContext);
-      const applicationFontFamily = ThemeRuntime.fontFamily() || systemFontFamily;
       AppStorage.setOrCreate('readerActiveFontFamily', '');
       AppStorage.setOrCreate('readerFontRegistered', false);
-      try {
-        context.getApplicationContext().setFont(applicationFontFamily);
-      } catch (err) {
-        hilog.warn(0x0000, 'testTag', 'Reader font bootstrap reset default failed source=%{public}s err=%{public}s',
-          source, JSON.stringify(err));
-      }
+      ReaderFontBootstrap.applyApplicationFont(context, source);
       if (settings.systemFontFamily !== systemFontFamily) {
         ReaderSettingsStore.saveFontSettings(
           context,
@@ -62,13 +234,7 @@ export class ReaderFontBootstrap {
     if (!result.registered) {
       AppStorage.setOrCreate('readerActiveFontFamily', '');
       AppStorage.setOrCreate('readerFontRegistered', false);
-      try {
-        context.getApplicationContext().setFont(ThemeRuntime.fontFamily());
-      } catch (fallbackError) {
-        hilog.warn(0x0000, 'testTag',
-          'Reader font bootstrap theme fallback failed source=%{public}s err=%{public}s',
-          source, JSON.stringify(fallbackError));
-      }
+      ReaderFontBootstrap.applyApplicationFont(context, source);
       hilog.warn(0x0000, 'testTag',
         'Reader font bootstrap failed source=%{public}s path=%{public}s family=%{public}s ark=%{public}s legacy=%{public}s graphics=%{public}s errors=%{public}s',
         source, result.filePath || settings.fontFilePath, result.familyName, String(result.arkUiRegistered),
@@ -95,12 +261,7 @@ export class ReaderFontBootstrap {
       });
     }
 
-    try {
-      context.getApplicationContext().setFont(result.familyName);
-    } catch (err) {
-      hilog.warn(0x0000, 'testTag', 'Reader font bootstrap setFont failed source=%{public}s err=%{public}s',
-        source, JSON.stringify(err));
-    }
+    ReaderFontBootstrap.setApplicationFont(context, result.familyName, source);
 
     hilog.info(0x0000, 'testTag',
       'Reader font bootstrap success source=%{public}s family=%{public}s path=%{public}s arkSrc=%{public}s graphicsSrc=%{public}s',

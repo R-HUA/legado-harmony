@@ -55,6 +55,37 @@ test('concurrency limiter rejects when queue is full', async () => {
   release();
 });
 
+test('members receive three turns, then a waiting normal request gets a turn', async () => {
+  const limiter = new TtsConcurrencyLimiter(1, 1, 10, 10000);
+  const release = await limiter.acquire('active');
+  const order: string[] = [];
+  const waiting = ['normal', 'm1', 'm2', 'm3', 'm4'].map(id =>
+    limiter.acquire(id, id !== 'normal').then(done => { order.push(id); done(); }));
+  release();
+  await Promise.all(waiting);
+  assert.deepEqual(order, ['m1', 'm2', 'm3', 'normal', 'm4']);
+  assert.deepEqual(limiter.snapshot(), { active: 0, queued: 0 });
+});
+
+test('aging prevents starvation and a blocked user does not waste a free slot', async () => {
+  let now = 0;
+  const limiter = new TtsConcurrencyLimiter(1, 1, 10, 10000, () => now);
+  const release = await limiter.acquire('active');
+  const order: string[] = [];
+  const normal = limiter.acquire('normal').then(done => { order.push('normal'); done(); });
+  now = 3001;
+  const member = limiter.acquire('member', true).then(done => { order.push('member'); done(); });
+  release();
+  await Promise.all([normal, member]);
+  assert.deepEqual(order, ['normal', 'member']);
+  const other = new TtsConcurrencyLimiter(2, 1, 1, 10000);
+  const first = await other.acquire('same');
+  const blocked = other.acquire('same');
+  const free = await other.acquire('different');
+  assert.deepEqual(other.snapshot(), { active: 2, queued: 1 });
+  free(); first(); (await blocked)();
+});
+
 test('binary timed TTS envelope contains metadata followed by raw audio', () => {
   const audio = Buffer.from([1, 2, 3, 4]);
   const encoded = encodeTimedTtsBinary(audio, 16000, 'WORD', [{ startTime: 0 }]);

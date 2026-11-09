@@ -45,6 +45,9 @@ function captureOr(name, fallback) {
 // 图片物化只影响漫画缓存路径，与本次验证的正文文本无关；返回空值让它保留原始地址。
 // 图片物化只影响漫画缓存路径，与本次验证的正文文本无关；返回空值让它保留原始地址，
 // 且不声明任何请求上下文（图片请求头的真实行为由 scripts/reader-image-context-check.mjs 覆盖）。
+b.ReaderImageRequest = class { static DEFAULT = new this(); deferred = false; priority = () => 0; hold() {} release() {} };
+b.ComicImageTiming = class { cacheHit = false; downloadMs = 0; scriptMs = 0; decryptMs = 0; };
+b.ReaderImageScheduler = { BACKGROUND: 1, foreground: () => 0, run: (_priority, _cancelled, task) => task() };
 b.ComicImagePipeline = {
   contextFromSource() { return { referer: '', headers: {}, isEmpty: () => true }; },
   async materialize() { return ''; }

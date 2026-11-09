@@ -1,4 +1,10 @@
-import { Book, BookChapter, BookSource, SearchBook, ReaderActionMarker, BookUrlResolver } from '@legado/sourceengine';
+import { ReaderImageReferences } from './ReaderImageReferences';
+import { ReaderCacheCoordinator } from './ReaderCacheCoordinator';
+import { ReaderImageCache } from './ReaderImageCache';
+import { Book, BookChapter, BookSource, SearchBook, ReaderActionMarker, BookUrlResolver, BookTypeSupport } from '@legado/sourceengine';
+import { AudioDownloadTask, AudioOfflineStore } from './AudioOfflineStore';
+import { AudioOfflinePolicy } from './AudioOfflinePolicy';
+import { AudioUrlResolver } from './AudioUrlResolver';
 import { appDb } from '../../model/data/AppDatabase';
 import { WebBookService } from './WebBookService';
 import { SearchCoordinator } from './SearchCoordinator';
@@ -6,6 +12,17 @@ import { CoverUrlNormalizer } from '../../utils/CoverUrlNormalizer';
 import { LocalChapterContentLoader } from './LocalChapterContentLoader';
 import { BookSourceInteractionPostProcessor } from './BookSourceInteractionPostProcessor';
 import { ReaderOpenTrace } from '../../utils/ReaderOpenTrace';
+import { ReaderImageMarker } from './ReaderImageMarker';
+import { ReaderCacheBudget } from './ReaderCacheBudget';
+import { ReaderImageRequest, ReaderImageScheduler } from './ReaderImageScheduler';
+import { ReaderImageResults } from './ReaderImageResults';
+import { BookChapterUpdate } from './BookChapterUpdate';
+
+class ReaderChapterPreloadTask {
+  cancelled: boolean = false;
+  /** 已被当前页或相邻翻页画面接管，关闭预缓存不能打断阅读。 */
+  required: boolean = false;
+}
 
 export class ReadBookEngine {
   private static inst: ReadBookEngine | null = null;
@@ -18,6 +35,21 @@ export class ReadBookEngine {
   curPos: number = 0;
   content: string = '';
   isLoading: boolean = false;
+  /** Background shelf refresh assigns one timestamp to all books in the batch. */
+  chapterUpdateBatchTime: number = 0;
+  lastCacheError: string = '';
+  /** 有声书下载：用户同意过用移动网络。书架任务与边听边下各用自己的后台引擎，互不影响。 */
+  audioAllowCellular: boolean = false;
+  /** 有声书下载：边听边下发起，下载的章节听过后可自动删除。 */
+  audioAuto: boolean = false;
+  /** 下载中各章已收到的字节数，通知栏显示进度用。 */
+  audioProgress: Map<number, number> = new Map();
+  /** 正在等网络恢复（离开 Wi-Fi 或断网）。 */
+  audioWaitingNetwork: boolean = false;
+  /** 不支持离线的章数（受保护、直播流），缓存结束的提示里单独说明。 */
+  audioUnsupportedCount: number = 0;
+  /** 取音频地址排队进行：并发下载时书源请求仍一章一章发，网页解析宿主也只有一个。 */
+  private audioResolveChain: Promise<void> = Promise.resolve();
 
   private chapterCache: Map<number, string> = new Map();
   private chapterLoading: Map<number, Promise<string>> = new Map();
@@ -25,6 +57,9 @@ export class ReadBookEngine {
   private chapterLoadingCancel: Map<number, (() => boolean) | null> = new Map();
   private readonly chapterCacheLimit: number = 7;
   private preloadGeneration: number = 0;
+  private preloadForwardCount: number = 0;
+  private preloadBackwardCount: number = 0;
+  private chapterPreloads: Map<number, ReaderChapterPreloadTask> = new Map();
   private bookGeneration: number = 0;
   private sourceInteractionIdentity: string = '';
   private openBookTask: Promise<void> | null = null;
@@ -35,11 +70,23 @@ export class ReadBookEngine {
   private sourceLoadedOrigin: string = '';
   private static readonly SOURCE_INTERACTION_IDENTITY_KEY: string = '__readerSourceInteractionIdentity';
   private static readonly SOURCE_RECHECK_INTERVAL_MS: number = 5000;
+  /** 阅读页用的共享实例；只有它的当前章能占用前台图片名额，书架缓存等后台实例一律排在后面。 */
+  private foregroundReader: boolean = false;
+  /** 阅读页处在漫画模式：正文先带着待加载图片返回，图片在后台逐张补齐（见 ReaderImageResults）。 */
+  private readerImagesDeferred: boolean = false;
+  /** 关闭渐进模式（离开阅读页、切到文字模式）时加一，作废还没处理完的后台图片。 */
+  private deferredImageGeneration: number = 0;
+  /** 渐进加载中、等图片补完再写缓存的各章正文；刷新本章后旧版本补完也不再写入。 */
+  private deferredChapterTexts: Map<number, Promise<string>> = new Map();
 
   private constructor() { this.webBook = new WebBookService(); }
 
   static get(): ReadBookEngine {
-    if (!ReadBookEngine.inst) ReadBookEngine.inst = new ReadBookEngine();
+    if (!ReadBookEngine.inst) {
+      ReadBookEngine.inst = new ReadBookEngine();
+      ReadBookEngine.inst.foregroundReader = true;
+      // Page visibility and background speech register their own lifetime in ReaderCacheCoordinator.
+    }
     return ReadBookEngine.inst;
   }
 
@@ -70,10 +117,13 @@ export class ReadBookEngine {
   }
 
   async openBook(book: Book, sourceHint: BookSource | null = null): Promise<void> {
+    if (book.origin === 'local' && (book.type === 4 || book.getVariable('localFormat') === 'pdf')) {
+      throw new Error('PDF 请使用 PDF 阅读器打开');
+    }
     if (this.openBookTask && this.openBookTaskUrl === book.bookUrl) {
       ReaderOpenTrace.mark(book.bookUrl, 'engine-open-await-existing');
       await this.openBookTask;
-      if (this.book?.bookUrl === book.bookUrl) this.applyLatestReadingProgress(book);
+      if (this.book?.bookUrl === book.bookUrl) this.applyLatestBookState(book);
       return;
     }
     if (this.canReuseBookSession(book)) {
@@ -120,8 +170,10 @@ export class ReadBookEngine {
     try {
       ReaderOpenTrace.mark(bookUrl, 'prewarm-start');
       const preparedBook = bookHint?.bookUrl === bookUrl ? bookHint :
-        (this.getPreparedBook(bookUrl) || await appDb.getBook(bookUrl));
+        await appDb.getBook(bookUrl);
       if (!preparedBook) return;
+      if (preparedBook.origin === 'local' &&
+        (preparedBook.type === 4 || preparedBook.getVariable('localFormat') === 'pdf')) return;
       const preparedSource = preparedBook.origin && preparedBook.origin !== 'local' ?
         await appDb.getBookSource(preparedBook.origin) : null;
       await this.openBook(preparedBook, preparedSource);
@@ -149,6 +201,8 @@ export class ReadBookEngine {
   }
 
   private async reuseBookSession(book: Book, sourceHint: BookSource | null): Promise<void> {
+    // Merge durable state before source initialization can write the retained Book back to the database.
+    this.applyLatestBookState(book);
     if (book.origin && book.origin !== 'local') {
       const latestSource = sourceHint?.bookSourceUrl === book.origin ? sourceHint :
         await appDb.getBookSource(book.origin);
@@ -159,14 +213,13 @@ export class ReadBookEngine {
         await this.initializeSourceInteractionIdentity(this.bookGeneration, this.book);
       }
     }
-    this.applyLatestReadingProgress(book);
     // External writers (shelf background caching, cache-range tasks) commit chapter content with
     // their own engine instances and never touch this retained session. Without a re-sync the
     // catalog's "已缓存" badges keep showing the state captured when this session was opened.
     await this.syncChapterCacheDates();
   }
 
-  private applyLatestReadingProgress(book: Book): void {
+  private applyLatestBookState(book: Book): void {
     this.curIdx = book.durChapterIndex;
     this.curPos = book.durChapterPos;
     if (!this.book || this.book.bookUrl !== book.bookUrl) return;
@@ -174,6 +227,13 @@ export class ReadBookEngine {
     this.book.durChapterPos = book.durChapterPos;
     this.book.durChapterTitle = book.durChapterTitle;
     this.book.durChapterTime = book.durChapterTime;
+    if (book.totalChapterNum > 0) this.book.totalChapterNum = book.totalChapterNum;
+    // Keeping a trial read updates a different Book instance on the detail page. The retained engine must
+    // adopt that shelf state as well as progress before any reader/player uses it for a full-record save.
+    this.book.pendingAddToShelf = book.pendingAddToShelf;
+    this.book.shelfModifiedTime = book.shelfModifiedTime;
+    this.book.confirmedChapterUpdateTime = book.confirmedChapterUpdateTime;
+    this.book.isPrivate = book.isPrivate;
     // Page position alone is insufficient: V2 restores from the durable character offset stored in variable.
     // A retained engine session must not keep an older variable snapshot and reinterpret a saved last page as
     // page one when the reader is opened again from the retained bookshelf route.
@@ -191,6 +251,7 @@ export class ReadBookEngine {
     this.chapterCache.clear();
     this.chapterLoading.clear();
     this.preloadGeneration++;
+    this.cancelChapterPreloads();
     this.source = null;
     this.sourceLoadedAt = 0;
     this.sourceLoadedOrigin = '';
@@ -211,26 +272,31 @@ export class ReadBookEngine {
     const cachedChapters = await appDb.getBookChapters(book.bookUrl);
     if (!this.isCurrentBookSession(generation, book.bookUrl)) return;
     this.chapters = cachedChapters;
+    if (book.totalChapterNum <= 0 && cachedChapters.length > 0) {
+      book.totalChapterNum = cachedChapters.length;
+    }
     console.log('[RE] cached chapters:', this.chapters.length);
     ReaderOpenTrace.mark(book.bookUrl, 'chapters-ready', `count=${this.chapters.length}`);
 
     // 检查缓存章节是否有未解析的变量（旧版本残留）
     const hasBrokenUrls = book.origin !== 'local' && this.chapters.some(c => this.isBrokenChapterUrl(c.url));
-    if (hasBrokenUrls ||
-      (this.chapters.length === 0 && this.source && book.origin !== 'local')) {
-      if (hasBrokenUrls) {
-        console.log('[RE] 检测到过期缓存，清除并重新获取');
-        await appDb.deleteBookChapters(book.bookUrl);
-        if (!this.isCurrentBookSession(generation, book.bookUrl)) return;
-        this.chapters = [];
+    if (hasBrokenUrls) {
+      // 旧目录先留着：refreshToc 只在取到新目录后才替换。断网时继续用旧目录，已缓存的正文按章节序号照常读出。
+      console.log('[RE] 检测到过期缓存，重新获取目录');
+      try {
+        await this.refreshToc(generation, true);
+      } catch (e) {
+        console.warn('[RE] refresh stale toc failed, keep cached chapters:', this.chapters.length, e);
       }
+    } else if (this.chapters.length === 0 && this.source && book.origin !== 'local') {
       console.log('[RE] no valid chapters, refreshing toc...');
       await this.refreshToc(generation);
     }
     ReaderOpenTrace.mark(book.bookUrl, 'engine-open-ready', `chapters=${this.chapters.length}`);
   }
 
-  async refreshToc(expectedGeneration: number = this.bookGeneration): Promise<void> {
+  /** staleCatalog：现有目录已知不可用（坏链接），和没有目录一样允许通用目录兜底。 */
+  async refreshToc(expectedGeneration: number = this.bookGeneration, staleCatalog: boolean = false): Promise<void> {
     if (!this.book || !this.source) return;
     const sessionBook = this.book;
     const sessionSource = this.source;
@@ -241,6 +307,7 @@ export class ReadBookEngine {
       const oldBook = sessionBook;
       const oldTocUrl = oldBook.tocUrl;
       const oldLatestChapter = oldBook.latestChapterTitle;
+      const previousChapters = this.chapters.slice();
       const oldCoverUrl = oldBook.coverUrl;
       const canReuseResolvedInfo = !!oldBook.tocUrl && oldBook.lastCheckTime > 0 &&
         Date.now() - oldBook.lastCheckTime < 2 * 60 * 1000;
@@ -261,7 +328,7 @@ export class ReadBookEngine {
 
       const resolvedBook = this.book;
       if (!resolvedBook || !this.isCurrentBookSession(expectedGeneration, sessionBookUrl)) return;
-      const allowGenericFallback = this.chapters.length === 0;
+      const allowGenericFallback = staleCatalog || this.chapters.length === 0;
       let chapters = await this.webBook.getChapterList(sessionSource, resolvedBook, 0, allowGenericFallback);
       if (!this.isCurrentBookSession(expectedGeneration, sessionBookUrl)) return;
       if (chapters.length === 0) {
@@ -288,6 +355,12 @@ export class ReadBookEngine {
         if (temporaryFallback) {
           console.warn('[RE] using temporary generic catalog; skip persistent catalog replacement');
         } else {
+          if (!staleCatalog && BookChapterUpdate.hasNewChapters(previousChapters, chapters)) {
+            targetBook.confirmedChapterUpdateTime = Math.max(targetBook.confirmedChapterUpdateTime,
+              this.chapterUpdateBatchTime || Date.now());
+            await appDb.recordBookChapterUpdate(targetBook.bookUrl, targetBook.confirmedChapterUpdateTime);
+            if (!this.isCurrentBookSession(expectedGeneration, sessionBookUrl)) return;
+          }
           await appDb.updateBook(targetBook);
           if (!this.isCurrentBookSession(expectedGeneration, sessionBookUrl)) return;
           await appDb.deleteBookChapters(targetBook.bookUrl);
@@ -419,6 +492,7 @@ export class ReadBookEngine {
     target.pendingAddToShelf = source.pendingAddToShelf;
     target.isPrivate = source.isPrivate;
     target.shelfModifiedTime = source.shelfModifiedTime;
+    target.confirmedChapterUpdateTime = source.confirmedChapterUpdateTime;
     target.updateTime = source.updateTime || target.updateTime;
     target.order = source.order;
     target.originOrder = source.originOrder;
@@ -458,12 +532,15 @@ export class ReadBookEngine {
 
     this.curIdx = idx;
     this.preloadGeneration++;
+    this.requireChapterPreload(idx);
+    this.trimChapterPreloads();
     return await this.fetchContent(idx, shouldCancel);
   }
 
   async peekContent(idx: number): Promise<string> {
     if (idx < 0 || idx >= this.chapters.length || !this.book) return '';
 
+    this.requireChapterPreload(idx);
     return await this.fetchContent(idx);
   }
 
@@ -484,6 +561,7 @@ export class ReadBookEngine {
     }
     this.chapterCache.delete(idx);
     this.chapterLoading.delete(idx);
+    this.deferredChapterTexts.delete(idx);
     await appDb.deleteCachedChapterContent(this.book.bookUrl, idx);
     const chapter = this.chapters[idx];
     if (chapter) {
@@ -492,12 +570,21 @@ export class ReadBookEngine {
     return await this.fetchContent(idx, shouldCancel);
   }
 
-  private async fetchContent(idx: number, shouldCancel: (() => boolean) | null = null): Promise<string> {
+  /** background 为 true 时（缓存全文、手动缓存）本章图片始终排在阅读用的请求后面。 */
+  private async fetchContent(idx: number, shouldCancel: (() => boolean) | null = null,
+    background: boolean = false): Promise<string> {
     if (idx < 0 || idx >= this.chapters.length || !this.book) return '';
     if (shouldCancel && shouldCancel()) return '';
 
     if (this.chapterCache.has(idx)) {
-      const memoryContent = this.chapterCache.get(idx)!;
+      const memoryContent = ReaderImageCache.normalize(this.chapterCache.get(idx)!);
+      // 只在本地图片被清理、或待加载结果已作废时重取。带失败标记的章节照旧留在内存里，
+      // 否则一张永久失败的图会让这一章每次预加载、翻回都重新联网。
+      if (!ReaderImageCache.filesPresent(memoryContent) || !ReaderImageResults.available(memoryContent)) {
+        this.chapterCache.delete(idx);
+        return await this.fetchContent(idx, shouldCancel, background);
+      }
+      ReaderImageCache.touchText(memoryContent);
       this.chapterCache.delete(idx);
       this.chapterCache.set(idx, memoryContent);
       ReaderOpenTrace.mark(this.book.bookUrl, 'content-memory-hit', `chapter=${idx}`);
@@ -510,16 +597,18 @@ export class ReadBookEngine {
         const text = await pending;
         if (text || !pendingCancel || !pendingCancel() || (shouldCancel && shouldCancel())) return text;
         // 共用的任务被发起方中途取消而返回空串，本调用方仍需要这一章，重新发起。
-        return await this.fetchContent(idx, shouldCancel);
+        return await this.fetchContent(idx, shouldCancel, background);
       }
     }
 
-    const task = this.fetchContentUncached(idx, shouldCancel);
+    const releaseBook = ReaderCacheCoordinator.retainBook(this.book.bookUrl);
+    const task = this.fetchContentUncached(idx, shouldCancel, background);
     this.chapterLoading.set(idx, task);
     this.chapterLoadingCancel.set(idx, shouldCancel);
     try {
       return await task;
     } finally {
+      releaseBook();
       if (this.chapterLoading.get(idx) === task) {
         this.chapterLoading.delete(idx);
         this.chapterLoadingCancel.delete(idx);
@@ -527,19 +616,37 @@ export class ReadBookEngine {
     }
   }
 
-  private async fetchContentUncached(idx: number, shouldCancel: (() => boolean) | null = null): Promise<string> {
+  private async fetchContentUncached(idx: number, shouldCancel: (() => boolean) | null = null,
+    background: boolean = false): Promise<string> {
     if (idx < 0 || idx >= this.chapters.length || !this.book) return '';
     if (shouldCancel && shouldCancel()) return '';
     const generation = this.bookGeneration;
     const sessionBook = this.book;
     const sessionBookUrl = sessionBook.bookUrl;
     const chapter = this.chapters[idx];
-    const cached = await appDb.getCachedChapterContent(sessionBookUrl, idx);
+    // “正文下一页”翻到下一章就停，见 WebBookService.getContent。
+    const nextChapterUrl = this.chapters[idx + 1]?.url || '';
+    const saved = await appDb.getCachedChapterContent(sessionBookUrl, idx);
+    let cached = ReaderImageCache.normalize(saved);
+    const releaseImages = ReaderImageCache.retainText(cached);
+    try {
+      if (cached && this.source && !ReaderImageCache.complete(cached)) {
+        cached = await this.webBook.restoreCachedImages(this.source, cached,
+          (): boolean => !!shouldCancel?.() || !this.isCurrentBookSession(generation, sessionBookUrl));
+      }
+      if (cached !== saved && ReaderImageCache.complete(cached) && this.isCurrentBookSession(generation, sessionBookUrl)) {
+        await appDb.saveCachedChapterContent(sessionBookUrl, chapter, cached);
+      }
+    } finally { releaseImages(); }
     if (shouldCancel && shouldCancel()) return '';
     if (!this.isCurrentBookSession(generation, sessionBookUrl)) return '';
-    if (cached && !this.isInvalidChapterContent(cached)) {
+    if (cached && !this.isInvalidChapterContent(cached) && ReaderImageCache.complete(cached)) {
+      ReaderImageCache.touchText(cached);
       this.putChapterCache(idx, cached);
       chapter.cacheDate = chapter.cacheDate || Date.now();
+      appDb.touchCachedChapterContent(sessionBookUrl, idx).catch((err: Error) => {
+        console.warn('[RE] touch chapter cache failed:', idx, err);
+      });
       ReaderOpenTrace.mark(sessionBookUrl, 'content-disk-hit', `chapter=${idx} length=${cached.length}`);
       return cached;
     }
@@ -558,25 +665,93 @@ export class ReadBookEngine {
       return text;
     }
 
-    if (!this.source) return '';
+    if (!this.source) return cached || '';
 
     await this.refreshSourceForContent(generation, sessionBookUrl);
     if (shouldCancel && shouldCancel()) return '';
     if (!this.isCurrentBookSession(generation, sessionBookUrl) || !this.source) return '';
     const sessionSource = this.source;
-    const text = await this.webBook.getContent(sessionSource, sessionBook, chapter, shouldCancel);
-    if (shouldCancel && shouldCancel()) return '';
-    if (!this.isCurrentBookSession(generation, sessionBookUrl)) return '';
-    if (text && !this.isInvalidChapterContent(text)) {
-      this.putChapterCache(idx, text);
-      ReaderOpenTrace.mark(sessionBookUrl, 'content-network-ready', `chapter=${idx} length=${text.length}`);
-      try {
-        await appDb.saveCachedChapterContent(sessionBookUrl, chapter, text);
-      } catch (err) {
-        console.error('[RE] save chapter cache failed:', idx, err);
-      }
+    const imageRequest = new ReaderImageRequest();
+    // 预加载的章节在读者翻到它之前排在后台，翻到后剩下的图片随即提前。
+    imageRequest.priority = (): number => !background && this.foregroundReader && this.curIdx === idx &&
+      this.book === sessionBook ? ReaderImageScheduler.FOREGROUND : ReaderImageScheduler.BACKGROUND;
+    // 缓存全文、手动缓存要完整的本地内容，始终等整章图片处理完。
+    if (!cached && !background && this.foregroundReader && this.readerImagesDeferred) {
+      const deferredGeneration = this.deferredImageGeneration;
+      const preload = this.chapterPreloads.get(idx);
+      imageRequest.deferred = true;
+      imageRequest.deferredCancelled = (): boolean => deferredGeneration !== this.deferredImageGeneration ||
+        !this.isCurrentBookSession(generation, sessionBookUrl) || (!!preload && preload.cancelled);
     }
-    return text;
+    let deferred = false;
+    try {
+      let text = '';
+      try {
+        text = await this.webBook.getContent(sessionSource, sessionBook, chapter, shouldCancel, null, imageRequest,
+          nextChapterUrl);
+      } catch (e) {
+        if (cached && this.isCurrentBookSession(generation, sessionBookUrl) && !shouldCancel?.()) return cached;
+        throw e;
+      }
+      if (cached && (!text || !ReaderImageCache.complete(text, true))) return cached;
+      if (shouldCancel && shouldCancel()) return '';
+      if (!this.isCurrentBookSession(generation, sessionBookUrl)) return '';
+      if (text && !this.isInvalidChapterContent(text)) {
+        this.putChapterCache(idx, text);
+        ReaderOpenTrace.mark(sessionBookUrl, 'content-network-ready', `chapter=${idx} length=${text.length}`);
+        if (ReaderImageMarker.hasPending(text)) {
+          deferred = true;
+          this.saveWhenImagesReady(idx, text, chapter, generation, sessionBookUrl, imageRequest);
+          return text;
+        }
+        // 有图片没下载/解密成功时只留在内存里：写进正文缓存的话，失败会一直留着，重新打开也不再重试。
+        if (ReaderImageMarker.hasFailure(text)) return text;
+        try {
+          await appDb.saveCachedChapterContent(sessionBookUrl, chapter, text);
+          ReaderCacheBudget.noteTextWrite();
+        } catch (err) {
+          console.error('[RE] save chapter cache failed:', idx, err);
+        }
+      }
+      return text;
+    } finally { if (!deferred) imageRequest.release(); }
+  }
+
+  /**
+   * 渐进加载的章节：图片都有结果后把换成本地路径的正文写入缓存（有失败的不写）。内存里仍保留待加载版本，
+   * 阅读页已显示的内容与之一致，图片项从 ReaderImageResults 取结果；处理被取消时从内存里去掉这一章，下次重新获取。
+   */
+  private saveWhenImagesReady(idx: number, text: string, chapter: BookChapter, generation: number,
+    bookUrl: string, request: ReaderImageRequest): void {
+    const finalizing = ReaderImageResults.finalize(text);
+    this.deferredChapterTexts.set(idx, finalizing);
+    finalizing.then(async (finalText: string): Promise<void> => {
+      const latest = this.deferredChapterTexts.get(idx) === finalizing;
+      if (latest) this.deferredChapterTexts.delete(idx);
+      if (!finalText || request.deferredCancelled()) {
+        if (latest && this.chapterCache.get(idx) === text) this.chapterCache.delete(idx);
+        return;
+      }
+      if (!latest || !this.isCurrentBookSession(generation, bookUrl) || ReaderImageMarker.hasFailure(finalText)) return;
+      await appDb.saveCachedChapterContent(bookUrl, chapter, finalText);
+      ReaderCacheBudget.noteTextWrite();
+      chapter.cacheDate = chapter.cacheDate || Date.now();
+    }).catch((err: Error) => {
+      console.error('[RE] save progressive chapter cache failed:', idx, err);
+    }).finally((): void => request.release());
+  }
+
+  /** 阅读页进入漫画模式时打开；离开阅读页或切到文字模式时关闭，并作废没处理完的后台图片。 */
+  setReaderImagesDeferred(enabled: boolean): void {
+    if (this.readerImagesDeferred === enabled) return;
+    this.readerImagesDeferred = enabled;
+    if (enabled) return;
+    this.cancelChapterPreloads();
+    this.deferredImageGeneration++;
+    this.deferredChapterTexts.clear();
+    for (const item of [...this.chapterCache]) {
+      if (ReaderImageMarker.hasPending(item[1])) this.chapterCache.delete(item[0]);
+    }
   }
 
   private async refreshSourceForContent(expectedGeneration: number = this.bookGeneration,
@@ -614,11 +789,166 @@ export class ReadBookEngine {
       text.includes('升级VIP可享受不限速访问');
   }
 
+  /** 手动缓存（缓存全文、指定章节）：写入的章节标为手动缓存，容量清理不会删它。 */
   async cacheChapter(idx: number, shouldCancel: (() => boolean) | null = null): Promise<boolean> {
-    if (shouldCancel && shouldCancel()) return false;
-    const text = await this.fetchContent(idx, shouldCancel);
-    return !(shouldCancel && shouldCancel()) && !!text;
+    if (shouldCancel?.() || !this.book || !this.chapters[idx]) return false;
+    const book = this.book;
+    this.lastCacheError = '';
+    if (BookTypeSupport.isAudio(book)) return await this.cacheAudioChapter(book, idx, shouldCancel);
+    const releaseBook = ReaderCacheCoordinator.retainBook(book.bookUrl);
+    try {
+      // 已是离线内容且图片都在：不重读、不重写整章，只算作完成。
+      if (await this.isOfflineChapterIntact(book.bookUrl, idx)) return true;
+      let text = await this.fetchContent(idx, shouldCancel, true);
+      if (ReaderImageMarker.hasPending(text)) text = await ReaderImageResults.finalize(text);
+      // A remote fallback is readable online but is not an offline download.
+      if (!ReaderImageCache.complete(text, true) && !shouldCancel?.()) {
+        this.chapterCache.delete(idx);
+        text = await this.fetchContentUncached(idx, shouldCancel, true);
+      }
+      if (ReaderImageCache.hasStorageFailure(text)) throw new Error(ReaderImageCache.STORAGE_FAILURE);
+      if (shouldCancel?.() || !text || this.book !== book || !ReaderImageCache.complete(text, true)) return false;
+      const releaseImages = ReaderImageCache.retainText(text);
+      try {
+        // Migration is copy-before-switch; a pin never depends on a later best-effort UPDATE.
+        if (book.origin !== 'local') {
+          await appDb.saveCachedChapterContent(book.bookUrl, this.chapters[idx], text, true);
+          await ReaderImageCache.migrateLegacy(ReaderImageReferences.paths(text));
+          const persisted = await appDb.getCachedChapterContent(book.bookUrl, idx);
+          if (!ReaderImageCache.complete(persisted, true)) return false;
+          this.putChapterCache(idx, persisted);
+        }
+        return true;
+      } finally { releaseImages(); }
+    } catch (e) {
+      // 只有空间不足才中止整个缓存任务；其余异常只算这一章失败，后面的章节继续缓存。
+      if ((e as Error)?.message === ReaderImageCache.STORAGE_FAILURE || ReaderImageCache.isStorageFull(e as Object)) {
+        this.lastCacheError = ReaderImageCache.STORAGE_FAILURE;
+      }
+      console.warn('[RE] offline chapter failed:', idx, e);
+      return false;
+    } finally { releaseBook(); }
   }
+
+  /**
+   * 有声书的手动缓存是把音频文件下载下来；只存地址文本，离线时照样播不了。
+   * 签名地址会过期，所以每章都重新取一次地址，不用正文缓存里的旧地址；失败重试时也重新取。
+   */
+  private async cacheAudioChapter(book: Book, idx: number, shouldCancel: (() => boolean) | null): Promise<boolean> {
+    const chapter = this.chapters[idx];
+    const previousDate = chapter.cacheDate;
+    const voice = book.getVariable('custom') || '';
+    let downloaded = false;
+    try {
+      if (await AudioOfflineStore.localFile(book.bookUrl, idx, chapter.url, chapter.title, voice)) {
+        if (!this.audioAuto) await appDb.markAudioOfflineManual(book.bookUrl, idx);
+        downloaded = true;
+        return true;
+      }
+      for (let attempt = 0; ; attempt++) {
+        const address = await this.resolveAudioAddress(book, idx, shouldCancel);
+        if (!address) return false;
+        const task = new AudioDownloadTask();
+        task.bookUrl = book.bookUrl;
+        task.chapterIndex = idx;
+        task.chapterUrl = chapter.url;
+        task.chapterTitle = chapter.title;
+        task.voice = voice;
+        task.auto = this.audioAuto;
+        task.url = address.url;
+        task.headers = address.headers;
+        task.allowCellular = this.audioAllowCellular;
+        task.shouldCancel = shouldCancel;
+        task.onProgress = (received: number): void => {
+          this.audioProgress.set(idx, received);
+        };
+        try {
+          await AudioOfflineStore.download(task);
+          downloaded = true;
+          return true;
+        } catch (e) {
+          const message = (e as Error)?.message || '';
+          if (message === AudioOfflineStore.NETWORK_WAIT) {
+            if (!await this.waitForAudioNetwork(shouldCancel)) return false;
+            attempt = -1;
+            continue;
+          }
+          // 网络抖动、下载中断：半截文件已留着，稍等后续传。
+          if (attempt < 2 && !shouldCancel?.() && /^音频(?:分片)?下载(?:失败|不完整)/.test(message)) {
+            await new Promise<void>((resolve: () => void): number => setTimeout(resolve, 1500 * (attempt + 1)));
+            continue;
+          }
+          throw e as Error;
+        }
+      }
+    } catch (e) {
+      const message = (e as Error)?.message || '';
+      if (message === AudioOfflineStore.STORAGE_FAILURE || message === AudioOfflineStore.CAP_REACHED) {
+        this.lastCacheError = message;
+      } else if (message === AudioOfflinePolicy.PROTECTED || message === AudioOfflinePolicy.NOT_SEGMENTED_LIVE) {
+        this.audioUnsupportedCount++;
+      }
+      if (!shouldCancel?.()) console.warn('[RE] offline audio failed:', idx, e);
+      return false;
+    } finally {
+      this.audioProgress.delete(idx);
+      // 取地址时正文缓存会把本章标成已缓存；有声书的标记只看音频文件在不在。
+      chapter.cacheDate = downloaded ? (previousDate > 0 ? previousDate : Date.now()) : 0;
+    }
+  }
+
+  private async resolveAudioAddress(book: Book, idx: number,
+    shouldCancel: (() => boolean) | null): Promise<AudioAddress | null> {
+    const previous = this.audioResolveChain;
+    let release: () => void = (): void => {};
+    this.audioResolveChain = new Promise<void>((resolve: () => void): void => { release = resolve; });
+    try {
+      await previous;
+      if (shouldCancel?.() || this.book !== book) return null;
+      const chapter = this.chapters[idx];
+      this.chapterCache.delete(idx);
+      this.chapterLoading.delete(idx);
+      await appDb.deleteCachedChapterContent(book.bookUrl, idx);
+      const content = await this.fetchContentUncached(idx, shouldCancel, true);
+      if (shouldCancel?.() || !content || this.book !== book) return null;
+      const url = AudioUrlResolver.resolveAudioUrl(content, chapter.url || book.bookUrl || this.source?.bookSourceUrl || '');
+      if (!url) {
+        console.warn('[RE] offline audio has no address:', idx, AudioUrlResolver.invalidAudioAddressMessage(content));
+        return null;
+      }
+      const address = new AudioAddress();
+      address.url = url;
+      address.headers = AudioUrlResolver.audioHeaders(url, this.source, content);
+      return address;
+    } finally {
+      release();
+    }
+  }
+
+  /** 等到网络允许下载（回到 Wi-Fi，或同意过移动网络时恢复联网）；取消时返回 false。 */
+  private async waitForAudioNetwork(shouldCancel: (() => boolean) | null): Promise<boolean> {
+    this.audioWaitingNetwork = true;
+    try {
+      while (!AudioOfflineStore.networkAllows(this.audioAllowCellular)) {
+        if (shouldCancel?.()) return false;
+        await new Promise<void>((resolve: () => void): number => setTimeout(resolve, 2000));
+      }
+      return !shouldCancel?.();
+    } finally {
+      this.audioWaitingNetwork = false;
+    }
+  }
+
+  private async isOfflineChapterIntact(bookUrl: string, idx: number): Promise<boolean> {
+    try {
+      const paths = await appDb.pinnedChapterImagePaths(bookUrl, idx);
+      return paths !== null && paths.every((path: string): boolean => ReaderImageCache.exists(path));
+    } catch (e) {
+      console.warn('[RE] offline chapter state unavailable:', idx, e);
+      return false;
+    }
+  }
+
 
   cancelPendingRequests(): void {
     this.webBook.cancelPendingRequests();
@@ -629,7 +959,11 @@ export class ReadBookEngine {
     if (!this.book || this.chapters.length === 0) {
       return;
     }
-    const cacheDates = await appDb.getBookChapterCacheDateMap(expectedBookUrl);
+    // 有声书的"已缓存"表示音频已下载，与正文缓存里存的地址文本无关。
+    const cacheDates = BookTypeSupport.isAudio(this.book) ? await AudioOfflineStore.downloadedDates(expectedBookUrl,
+      this.chapters.map((chapter: BookChapter): string => chapter.url),
+      this.chapters.map((chapter: BookChapter): string => chapter.title), this.book.getVariable('custom') || '') :
+      await appDb.getBookChapterCacheDateMap(expectedBookUrl);
     if (!this.isCurrentBookSession(expectedGeneration, expectedBookUrl)) return;
     for (const chapter of this.chapters) {
       chapter.cacheDate = cacheDates.get(chapter.index) || 0;
@@ -637,6 +971,7 @@ export class ReadBookEngine {
   }
 
   clearCurrentBookMemoryCache(): void {
+    this.cancelChapterPreloads();
     this.chapterCache.clear();
     this.chapterLoading.clear();
     for (const chapter of this.chapters) {
@@ -665,6 +1000,7 @@ export class ReadBookEngine {
       return false;
     }
     this.sourceInteractionIdentity = nextIdentity;
+    this.cancelChapterPreloads();
     this.chapterCache.clear();
     this.chapterLoading.clear();
     this.content = '';
@@ -728,15 +1064,46 @@ export class ReadBookEngine {
     return `v3:${source.bookSourceUrl || ''}:${(hash >>> 0).toString(16)}`;
   }
 
+  /** 章节数同时决定正文和整章图片的缓存范围；缩小范围立即取消尚未用于阅读的任务。 */
+  setPreloadChapterCounts(forwardCount: number, backwardCount: number = 0): void {
+    this.preloadForwardCount = Math.max(0, Math.min(10, Math.round(forwardCount)));
+    this.preloadBackwardCount = Math.max(0, Math.min(10, Math.round(backwardCount)));
+    this.trimChapterPreloads();
+  }
+
+  private requireChapterPreload(idx: number): void {
+    const task = this.chapterPreloads.get(idx);
+    if (task && !task.cancelled) task.required = true;
+  }
+
+  private trimChapterPreloads(): void {
+    for (const item of [...this.chapterPreloads]) {
+      const idx = item[0];
+      const task = item[1];
+      if (task.required || idx === this.curIdx ||
+        (idx >= this.curIdx - this.preloadBackwardCount && idx <= this.curIdx + this.preloadForwardCount)) continue;
+      task.cancelled = true;
+      this.chapterPreloads.delete(idx);
+      this.deferredChapterTexts.delete(idx);
+      if (ReaderImageMarker.hasPending(this.chapterCache.get(idx) || '')) this.chapterCache.delete(idx);
+    }
+  }
+
+  private cancelChapterPreloads(): void {
+    for (const task of this.chapterPreloads.values()) task.cancelled = true;
+    this.chapterPreloads.clear();
+  }
+
   preloadAround(idx: number, forwardCount: number = 2, backwardCount: number = 1): void {
+    this.setPreloadChapterCounts(forwardCount, backwardCount);
     if (this.chapters.length === 0 || !this.book) {
       return;
     }
     const generation = ++this.preloadGeneration;
-    for (let offset = 1; offset <= forwardCount; offset++) {
+    for (let offset = 1; offset <= this.preloadForwardCount; offset++) {
       this.schedulePreloadContent(idx + offset, idx, generation, offset * 80);
     }
-    for (let offset = 1; offset <= backwardCount; offset++) {
+    for (let offset = 1; offset <= this.preloadBackwardCount; offset++) {
       this.schedulePreloadContent(idx - offset, idx, generation, (forwardCount + offset) * 80);
     }
   }
@@ -744,6 +1111,7 @@ export class ReadBookEngine {
   private schedulePreloadContent(idx: number, anchorIndex: number, generation: number, delayMs: number): void {
     setTimeout(() => {
       if (generation !== this.preloadGeneration || this.curIdx !== anchorIndex) return;
+      if (idx < this.curIdx - this.preloadBackwardCount || idx > this.curIdx + this.preloadForwardCount) return;
       this.preloadContent(idx);
     }, Math.max(0, delayMs));
   }
@@ -752,11 +1120,18 @@ export class ReadBookEngine {
     if (idx < 0 || idx >= this.chapters.length) {
       return;
     }
-    if (this.chapterCache.has(idx) || this.chapterLoading.has(idx)) {
-      return;
-    }
-    this.fetchContent(idx).catch((err: Error) => {
-      console.error('[RE] preload chapter failed:', idx, err);
+    if (this.chapterCache.has(idx)) return;
+    const loadingCancel = this.chapterLoadingCancel.get(idx);
+    if (this.chapterLoading.has(idx) && (!loadingCancel || !loadingCancel())) return;
+    const task = new ReaderChapterPreloadTask();
+    this.chapterPreloads.set(idx, task);
+    this.fetchContent(idx, (): boolean => task.cancelled).then(async (): Promise<void> => {
+      const images = this.deferredChapterTexts.get(idx);
+      if (images) await images;
+    }).catch((err: Error) => {
+      if (!task.cancelled) console.error('[RE] preload chapter failed:', idx, err);
+    }).finally((): void => {
+      if (this.chapterPreloads.get(idx) === task) this.chapterPreloads.delete(idx);
     });
   }
 
@@ -815,4 +1190,9 @@ export class ReadBookEngine {
     const c = this.chapters[this.curIdx];
     return c ? c.title : '';
   }
+}
+
+class AudioAddress {
+  url: string = '';
+  headers: Record<string, string> = {};
 }

@@ -1,4 +1,5 @@
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
+import { ReaderThemeDecorationLayout } from '../core/reader/ReaderThemeDecorationLayout';
 
 /**
  * Responsive reader background for builtin themes.
@@ -31,6 +32,15 @@ export struct ReaderThemeBackground {
           .width('100%')
           .height('100%')
           .objectFit(this.customImageFit)
+          .syncLoad(true)
+          .draggable(false)
+          .hitTestBehavior(HitTestMode.None)
+      } else if (ThemeAssetRegistry.readerBackgroundImage(this.backgroundAssetId)) {
+        // 主题包（含方案自己上传）的整图背景；阅读页走 ReaderThemeHelper 转成 customImage，预览面板直接到这里。
+        Image(ThemeAssetRegistry.readerBackgroundImage(this.backgroundAssetId))
+          .width('100%')
+          .height('100%')
+          .objectFit(this.packImageFit())
           .syncLoad(true)
           .draggable(false)
           .hitTestBehavior(HitTestMode.None)
@@ -94,20 +104,22 @@ export struct ReaderThemeBackground {
     }
   }
 
+  packImageFit(): ImageFit {
+    const fit = ThemeAssetRegistry.readerBackgroundImageFit(this.backgroundAssetId);
+    if (fit === 'contain') return ImageFit.Contain;
+    if (fit === 'fill') return ImageFit.Fill;
+    return ImageFit.Cover;
+  }
+
+  // The placement math lives in ReaderThemeDecorationLayout, shared with the self-drawn page raster.
   decorationSize(): number {
-    const fallback = this.compact ? 42 : 156;
-    const width = this.effectiveViewportWidth();
-    const height = this.effectiveViewportHeight();
-    if (width <= 0 || height <= 0) return fallback;
-    const shortEdge = Math.min(width, height);
-    if (this.compact) return Math.max(30, Math.min(54, shortEdge * 0.72));
-    // Size follows the short edge, so portrait, landscape, tablet and split
-    // window layouts preserve the ornament's proportions without device rules.
-    return Math.max(112, Math.min(260, shortEdge * 0.36));
+    return ReaderThemeDecorationLayout.size(this.effectiveViewportWidth(), this.effectiveViewportHeight(),
+      this.compact);
   }
 
   decorationInset(): Padding {
-    const inset = this.compact ? 2 : Math.max(8, Math.min(22, this.shortEdge() * 0.025));
+    const inset = ReaderThemeDecorationLayout.inset(this.effectiveViewportWidth(), this.effectiveViewportHeight(),
+      this.compact);
     return { left: inset, right: inset, top: inset, bottom: inset };
   }
 

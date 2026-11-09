@@ -1,32 +1,48 @@
+import { AppAiHost } from '../utils/AppAiHost';
+import { AiAccessPolicy } from '../account/AiAccessPolicy';
+import { ComicColorizer } from '@legado/aiengine';
+import { ImmersiveLightSettingsStore } from '../utils/ImmersiveLightSettingsStore';
+import { SmartGripSettingsStore } from '../utils/SmartGripSettingsStore';
+import { HomeBackdropSettingsStore } from '../utils/HomeBackdropSettingsStore';
+import { HomeTabBarSettingsStore } from '../utils/HomeTabBarSettingsStore';
 import { AbilityConstant, UIAbility, Want, Configuration, ConfigurationConstant } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
-import { RecentReadShortcut, RECENT_READ_SHORTCUT_ACTION, OPEN_BOOK_SHORTCUT_ACTION } from '../utils/RecentReadShortcut';
+import { UIContext, window } from '@kit.ArkUI';
+import { RecentReadShortcut, OPEN_BOOK_SHORTCUT_ACTION } from '../utils/RecentReadShortcut';
 import { CoverGalleryStore } from '../utils/CoverGalleryStore';
 import { BookshelfDisplaySettingsStore } from '../utils/BookshelfDisplaySettingsStore';
 import { SearchExploreSettingsStore } from '../utils/SearchExploreSettingsStore';
 import { ReaderSettingsStore } from '../utils/ReaderSettingsStore';
 import { ChineseConverter } from '../utils/ChineseConverter';
 import { AppThemeSettingsStore } from '../utils/AppThemeSettingsStore';
-import { GlassSettingsStore } from '../utils/GlassSettingsStore';
+import { CustomThemeSchemeStore } from '../utils/CustomThemeSchemeStore';
+import { ThemePackStore } from '../utils/ThemePackStore';
 import { AppThemeModeStore } from '../utils/AppThemeModeStore';
 import { AppIconSettingsStore } from '../utils/AppIconSettingsStore';
+import { AppIconManager } from '../utils/AppIconManager';
 import { ReaderFontBootstrap } from '../utils/ReaderFontBootstrap';
 import { ReaderSystemFontHelper } from '../utils/ReaderSystemFontHelper';
 import { TtsSettingsStore } from '../utils/TtsSettingsStore';
+import { LocalTtsModels } from '../utils/localtts/LocalTtsModels';
+import { LocalTtsSelection } from '../utils/localtts/LocalTtsSelection';
+import { MimoStore } from '../utils/mimo/MimoStore';
 import { ReaderProgressCheckpoint } from '../utils/ReaderProgressCheckpoint';
+import { ReadingContinuation, QYBOOK_UTD } from '../utils/ReadingContinuation';
+import { AppIntentActions } from '../utils/AppIntentActions';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { ThemeIds } from '../theme/ThemeModels';
 import { ThemeTrialManager } from '../utils/ThemeTrialManager';
 import { AccountSessionStore } from '../account/AccountSessionStore';
+import { MemberSettingsStore } from '../account/MemberSettingsStore';
+import { MembershipThemeGuard } from '../account/MembershipThemeGuard';
 import { HuaweiAccountService } from '../account/HuaweiAccountService';
 import { CloudSyncSettingsStore } from '../account/CloudSyncSettingsStore';
 import { CloudSyncCoordinator } from '../account/CloudSyncCoordinator';
 import { CloudSyncChangeTracker } from '../account/CloudSyncChangeTracker';
 import { StartupCoverTextStore } from '../utils/StartupCoverTextStore';
-import { BookSourceRuntimeStore, SourceScriptNotice, TlsTrustStore, SourceEngineHost } from '@legado/sourceengine';
+import { BookSourceRuntimeStore, NativeSourceInteraction, SourceScriptNotice, TlsTrustStore, SourceEngineHost } from '@legado/sourceengine';
+import { AppSourceInteraction } from '../utils/AppSourceInteraction';
 import { HdsFeedback } from '../utils/HdsFeedback';
-import { QuickJsDiagnostics } from '@legado/sourceengine/Diagnostics';
 import { AppDatabase } from '../model/data/AppDatabase';
 import fs from '@ohos.file.fs';
 import { util } from '@kit.ArkTS';
@@ -34,15 +50,33 @@ import { FullTextCacheCancelCoordinator } from '../utils/FullTextCacheCancelCoor
 import { lanReaderServer } from '../core/lan/LanReaderServer';
 import { LanReaderPasswordStore } from '../core/lan/LanReaderPasswordStore';
 import { readStatsTracker } from '../core/stats/ReadStatsTracker';
+import { CloudAutoSync } from '../account/CloudAutoSync';
+import { ReaderCacheBudget } from '../core/book/ReaderCacheBudget';
+import { NetworkSettingsStore } from '../utils/NetworkSettingsStore';
+import { AudioOfflineSettingsStore } from '../utils/AudioOfflineSettingsStore';
+import { AudioBookSettingsStore } from '../utils/AudioBookSettingsStore';
+import { PlaybackLoudnessGain } from '../utils/PlaybackLoudnessGain';
+import { ReaderInputScopes } from '../utils/ReaderInputScopes';
+import { AudioOfflineStore } from '../core/book/AudioOfflineStore';
+import { syncDesktopTitleBar, releaseSystemBarListeners } from '../utils/SystemBars';
 
 export default class EntryAbility extends UIAbility {
   private appliedColorMode: number = -1;
   private modeDependentThemeKey: string = '';
+  private immersiveLightBootstrapPromise: Promise<void> = Promise.resolve();
+  private memberSettingsBootstrapPromise: Promise<void> = Promise.resolve();
   private themeBootstrapPromise: Promise<void> = Promise.resolve();
   private readerBootstrapPromise: Promise<void> = Promise.resolve();
+  private networkBootstrapPromise: Promise<void> = Promise.resolve();
+  private smartGripBootstrapPromise: Promise<void> = Promise.resolve();
+  private homeBackdropBootstrapPromise: Promise<void> = Promise.resolve();
+  private homeTabBarBootstrapPromise: Promise<void> = Promise.resolve();
   private accountBootstrapPromise: Promise<void> = Promise.resolve();
+  private membershipThemeTimer: number = -1;
   private deferredStartupScheduled: boolean = false;
   private mainWindowStage: window.WindowStage | null = null;
+  // 系统全局字体的 ID，后台换了手机字体后回到前台靠它发现变化。
+  private systemFontId: string = '';
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     SourceEngineHost.install({
@@ -51,8 +85,22 @@ export default class EntryAbility extends UIAbility {
     });
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onCreate');
     AppStorage.setOrCreate('startupT0', Date.now());
+    this.networkBootstrapPromise = NetworkSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复网络设置失败:', error);
+    });
+    AudioOfflineSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复离线音频设置失败:', error);
+    });
+    AudioBookSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复听书设置失败:', error);
+    });
+    PlaybackLoudnessGain.load(this.context.getApplicationContext()).catch((error: Error) => {
+      console.warn('恢复音量增益设置失败:', error);
+    });
     AppStorage.setOrCreate('appCacheDir', this.context.cacheDir);
     AppStorage.setOrCreate('appFilesDir', this.context.filesDir);
+    AppIntentActions.install(this.context);
+    try { MimoStore.load(); } catch (_) {}
     AppStorage.setOrCreate('pendingBookSourceImportUri', '');
     AppStorage.setOrCreate('pendingBookSourceImportUrl', '');
     AppStorage.setOrCreate('pendingBookSourceImportNonce', 0);
@@ -68,6 +116,11 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('globalTtsCurrentText', '');
     AppStorage.setOrCreate('globalTtsTextAfter', '');
     AccountSessionStore.initializeStorage();
+    AiAccessPolicy.initialize();
+    AppAiHost.install();
+    this.memberSettingsBootstrapPromise = MemberSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复会员设置失败:', error);
+    });
     CloudSyncSettingsStore.initializeStorage();
     CloudSyncChangeTracker.initializeStorage();
     readStatsTracker.init(this.context);
@@ -75,6 +128,8 @@ export default class EntryAbility extends UIAbility {
     SourceScriptNotice.setHandler((sourceName: string, message: string): void => {
       HdsFeedback.showToast(sourceName ? `${sourceName}：${message}` : message);
     });
+    // 原生书源脚本的提示、刷新发现页、打开网页。
+    NativeSourceInteraction.setHandler(new AppSourceInteraction(this.context));
     TlsTrustStore.load(this.context).catch((e: Error) => {
       hilog.warn(0x0000, 'testTag', 'Load TLS trust settings failed: %{public}s', JSON.stringify(e));
     });
@@ -90,11 +145,17 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('readerSystemFontFamily', ReaderSystemFontHelper.FALLBACK_SYSTEM_FONT_FAMILY);
     AppStorage.setOrCreate('readerActiveFontFamily', '');
     AppStorage.setOrCreate('readerFontRegistered', false);
+    AppStorage.setOrCreate('systemFontRevision', 0);
+    this.systemFontId = this.context.config.fontId || '';
     PersistentStorage.persistProp('readerPageTurnMode', 1);
     PersistentStorage.persistProp('readerPreloadEnabled', true);
     PersistentStorage.persistProp('readerPreloadChapterCount', 1);
     PersistentStorage.persistProp('readerUseTtsQuickAction', true);
+    PersistentStorage.persistProp('readerUseAutoScrollQuickAction', true);
     PersistentStorage.persistProp('readerUseChapterQuickJump', true);
+    PersistentStorage.persistProp('readerQuickJumpMode', 'chapter');
+    PersistentStorage.persistProp('readerQuickJumpExpanded', false);
+    PersistentStorage.persistProp('pdfQuickJumpMode', 'page');
     PersistentStorage.persistProp('fullTextCacheCancelNonce', 0);
     PersistentStorage.persistProp('fullTextCacheCancelSignal', '');
     PersistentStorage.persistProp('readerBodyFontMode', 'global');
@@ -124,6 +185,7 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate('navBarHeight', 0);
     }
     PersistentStorage.persistProp('bookshelfSortMode', 'recentRead');
+    PersistentStorage.persistProp('videoDisplayMode', 'contain');
     PersistentStorage.persistProp('ttsPerson', 0);
     PersistentStorage.persistProp('ttsOnline', 1);
     PersistentStorage.persistProp('ttsStyle', '');
@@ -145,41 +207,62 @@ export default class EntryAbility extends UIAbility {
     }
     PersistentStorage.persistProp('readerPageTurnAnimation', true);
     PersistentStorage.persistProp('readerPageTurnAnimationType', 1);
+    // 旧版音量键/智控键开关，只供 ReaderInputScopes 第一次迁移时兜底读取。
     PersistentStorage.persistProp('readerVolumeTurnPage', false);
+    PersistentStorage.persistProp('readerSmartKeyTurnPage', false);
+    ReaderInputScopes.load(this.context);
     PersistentStorage.persistProp('readerKeepScreenOn', true);
     PersistentStorage.persistProp('readerExtendToStatusBar', false);
     PersistentStorage.persistProp('readerLastPageViewWidth', 0);
     PersistentStorage.persistProp('readerLastPageViewHeight', 0);
     PersistentStorage.persistProp('bookshelfShowTags', true);
+    PersistentStorage.persistProp('bookshelfCategoryExpanded', true);
     PersistentStorage.persistProp('bookshelfShowSource', true);
     PersistentStorage.persistProp('bookshelfShowIntro', true);
     PersistentStorage.persistProp('bookshelfShowFullIntro', false);
     PersistentStorage.persistProp('bookshelfShowProgressBar', false);
     PersistentStorage.persistProp('bookshelfShowLastReadTime', true);
     PersistentStorage.persistProp('bookshelfShowLastReadChapter', false);
-    PersistentStorage.persistProp('bookshelfLayoutMode', 'compact');
+    PersistentStorage.persistProp('bookshelfLayoutMode', 'companion');
     PersistentStorage.persistProp('bookshelfLastReadLeafMode', 'adaptive');
+    PersistentStorage.persistProp('bookshelfLastReadPinMode', 'large');
+    PersistentStorage.persistProp('bookshelfLastReadPinCount', 1);
     PersistentStorage.persistProp('bookshelfBookOpenAnimation', true);
+    PersistentStorage.persistProp('bookshelfTypeCategoryEnabled', true);
+    PersistentStorage.persistProp('bookshelfShowAllTypeTab', true);
+    PersistentStorage.persistProp('bookshelfCompanionStagger', true);
+    PersistentStorage.persistProp('bookshelfCompanionReadingNote', true);
+    PersistentStorage.persistProp('bookshelfGreetingMode', 'time');
+    PersistentStorage.persistProp('bookshelfGreetingTitle', '');
+    PersistentStorage.persistProp('bookshelfGreetingSubtitle', '');
+    PersistentStorage.persistProp('bookshelfCompanionSectionTitle', '');
     PersistentStorage.persistProp('bookshelfCoverAlbums', '');
     PersistentStorage.persistProp('bookshelfLightCoverAlbumId', '');
     PersistentStorage.persistProp('bookshelfDarkCoverAlbumId', '');
     PersistentStorage.persistProp('bookshelfCoverApplyScope', 'all');
     PersistentStorage.persistProp('bookshelfCoverTargetBooks', '');
     PersistentStorage.persistProp('bookshelfIgnoreSourceCover', false);
+    PersistentStorage.persistProp('bookshelfIgnoreEmptyCoverOnly', false);
     PersistentStorage.persistProp('bookshelfCoverMode', 'sequence');
     PersistentStorage.persistProp('searchExploreShowResultCover', true);
+    PersistentStorage.persistProp('searchExploreShowResultCoverBackground', true);
     PersistentStorage.persistProp('searchExploreUseBookshelfCoverGallery', false);
     PersistentStorage.persistProp('searchExploreShowResultTags', true);
     PersistentStorage.persistProp('searchExploreAggregateResults', true);
     PersistentStorage.persistProp('searchResultCategory', 'all');
+    PersistentStorage.persistProp('searchResultLayout', 'list');
+    PersistentStorage.persistProp('exploreResultLayout', 'list');
     PersistentStorage.persistProp('searchExplorePromptAddToShelfOnBack', true);
     PersistentStorage.persistProp('searchExploreExactSearch', false);
     PersistentStorage.persistProp('searchExploreExactSearchMatchAuthor', true);
     PersistentStorage.persistProp('searchExploreShowSearchProgress', true);
+    PersistentStorage.persistProp('searchExploreSimpTradSearch', true);
     PersistentStorage.persistProp('searchExploreSearchConcurrency', 6);
     PersistentStorage.persistProp('searchExploreSelectedSourceGroups', '');
     PersistentStorage.persistProp('searchExploreSourceSort', '');
     PersistentStorage.persistProp('bookSourceOrderRevision', 0);
+    PersistentStorage.persistProp('bookSourceSortMode', 'custom');
+    PersistentStorage.persistProp('bookSourceSortAscending', false);
     PersistentStorage.persistProp('compatSourceNoticeDismissed', false);
     PersistentStorage.persistProp('appLightAccentColor', '#007DFF');
     PersistentStorage.persistProp('appDarkAccentColor', '#4E9BFF');
@@ -187,6 +270,19 @@ export default class EntryAbility extends UIAbility {
     PersistentStorage.persistProp('appDarkButtonColor', '#3F8CFF');
     // Immersive light strength: adaptive follows the system by default.
     PersistentStorage.persistProp('immersiveLightLevel', 'adaptive');
+    PersistentStorage.persistProp('smartGripEnabled', true);
+    this.smartGripBootstrapPromise = SmartGripSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复智感握姿设置失败:', error);
+    });
+    this.homeBackdropBootstrapPromise = HomeBackdropSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复首页背景设置失败:', error);
+    });
+    this.homeTabBarBootstrapPromise = HomeTabBarSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复底栏设置失败:', error);
+    });
+    this.immersiveLightBootstrapPromise = ImmersiveLightSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复沉浸光感设置失败:', error);
+    });
     PersistentStorage.persistProp('appIconId', AppIconSettingsStore.DEFAULT_ICON_ID);
     PersistentStorage.persistProp('explorePlatform', '');
     PersistentStorage.persistProp('exploreSourceUrl', '');
@@ -211,28 +307,49 @@ export default class EntryAbility extends UIAbility {
     }).catch((e: Error) => {
       hilog.warn(0x0000, 'testTag', 'Sync tts settings failed: %{public}s', JSON.stringify(e));
     });
+    LocalTtsModels.recoverInterruptedLoads(this.context);
+    LocalTtsSelection.load(this.context);
     this.accountBootstrapPromise = AccountSessionStore.load(this.context).then(() => {
+      AiAccessPolicy.start();
       const userId = AccountSessionStore.isLoggedIn() ? AccountSessionStore.account().userId : '';
       return CloudSyncSettingsStore.load(this.context, userId).then((): void => {});
     }).catch((e: Error) => {
       hilog.warn(0x0000, 'testTag', 'Load account session failed: %{public}s', JSON.stringify(e));
     });
-    const appThemePromise = AppThemeSettingsStore.load(this.context).then((settings) => {
+    // 已安装的主题包要先注册，方案里指向 pack: 的部件来源才能解析，所以排在主题设置之前。
+    const appThemePromise = ThemePackStore.loadInstalled(this.context).catch((e: Error) => {
+      hilog.warn(0x0000, 'testTag', 'Load installed theme packs failed: %{public}s', JSON.stringify(e));
+      return 0;
+    }).then(() => {
+      return AppThemeSettingsStore.load(this.context);
+    }).then((settings) => {
       AppThemeSettingsStore.applyToStorage(settings);
       return StartupCoverTextStore.load(this.context);
     }).catch((e: Error) => {
       hilog.warn(0x0000, 'testTag', 'Sync app theme settings failed: %{public}s', JSON.stringify(e));
     });
-    const glassPromise = GlassSettingsStore.load(this.context).then((settings) => {
-      GlassSettingsStore.applyToStorage(settings);
-    }).catch((e: Error) => {
-      hilog.warn(0x0000, 'testTag', 'Sync glass settings failed: %{public}s', JSON.stringify(e));
-    });
-    // Theme and glass affect the first frame, but they are independent and can be restored in parallel.
-    this.themeBootstrapPromise = Promise.all([appThemePromise, glassPromise]).then(() => {});
-    // Reader preferences and custom font registration are not needed to paint Index/Startup. Keep their I/O warm,
-    // but do not make the first application content wait for them.
-    this.readerBootstrapPromise = ReaderSettingsStore.load(this.context).then((settings) => {
+    // The theme affects the first frame.
+    this.themeBootstrapPromise = appThemePromise.then(() => {});
+    Promise.all([this.themeBootstrapPromise, this.accountBootstrapPromise]).then(() => {
+      this.membershipThemeTimer = setInterval(() => {
+        MembershipThemeGuard.refresh(this.context).catch((error: Error) => console.warn('主题权益检查失败', error.message));
+      }, 60000);
+      return MembershipThemeGuard.refresh(this.context);
+    }).then(() => {
+      // Font and local-book cloud sync waits for the account and stays out of the first frames.
+      CloudAutoSync.schedule(this.context, 8000);
+    }).catch((error: Error) => console.warn('主题权益初始化检查失败', error.message));
+    // Reader preferences and custom font registration are not needed to paint Index/Startup, so the first
+    // content does not wait for them. They do wait for the theme: reader settings are kept per theme, and
+    // loading before appThemeId is restored would read the default theme's copy (including its global font).
+    // 自定义主题每套方案各有一份阅读设置，读取前先恢复正在使用的方案。
+    this.readerBootstrapPromise = appThemePromise.then(() => {
+      return CustomThemeSchemeStore.restoreActiveSchemeId(this.context).catch((e: Error) => {
+        hilog.warn(0x0000, 'testTag', 'Restore custom theme scheme failed: %{public}s', JSON.stringify(e));
+      });
+    }).then(() => {
+      return ReaderSettingsStore.load(this.context);
+    }).then((settings) => {
       ReaderSettingsStore.applyToStorage(settings);
       // 简繁词典与 MD3 的 ChineseUtils.preLoad 对齐：按当前转换方向在启动时后台预热，
       // 正文预处理与规则引擎的 java.t2s/java.s2t 随后可直接同步转换。
@@ -250,13 +367,19 @@ export default class EntryAbility extends UIAbility {
     });
     AppIconSettingsStore.load(this.context).then((settings) => {
       AppIconSettingsStore.applyToStorage(settings);
+      return AppIconManager.syncCurrentIcon(this.context);
     }).catch((e: Error) => {
       hilog.warn(0x0000, 'testTag', 'Sync app icon settings failed: %{public}s', JSON.stringify(e));
     });
+    if (launchParam.launchReason === AbilityConstant.LaunchReason.CONTINUATION) {
+      ReadingContinuation.accept(this.context, want);
+    }
     this.handleLaunchWant(want);
   }
 
   onDestroy(): void {
+    AiAccessPolicy.stop();
+    if (this.membershipThemeTimer >= 0) clearInterval(this.membershipThemeTimer);
     lanReaderServer.stop().catch(() => undefined);
     readStatsTracker.flush();
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onDestroy');
@@ -267,7 +390,10 @@ export default class EntryAbility extends UIAbility {
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
     hilog.info(0x0000, 'testTag', 'StartupTrace onWindowStageCreate %{public}d', Date.now());
 
-    this.themeBootstrapPromise.finally(() => {
+    Promise.all([this.themeBootstrapPromise, this.immersiveLightBootstrapPromise,
+      this.memberSettingsBootstrapPromise, this.networkBootstrapPromise,
+      this.smartGripBootstrapPromise, this.homeBackdropBootstrapPromise,
+      this.homeTabBarBootstrapPromise]).finally(() => {
       this.loadStartupContent(windowStage);
     });
   }
@@ -302,24 +428,59 @@ export default class EntryAbility extends UIAbility {
     this.deferredStartupScheduled = true;
     // Let the first frame commit before registering a potentially large custom font file.
     setTimeout(() => {
-      QuickJsDiagnostics.initialize(this.context).catch((error: Error) => {
-        hilog.warn(0x0000, 'QuickJS', 'Migration initialization failed: %{public}s', error.message);
-      });
+      ReaderCacheBudget.scheduleStartupTrim();
+      // 与缓存清理同一时机：删掉没有记录的离线音频、过了保留期的半截文件。
+      setTimeout(() => {
+        AudioOfflineStore.cleanupOrphans().catch((error: Error) => console.warn('清理离线音频残留失败:', error));
+      }, 20000);
+      // ReaderFontHelper only counts a font as registered when the UIContext registration succeeds, so a null
+      // context here always fell back to the theme font when Index (not Startup) was the first page.
       this.readerBootstrapPromise
         .then(() => ReaderFontBootstrap.registerFromSettings(
-          this.context, null, 'ability-after-first-content'))
+          this.context, this.mainUIContext(), 'ability-after-first-content'))
+        .then(() => {
+          // 阅读页单独选的自定义字体等书架首屏忙完再预载，进程内第一次开书就不用在主线程现解析字体文件。
+          setTimeout(() => {
+            ReaderFontBootstrap.preloadStyledFonts(this.context).catch((e: Error) => {
+              hilog.warn(0x0000, 'testTag', 'Reader styled font preload failed: %{public}s', JSON.stringify(e));
+            });
+          }, 1000);
+        })
         .catch((e: Error) => {
           hilog.warn(0x0000, 'testTag', 'Deferred reader bootstrap failed: %{public}s', JSON.stringify(e));
         });
     }, 80);
   }
 
+  private mainUIContext(): UIContext | null {
+    if (!this.mainWindowStage) {
+      return null;
+    }
+    try {
+      return this.mainWindowStage.getMainWindowSync().getUIContext();
+    } catch (e) {
+      hilog.warn(0x0000, 'testTag', 'Get main UIContext failed: %{public}s', JSON.stringify(e));
+      return null;
+    }
+  }
+
+  // 接续拉起时系统调这里而不调 onWindowStageCreate；不迁移页面栈，冷启动按普通启动加载首页，
+  // 热启动窗口里已有页面就保持原样（书由 onNewWant 里的接续数据打开）。
+  onWindowStageRestore(windowStage: window.WindowStage): void {
+    hilog.info(0x0000, 'testTag', 'Ability onWindowStageRestore loaded=%{public}s', String(!!this.mainWindowStage));
+    if (this.mainWindowStage) return;
+    this.onWindowStageCreate(windowStage);
+  }
+
   onWindowStageDestroy(): void {
+    releaseSystemBarListeners();
     this.mainWindowStage = null;
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
   }
 
   onForeground(): void {
+    ReaderCacheBudget.scheduleStartupTrim();
+    ComicColorizer.setAppForeground(true);
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onForeground');
     readStatsTracker.setAppForeground(true);
     AppStorage.setOrCreate<number>('appLifecycleForegroundRevision', Date.now());
@@ -330,12 +491,19 @@ export default class EntryAbility extends UIAbility {
     }
     ThemeTrialManager.stopIfExpired();
     this.syncSystemColorMode(this.context.config);
+    this.syncSystemFont(this.context.config, 'foreground');
     this.accountBootstrapPromise
-      .then(() => HuaweiAccountService.renewSession(this.context))
+      .then(() => {
+        AiAccessPolicy.start();
+        return HuaweiAccountService.renewSession(this.context);
+      })
+      .then(() => MembershipThemeGuard.refresh(this.context))
       .catch((e: Error) => {
         hilog.warn(0x0000, 'testTag', 'Renew account session failed: %{public}s', JSON.stringify(e));
       })
       .finally(() => {
+        // A failed renewal must not skip the file sync; it checks login and membership itself.
+        CloudAutoSync.schedule(this.context, 5000);
         setTimeout(() => {
           CloudSyncCoordinator.syncAutomatically(
             this.context, CloudSyncCoordinator.TRIGGER_FOREGROUND).catch((e: Error) => {
@@ -347,14 +515,26 @@ export default class EntryAbility extends UIAbility {
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(0x0000, 'testTag', 'Ability onNewWant %{public}s', JSON.stringify(launchParam));
+    if (launchParam.launchReason === AbilityConstant.LaunchReason.CONTINUATION) {
+      ReadingContinuation.accept(this.context, want);
+    }
     const launchTarget = this.handleLaunchWant(want);
     if (launchTarget && this.mainWindowStage) {
       const targetUrl = launchTarget === 'bookSource' ? 'pages/BookSource' :
+        launchTarget === 'themeImport' ? 'pages/ThemeSettings' :
         (launchTarget === 'audioBook' ? 'pages/AudioBook' : 'pages/Startup');
       this.mainWindowStage.getMainWindow().then((mainWindow: window.Window) => {
         const appRouter = mainWindow.getUIContext().getRouter();
         const state = appRouter.getState();
         if (this.routeMatches(state.name, state.path, targetUrl)) {
+          return Promise.resolve();
+        }
+        // 首页在最上层且正是这本书在后台播放：打开首页自己的听书面板。再叠一个听书页的话，
+        // 关面板要关两次，新页面在加载完之前被关掉还会把播放和系统媒体控件一起停掉。
+        if (launchTarget === 'audioBook' && this.routeMatches(state.name, state.path, 'pages/Index') &&
+          AppStorage.get<boolean>('globalTtsActive') === true && AppStorage.get<string>('globalTtsMode') === 'audio' &&
+          AppStorage.get<string>('globalTtsBookUrl') === (AppStorage.get<string>('pendingAudioBookUrl') || '')) {
+          AppStorage.setOrCreate('globalTtsPanelRequest', Date.now());
           return Promise.resolve();
         }
         if (launchTarget === 'audioBook') {
@@ -373,7 +553,16 @@ export default class EntryAbility extends UIAbility {
     }
   }
 
+  // 跨设备接续：带上在读的书和进度，对端打开到同一位置。
+  onContinue(wantParam: Record<string, Object>): Promise<AbilityConstant.OnContinueResult> {
+    return ReadingContinuation.collect(this.context, wantParam).catch((e: Error) => {
+      hilog.warn(0x0000, 'testTag', 'Collect continuation failed: %{public}s', JSON.stringify(e));
+    }).then((): AbilityConstant.OnContinueResult => AbilityConstant.OnContinueResult.AGREE);
+  }
+
   onBackground(): void {
+    AiAccessPolicy.stop();
+    ComicColorizer.setAppForeground(false);
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onBackground');
     readStatsTracker.setAppForeground(false);
     // Page.onPageShow is shared by real route returns and a simple Home/lock-screen resume. Publish a
@@ -388,8 +577,34 @@ export default class EntryAbility extends UIAbility {
     });
   }
 
+  onMemoryLevel(level: AbilityConstant.MemoryLevel): void {
+    ComicColorizer.onMemoryPressure(level);
+  }
+
   onConfigurationUpdate(newConfig: Configuration): void {
     this.syncSystemColorMode(newConfig);
+    this.syncSystemFont(newConfig, 'configuration-update');
+  }
+
+  private syncSystemFont(config: Configuration, source: string): void {
+    const fontId = config.fontId || '';
+    if (!fontId || fontId === this.systemFontId) {
+      return;
+    }
+    const known = !!this.systemFontId;
+    this.systemFontId = fontId;
+    if (!known) {
+      return;
+    }
+    // 等阅读设置载入后再处理，回写的系统字体名才不会被启动流程用旧值盖掉。
+    // 回调先于 ArkUI 收到这次配置变化（日志里相差约 30ms），延后一点，等它装好新的主题字体再清缓存、重排。
+    this.readerBootstrapPromise.then(() => {
+      setTimeout(() => {
+        ReaderFontBootstrap.onSystemFontChanged(this.context, this.mainUIContext(), source);
+      }, 500);
+    }).catch((e: Error) => {
+      hilog.warn(0x0000, 'testTag', 'Sync system font failed: %{public}s', JSON.stringify(e));
+    });
   }
 
   private syncSystemColorMode(config: Configuration): void {
@@ -428,11 +643,7 @@ export default class EntryAbility extends UIAbility {
     }
     this.modeDependentThemeKey = themeKey;
     AppThemeSettingsStore.reapplyCustomForMode(darkMode);
-    try {
-      this.context.getApplicationContext().setFont(ThemeRuntime.fontFamily());
-    } catch (e) {
-      hilog.warn(0x0000, 'testTag', 'Apply mode-dependent theme font failed: %{public}s', JSON.stringify(e));
-    }
+    ReaderFontBootstrap.applyApplicationFont(this.context, 'mode-dependent-theme');
   }
 
   private setApplicationColorMode(colorMode: number): void {
@@ -450,13 +661,25 @@ export default class EntryAbility extends UIAbility {
     const externalUri = this.externalFileUri(want);
     const externalName = this.externalFileNameHint(want, externalUri);
     const externalFormat = externalUri ? this.externalFileFormat(want, externalUri, externalName) : '';
+    if (externalUri && externalFormat === 'qytheme') {
+      AppStorage.setOrCreate('pendingThemeImportUri', externalUri);
+      const nonce = AppStorage.get<number>('pendingThemeImportNonce') || 0;
+      AppStorage.setOrCreate('pendingThemeImportNonce', nonce + 1);
+      return 'themeImport';
+    }
+    if (externalUri && externalFormat === 'qybook') {
+      // 碰一碰收到的在线书：加入书架（需本机有该书源）并打开到对方的阅读位置。
+      const raw = this.readExternalText(externalUri);
+      if (raw) ReadingContinuation.acceptRaw(this.context, raw);
+      return '';
+    }
     if (externalUri && externalFormat === 'json') {
       AppStorage.setOrCreate('pendingBookSourceImportUri', externalUri);
       const nonce = AppStorage.get<number>('pendingBookSourceImportNonce') || 0;
       AppStorage.setOrCreate('pendingBookSourceImportNonce', nonce + 1);
       return 'bookSource';
     }
-    if (externalUri && (externalFormat === 'txt' || externalFormat === 'epub')) {
+    if (externalUri && (externalFormat === 'txt' || externalFormat === 'epub' || externalFormat === 'mobi' || externalFormat === 'pdf')) {
       AppStorage.setOrCreate('pendingLocalBookImportUri', externalUri);
       AppStorage.setOrCreate('pendingLocalBookImportFormat', externalFormat);
       AppStorage.setOrCreate('pendingLocalBookImportName', externalName);
@@ -478,10 +701,6 @@ export default class EntryAbility extends UIAbility {
       return '';
     }
     const action = params['shortcutAction'];
-    if (action === RECENT_READ_SHORTCUT_ACTION) {
-      RecentReadShortcut.request();
-      return '';
-    }
     if (action === OPEN_BOOK_SHORTCUT_ACTION) {
       const bookUrl = params['bookUrl'];
       if (bookUrl) {
@@ -497,10 +716,14 @@ export default class EntryAbility extends UIAbility {
     const extension = this.isSupportedExternalExtension(uriExtension) ? uriExtension : nameExtension;
     if (this.isSupportedExternalExtension(extension)) return extension;
     const type = (want.type || '').toLowerCase();
+    if (type === 'io.legado.read.qytheme') return 'qytheme';
+    if (type === QYBOOK_UTD) return 'qybook';
     if (type === 'application/json' || type === 'text/json' || type === 'application/x-json' ||
       type === 'general.json') return 'json';
     if (type === 'general.epub' || type === 'application/epub+zip' ||
       type === 'application/x-epub+zip') return 'epub';
+    if (type === 'com.amazon.mobi' || type === 'application/x-mobipocket-ebook') return 'mobi';
+    if (type === 'com.adobe.pdf' || type === 'application/pdf') return 'pdf';
     const sniffed = this.sniffExternalFileFormat(uri);
     if (sniffed) return sniffed;
     if (type === 'general.plain-text' || type === 'text/plain' || type === 'general.text') return 'txt';
@@ -604,9 +827,16 @@ export default class EntryAbility extends UIAbility {
       const readLength = fs.readSync(file.fd, buffer, { offset: 0, length: buffer.byteLength });
       if (readLength >= 4) {
         const bytes = new Uint8Array(buffer, 0, readLength);
+        if (readLength >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 &&
+          bytes[3] === 0x46 && bytes[4] === 0x2D) return 'pdf';
         if (bytes[0] === 0x50 && bytes[1] === 0x4B &&
           ((bytes[2] === 0x03 && bytes[3] === 0x04) || (bytes[2] === 0x05 && bytes[3] === 0x06))) {
           return 'epub';
+        }
+        // PalmDB 头第 60 字节起是类型与创建者标识。
+        if (readLength >= 68 && util.TextDecoder.create('utf-8').decodeWithStream(bytes.subarray(60, 68),
+          { stream: false }) === 'BOOKMOBI') {
+          return 'mobi';
         }
         const text = util.TextDecoder.create('utf-8').decodeWithStream(bytes, { stream: false })
           .replace(/^\uFEFF/, '').trim();
@@ -627,7 +857,29 @@ export default class EntryAbility extends UIAbility {
   }
 
   private isSupportedExternalExtension(extension: string): boolean {
-    return extension === 'json' || extension === 'txt' || extension === 'epub';
+    return extension === 'json' || extension === 'txt' || extension === 'epub' || extension === 'mobi' || extension === 'pdf' ||
+      extension === 'qytheme' || extension === 'qybook';
+  }
+
+  private readExternalText(uri: string): string {
+    let file: fs.File | null = null;
+    try {
+      file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+      const buffer = new ArrayBuffer(256 * 1024);
+      const readLength = fs.readSync(file.fd, buffer, { offset: 0, length: buffer.byteLength });
+      return util.TextDecoder.create('utf-8').decodeWithStream(new Uint8Array(buffer, 0, readLength),
+        { stream: false });
+    } catch (e) {
+      hilog.warn(0x0000, 'testTag', 'Read external text failed: %{public}s', JSON.stringify(e));
+      return '';
+    } finally {
+      if (file) {
+        try {
+          fs.closeSync(file);
+        } catch (_) {
+        }
+      }
+    }
   }
 
   private externalFileName(uriOrName: string): string {
@@ -732,6 +984,7 @@ export default class EntryAbility extends UIAbility {
         mainWindow.setWindowBackgroundColor(bg);
         mainWindow.setWindowLayoutFullScreen(true);
         mainWindow.setWindowSystemBarEnable(['navigation', 'status']);
+        syncDesktopTitleBar(mainWindow, darkMode);
         mainWindow.setWindowSystemBarProperties({
           statusBarColor: '#00000000',
           isStatusBarLightIcon: darkMode,

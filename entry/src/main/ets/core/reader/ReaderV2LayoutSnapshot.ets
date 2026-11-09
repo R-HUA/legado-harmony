@@ -1,3 +1,5 @@
+import { ReaderCommentBubbleSize } from './ReaderCommentBubbleSize';
+import { ReaderFontWeight } from './ReaderFontWeight';
 import { ReaderCommentBubbleStyle } from './ReaderCommentBubble';
 
 export class ReaderV2Rect {
@@ -41,7 +43,15 @@ export class ReaderV2LayoutInput {
   columnGapPx: number = 0;
   columnCount: number = 1;
   fontSizePx: number = 40;
+  fontWeight: number = ReaderFontWeight.DEFAULT;
   titleFontSizePx: number = 44;
+  titleFontWeight: number = 600;
+  titleSecondaryScale: number = 1.4;
+  titleLineGapPx: number = 14;
+  titleAlignment: string = 'center';
+  titleMarginTopPx: number = 0;
+  titleMarginBottomPx: number = 0;
+  titleSinglePage: boolean = false;
   lineSpacingPx: number = 0;
   paragraphSpacingPx: number = 0;
   letterSpacingPx: number = 0;
@@ -49,8 +59,11 @@ export class ReaderV2LayoutInput {
   bodyFontFamily: string = '';
   titleFontFamily: string = '';
   textColor: number = 0xFF202124;
+  /** EPUB 注释编号的颜色。 */
+  noteColor: number = 0xFF3A7BD5;
   commentBubble: ReaderCommentBubbleStyle = new ReaderCommentBubbleStyle();
   commentFontSizePx: number = 30;
+  commentBubbleSize: number = ReaderCommentBubbleSize.DEFAULT;
   commentHitSlopXPx: number = 16;
   commentHitSlopYPx: number = 12;
   commentsEnabled: boolean = true;
@@ -63,12 +76,23 @@ export class ReaderV2LayoutInput {
 }
 
 export class ReaderV2LayoutSnapshot {
+  /** Font-box centres relative to the baseline, scoped to this layout/font snapshot. */
+  commentTextCenters: Map<string, number> = new Map<string, number>();
+  commentTextWidths: Map<string, number> = new Map<string, number>();
   viewport: ReaderV2Rect = new ReaderV2Rect();
   contentRect: ReaderV2Rect = new ReaderV2Rect();
   columnRects: ReaderV2Rect[] = [];
   extendToStatusBar: boolean = false;
   fontSizePx: number = 40;
+  fontWeight: number = ReaderFontWeight.DEFAULT;
   titleFontSizePx: number = 44;
+  titleFontWeight: number = 600;
+  titleSecondaryScale: number = 1.4;
+  titleLineGapPx: number = 14;
+  titleAlignment: string = 'center';
+  titleMarginTopPx: number = 0;
+  titleMarginBottomPx: number = 0;
+  titleSinglePage: boolean = false;
   lineSpacingPx: number = 0;
   paragraphSpacingPx: number = 0;
   letterSpacingPx: number = 0;
@@ -76,8 +100,11 @@ export class ReaderV2LayoutSnapshot {
   bodyFontFamily: string = '';
   titleFontFamily: string = '';
   textColor: number = 0xFF202124;
+  /** EPUB 注释编号的颜色。 */
+  noteColor: number = 0xFF3A7BD5;
   commentBubble: ReaderCommentBubbleStyle = new ReaderCommentBubbleStyle();
   commentFontSizePx: number = 30;
+  commentBubbleSize: number = ReaderCommentBubbleSize.DEFAULT;
   commentHitSlopXPx: number = 16;
   commentHitSlopYPx: number = 12;
   commentsEnabled: boolean = true;
@@ -112,7 +139,17 @@ export class ReaderV2LayoutSnapshot {
     }
 
     snapshot.fontSizePx = Math.max(1, input.fontSizePx);
+    snapshot.fontWeight = ReaderFontWeight.normalize(input.fontWeight);
     snapshot.titleFontSizePx = Math.max(1, input.titleFontSizePx);
+    snapshot.titleFontWeight = ReaderFontWeight.normalize(input.titleFontWeight ?? 600);
+    snapshot.titleSecondaryScale = Number.isFinite(input.titleSecondaryScale) ?
+      Math.max(0.5, Math.min(2, input.titleSecondaryScale)) : 1.4;
+    snapshot.titleLineGapPx = Number.isFinite(input.titleLineGapPx) ? Math.max(0, input.titleLineGapPx) : 14;
+    snapshot.titleAlignment = input.titleAlignment === 'left' || input.titleAlignment === 'right' ?
+      input.titleAlignment : 'center';
+    snapshot.titleMarginTopPx = Number.isFinite(input.titleMarginTopPx) ? Math.max(0, input.titleMarginTopPx) : 0;
+    snapshot.titleMarginBottomPx = Number.isFinite(input.titleMarginBottomPx) ? Math.max(0, input.titleMarginBottomPx) : 0;
+    snapshot.titleSinglePage = input.titleSinglePage === true;
     snapshot.lineSpacingPx = Math.max(0, input.lineSpacingPx);
     snapshot.paragraphSpacingPx = Math.max(0, input.paragraphSpacingPx);
     snapshot.letterSpacingPx = input.letterSpacingPx;
@@ -120,7 +157,9 @@ export class ReaderV2LayoutSnapshot {
     snapshot.bodyFontFamily = input.bodyFontFamily;
     snapshot.titleFontFamily = input.titleFontFamily || input.bodyFontFamily;
     snapshot.textColor = input.textColor;
+    snapshot.noteColor = input.noteColor;
     snapshot.commentBubble = input.commentBubble;
+    snapshot.commentBubbleSize = ReaderCommentBubbleSize.normalize(input.commentBubbleSize);
     snapshot.commentFontSizePx = Math.max(1, input.commentFontSizePx);
     snapshot.commentHitSlopXPx = Math.max(0, input.commentHitSlopXPx);
     snapshot.commentHitSlopYPx = Math.max(0, input.commentHitSlopYPx);
@@ -136,8 +175,11 @@ export class ReaderV2LayoutSnapshot {
     const values = [
       snapshot.viewport.width(), snapshot.viewport.height(), snapshot.contentRect.left, snapshot.contentRect.top,
       snapshot.contentRect.right, snapshot.contentRect.bottom, snapshot.columnRects.length,
-      snapshot.fontSizePx, snapshot.titleFontSizePx, snapshot.lineSpacingPx, snapshot.paragraphSpacingPx,
-      snapshot.letterSpacingPx, snapshot.textAlign, snapshot.commentFontSizePx, snapshot.commentBubble.identity(),
+      snapshot.fontSizePx, snapshot.fontWeight, snapshot.titleFontSizePx, snapshot.titleFontWeight, snapshot.lineSpacingPx, snapshot.paragraphSpacingPx,
+      snapshot.titleSecondaryScale, snapshot.titleLineGapPx,
+      snapshot.titleAlignment, snapshot.titleMarginTopPx, snapshot.titleMarginBottomPx,
+      snapshot.titleSinglePage ? 1 : 0,
+      snapshot.letterSpacingPx, snapshot.textAlign, snapshot.noteColor, snapshot.commentFontSizePx, snapshot.commentBubbleSize, snapshot.commentBubble.identity(),
       snapshot.commentsEnabled ? 1 : 0, snapshot.regexEnabled ? 1 : 0
     ];
     const rounded = values.map((value: string | number): string =>

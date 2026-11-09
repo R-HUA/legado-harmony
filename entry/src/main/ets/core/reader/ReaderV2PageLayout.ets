@@ -1,21 +1,23 @@
 import graphicsText from '@ohos.graphics.text';
+import { ReaderPaginationBoundary } from './ReaderPaginationIndex';
 import { ReaderV2Rect } from './ReaderV2LayoutSnapshot';
 import { ReaderCommentBubbleStyle } from './ReaderCommentBubble';
+import { ReaderFontStrokeRun } from './ReaderFontStroke';
 
 /** Minimal native Text span metadata used by the transparent system-selection layer. */
 export class ReaderV2SelectionRun {
   text: string = '';
   fontSizePx: number = 0;
   fontFamily: string = '';
-  bold: boolean = false;
+  fontWeight: number = 400;
   letterSpacingPx: number = 0;
 
-  constructor(text: string, fontSizePx: number, fontFamily: string, bold: boolean,
+  constructor(text: string, fontSizePx: number, fontFamily: string, fontWeight: number,
     letterSpacingPx: number = 0) {
     this.text = text;
     this.fontSizePx = fontSizePx;
     this.fontFamily = fontFamily;
-    this.bold = bold;
+    this.fontWeight = fontWeight;
     this.letterSpacingPx = letterSpacingPx;
   }
 }
@@ -46,15 +48,21 @@ export class ReaderV2RegexBubbleSegment {
 
 /** One line's piece of a paragraph-comment / 本章说 bubble; only the last piece carries the tail. */
 export class ReaderV2CommentBubbleSegment {
+  scale: number = 1;
   rect: ReaderV2Rect = new ReaderV2Rect();
   tail: boolean = true;
   style: ReaderCommentBubbleStyle = new ReaderCommentBubbleStyle();
 }
 
 export class ReaderV2PageFragment {
+  title: boolean = false;
+  titleContinuation: boolean = false;
+  titleEnd: boolean = false;
+  fixedGapBefore: boolean = false;
   blockId: string = '';
   blockIndex: number = 0;
   paragraph: graphicsText.Paragraph | null = null;
+  fontStrokes: ReaderFontStrokeRun[] = [];
   paragraphX: number = 0;
   paragraphY: number = 0;
   clipRect: ReaderV2Rect = new ReaderV2Rect();
@@ -81,7 +89,7 @@ export class ReaderV2ActionHitArea {
   rect: ReaderV2Rect = new ReaderV2Rect();
 }
 
-export class ReaderV2PageLayout {
+export class ReaderV2PageLayout implements ReaderPaginationBoundary {
   pageIndex: number = 0;
   columnIndex: number = 0;
   displayStart: number = 0;

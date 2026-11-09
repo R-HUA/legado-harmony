@@ -3,4 +3,9 @@ export interface RedeemBody { requestId?: string; expectedPricePoints?: number; 
 export interface TtsRedeemBody { requestId?: string; }
 export interface TtsSynthesizeBody { requestId?: string; voiceId?: string; text?: string; speed?: number; pitch?: number; volume?: number; timed?: boolean; transport?: string; }
 export interface IapBody { purchaseData?: string; }
-export interface ProfileBody { displayName?: string; avatarBase64?: string; removeAvatar?: boolean; }
+export interface ProfileBody {
+  displayName?: string;
+  avatarBase64?: string;
+  removeAvatar?: boolean;
+  avatarCrop?: import('./imageSecurity.js').AvatarCrop | null;
+}

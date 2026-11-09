@@ -39,6 +39,8 @@ tmp/
 # 引擎迁移前保留在本机的 QuickJS 构建缓存
 /quickjs/.cxx/
 /quickjs/oh_modules/
+/entry/.test/
+/entry/src/ohosTest/resources/rawfile/reader-font-fixture.ttf
 /.hvigor
 /.appanalyzer
 server/node_modules/
@@ -58,6 +60,7 @@ output/
 
 # Local configuration
 local.properties
+/AGENTS.md
 
 # Personal book sources imported into the app from this working copy. docs/book-sources/README.md
 # states that this repository does not ship sources for real third-party content sites, so keep
@@ -77,3 +80,5 @@ Thumbs.db
 !/.github/
 !/.github/**
 /_bridge_test/
+# 本地调试、真机验证产物
+/diagnosis/

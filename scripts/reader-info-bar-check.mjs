@@ -4,6 +4,8 @@
 // Usage: node --experimental-strip-types scripts/reader-info-bar-check.mjs
 
 import { loadReaderModules } from './lib/load-reader-modules.mjs';
+import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 
 const { ReaderInfoBarConfig: Config, ReaderInfoBarContext, ReaderInfoBarText: T, ReaderInfoItem: Item,
   ReaderInfoProgressBar: Bar, cleanup } = await loadReaderModules();
@@ -49,34 +51,248 @@ const roundTrip = Config.parse(migrated.serialize());
 equal(roundTrip.serialize(), migrated.serialize(), '序列化后再解析结果不变');
 const dirty = Config.parse(JSON.stringify({ headerLeft: 'bogus', fontSize: 99, opacity: 1, progressBar: 'x' }));
 equal(dirty.headerLeft, Item.CHAPTER_TITLE, '未知信息项回退到默认');
-equal(dirty.fontSize, Config.FONT_SIZE_MAX, '字号被限制在上限');
-equal(dirty.opacity, Config.OPACITY_MIN, '不透明度被限制在下限');
+equal(dirty.headerFontSize, 40, '旧版过大字号迁移后页眉被限制为 40');
+equal(dirty.footerFontSize, 40, '旧版过大字号迁移后页脚被限制为 40');
+equal(dirty.headerOpacity, Config.OPACITY_MIN, '旧不透明度迁移到页眉时限制在下限');
+equal(dirty.footerOpacity, Config.OPACITY_MIN, '旧不透明度迁移到页脚时限制在下限');
 equal(dirty.progressBar, Bar.NONE, '未知进度条位置回退到不显示');
+
+const legacySize = Config.parse(JSON.stringify({ fontSize: 15 }));
+equal(legacySize.headerFontSize, 15, '旧共用字号沿用到页眉');
+equal(legacySize.footerFontSize, 15, '旧共用字号沿用到页脚');
+const separateSizes = Config.parse(JSON.stringify({ fontSize: 15, headerFontSize: 32, footerFontSize: 18 }));
+equal(separateSizes.headerFontSize, 32, '独立页眉字号优先于旧字号');
+equal(separateSizes.footerFontSize, 18, '独立页脚字号优先于旧字号');
+equal(separateSizes.copy().serialize(), separateSizes.serialize(), '不同字号复制与序列化后保持不变');
+equal(JSON.parse(separateSizes.serialize()).fontSize, undefined, '新配置不再保存旧共用字号');
+const partialSize = Config.parse(JSON.stringify({ fontSize: 14, headerFontSize: 24 }));
+equal(partialSize.headerFontSize, 24, '部分迁移的页眉使用新字号');
+equal(partialSize.footerFontSize, 14, '部分迁移的页脚沿用旧字号');
+const boundedSizes = Config.parse(JSON.stringify({ headerFontSize: 99, footerFontSize: 1 }));
+equal(boundedSizes.headerFontSize, 40, '页眉字号上限为 40');
+equal(boundedSizes.footerFontSize, 10, '页脚字号下限为 10');
+const invalidSizes = Config.parse(JSON.stringify({ headerFontSize: 'bad', footerFontSize: {} }));
+equal(invalidSizes.headerFontSize, 12, '无效页眉字号回退默认值');
+equal(invalidSizes.footerFontSize, 12, '无效页脚字号回退默认值');
+
+const legacyOpacity = Config.parse(JSON.stringify({ opacity: 60 }));
+equal(legacyOpacity.headerOpacity, 60, '旧共用不透明度沿用到页眉');
+equal(legacyOpacity.footerOpacity, 60, '旧共用不透明度沿用到页脚');
+const separateOpacity = Config.parse(JSON.stringify({ opacity: 60, headerOpacity: 30, footerOpacity: 90 }));
+equal(separateOpacity.headerOpacity, 30, '独立页眉不透明度优先于旧值');
+equal(separateOpacity.footerOpacity, 90, '独立页脚不透明度优先于旧值');
+equal(separateOpacity.copy().serialize(), separateOpacity.serialize(), '独立不透明度序列化与复制后保持不变');
+equal(JSON.parse(separateOpacity.serialize()).opacity, undefined, '新配置不再保存旧共用不透明度');
+for (const field of ['headerOpacity', 'footerOpacity']) {
+  const other = field === 'headerOpacity' ? 'footerOpacity' : 'headerOpacity';
+  const partial = Config.parse(JSON.stringify({ opacity: 60, [field]: 80 }));
+  equal(partial[field], 80, `${field} 使用新值`);
+  equal(partial[other], 60, `${other} 缺失时沿用旧值`);
+  for (const [value, expected] of [[0, 30], [101, 100], ['bad', 100]]) {
+    equal(Config.parse(JSON.stringify({ [field]: value }))[field], expected, `${field} 校验 ${value}`);
+  }
+  equal(new Config()[field], 100, `${field} 默认完全不透明`);
+  const independent = new Config();
+  independent[field] = 40;
+  equal(independent.copy()[other], 100, `${field} 调整不影响另一项`);
+  equal(independent.layoutIdentity(), new Config().layoutIdentity(), `${field} 调整不影响分页`);
+}
 
 // 分页标识：换内容不变，换高度相关项才变。
 const base = new Config();
 const contentOnly = base.copy();
 contentOnly.headerRight = Item.TIME;
 contentOnly.footerCenter = Item.BATTERY;
-contentOnly.opacity = 60;
+contentOnly.headerOpacity = 60;
+contentOnly.footerOpacity = 80;
 contentOnly.followMargin = true;
 equal(contentOnly.layoutIdentity(), base.layoutIdentity(), '只换内容与外观不改变分页标识');
 const bigger = base.copy();
-bigger.fontSize = 14;
-check(bigger.layoutIdentity() !== base.layoutIdentity(), '字号变化改变分页标识');
+bigger.headerFontSize = 40;
+check(bigger.layoutIdentity() !== base.layoutIdentity(), '页眉字号变化改变分页标识');
+equal(bigger.headerLineHeight(), 60, '大页眉字号同步增加行高');
+equal(bigger.footerFontSize, 12, '调整页眉字号不影响页脚字号');
+const biggerFooter = base.copy();
+biggerFooter.footerFontSize = 40;
+check(biggerFooter.layoutIdentity() !== base.layoutIdentity(), '页脚字号变化改变分页标识');
+equal(biggerFooter.headerLineHeight(), base.headerLineHeight(), '调整页脚字号不影响页眉行高');
 const withBar = base.copy();
 withBar.progressBar = Bar.FOOTER;
 check(withBar.layoutIdentity() !== base.layoutIdentity(), '进度条变化改变分页标识');
 const shifted = base.copy();
 shifted.footerOffset = 12;
-check(shifted.layoutIdentity() !== base.layoutIdentity(), '页脚上移改变分页标识');
+check(shifted.layoutIdentity() !== base.layoutIdentity(), '页脚位置改变分页标识');
 equal(Config.parse(JSON.stringify({ headerOffset: 999, footerOffset: -5 })).headerOffset, Config.OFFSET_MAX,
-  '页眉下移被限制在上限');
-equal(Config.parse(JSON.stringify({ footerOffset: -5 })).footerOffset, 0, '页脚上移不能为负');
+  '页眉位置被限制在上限');
+for (const field of ['headerOffset', 'footerOffset']) {
+  for (const [value, expected] of [[-5, -5], [-999, -350], [999, 350], [-1.8, -2], ['bad', 0]]) {
+    equal(Config.parse(JSON.stringify({ [field]: value }))[field], expected, `${field} 校验 ${value}`);
+  }
+  const negative = Config.parse(JSON.stringify({ [field]: -6 }));
+  equal(negative.copy()[field], -6, `${field} 负值保存与复制后保留`);
+  check(negative.layoutIdentity() !== base.layoutIdentity(), `${field} 负值改变分页标识`);
+  const header = field === 'headerOffset';
+  for (const inset of [0, 6, 8, 24, 48]) {
+    equal(base.edgeInset(header, inset), inset, '零位置保持默认间距');
+    equal(negative.edgeInset(header, inset), Math.max(0, inset - 6), '负位置朝屏幕边缘移动');
+    negative[field] = -350;
+    equal(negative.edgeInset(header, inset), 0, '极端负位置停在屏幕边缘');
+    negative[field] = 12;
+    equal(negative.edgeInset(header, inset), inset + 12, '正位置向正文方向移动');
+    negative[field] = -6;
+  }
+}
 equal(Config.parse(migrated.serialize()).footerOffset, 0, '旧配置没有位置偏移时默认为 0');
 equal(base.headerLineHeight(), 18, '默认字号下页眉行高保持 18');
 equal(base.footerExtraHeight(), 0, '默认配置页脚没有附加高度');
 equal(withBar.footerExtraHeight(), 5, '页脚进度条附加高度保持 5');
+
+// 执行阅读页和预览的真实几何方法，覆盖安全区、负位置与正文不重叠的边界。
+function layoutMethods(file, names) {
+  const source = readFileSync(new URL(`../entry/src/main/ets/pages/${file}`, import.meta.url), 'utf8');
+  const methods = names.map(name => source.match(new RegExp(`  ${name}\\([^]*?\\n  \\}`))[0]).join('\n');
+  return new (Function('ReaderInfoBarConfig', stripTypeScriptTypes(`class Layout {\n${methods}\n}`, { mode: 'strip' }) +
+    '\nreturn Layout;')(Config))();
+}
+
+// 执行编辑器真实步进方法：禁用下限、最后不足一步、旧值越界后立即反向移动。
+const editorSource = readFileSync(new URL(
+  '../entry/src/main/ets/components/reader/ReaderLayoutSettings.ets', import.meta.url), 'utf8');
+const editorBody = editorSource.slice(editorSource.indexOf('export struct ReaderHeaderFooterEditor'));
+const editorConstants = editorBody.match(/  private static readonly [^\n]+/g).join('\n');
+const editorMethods = ['config', 'stepperValue', 'isOffsetStepper', 'isShrinkStepper', 'isOpacityStepper',
+  'stepperMin', 'stepperMax', 'canStep', 'stepBy'].map(name =>
+  editorBody.match(new RegExp(`  private ${name}\\([^]*?\\n  \\}`))[0]).join('\n');
+const Editor = Function('ReaderInfoBarConfig', stripTypeScriptTypes(
+  `class ReaderHeaderFooterEditor {\n${editorConstants}\n${editorMethods}\n}`, { mode: 'strip' }) +
+  '\nreturn ReaderHeaderFooterEditor;')(Config);
+for (const inset of [0, 6, 7, 7.5, 8, 24, 48.25]) {
+  for (const header of [true, false]) {
+    const editor = new Editor();
+    const config = new Config();
+    const key = header ? 'headerOffset' : 'footerOffset';
+    const field = header ? Editor.STEPPER_HEADER_OFFSET : Editor.STEPPER_FOOTER_OFFSET;
+    editor.headerBaseInset = inset;
+    editor.footerBaseInset = inset;
+    editor.readerInfoBarConfig = config.serialize();
+    let commits = 0;
+    editor.commit = next => { editor.readerInfoBarConfig = next.serialize(); commits++; };
+    let steps = 0;
+    while (editor.canStep(field, -1) && steps++ < 200) editor.stepBy(field, -1);
+    check(steps < 200, '步进有限次后到达边缘');
+    equal(editor.stepperValue(field), -Math.ceil(inset), '下限由安全区决定');
+    equal(editor.config().edgeInset(header, inset), 0, '最后一步确实到达边缘');
+    const count = commits;
+    editor.stepBy(field, -1);
+    equal(commits, count, '到边缘后减号不再修改配置');
+    editor.stepBy(field, 1);
+    check(editor.config().edgeInset(header, inset) > 0, '边缘处加一次立即向内移动');
+    config[key] = -350;
+    editor.readerInfoBarConfig = config.serialize();
+    equal(editor.canStep(field, -1), false, '旧越界值不允许再减');
+    equal(editor.stepperValue(field), -Math.ceil(inset), '旧越界值显示有效位置');
+    editor.stepBy(field, 1);
+    check(editor.config().edgeInset(header, inset) > 0, '旧越界值加一次立即向内移动');
+    equal(editor.config()[header ? 'footerOffset' : 'headerOffset'], 0, '步进不改变另一侧位置');
+  }
+}
+const readerLayout = layoutMethods('ReadBook.ets', ['getReaderHeaderOverlayTopInset', 'getReaderHeaderTopGap',
+  'getReaderHeaderContentReserve', 'getReaderBottomInfoBarBottomInset', 'getReaderGestureIndicatorLift']);
+const previewLayout = layoutMethods('ThemeTypographySettings.ets', ['headerTopInset', 'statusInset',
+  'bodyTop', 'footerBottomInset']);
+const layoutConfig = new Config();
+Object.assign(readerLayout, {
+  desktopTitleBarHeight: 0,
+  getReaderInfoBarConfig: () => layoutConfig, isReaderHeaderVisible: () => true,
+  getReaderHeaderInfoBarHeight: () => layoutConfig.headerLineHeight(), readerVerticalGapWithinMargin: () => 4
+});
+Object.assign(previewLayout, { infoConfig: () => layoutConfig, headerVisible: () => true });
+for (const extend of [false, true]) {
+  for (const safe of [0, 24, 48]) {
+    readerLayout.readerExtendToStatusBar = extend;
+    readerLayout.statusBarSafeHeight = safe;
+    readerLayout.navBarHeight = safe;
+    previewLayout.statusBarHeight = safe;
+    previewLayout.navBarHeight = safe;
+    previewLayout.draft = { extendToStatusBar: extend, marginTop: 16 };
+    for (const offset of [-350, -48, -8, -2, 0, 20, 350]) {
+      layoutConfig.headerOffset = offset;
+      layoutConfig.footerOffset = offset;
+      const top = readerLayout.getReaderHeaderOverlayTopInset();
+      const bottom = readerLayout.getReaderBottomInfoBarBottomInset();
+      const bodyTop = (extend ? 0 : safe) + 16 + readerLayout.getReaderHeaderContentReserve();
+      check(top >= 0 && bottom >= 0, '页眉页脚不越出屏幕边缘');
+      check(bodyTop >= top + layoutConfig.headerLineHeight() + 4, '正文不会与移动后的页眉重叠');
+      equal(previewLayout.headerTopInset(true), top, '全屏预览页眉位置与阅读页一致');
+      equal(previewLayout.footerBottomInset(true), bottom, '全屏预览页脚位置与阅读页一致');
+      equal(previewLayout.bodyTop(true), bodyTop, '全屏预览正文预留与阅读页一致');
+      if (offset === -350) {
+        equal(top, 0, '页眉可抵消状态栏留白直到屏幕顶部');
+        equal(bottom, 0, '页脚可抵消手势条留白直到屏幕底部');
+      }
+    }
+  }
+}
+
+// 桌面三键区不可被“延伸至状态栏”或负页眉偏移覆盖。
+readerLayout.desktopTitleBarHeight = 40;
+readerLayout.statusBarSafeHeight = 40;
+for (const extend of [false, true]) {
+  readerLayout.readerExtendToStatusBar = extend;
+  for (const offset of [-350, 0, 20]) {
+    layoutConfig.headerOffset = offset;
+    const top = readerLayout.getReaderHeaderOverlayTopInset();
+    const bodyTop = 40 + 16 + readerLayout.getReaderHeaderContentReserve();
+    check(top >= 40, 'PC 页眉始终避让窗口按钮');
+    check(bodyTop >= top + layoutConfig.headerLineHeight() + 4, 'PC 正文与页眉保持间距');
+  }
+}
+
+// 左右收缩：旧配置保持位置，正负值分别内收、外扩，且页眉页脚互不影响。
+const shrinkConfig = Config.parse(JSON.stringify({ headerShrink: 12, footerShrink: -8 }));
+equal(Config.parse('{}').headerShrink, 0, '旧配置页眉收缩默认为 0');
+equal(Config.parse('{}').footerShrink, 0, '旧配置页脚收缩默认为 0');
+equal(shrinkConfig.copy().serialize(), shrinkConfig.serialize(), '收缩正负值保存与复制后保持不变');
+equal(shrinkConfig.layoutIdentity(), base.layoutIdentity(), '左右收缩不影响正文分页');
+equal(base.sidePadding(true, true, 18, 20, 400), 28, '零收缩沿用固定边距');
+equal(shrinkConfig.sidePadding(true, true, 18, 20, 400), 40, '页眉左侧向内收');
+equal(shrinkConfig.sidePadding(true, false, 18, 20, 400), 40, '页眉右侧向内收');
+equal(shrinkConfig.sidePadding(false, true, 18, 20, 400), 20, '页脚左侧向外扩');
+equal(shrinkConfig.sidePadding(false, false, 18, 20, 400), 20, '页脚右侧向外扩');
+shrinkConfig.followMargin = true;
+equal(shrinkConfig.sidePadding(true, true, 18, 20, 400), 30, '内收叠加正文左边距');
+equal(shrinkConfig.sidePadding(true, false, 18, 20, 400), 32, '内收叠加正文右边距');
+equal(shrinkConfig.sidePadding(false, true, 18, 20, 400), 10, '外扩扣减正文左边距');
+equal(shrinkConfig.sidePadding(false, false, 18, 20, 400), 12, '外扩扣减正文右边距');
+const extremes = Config.parse(JSON.stringify({ headerShrink: 999, footerShrink: -999 }));
+equal(extremes.headerShrink, 350, '收缩上限为 350');
+equal(extremes.footerShrink, -350, '收缩下限为 -350');
+for (const width of [80, 200, 400, 1000]) {
+  const left = extremes.sidePadding(true, true, 18, 20, width);
+  const right = extremes.sidePadding(true, false, 18, 20, width);
+  check(width - left - right >= Math.min(96, width), '极端内收仍保留文字宽度');
+  equal(extremes.sidePadding(false, true, 18, 20, width), 0, '外扩不超过左侧屏幕边缘');
+  equal(extremes.sidePadding(false, false, 18, 20, width), 0, '外扩不超过右侧屏幕边缘');
+}
+equal(Config.clampShrink(-1), -1, '允许负值');
+equal(Config.clampShrink(1.8), 2, '收缩使用整数');
+for (const value of [undefined, null, 'bad', NaN, Infinity]) {
+  equal(Config.clampShrink(value), 0, '无效收缩值回退到 0');
+}
+
+// 文字颜色独立保存，旧配置、清空或损坏值沿用主题。
+const colors = Config.parse(JSON.stringify({ headerColor: ' ff00aa ', footerColor: '#123abc' }));
+equal(colors.headerColor, '#FF00AA', '页眉颜色规范化');
+equal(colors.footerColor, '#123ABC', '页脚颜色规范化');
+equal(colors.textColor(true, '#808080'), '#FF00AA', '页眉显示独立颜色');
+equal(colors.textColor(false, '#808080'), '#123ABC', '页脚显示独立颜色');
+equal(colors.copy().serialize(), colors.serialize(), '颜色保存与复制后保持不变');
+equal(colors.layoutIdentity(), base.layoutIdentity(), '颜色不影响分页');
+for (const value of [undefined, null, '', 'oops', '#xyzxyz', '#123', '#AA123456', 123, {}]) {
+  const invalid = Config.parse(JSON.stringify({ headerColor: value, footerColor: value }));
+  equal(invalid.textColor(true, '#808080'), '#808080', '缺失或非法页眉颜色沿用主题');
+  equal(invalid.textColor(false, '#EEEEEE'), '#EEEEEE', '缺失或非法页脚颜色沿用主题');
+}
 
 // 时钟需求。
 equal(base.usesClock(true, true), false, '默认配置不需要时钟');
@@ -116,6 +332,20 @@ context.doublePage = true;
 equal(T.of(Item.PAGE, context), '5-6/20', '双页页码');
 equal(T.of(Item.PAGES_LEFT, context), '剩余 14 页', '双页剩余页数');
 context.doublePage = false;
+
+context.pageCountPending = true;
+for (const item of [Item.PAGE, Item.PAGES_LEFT, Item.CHAPTER_PERCENT, Item.BOOK_PERCENT]) {
+  equal(T.of(item, context), '…', '分页未完成时不展示临时总页数或百分比');
+}
+equal(T.of(Item.CHAPTER_PROGRESS, context), '3/10 章', '等待分页不影响章节进度');
+equal(T.chapterPercent(context), 0, '临时页数不能让本章进度条填满');
+equal(T.bookPercent(context), 20, '未知章内进度只计入已完成的章节');
+context.chapterProgressRatio = 0.4;
+equal(T.of(Item.CHAPTER_PERCENT, context), '40%', '滚动模式有可见字符位置时可展示百分比');
+equal(T.of(Item.BOOK_PERCENT, context), '24.0%', '滚动百分比不依赖待计算的屏幕总页数');
+equal(T.of(Item.PAGE, context), '…', '字符进度不能代替待计算的总页数');
+context.chapterProgressRatio = -1;
+context.pageCountPending = false;
 
 context.chapterIndex = 9;
 context.pageIndex = 19;

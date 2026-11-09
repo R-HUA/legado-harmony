@@ -1,3 +1,11 @@
+import { MembershipSnapshot } from './MembershipModels';
+
+export class AvatarCrop {
+  left: number = 0;
+  top: number = 0;
+  size: number = 0;
+}
+
 export class ThemeEntitlement {
   themeId: string = '';
   expiresAt: number = 0;
@@ -8,6 +16,18 @@ export class ThemeCatalogItem {
   displayName: string = '';
   pricePoints: number = 60;
   validDays: number = 365;
+  acquisition: string = 'POINTS';
+}
+
+export class SuperThemeClaim {
+  themeId: string = '';
+  expiresAt: number = 0;
+  duplicate: boolean = false;
+}
+
+export class SuperThemeClaimResponse {
+  claim: SuperThemeClaim = new SuperThemeClaim();
+  account: AccountSnapshot = new AccountSnapshot();
 }
 
 export class ThemeCatalogResponse {
@@ -15,6 +35,9 @@ export class ThemeCatalogResponse {
 }
 
 export class AccountSnapshot {
+  membership: MembershipSnapshot | null = null;
+  memberThemeIds: string[] = [];
+  memberVerifiedAt: number = 0;
   userId: string = '';
   displayName: string = '华为用户';
   avatarUrl: string = '';

@@ -68,7 +68,7 @@ export class ReaderImageSizeResolver {
 
   private static localPath(source: string): string {
     const value = (source || '').trim();
-    if (!value || /^(?:https?:|data:)/i.test(value)) return '';
+    if (!value || /^(?:https?:|data:|legado-image-error:)/i.test(value)) return '';
     if (/^file:/i.test(value)) {
       try {
         return new fileUri.FileUri(value).path;

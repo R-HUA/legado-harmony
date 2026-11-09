@@ -1,7 +1,25 @@
 import { readStatsTracker } from '../core/stats/ReadStatsTracker';
 
+/**
+ * 听书的离线下载信息，由听书页发布。书架胶囊打开的播放面板和目录靠它显示"下载"入口、
+ * "已下载"标记和摘要，与听书页自己的目录一致。朗读（TTS）不发布。
+ */
+export interface AudioOfflineCatalogInfo {
+  author: string;
+  cachedLabel: string;
+  summary: string;
+  openDownload: (ui: UIContext) => void;
+  chapterAction: (ui: UIContext, canonicalIndex: number) => void;
+  /** 打开目录前调用：重新读取已下载章节，更新标记和摘要。 */
+  refresh: () => Promise<void>;
+}
+
 export class ReaderTtsFloatingSession {
+  /** 目录标记或离线信息变化时更新，书架上的目录据此重绘。 */
+  static readonly CATALOG_REVISION_KEY: string = 'globalTtsCatalogRevision';
+  private static audioOffline: AudioOfflineCatalogInfo | null = null;
   private static ownerId: string = '';
+  private static releaseListener: ((bookUrl: string) => void) | null = null;
   private static toggleAction: (() => Promise<void>) | null = null;
   private static pausedState: (() => boolean) | null = null;
   private static stopAction: (() => Promise<void> | void) | null = null;
@@ -9,6 +27,8 @@ export class ReaderTtsFloatingSession {
   private static nextAction: (() => void) | null = null;
   private static positionAction: ((chapterIndex: number, pageIndex: number,
     sourceOffset: number) => Promise<void> | void) | null = null;
+  private static preparedPositionAction: ((chapterIndex: number, sourceOffset: number,
+    resume: boolean) => Promise<boolean>) | null = null;
   private static speedAction: ((value: number) => void) | null = null;
   private static timerAction: ((minutes: number) => void) | null = null;
   private static voiceAction: (() => void) | null = null;
@@ -26,6 +46,9 @@ export class ReaderTtsFloatingSession {
   static attach(ownerId: string, bookUrl: string, bookName: string, chapterTitle: string,
     paused: boolean, toggleAction: () => Promise<void>, pausedState: () => boolean,
     stopAction: () => Promise<void> | void): void {
+    // 换了会话主人（例如从听书换成朗读）时，上一位发布的离线信息不再适用。
+    if (ReaderTtsFloatingSession.ownerId !== ownerId) ReaderTtsFloatingSession.audioOffline = null;
+    const previousBookUrl = ReaderTtsFloatingSession.isActive() ? AppStorage.get<string>('globalTtsBookUrl') || '' : '';
     ReaderTtsFloatingSession.ownerId = ownerId;
     ReaderTtsFloatingSession.toggleAction = toggleAction;
     ReaderTtsFloatingSession.pausedState = pausedState;
@@ -41,6 +64,9 @@ export class ReaderTtsFloatingSession {
     AppStorage.setOrCreate('globalTtsStatusText', '');
     AppStorage.setOrCreate('globalTtsBusy', false);
     ReaderTtsFloatingSession.notifyChanged();
+    // 没经过 clear 直接换成另一本书时，上一本也算播完了。
+    const listener = ReaderTtsFloatingSession.releaseListener;
+    if (listener && previousBookUrl && previousBookUrl !== bookUrl) listener(previousBookUrl);
   }
 
   static update(ownerId: string, bookName: string, chapterTitle: string, paused: boolean): void {
@@ -78,6 +104,18 @@ export class ReaderTtsFloatingSession {
       return;
     }
     ReaderTtsFloatingSession.positionAction = positionAction;
+  }
+
+  static configurePreparedPositionControl(ownerId: string,
+    action: (chapterIndex: number, sourceOffset: number, resume: boolean) => Promise<boolean>): void {
+    if (ReaderTtsFloatingSession.isOwner(ownerId)) ReaderTtsFloatingSession.preparedPositionAction = action;
+  }
+
+  static async jumpToPreparedPosition(ownerId: string, chapterIndex: number, sourceOffset: number,
+    resume: boolean): Promise<boolean> {
+    if (!ReaderTtsFloatingSession.isOwner(ownerId)) return false;
+    const action = ReaderTtsFloatingSession.preparedPositionAction;
+    return action ? await action(chapterIndex, sourceOffset, resume) : false;
   }
 
   static configureTtsVoices(ownerId: string, labels: string[], selectedIndex: number,
@@ -203,6 +241,22 @@ export class ReaderTtsFloatingSession {
   static updateCatalogCachedFlags(ownerId: string, cachedFlags: boolean[]): void {
     if (!ReaderTtsFloatingSession.isOwner(ownerId)) return;
     ReaderTtsFloatingSession.catalogCachedFlags = cachedFlags.slice();
+    ReaderTtsFloatingSession.bumpCatalogRevision();
+  }
+
+  static configureAudioOffline(ownerId: string, info: AudioOfflineCatalogInfo | null): void {
+    if (!ReaderTtsFloatingSession.isOwner(ownerId)) return;
+    ReaderTtsFloatingSession.audioOffline = info;
+    ReaderTtsFloatingSession.bumpCatalogRevision();
+  }
+
+  static audioOfflineInfo(): AudioOfflineCatalogInfo | null {
+    return ReaderTtsFloatingSession.audioOffline;
+  }
+
+  private static bumpCatalogRevision(): void {
+    AppStorage.setOrCreate(ReaderTtsFloatingSession.CATALOG_REVISION_KEY,
+      (AppStorage.get<number>(ReaderTtsFloatingSession.CATALOG_REVISION_KEY) || 0) + 1);
   }
 
   /**
@@ -225,7 +279,7 @@ export class ReaderTtsFloatingSession {
   static updateDetails(ownerId: string, content: string, textBefore: string, currentText: string,
     textAfter: string, cover: ResourceStr, coverFrame: ResourceStr,
     chapterProgress: string, speed: number, timerMinutes: number, timerRemainingSeconds: number,
-    canPrevious: boolean, canNext: boolean, progress: number = 0): void {
+    canPrevious: boolean, canNext: boolean, progress: number = 0, chapterPercent: number = -1): void {
     if (!ReaderTtsFloatingSession.isOwner(ownerId)) {
       return;
     }
@@ -253,6 +307,11 @@ export class ReaderTtsFloatingSession {
     const normalizedProgress = Math.max(0, Math.min(100, progress || 0));
     if (AppStorage.get<number>('globalTtsProgress') !== normalizedProgress) {
       AppStorage.setOrCreate('globalTtsProgress', normalizedProgress);
+    }
+    // 本章进度（0–100，-1 表示没有）：首页伴生条的进度线用它，整本进度在长书里几乎不动。
+    const normalizedChapter = chapterPercent < 0 ? -1 : Math.max(0, Math.min(100, chapterPercent));
+    if (AppStorage.get<number>('globalTtsChapterPercent') !== normalizedChapter) {
+      AppStorage.setOrCreate('globalTtsChapterPercent', normalizedChapter);
     }
     if (AppStorage.get<number>('globalTtsSpeed') !== speed) {
       AppStorage.setOrCreate('globalTtsSpeed', speed);
@@ -326,6 +385,15 @@ export class ReaderTtsFloatingSession {
     }
   }
 
+  /** 正在朗读/听书时暂停，已暂停或没在播放则不动。App 内其他声音（如视频）开播时调用。 */
+  static async pause(): Promise<void> {
+    if (!ReaderTtsFloatingSession.isActive()) return;
+    const pausedState = ReaderTtsFloatingSession.pausedState;
+    const paused = pausedState ? pausedState() : (AppStorage.get<boolean>('globalTtsPaused') || false);
+    if (paused) return;
+    await ReaderTtsFloatingSession.toggle();
+  }
+
   static stop(): void {
     const action = ReaderTtsFloatingSession.stopAction;
     if (action) {
@@ -335,6 +403,17 @@ export class ReaderTtsFloatingSession {
       return;
     }
     ReaderTtsFloatingSession.clear();
+  }
+
+  /** 这本书正在朗读或听书（暂停也算），书架胶囊和系统媒体控件还挂着它。 */
+  static isPlayingBook(bookUrl: string): boolean {
+    return !!bookUrl && ReaderTtsFloatingSession.isActive() &&
+      AppStorage.get<string>('globalTtsBookUrl') === bookUrl;
+  }
+
+  /** 会话结束时收到结束的是哪本书，试听后不加入书架的临时书靠它在停播后再删。 */
+  static setReleaseListener(listener: ((bookUrl: string) => void) | null): void {
+    ReaderTtsFloatingSession.releaseListener = listener;
   }
 
   static previous(): void {
@@ -397,6 +476,7 @@ export class ReaderTtsFloatingSession {
     if (ownerId && ReaderTtsFloatingSession.ownerId !== ownerId) {
       return;
     }
+    const releasedBookUrl = AppStorage.get<string>('globalTtsBookUrl') || '';
     ReaderTtsFloatingSession.ownerId = '';
     ReaderTtsFloatingSession.toggleAction = null;
     ReaderTtsFloatingSession.pausedState = null;
@@ -404,6 +484,7 @@ export class ReaderTtsFloatingSession {
     ReaderTtsFloatingSession.previousAction = null;
     ReaderTtsFloatingSession.nextAction = null;
     ReaderTtsFloatingSession.positionAction = null;
+    ReaderTtsFloatingSession.preparedPositionAction = null;
     ReaderTtsFloatingSession.speedAction = null;
     ReaderTtsFloatingSession.timerAction = null;
     ReaderTtsFloatingSession.voiceAction = null;
@@ -412,6 +493,7 @@ export class ReaderTtsFloatingSession {
     ReaderTtsFloatingSession.catalogCachedFlags = [];
     ReaderTtsFloatingSession.catalogCurrentIndex = 0;
     ReaderTtsFloatingSession.catalogSelectAction = null;
+    ReaderTtsFloatingSession.audioOffline = null;
     ReaderTtsFloatingSession.ttsVoiceLabels = [];
     ReaderTtsFloatingSession.ttsVoiceSelectedIndex = 0;
     ReaderTtsFloatingSession.ttsVoiceSelectAction = null;
@@ -435,6 +517,7 @@ export class ReaderTtsFloatingSession {
     AppStorage.setOrCreate('globalTtsTextAfter', '');
     AppStorage.setOrCreate('globalTtsChapterProgress', '');
     AppStorage.setOrCreate('globalTtsProgress', 0);
+    AppStorage.setOrCreate('globalTtsChapterPercent', -1);
     AppStorage.setOrCreate('globalTtsSpeed', 1);
     AppStorage.setOrCreate('globalTtsTimerMinutes', 0);
     AppStorage.setOrCreate('globalTtsTimerRemainingSeconds', 0);
@@ -446,6 +529,8 @@ export class ReaderTtsFloatingSession {
     AppStorage.setOrCreate('globalTtsVoiceRevision', 0);
     AppStorage.setOrCreate('globalTtsAudioCatalogReverseOrder', false);
     ReaderTtsFloatingSession.notifyChanged();
+    const listener = ReaderTtsFloatingSession.releaseListener;
+    if (listener && releasedBookUrl) listener(releasedBookUrl);
   }
 
   private static notifyChanged(): void {

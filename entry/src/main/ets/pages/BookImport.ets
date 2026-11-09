@@ -6,6 +6,7 @@ import { HdsFeedback } from '../utils/HdsFeedback';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
+import { CloudAutoSync } from '../account/CloudAutoSync';
 
 @Entry
 @Component
@@ -68,14 +69,14 @@ struct BookImportPage {
           router.pushUrl({ url: 'pages/OpdsServers' });
         })
       this.menuRow($r('sys.symbol.externaldrive'), 'WebDAV 服务',
-        '浏览远程 TXT / EPUB 书库', true, () => {
+        '浏览远程 TXT / EPUB / MOBI / PDF 书库', true, () => {
           router.pushUrl({ url: 'pages/WebDav' });
         })
       this.menuRow($r('sys.symbol.book'), '本地导入',
-        '选择并导入 TXT / EPUB 文件', false, () => {
+        '选择并导入 TXT / EPUB / MOBI / PDF 文件或 ZIP 压缩包', false, () => {
           this.addBooks();
         })
-      Text('本地导入仅支持 TXT / EPUB 格式')
+      Text('支持 TXT / EPUB / MOBI / PDF 格式，也可以选装着这些文件的 ZIP 压缩包（不支持加密包）。MOBI 需未加密且不是 KF8（AZW3），PDF 暂不支持打开密码')
         .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor())
         .width('100%')
@@ -94,9 +95,10 @@ struct BookImportPage {
       const selected = await LocalBookService.chooseBookFiles(getContext(this));
       if (selected.length === 0) return;
       this.isScanning = true;
-      this.statusText = `正在导入${selected.length}本书...`;
+      this.statusText = `正在导入${selected.length}个文件...`;
       const result = await LocalBookService.importSelectedFiles(getContext(this), selected);
       this.finishImport(result);
+      CloudAutoSync.schedule(getContext(this));
     } catch (e) {
       console.error('添加本地书籍失败:', e);
       this.statusText = '导入失败，请重新选择文件';
@@ -108,9 +110,12 @@ struct BookImportPage {
 
   finishImport(result: LocalBookScanResult): void {
     const failed = result.failed > 0 ? `，${result.failed}本失败` : '';
-    this.statusText = `导入完成：成功${result.imported}本${failed}`;
+    const duplicated = result.duplicates.length > 0 ? `，${result.duplicates.length}本已在书架` : '';
+    const summary = `导入完成：成功${result.imported}本${duplicated}${failed}`;
+    const details = result.duplicates.map((name: string): string => `已在书架：${name}`).concat(result.failures);
+    this.statusText = summary + (details.length ? `\n${details.join('\n')}` : '');
     AppStorage.setOrCreate('shelfUpdateTime', Date.now());
-    HdsFeedback.showToast(this.statusText);
+    HdsFeedback.showToast(summary);
   }
 
   pageColor(): string {

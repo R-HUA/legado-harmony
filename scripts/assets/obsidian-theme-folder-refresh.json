@@ -1,0 +1,20 @@
+{
+  "tool": "dreamina",
+  "session": 23717120127244,
+  "model": "5.0 (CLI default)",
+  "resolution": "2k",
+  "prompt": "为中文阅读App的曜金藏书主题设计一张书架分组文件夹艺术底图，竖版2:3，全出血，纯深炭黑细纹纸底色，香槟金与象牙白的高端装帧版画风格。画面下方55%是一组横向平放、交错叠放的三本精装藏书，整体斜向右上微微打开，黑色书皮配精细金箔书脊线，清楚的象牙色纸页切口，细微铜版蚀刻排线。一本书上垂下一条宽窄适中的香槟金织带书签，前景左下有两片有机柔美的银杏叶作为烫金纹饰，一片金色一片象牙色，叶脉细致。低浮雕与平面版画结合，构图轻盈开阔，书本必须横躺而非竖立，没有台座，没有包围图案的外框。画面上方40%保持完全干净的深炭黑留白，给App另行放置分组名称。不是电脑办公文件夹图标，不是UI样机，不出现门洞、拱门、墓碑、牌匾、椭圆框、圆形章、王冠、文字、数字、字母、logo、水印。禁止强烈黄色橘色，金箔克制温柔，清晰完整的艺术主体，缩小成手机书架的封面也能辨认藏书和书签。",
+  "submitId": "c5dc20d2-8179-480f-812f-577a7a7a5340",
+  "status": "success",
+  "creditCount": 3,
+  "width": 1664,
+  "height": 2496,
+  "themeId": "obsidian-archive",
+  "revision": 2,
+  "sourceSha256": "de43670bbcf9ad2a05b5535502f551d7d8dbf402edfe94ce5c06ae89d5f032ca",
+  "asset": "entry/src/main/resources/base/media/theme_folder_art_obsidian_archive.jpg",
+  "assetWidth": 450,
+  "assetHeight": 660,
+  "assetSha256": "2d5f3b3516c19f7104e5bc4a19c82110b459ffa3ee47b01eb871b88ede6af24f",
+  "processing": "Centre crop and resize only; JPEG quality 94. Supersedes the original folder artwork."
+}

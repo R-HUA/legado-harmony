@@ -11,6 +11,7 @@ import {
   ThemeRegexEmphasisTokens,
   ThemeVariant
 } from './ThemeModels';
+import { ThemePackRegistry } from './ThemePackRegistry';
 
 export class BuiltinThemeRegistry {
   static readonly DEFAULT_THEME_ID: string = ThemeIds.PLAIN_DEFAULT;
@@ -28,6 +29,11 @@ export class BuiltinThemeRegistry {
     const normalized = (themeId || '').trim();
     if (normalized === ThemeIds.CUSTOM) {
       return BuiltinThemeRegistry.customTheme();
+    }
+    if (ThemePackRegistry.isPackId(normalized)) {
+      // 已安装的主题包按主题使用；包被删掉或还没同步到这台设备时按默认主题显示，ID 不改写。
+      const installed = ThemePackRegistry.get(normalized);
+      if (installed) return BuiltinThemeRegistry.cloneTheme(installed.pack);
     }
     for (const theme of BuiltinThemeRegistry.THEMES) {
       if (theme.id === normalized) {
@@ -47,6 +53,9 @@ export class BuiltinThemeRegistry {
     if (normalized === ThemeIds.CUSTOM) {
       return ThemeIds.CUSTOM;
     }
+    if (ThemePackRegistry.isPackId(normalized)) {
+      return normalized;
+    }
     for (const theme of BuiltinThemeRegistry.THEMES) {
       if (theme.id === normalized) {
         return normalized;
@@ -59,6 +68,9 @@ export class BuiltinThemeRegistry {
     const normalized = (themeId || '').trim();
     if (normalized === ThemeIds.CUSTOM) {
       return true;
+    }
+    if (ThemePackRegistry.isPackId(normalized)) {
+      return ThemePackRegistry.has(normalized);
     }
     for (const theme of BuiltinThemeRegistry.THEMES) {
       if (theme.id === normalized) {
@@ -73,8 +85,12 @@ export class BuiltinThemeRegistry {
     return BuiltinThemeRegistry.has(normalized);
   }
 
+  /** 主题包 ID（pack:<packageId>）原样保留：缺包时由 findById 回退，不把方案里的来源改写掉。 */
   static normalizeBuiltinId(themeId: string): string {
     const normalized = (themeId || '').trim();
+    if (ThemePackRegistry.isPackId(normalized)) {
+      return normalized;
+    }
     for (const theme of BuiltinThemeRegistry.THEMES) {
       if (theme.id === normalized) {
         return normalized;
@@ -132,6 +148,9 @@ export class BuiltinThemeRegistry {
     themes.push(BuiltinThemeRegistry.azureMecha());
     themes.push(BuiltinThemeRegistry.starwishMagic());
     themes.push(BuiltinThemeRegistry.letterpressPage());
+    themes.push(BuiltinThemeRegistry.obsidianArchive());
+    themes.push(BuiltinThemeRegistry.celestialVault());
+    themes.push(BuiltinThemeRegistry.neonHarbor());
     themes.push(BuiltinThemeRegistry.classicBlue());
     themes.push(BuiltinThemeRegistry.warmPaper());
     themes.push(BuiltinThemeRegistry.forestMist());
@@ -150,20 +169,20 @@ export class BuiltinThemeRegistry {
     );
     theme.light = BuiltinThemeRegistry.variant(
       BuiltinThemeRegistry.colors('#F7F7F7', '#FFFFFF', '#F0F0F0', '#202124', '#73777F', '#E2E2E2',
-        '#5B6573', '#505967', '#C93F3F'),
+        '#4A5F7E', '#435673', '#C93F3F'),
       BuiltinThemeRegistry.reader('#FAFAFA', '', '#262626', '#777777', 'light'),
       BuiltinThemeRegistry.regex(ThemeBubbleStyles.CAPSULE, '#E7E9EC', '#34383D')
     );
     theme.dark = BuiltinThemeRegistry.variant(
       BuiltinThemeRegistry.colors('#111111', '#1B1B1B', '#262626', '#F0F0F0', '#A0A0A0', '#343434',
-        '#AAB2BD', '#737D8A', '#E86A6A'),
+        '#9DB1CF', '#62748F', '#E86A6A'),
       BuiltinThemeRegistry.reader('#161616', '', '#E1E1E1', '#9A9A9A', 'dark'),
       BuiltinThemeRegistry.regex(ThemeBubbleStyles.CAPSULE, '#34383D', '#E4E7EB')
     );
     theme.book.coverAssetId = '';
     theme.book.shelfFrameAssetId = '';
     theme.book.shelfFolderAssetId = '';
-    theme.radius = BuiltinThemeRegistry.radius(4, 8, 12, 8, 16, 8);
+    theme.radius = BuiltinThemeRegistry.radius(6, 12, 20, 12, 24, 8);
     theme.readerLayout = BuiltinThemeRegistry.readerLayout(20, 12, 0, 18, 18, 18, 18);
     return theme;
   }
@@ -527,6 +546,67 @@ export class BuiltinThemeRegistry {
     return theme;
   }
 
+  private static neonHarbor(): ThemePack {
+    const theme = BuiltinThemeRegistry.theme(
+      ThemeIds.NEON_HARBOR, '霓港来信',
+      '海风翻动书页，电台捎来晚安。走进三位都市友人的复古动画日常。', 'sans-serif', 'neon-harbor');
+    theme.light = BuiltinThemeRegistry.variant(
+      BuiltinThemeRegistry.colors('#F7F1EA', '#FFFBF5', '#EDE4DF', '#27283D', '#70646D', '#D8CBCB',
+        '#9C4058', '#994057', '#AD3C48'),
+      BuiltinThemeRegistry.reader('#FAF3E9', 'neon-harbor-light', '#303043', '#726571', 'light'),
+      BuiltinThemeRegistry.regex(ThemeBubbleStyles.HARBOR_POSTCARD, '#EEDBD7', '#643244'));
+    theme.dark = BuiltinThemeRegistry.variant(
+      BuiltinThemeRegistry.colors('#131A2C', '#1E263B', '#2A3349', '#F5EADF', '#B9ACB8', '#394359',
+        '#F4A595', '#994057', '#F29A9F'),
+      BuiltinThemeRegistry.reader('#182032', 'neon-harbor-dark', '#E5DFD8', '#B0A7B6', 'dark'),
+      BuiltinThemeRegistry.regex(ThemeBubbleStyles.HARBOR_POSTCARD, '#3B3048', '#FFE5D5'));
+    theme.radius = BuiltinThemeRegistry.radius(4, 8, 16, 10, 18, 4);
+    theme.readerLayout = BuiltinThemeRegistry.readerLayout(20, 14, 8, 24, 24, 24, 24);
+    theme.glass = BuiltinThemeRegistry.glass(18, 14, 92, 88, 44, 22, 12, 3);
+    return theme;
+  }
+
+  private static obsidianArchive(): ThemePack {
+    const theme = BuiltinThemeRegistry.theme(
+      ThemeIds.OBSIDIAN_ARCHIVE, '曜金藏书',
+      '曜黑藏书，香槟描金。献给把阅读珍藏一生的你。', 'serif', 'obsidian-archive');
+    theme.light = BuiltinThemeRegistry.variant(
+      BuiltinThemeRegistry.colors('#F3EFE7', '#FFFCF6', '#EAE3D7', '#242320', '#71685B', '#DCD2C0',
+        '#795A2F', '#75562D', '#A6423C'),
+      BuiltinThemeRegistry.reader('#F5EFE3', 'obsidian-archive-light', '#302C26', '#746B5D', 'light'),
+      BuiltinThemeRegistry.regex(ThemeBubbleStyles.GILDED_ORBIT, '#292620', '#F2DEAE'));
+    theme.dark = BuiltinThemeRegistry.variant(
+      BuiltinThemeRegistry.colors('#121418', '#1D2025', '#272A30', '#EFE7D9', '#B4AA99', '#3A3731',
+        '#D6B878', '#80613C', '#E79086'),
+      BuiltinThemeRegistry.reader('#1C1C1B', 'obsidian-archive-dark', '#DED6C8', '#AEA492', 'dark'),
+      BuiltinThemeRegistry.regex(ThemeBubbleStyles.GILDED_ORBIT, '#463B2A', '#F4E3BF'));
+    theme.radius = BuiltinThemeRegistry.radius(6, 12, 20, 14, 18, 7);
+    theme.readerLayout = BuiltinThemeRegistry.readerLayout(21, 14, 8, 25, 25, 26, 26);
+    theme.glass = BuiltinThemeRegistry.glass(20, 16, 92, 86, 48, 24, 14, 3);
+    return theme;
+  }
+
+  /** 终身超级会员的第二套专属主题：午夜蓝漆面、香槟金浑天仪与星轨，底栏是带选中态的位图图标、不显示文字。 */
+  private static celestialVault(): ThemePack {
+    const theme = BuiltinThemeRegistry.theme(
+      ThemeIds.CELESTIAL_VAULT, '星穹御藏',
+      '午夜蓝穹顶下，香槟金星轨绕着书架缓缓转动。以星为签，此生所读皆珍藏。', 'serif', 'celestial-vault');
+    theme.light = BuiltinThemeRegistry.variant(
+      BuiltinThemeRegistry.colors('#F5F0E5', '#FFFCF5', '#EAE2D0', '#1B2340', '#6E6A60', '#DDD3BF',
+        '#8E6E33', '#1E2A4F', '#A6423C'),
+      BuiltinThemeRegistry.reader('#F6F1E6', 'celestial-vault-light', '#22283A', '#6F6B62', 'light'),
+      BuiltinThemeRegistry.regex(ThemeBubbleStyles.CELESTIAL_ORBIT, '#1E2A4F', '#F1E3BF'));
+    theme.dark = BuiltinThemeRegistry.variant(
+      BuiltinThemeRegistry.colors('#0E1428', '#161E38', '#212A48', '#EFE6D2', '#A7A190', '#2A3352',
+        '#D8BB7A', '#8A6D38', '#E79086'),
+      BuiltinThemeRegistry.reader('#10162A', 'celestial-vault-dark', '#DCD6C8', '#A39D8D', 'dark'),
+      BuiltinThemeRegistry.regex(ThemeBubbleStyles.CELESTIAL_ORBIT, '#2C3866', '#F4E3BF'));
+    theme.radius = BuiltinThemeRegistry.radius(6, 12, 20, 14, 22, 9);
+    theme.readerLayout = BuiltinThemeRegistry.readerLayout(21, 14, 8, 25, 25, 26, 26);
+    theme.glass = BuiltinThemeRegistry.glass(20, 16, 92, 86, 48, 24, 14, 3);
+    return theme;
+  }
+
   private static letterpressPage(): ThemePack {
     const theme = BuiltinThemeRegistry.theme(
       ThemeIds.LETTERPRESS_PAGE,
@@ -692,7 +772,7 @@ export class BuiltinThemeRegistry {
     return glass;
   }
 
-  private static cloneTheme(source: ThemePack): ThemePack {
+  static cloneTheme(source: ThemePack): ThemePack {
     const theme = new ThemePack();
     theme.schemaVersion = source.schemaVersion;
     theme.id = source.id;
@@ -746,7 +826,7 @@ export class BuiltinThemeRegistry {
   }
 
   private static cloneVariant(source: ThemeVariant): ThemeVariant {
-    return BuiltinThemeRegistry.variant(
+    const variant = BuiltinThemeRegistry.variant(
       BuiltinThemeRegistry.colors(source.colors.pageColor, source.colors.cardColor, source.colors.inputColor,
         source.colors.primaryTextColor, source.colors.subTextColor, source.colors.dividerColor,
         source.colors.accentColor, source.colors.buttonColor, source.colors.dangerColor),
@@ -755,5 +835,8 @@ export class BuiltinThemeRegistry {
       BuiltinThemeRegistry.regex(source.regexEmphasis.bubbleStyle, source.regexEmphasis.emphasisColor,
         source.regexEmphasis.emphasisTextColor)
     );
+    variant.reader.backgroundImageFit = source.reader.backgroundImageFit || 'cover';
+    variant.regexEmphasis.emphasisMode = source.regexEmphasis.emphasisMode || ThemeRegexEmphasisModes.BUBBLE;
+    return variant;
   }
 }

@@ -1,15 +1,18 @@
 import { HttpTTS } from '@legado/sourceengine';
 import { TtsVoiceInfo } from '../../account/AccountCommerceModels';
-import { TtsVoiceOption } from '../../utils/SystemTtsReader';
+import { TtsVoiceOption } from '../../utils/TtsVoiceModels';
 import { TtsVoiceCatalog } from '../../utils/TtsVoiceCatalog';
 import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 import { ImmersiveBackButton } from '../ImmersiveBackButton';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { AppSpacing } from '../../theme/AppSpacing';
+import { ReaderMaterialPanel } from './ReaderFloatingMaterialBar';
+import { PlaybackLoudnessGain } from '../../utils/PlaybackLoudnessGain';
+import { LocalTtsModel, LocalTtsModels } from '../../utils/localtts/LocalTtsModels';
 
 /**
- * 阅读设置面板里的"朗读"页：倍速、音色入口、定时、开始/停止。
+ * 阅读设置面板里的"朗读"页：倍速、音量增益、音色入口、定时、开始/停止。
  * 只展示页面传入的朗读状态并把操作回报给页面；画在阅读页的设置面板里，配色用阅读主题。
  */
 @Component
@@ -34,9 +37,23 @@ export struct ReaderTtsQuickSettingsPanel {
   };
   onToggleReading: () => void = (): void => {
   };
+  // 音量增益是进程内的全局设置，直接读写，不经页面转发。
+  @StorageProp('ttsLoudnessGain') ttsLoudnessGain: number = 0;
+  @StorageProp('ttsLoudnessGainSupported') ttsLoudnessGainSupported: boolean = true;
+  /** 拖动滑条时的显示值；-1 表示没在拖。 */
+  @State gainDraft: number = -1;
 
   private chipColor(): string {
     return this.dark ? '#24272D' : '#EEF0F3';
+  }
+
+  private gainShown(): number {
+    return this.gainDraft >= 0 ? this.gainDraft : this.ttsLoudnessGain;
+  }
+
+  private setGain(value: number): void {
+    this.gainDraft = -1;
+    PlaybackLoudnessGain.set(PlaybackLoudnessGain.TTS, value);
   }
 
   build() {
@@ -60,8 +77,7 @@ export struct ReaderTtsQuickSettingsPanel {
           .layoutWeight(1)
           .showTips(true)
           .selectedColor(this.accentColor)
-          .sliderInteractionMode(ImmersiveMaterialRuntime.supportsHds() ?
-            SliderInteraction.SLIDE_AND_CLICK_UP : SliderInteraction.SLIDE_ONLY)
+          .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
           .onChange((value: number) => this.onSpeedChange(value))
         this.stepButton($r('sys.symbol.plus'), '提高朗读倍速', this.speed !== 2, () => {
           this.onSpeedChange(this.speed + 0.1);
@@ -77,6 +93,55 @@ export struct ReaderTtsQuickSettingsPanel {
         this.speedChip(2.0)
       }
       .width('100%')
+
+      Row() {
+        Text('音量增益')
+          .fontSize(AppFontSize.BODY_LARGE)
+          .fontColor(this.textColor)
+          .layoutWeight(1)
+        Text(this.ttsLoudnessGainSupported ? (this.gainShown() > 0 ? `+${this.gainShown()} dB` : '关闭') : '不可用')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.gainShown() > 0 && this.ttsLoudnessGainSupported ? this.accentColor : this.subTextColor)
+      }
+      .width('100%')
+
+      Row({ space: AppSpacing.MD }) {
+        this.stepButton($r('sys.symbol.minus'), '减小音量增益',
+          this.ttsLoudnessGainSupported && this.ttsLoudnessGain > 0, () => {
+            this.setGain(this.ttsLoudnessGain - 1);
+          })
+        Slider({ value: this.gainShown(), min: 0, max: PlaybackLoudnessGain.MAX_DB, step: 1 })
+          .layoutWeight(1)
+          .selectedColor(this.accentColor)
+          .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
+          .enabled(this.ttsLoudnessGainSupported)
+          .accessibilityText('音量增益')
+          .onChange((value: number, mode: SliderChangeMode) => {
+            // 拖动时只改显示，松手才下发。
+            if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+              this.setGain(value);
+            } else {
+              this.gainDraft = Math.round(value);
+            }
+          })
+        this.stepButton($r('sys.symbol.plus'), '增大音量增益',
+          this.ttsLoudnessGainSupported && this.ttsLoudnessGain < PlaybackLoudnessGain.MAX_DB, () => {
+            this.setGain(this.ttsLoudnessGain + 1);
+          })
+      }
+      .width('100%')
+
+      if (!this.ttsLoudnessGainSupported) {
+        Text('当前朗读方式不支持音量增益，可换用其他音色后再试')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.subTextColor)
+          .width('100%')
+      } else if (this.gainShown() > PlaybackLoudnessGain.SAFE_DB) {
+        Text('增益较高，人声可能破音，建议先调大系统音量')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(ThemeRuntime.warningColor(this.dark))
+          .width('100%')
+      }
 
       Row() {
         Text('朗读音色')
@@ -195,6 +260,7 @@ export struct ReaderTtsQuickSettingsPanel {
  */
 @Component
 export struct ReaderTtsVoicePickerPanel {
+  @Prop localVoices: LocalTtsModel[] = [];
   @Prop cloudVoices: TtsVoiceInfo[] = [];
   @Prop customVoices: HttpTTS[] = [];
   @Prop systemVoices: TtsVoiceOption[] = [];
@@ -212,6 +278,8 @@ export struct ReaderTtsVoicePickerPanel {
   @Prop panelHeight: number = 480;
   onClose: () => void = (): void => {
   };
+  onSelectLocalVoice: (voice: LocalTtsModel) => void = (_voice: LocalTtsModel): void => {
+  };
   onSelectCloudVoice: (voice: TtsVoiceInfo) => void = (_voice: TtsVoiceInfo): void => {
   };
   onSelectCustomVoice: (voice: HttpTTS) => void = (_voice: HttpTTS): void => {
@@ -220,6 +288,19 @@ export struct ReaderTtsVoicePickerPanel {
   };
 
   build() {
+    ReaderMaterialPanel({
+      panelWidth: this.panelWidth,
+      panelHeight: this.panelHeight,
+      cornerRadius: 28,
+      darkMode: this.dark,
+      fallbackColor: this.panelColor
+    }) {
+      this.panelBody()
+    }
+  }
+
+  @Builder
+  panelBody() {
     Column() {
       Row() {
         Text('朗读音色')
@@ -251,6 +332,14 @@ export struct ReaderTtsVoicePickerPanel {
 
       Scroll() {
         Column() {
+          if (this.localVoices.length > 0) {
+            this.sectionTitle('离线音色')
+            ForEach(this.localVoices, (voice: LocalTtsModel) => {
+              this.option(LocalTtsModels.voiceTitle(voice),
+                LocalTtsModels.voiceKey(voice) === this.selectedKey, () => this.onSelectLocalVoice(voice))
+            }, (voice: LocalTtsModel) => LocalTtsModels.voiceKey(voice))
+          }
+
           if (this.cloudVoices.length > 0) {
             this.sectionTitle('云端音色')
             ForEach(this.cloudVoices, (voice: TtsVoiceInfo) => {
@@ -284,19 +373,9 @@ export struct ReaderTtsVoicePickerPanel {
       .scrollBar(BarState.Auto)
       .scrollBarColor(this.dark ? '#668A8F98' : '#667A6F63')
     }
-    .width(this.panelWidth)
-    .height(this.panelHeight)
-    .borderRadius(ThemeRuntime.glassCornerRadius(28, 'panel'))
+    .width('100%')
+    .height('100%')
     .clip(true)
-    .backgroundColor(this.panelColor)
-    .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-    .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: this.panelBorderColor })
-    .shadow({
-      radius: ThemeRuntime.glassShadowRadius('panel'),
-      color: this.panelShadowColor,
-      offsetX: ThemeRuntime.glassShadowOffsetX('panel'),
-      offsetY: ThemeRuntime.glassShadowOffsetY('panel')
-    })
   }
 
   @Builder

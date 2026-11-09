@@ -1,13 +1,20 @@
 import { common } from '@kit.AbilityKit';
 import image from '@ohos.multimedia.image';
+import { router } from '@kit.ArkUI';
 import { HdsFeedback } from '../../utils/HdsFeedback';
+import { ReaderImageMarker } from '../book/ReaderImageMarker';
+import { ReaderImageResults } from '../book/ReaderImageResults';
 import { ReaderComicImageExport, ReaderComicSnapshotProvider } from './ReaderComicImageExport';
+import { ComicTextRequests } from './ComicTextRequests';
+import { ComicColorizer } from '@legado/aiengine';
 
 /** 阅读页为漫画图片操作提供的环境。 */
 export interface ReaderComicImageActionsHost {
   uiContext: () => UIContext;
   abilityContext: () => common.UIAbilityContext;
   accentColor: () => string;
+  /** Return true when the reader handled in-place coloring; otherwise use the standalone page. */
+  colorPage?: (source: string) => boolean;
   /** 本地导入的书：图片不会过期，不自动刷新。 */
   isLocalBook: () => boolean;
   currentChapter: () => number;
@@ -38,21 +45,58 @@ export class ReaderComicImageActions {
     this.refreshedChapters.clear();
   }
 
-  async showMenu(source: string, reload: () => void, snapshotId: string): Promise<void> {
+  async showMenu(markerSource: string, reload: () => void, snapshotId: string): Promise<void> {
+    let source = markerSource;
+    const pendingRaw = ReaderImageMarker.pendingRaw(source);
+    if (pendingRaw) {
+      // 渐进加载的图片按处理结果操作；还没处理好时没有可保存的内容。
+      source = ReaderImageResults.current(pendingRaw);
+      if (!source) {
+        HdsFeedback.showToast('图片还在加载');
+        return;
+      }
+    }
     if (!source) return;
+    const failure = ReaderImageMarker.failureReason(source);
+    if (failure) {
+      // 获取正文时就没拿到这张图，没有可保存的内容；只能重新抓取本章。
+      try {
+        await this.host.uiContext().getPromptAction().showActionMenu({
+          title: failure.length > 60 ? `${failure.substring(0, 60)}…` : failure,
+          buttons: [{ text: '刷新本章', color: this.host.accentColor() }]
+        });
+      } catch (_) {
+        return;
+      }
+      if (!this.host.busy()) this.host.refreshCurrentChapter();
+      return;
+    }
     const snapshot: ReaderComicSnapshotProvider | null = snapshotId ?
       (): Promise<image.PixelMap> => this.host.uiContext().getComponentSnapshot().get(snapshotId) : null;
     let index = -1;
     try {
       const color = this.host.accentColor();
-      const result = await this.host.uiContext().getPromptAction().showActionMenu({
-        title: '图片',
-        buttons: [
-          { text: '保存到相册', color: color },
-          { text: '分享', color: color },
-          { text: '重新加载', color: color }
-        ]
-      });
+      // 本构建不包含漫画 AI 着色（ComicColorizer.supported() 为 false），菜单不显示这一项；索引 0-3 不变。
+      const result = ComicColorizer.supported() ?
+        await this.host.uiContext().getPromptAction().showActionMenu({
+          title: '图片',
+          buttons: [
+            { text: '保存到相册', color: color },
+            { text: '分享', color: color },
+            { text: '重新加载', color: color },
+            { text: '查看本页文字', color: color },
+            { text: '本页着色（会员）', color: color }
+          ]
+        }) :
+        await this.host.uiContext().getPromptAction().showActionMenu({
+          title: '图片',
+          buttons: [
+            { text: '保存到相册', color: color },
+            { text: '分享', color: color },
+            { text: '重新加载', color: color },
+            { text: '查看本页文字', color: color }
+          ]
+        });
       index = result.index;
     } catch (_) {
       // 点空白处取消。
@@ -60,6 +104,18 @@ export class ReaderComicImageActions {
     }
     if (index === 2) {
       reload();
+      return;
+    }
+    if (index === 3 || index === 4) {
+      if (index === 4 && this.host.colorPage?.(source)) return;
+      const requestId = ComicTextRequests.put(source);
+      try {
+        await router.pushUrl({ url: index === 4 ? 'pages/ComicColor' : 'pages/ComicText',
+          params: { requestId: requestId } });
+      } catch (_) {
+        ComicTextRequests.take(requestId);
+        HdsFeedback.showToast(index === 4 ? '无法打开本页着色，请重试' : '无法打开文字识别，请重试');
+      }
       return;
     }
     try {

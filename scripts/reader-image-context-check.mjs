@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 // 阅读器正文图片与隐藏抓取宿主的离线回归。
 //
 // 运行：node scripts/reader-image-context-check.mjs
@@ -66,8 +67,24 @@ const { ComicImagePipeline } = evaluate('core/book/ComicImagePipeline.ts', ['Com
   AppStorage: { get: () => cacheRoot, setOrCreate() {} },
   fs: fsStub,
   util: { TextEncoder: class { encodeInto(value) { return new Uint8Array(Array.from(value, c => c.charCodeAt(0))); } } },
-  cryptoFramework: {}
+  cryptoFramework: {},
+  // Reader image cache layer (upstream): files are committed through ReaderImageCache.
+  ReaderImageCache: {
+    directory: () => cacheRoot + '/comic_images',
+    exists: path => written.has(path) && written.get(path) !== null,
+    async registerExisting() {},
+    async commit(path, bytes) { written.set(path, new Uint8Array(bytes)); }
+  },
+  ReaderCacheBudget: { touchComicFile() {}, noteComicWrite() {} },
+  digestHashHex: (_algorithm, value) => createHash('sha256').update(String(value)).digest('hex'),
+  NativeSourceSpec: { unpack: () => null, validate: () => [] },
+  NativeSourceCrypto: {}, NativeImageScriptRunner: {},
+  SourceImageDecoder: { isImage: bytes => bytes.length > 4 && bytes[0] === 0x89 && bytes[1] === 0x50 },
+  HttpClient: { CANCELLED_ERROR: 'cancelled' }
 });
+// materialize(http, source, raw, forceLocal, cancelled, index, timing, context)
+const materializeWith = (http, source, raw, context) =>
+  ComicImagePipeline.materialize(http, source, raw, false, () => false, 0, null, context);
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0, 0, 0, 0, 0]);
 const CHALLENGE_HTML = new Uint8Array(Buffer.from('<!DOCTYPE html><title>Attention Required! | Cloudflare</title>' +
@@ -138,7 +155,7 @@ const illustration = 'https://img3.readpai.com/3/3765/196481/218745.jpg';
 {
   const http = httpStub(() => ({ success: true, statusCode: 200, data: PNG_BYTES, headers: {} }));
   const context = ComicImagePipeline.contextFromSource(linovelib, chapterUrl);
-  const path = await ComicImagePipeline.materialize(http, linovelib, illustration, context);
+  const path = await materializeWith(http, linovelib, illustration, context);
   assert.ok(path.startsWith(cacheRoot + '/comic_images/'), `应返回缓存文件路径：${path}`);
   assert.equal(http.calls.length, 1, '首次必须真正下载');
   const request = http.calls[0].request;
@@ -149,7 +166,7 @@ const illustration = 'https://img3.readpai.com/3/3765/196481/218745.jpg';
   assert.ok(/^image\//.test(headerOf(request, 'Accept')), '图片请求应声明图片 Accept');
   assert.equal(headerOf(request, 'Cookie'), '', '书源 Cookie 不得随图片请求发给第三方图片站');
   assert.ok(written.get(path) && written.get(path).length === PNG_BYTES.length, '缓存文件必须写入完整字节');
-  const again = await ComicImagePipeline.materialize(http, linovelib, illustration, context);
+  const again = await materializeWith(http, linovelib, illustration, context);
   assert.equal(again, path);
   assert.equal(http.calls.length, 1, '命中缓存后不得再次下载');
 }
@@ -162,7 +179,7 @@ const illustration = 'https://img3.readpai.com/3/3765/196481/218745.jpg';
   const challenged = 'https://img3.readpai.com/3/3765/196481/218746.jpg';
   const before = written.size;
   warnings.length = 0;
-  assert.equal(await ComicImagePipeline.materialize(http, linovelib, challenged, context), challenged,
+  assert.equal(await materializeWith(http, linovelib, challenged, context), challenged,
     '下载失败必须回退到原始地址');
   assert.equal(written.size, before, '挑战页字节不得写入图片缓存');
   assert.ok(warnings.some(line => line.includes('图片下载失败') && line.includes('403')),
@@ -175,7 +192,7 @@ const illustration = 'https://img3.readpai.com/3/3765/196481/218745.jpg';
   const context = ComicImagePipeline.contextFromSource(linovelib, chapterUrl);
   const other = 'https://img3.readpai.com/3/3765/196481/218799.jpg';
   warnings.length = 0;
-  assert.equal(await ComicImagePipeline.materialize(http, linovelib, other, context), other);
+  assert.equal(await materializeWith(http, linovelib, other, context), other);
   assert.ok(warnings.some(line => line.includes('不是图片')), 'HTTP 200 的挑战页必须被识别为非图片');
 }
 
@@ -183,7 +200,7 @@ const illustration = 'https://img3.readpai.com/3/3765/196481/218745.jpg';
 {
   const http = httpStub(() => ({ success: true, statusCode: 200, data: PNG_BYTES, headers: {} }));
   const plain = { bookSourceUrl: 'https://example.test/', header: '', contentRule: {} };
-  assert.equal(await ComicImagePipeline.materialize(http, plain, illustration,
+  assert.equal(await materializeWith(http, plain, illustration,
     ComicImagePipeline.contextFromSource(plain, chapterUrl)), illustration);
   assert.equal(http.calls.length, 0, '普通书源的图片不得被强制下载');
 }
@@ -203,7 +220,10 @@ function fakeController(name) {
     stop() {},
     // 稳定的 DOM 快照：inspect 连续两次读到同一签名后才认为页面加载完成。
     runJavaScript() {
-      return Promise.resolve(JSON.stringify({ url: 'https://example.test/page.html', title: '示例',
+      // The snapshot reports the document this host navigated to last (the runtime rejects a
+      // snapshot whose URL differs from the pending navigation).
+      const current = (this.loaded[this.loaded.length - 1] || 'https://example.test/page.html').replace(/^POST /, '');
+      return Promise.resolve(JSON.stringify({ url: current, title: '示例',
         ready: 'complete', html: '<html><body>正文</body></html>' }));
     }
   };
@@ -314,7 +334,13 @@ const coverFs = {
   async open(path) { coverFiles.set(path, null); return { fd: path }; },
   async write(fd, buffer) { coverFiles.set(fd, new Uint8Array(buffer)); return buffer.byteLength; },
   async close() {},
-  async stat(path) { if (!coverFiles.has(path) || coverFiles.get(path) === null) throw new Error('ENOENT'); },
+  async stat(path) { return coverFs.statSync(path); },
+  statSync(path) {
+    if (!coverFiles.has(path) || coverFiles.get(path) === null) throw new Error('ENOENT');
+    return { size: coverFiles.get(path).byteLength };
+  },
+  async rename(from, to) { coverFiles.set(to, coverFiles.get(from)); coverFiles.delete(from); },
+  async unlink(path) { if (!coverFiles.has(path)) throw new Error('ENOENT'); coverFiles.delete(path); },
   async mkdir() {},
   async copy() {},
   accessSync(path) {
@@ -354,6 +380,9 @@ const coverBindings = {
     })
   },
   CoverUrlNormalizer: { downloadCandidates: (url) => [url] },
+  SourceCoverUrl: { isEncoded: () => false },
+  HttpClient: class {},
+  SourceCoverLoader: {},
   AppDatabase: {
     getInstance: () => ({
       async getBookSource(origin) {

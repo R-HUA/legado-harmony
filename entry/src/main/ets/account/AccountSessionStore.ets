@@ -1,13 +1,17 @@
 import { Context } from '@kit.AbilityKit';
 import preferences from '@ohos.data.preferences';
+import { readStatsTracker } from '../core/stats/ReadStatsTracker';
 import {
   AccountSnapshot,
   HuaweiLoginResponse,
   ThemeEntitlement
 } from './AccountCommerceModels';
+import { SuperExclusiveThemes } from '../theme/ThemeModels';
+import { AccountCommerceConfig } from './AccountCommerceConfig';
 
 export class AccountSessionStore {
   static readonly STORAGE_LOGGED_IN: string = 'accountLoggedIn';
+  static readonly STORAGE_USER_ID: string = 'accountUserId';
   static readonly STORAGE_DISPLAY_NAME: string = 'accountDisplayName';
   static readonly STORAGE_AVATAR_URL: string = 'accountAvatarUrl';
   static readonly STORAGE_POINTS: string = 'accountPoints';
@@ -114,8 +118,50 @@ export class AccountSessionStore {
   }
 
   static hasValidEntitlement(themeId: string, now: number = Date.now()): boolean {
+    return AccountSessionStore.hasOwnedEntitlement(themeId, now) ||
+      AccountSessionStore.hasMemberThemeAccess(themeId, now);
+  }
+
+  /** 当前有效会员档位；未登录、欠款暂停或按服务端时间推算已到期时为空。 */
+  static activeMembershipSku(now: number = Date.now()): string {
+    const account = AccountSessionStore.snapshot;
+    const membership = account.membership;
+    if (!AccountSessionStore.isLoggedIn() || !membership?.active || membership.restricted ||
+      account.iapDebtPoints > 0 || !membership.state) {
+      return '';
+    }
+    const elapsed = Math.max(0, now - account.memberVerifiedAt);
+    const expiresAt = membership.state.expiresAt;
+    return expiresAt === null || expiresAt > membership.serverNow + elapsed ?
+      (membership.tierSku || membership.state.sku) : '';
+  }
+
+  /** Owned themes; the exclusive annual grants additionally require super membership. */
+  static hasOwnedEntitlement(themeId: string, now: number = Date.now()): boolean {
+    if (AccountCommerceConfig.localUnlocked()) return true;
     const entitlement = AccountSessionStore.entitlement(themeId);
+    if (SuperExclusiveThemes.has(themeId)) {
+      const account = AccountSessionStore.snapshot;
+      const elapsed = now - account.memberVerifiedAt;
+      if (AccountSessionStore.activeMembershipSku(now) !== 'SUPER_LIFETIME' || elapsed < 0 || !account.membership) return false;
+      return entitlement !== null && entitlement.expiresAt > account.membership.serverNow + elapsed;
+    }
     return entitlement !== null && entitlement.expiresAt > now;
+  }
+
+  static hasMemberThemeAccess(themeId: string, now: number = Date.now()): boolean {
+    // These themes require an explicit annual claim, never the general member theme library.
+    if (SuperExclusiveThemes.has(themeId) || AccountCommerceConfig.localUnlocked()) return false;
+    const account = AccountSessionStore.snapshot;
+    const membership = account.membership;
+    const elapsed = now - account.memberVerifiedAt;
+    if (!AccountSessionStore.isLoggedIn() || !membership?.active || membership.restricted ||
+      account.iapDebtPoints > 0 || !membership.state || elapsed < 0 || elapsed > 72 * 60 * 60 * 1000) {
+      return false;
+    }
+    const serverNow = membership.serverNow + elapsed;
+    return (membership.state.expiresAt === null || membership.state.expiresAt > serverNow) &&
+      account.memberThemeIds.includes(themeId);
   }
 
   private static async persist(context: Context): Promise<void> {
@@ -126,8 +172,16 @@ export class AccountSessionStore {
   }
 
   private static applyToStorage(): void {
+    readStatsTracker.setOwnerId(AccountSessionStore.isLoggedIn() ? AccountSessionStore.snapshot.userId : '');
+    AppStorage.setOrCreate(AccountSessionStore.STORAGE_USER_ID,
+      AccountSessionStore.isLoggedIn() ? AccountSessionStore.snapshot.userId : '');
     AccountSessionStore.initializeStorage();
     AppStorage.setOrCreate(AccountSessionStore.STORAGE_LOGGED_IN, AccountSessionStore.isLoggedIn());
+    const membershipSku = AccountSessionStore.activeMembershipSku();
+    AppStorage.setOrCreate('accountMembershipSku', membershipSku);
+    // 0 表示永久；未开通时同样为 0，需结合档位判断。
+    AppStorage.setOrCreate('accountMembershipExpiresAt',
+      membershipSku ? AccountSessionStore.snapshot.membership?.state?.expiresAt ?? 0 : 0);
     AppStorage.setOrCreate(AccountSessionStore.STORAGE_DISPLAY_NAME,
       AccountSessionStore.isLoggedIn() ? AccountSessionStore.snapshot.displayName : '');
     AppStorage.setOrCreate(AccountSessionStore.STORAGE_AVATAR_URL,
@@ -166,6 +220,9 @@ export class AccountSessionStore {
     result.promoPoints = Math.max(0, Math.floor(Number(source.promoPoints) || 0));
     result.iapDebtPoints = Math.max(0, Math.floor(Number(source.iapDebtPoints) || 0));
     result.welcomeGranted = source.welcomeGranted === true;
+    result.membership = source.membership || null;
+    result.memberThemeIds = source.memberThemeIds || [];
+    result.memberVerifiedAt = Number(source.memberVerifiedAt) || 0;
     result.entitlements = [];
     if (source.entitlements) {
       for (const item of source.entitlements) {

@@ -20,6 +20,50 @@ export class ReaderImageMarker {
     return `${ReaderImageMarker.PREFIX}${encodeURIComponent(value)}${size}${ReaderImageMarker.SUFFIX}`;
   }
 
+  /**
+   * 下载或解密失败的图片：来源写成这个前缀加失败原因，阅读器显示原因而不是去加载它。
+   * 只出现在内存里的章节正文中，带有它的章节不写入正文缓存，下次打开会重新获取。
+   */
+  static readonly FAILURE_SCHEME: string = 'legado-image-error:';
+
+  static failureSource(reason: string): string {
+    return `${ReaderImageMarker.FAILURE_SCHEME}${(reason || '图片加载失败').trim()}`;
+  }
+
+  /** 失败图片的原因；不是失败图片时为空串。 */
+  static failureReason(source: string): string {
+    const value = source || '';
+    return value.startsWith(ReaderImageMarker.FAILURE_SCHEME) ?
+      (value.substring(ReaderImageMarker.FAILURE_SCHEME.length) || '图片加载失败') : '';
+  }
+
+  static hasFailure(text: string): boolean {
+    return (text || '').includes(
+      `${ReaderImageMarker.PREFIX}${encodeURIComponent(ReaderImageMarker.FAILURE_SCHEME)}`);
+  }
+
+  /**
+   * 渐进加载中还没处理好的图片：来源写成这个前缀加原始图片值，阅读器按原始值等 ReaderImageResults 给出结果。
+   * 同样只出现在内存里的章节正文中，整章图片都有结果后才把换成本地路径的正文写入缓存。
+   */
+  static readonly PENDING_SCHEME: string = 'legado-image-pending:';
+
+  static pendingSource(raw: string): string {
+    return `${ReaderImageMarker.PENDING_SCHEME}${raw || ''}`;
+  }
+
+  /** 待加载图片的原始图片值；不是待加载图片时为空串。 */
+  static pendingRaw(source: string): string {
+    const value = source || '';
+    return value.startsWith(ReaderImageMarker.PENDING_SCHEME) ?
+      value.substring(ReaderImageMarker.PENDING_SCHEME.length) : '';
+  }
+
+  static hasPending(text: string): boolean {
+    return (text || '').includes(
+      `${ReaderImageMarker.PREFIX}${encodeURIComponent(ReaderImageMarker.PENDING_SCHEME)}`);
+  }
+
   static isMarker(value: string): boolean {
     const text = (value || '').trim();
     return text.startsWith(ReaderImageMarker.PREFIX) && text.endsWith(ReaderImageMarker.SUFFIX);

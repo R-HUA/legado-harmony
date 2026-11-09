@@ -1,6 +1,7 @@
 import { audio } from '@kit.AudioKit';
 import deviceInfo from '@ohos.deviceInfo';
 import { TtsAudioSession } from './TtsAudioSession';
+import { PlaybackLoudnessGain } from './PlaybackLoudnessGain';
 import { sleepMs } from '@legado/sourceengine';
 
 interface PcmPlaybackMark {
@@ -48,6 +49,10 @@ export class TtsPcmAudioPlayer {
   private pendingWriteBytes: number = 0;
   private paused: boolean = false;
   private systemInterrupted: boolean = false;
+  private interruptResumeAllowed: boolean = false;
+  private interruptRevision: number = 0;
+  private interruptResumeRevision: number = -1;
+  private interruptPausePromise: Promise<void> = Promise.resolve();
   private systemDucked: boolean = false;
   private resumeWaiters: Array<() => void> = [];
   private playbackWaiters: Array<() => void> = [];
@@ -150,6 +155,16 @@ export class TtsPcmAudioPlayer {
       return;
     }
     this.playbackMarks.push({ frame, callback });
+  }
+
+  /** Wait for the audible boundary without draining/restarting the renderer between TTS segments. */
+  async waitForSegmentEnd(): Promise<void> {
+    const generation = this.playGeneration;
+    await this.writeChain;
+    await this.waitUntilResumed();
+    const renderer = this.renderer;
+    if (!renderer || generation !== this.playGeneration) return;
+    await this.waitUntilPlaybackFrameReached(this.queuedContentEndFrame, renderer, generation);
   }
 
   async drain(): Promise<void> {
@@ -269,6 +284,8 @@ export class TtsPcmAudioPlayer {
   }
 
   async pause(): Promise<void> {
+    this.interruptRevision++;
+    this.interruptResumeAllowed = false;
     if (this.paused) {
       return;
     }
@@ -292,12 +309,16 @@ export class TtsPcmAudioPlayer {
   }
 
   async resume(): Promise<void> {
-    if (!this.paused) {
+    if (!this.paused && !this.systemInterrupted) {
       return;
     }
     this.paused = false;
     this.systemInterrupted = false;
+    this.interruptResumeAllowed = false;
     this.systemDucked = false;
+    const revision = ++this.interruptRevision;
+    await this.interruptPausePromise;
+    if (revision !== this.interruptRevision || this.paused || this.systemInterrupted) return;
     const renderer = this.renderer;
     const generation = this.playGeneration;
     if (renderer && renderer.state !== audio.AudioState.STATE_RUNNING &&
@@ -305,8 +326,13 @@ export class TtsPcmAudioPlayer {
       let rendererResumed = false;
       try {
         await TtsAudioSession.acquire(this.audioSessionOwner);
+        if (renderer !== this.renderer || revision !== this.interruptRevision || this.paused ||
+          this.systemInterrupted) return;
         await renderer.setVolume(1);
+        if (renderer !== this.renderer || revision !== this.interruptRevision || this.paused ||
+          this.systemInterrupted) return;
         await renderer.start();
+        if (await this.pauseRendererIfInterrupted(renderer)) return;
         rendererResumed = true;
       } catch (error) {
         console.warn('[TTS] resume pcm renderer failed:', error);
@@ -330,6 +356,8 @@ export class TtsPcmAudioPlayer {
 
   stop(): void {
     this.playGeneration++;
+    this.interruptRevision++;
+    this.interruptResumeAllowed = false;
     this.paused = false;
     this.systemInterrupted = false;
     this.systemDucked = false;
@@ -403,7 +431,12 @@ export class TtsPcmAudioPlayer {
         return;
       }
       await renderer.setVolume(1);
-      await renderer.start();
+      PlaybackLoudnessGain.markSupported(PlaybackLoudnessGain.TTS, true);
+      if (!this.paused && !this.systemInterrupted && generation === this.playGeneration &&
+        renderer === this.renderer) {
+        await renderer.start();
+        await this.pauseRendererIfInterrupted(renderer);
+      }
     }
     if (generation !== this.playGeneration) {
       await this.releaseStaleRenderer(renderer);
@@ -436,6 +469,13 @@ export class TtsPcmAudioPlayer {
       };
       this.playbackWaiters.push(check);
     });
+  }
+
+  private async pauseRendererIfInterrupted(renderer: audio.AudioRenderer): Promise<boolean> {
+    if (renderer !== this.renderer) return true;
+    if (!this.paused && !this.systemInterrupted) return false;
+    if (renderer.state === audio.AudioState.STATE_RUNNING) await renderer.pause();
+    return true;
   }
 
   private resolvePlaybackWaiters(): void {
@@ -657,6 +697,7 @@ export class TtsPcmAudioPlayer {
     this.rendererWriteCallback = writeCallback;
     this.rendererInterruptCallback = interruptCallback;
     this.renderer = renderer;
+    PlaybackLoudnessGain.trackRenderer(renderer);
     console.info(`[TTS] audio renderer created: ${this.debugState()}`);
     return renderer;
   }
@@ -664,6 +705,7 @@ export class TtsPcmAudioPlayer {
   private async releaseRenderer(renderer: audio.AudioRenderer,
     writeCallback: audio.AudioRendererWriteDataCallback | null,
     interruptCallback: ((event: audio.InterruptEvent) => void) | null): Promise<void> {
+    PlaybackLoudnessGain.untrackRenderer(renderer);
     if (writeCallback) {
       try {
         renderer.off('writeData', writeCallback);
@@ -717,33 +759,53 @@ export class TtsPcmAudioPlayer {
     }
     if (hint === audio.InterruptHint.INTERRUPT_HINT_PAUSE ||
       hint === audio.InterruptHint.INTERRUPT_HINT_STOP) {
-      if (event.forceType === audio.InterruptForceType.INTERRUPT_SHARE) {
-        // STREAM_USAGE_AUDIOBOOK is allowed to continue while the screen is
-        // locked. A shared hint is advisory; pausing here caused the observed
-        // lock-screen pause/unlock resume cycle.
-        console.info('[TTS] ignore shared pause/stop interrupt for audiobook playback');
-        return;
-      }
-      this.systemInterrupted = true;
+      this.interruptRevision++;
+      this.interruptResumeAllowed = hint === audio.InterruptHint.INTERRUPT_HINT_PAUSE && !this.paused;
       this.updatePlaybackTimeline(this.playGeneration);
+      this.systemInterrupted = true;
+      if (hint === audio.InterruptHint.INTERRUPT_HINT_STOP) this.paused = true;
+      this.updatePlaybackTimeline(this.playGeneration);
+      // SHARE requires the application to pause. FORCE has already paused/stopped the renderer.
+      if (event.forceType === audio.InterruptForceType.INTERRUPT_SHARE &&
+        renderer.state === audio.AudioState.STATE_RUNNING) {
+        this.interruptPausePromise = renderer.pause().catch((error: Error) => {
+          console.warn('[TTS] pcm interrupt pause failed:', error);
+        });
+      }
       return;
     }
     if (hint === audio.InterruptHint.INTERRUPT_HINT_RESUME) {
-      this.systemInterrupted = false;
-      this.systemDucked = false;
-      this.resumeRendererAfterInterrupt(renderer);
+      if (!this.systemInterrupted || !this.interruptResumeAllowed || this.paused) return;
+      const revision = this.interruptRevision;
+      if (this.interruptResumeRevision === revision) return;
+      this.interruptResumeRevision = revision;
+      this.resumeRendererAfterInterrupt(renderer, revision);
     }
   }
 
-  private async resumeRendererAfterInterrupt(renderer: audio.AudioRenderer): Promise<void> {
-    if (renderer !== this.renderer || this.paused) {
+  private async resumeRendererAfterInterrupt(renderer: audio.AudioRenderer, revision: number): Promise<void> {
+    await this.interruptPausePromise;
+    if (renderer !== this.renderer || revision !== this.interruptRevision || this.paused ||
+      !this.systemInterrupted || !this.interruptResumeAllowed) {
       return;
     }
     try {
       await renderer.setVolume(1);
+      if (renderer !== this.renderer || revision !== this.interruptRevision || this.paused ||
+        !this.interruptResumeAllowed) return;
       if (renderer.state !== audio.AudioState.STATE_RUNNING) {
         await renderer.start();
       }
+      if (renderer !== this.renderer) return;
+      if (revision !== this.interruptRevision || this.paused || !this.interruptResumeAllowed) {
+        if ((this.paused || this.systemInterrupted) && renderer.state === audio.AudioState.STATE_RUNNING) {
+          await renderer.pause();
+        }
+        return;
+      }
+      this.systemInterrupted = false;
+      this.interruptResumeAllowed = false;
+      this.systemDucked = false;
       if (renderer === this.renderer && renderer.state === audio.AudioState.STATE_RUNNING) {
         this.rendererFrameOrigin = -1;
         this.rendererLogicalFrameOrigin = this.lastReachedFrame;
@@ -754,11 +816,13 @@ export class TtsPcmAudioPlayer {
       }
     } catch (error) {
       console.warn('[TTS] resume interrupted pcm renderer failed:', error);
+    } finally {
+      if (this.interruptResumeRevision === revision) this.interruptResumeRevision = -1;
     }
   }
 
   private handleRendererWriteData(data: ArrayBuffer): audio.AudioDataCallbackResult {
-    if (!data || data.byteLength === 0 || this.pendingWrites.length === 0) {
+    if (this.paused || this.systemInterrupted || !data || data.byteLength === 0 || this.pendingWrites.length === 0) {
       return audio.AudioDataCallbackResult.INVALID;
     }
     const output = new Uint8Array(data);

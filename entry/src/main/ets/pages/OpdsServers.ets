@@ -10,15 +10,24 @@ import { OpdsClient } from '../opds/OpdsClient';
 import { OpdsError } from '../opds/OpdsError';
 import { OpdsKavita } from '../opds/OpdsKavita';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { ListDissolve } from '../utils/ListDissolve';
+import { DeleteParticleBurst, DeleteParticleLayer } from '../components/common/DeleteParticles';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 import { AdaptiveSwitch } from '../components/AdaptiveSwitch';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
+import { CollapsingHeader } from '../utils/CollapsingHeader';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
+import { ImmersiveMaterialSurface } from '../components/ImmersiveMaterialSurface';
+import { PopupMenuAction } from '../components/common/PopupMenuAction';
 
 @Entry
 @Component
 struct OpdsServersPage {
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @State headerCollapse: number = 0;
+  private headerScroller: Scroller = new Scroller();
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
@@ -27,6 +36,9 @@ struct OpdsServersPage {
   @StorageProp('navBarHeight') navBarHeight: number = 0;
 
   @State servers: OpdsServerConfig[] = [];
+  /** 正在消散的条目 id，见 ListDissolve。 */
+  @State dissolvingIds: string[] = [];
+  @State deleteParticleBursts: DeleteParticleBurst[] = [];
   @State busy: boolean = false;
   @State busyText: string = '';
   @State busyProgress: number = 0;
@@ -65,13 +77,20 @@ struct OpdsServersPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      PageScaffold({ title: 'OPDS 书库', scrollable: false, content: () => {
+      PageScaffold({ title: 'OPDS 书库', scrollable: false, externalCollapse: this.headerCollapse, content: () => {
         this.pageContent()
       } })
 
-      if (this.showServerActionMenu) {
-        this.serverActionMenu()
-      }
+      Column()
+        .width(1)
+        .height(1)
+        .position({ x: this.contextMenuX, y: this.contextMenuY })
+        .hitTestBehavior(HitTestMode.None)
+        .bindPopup(this.showServerActionMenu, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
+          this.serverActionMenu()
+        }, Placement.BottomLeft, this.appDarkMode, this.accentColor(), () => {
+          this.showServerActionMenu = false;
+        }))
 
       if (!this.showServerActionMenu && !this.showServerEditorDialog && !this.busy) {
         Stack({ alignContent: Alignment.BottomEnd }) {
@@ -98,7 +117,12 @@ struct OpdsServersPage {
         .shadow({ radius: 18, color: this.appDarkMode ? '#66000000' : '#28000000' })
         .position({ x: '11%', y: '42%' })
       }
+
+      if (this.deleteParticleBursts.length > 0) {
+        DeleteParticleLayer({ bursts: this.deleteParticleBursts })
+      }
     }
+    .id('opds_servers_root')
     .width('100%')
     .height('100%')
     .backgroundColor(this.pageColor())
@@ -113,22 +137,27 @@ struct OpdsServersPage {
 
   @Builder
   addServerFloatingButton() {
-    Button({ type: ButtonType.Circle, stateEffect: true }) {
-      SymbolGlyph($r('sys.symbol.plus'))
-        .fontSize(25)
-        .fontColor([this.accentColor()])
+    Stack() {
+      ImmersiveMaterialSurface({
+        surfaceWidth: 52,
+        surfaceHeight: 52,
+        darkMode: this.appDarkMode,
+        fallbackColor: this.cardColor(),
+        glowColor: `#40${this.accentColor().substring(1)}`
+      }) {
+        SymbolGlyph($r('sys.symbol.plus'))
+          .fontSize(25)
+          .fontColor([this.accentColor()])
+      }
     }
     .width(52)
     .height(52)
     .margin({ right: AppSpacing.XXL, bottom: this.navBarHeight + 22 })
-    .backgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode, this.cardColor(), 'button'))
-    .backdropBlur(ThemeRuntime.glassBlur('button', 12))
-    .border({ width: ThemeRuntime.glassBorderWidth('button'), color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'button') })
-    .shadow({ radius: ThemeRuntime.glassShadowRadius('button'), color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'button'), offsetX: ThemeRuntime.glassShadowOffsetX('button'), offsetY: ThemeRuntime.glassShadowOffsetY('button') })
     .accessibilityText('添加 OPDS 书库')
     .onClick(() => {
       this.openAddDialog();
     })
+    .accessibilityRole(AccessibilityRoleType.BUTTON)
   }
 
   @Builder
@@ -137,7 +166,7 @@ struct OpdsServersPage {
       if (this.servers.length === 0) {
         this.emptyGuide()
       } else {
-        List({ space: AppSpacing.MD }) {
+        List({ scroller: this.headerScroller, space: AppSpacing.MD }) {
           ListItem() {
             Row()
               .height(this.listTopInset())
@@ -175,7 +204,7 @@ struct OpdsServersPage {
           }, (server: OpdsServerConfig) => server.id)
 
           ListItem() {
-            Text('仅支持下载 EPUB / TXT 格式')
+            Text('仅支持下载 EPUB / TXT / MOBI 格式')
               .fontSize(AppFontSize.CAPTION)
               .fontColor(this.subTextColor())
               .width('100%')
@@ -187,8 +216,21 @@ struct OpdsServersPage {
         .width('100%')
         .layoutWeight(1)
         .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
-        .margin({ top: -this.listTopInset() })
+        // 顶栏收起时外层留白同步减少，列表顶边保持贴住页面顶部。
+        .margin({ top: -(this.listTopInset() - this.headerCollapse) })
         .zIndex(0)
+        .onDidScroll((yOffset: number) => {
+          this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+            this.headerScroller.currentOffset().yOffset);
+        })
+        .onScrollStop(() => {
+          const target = CollapsingHeader.settle(this.headerCollapse, this.headerScroller.currentOffset().yOffset);
+          if (target !== this.headerCollapse) {
+            animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+              this.headerCollapse = target;
+            });
+          }
+        })
       }
     }
     .width('100%')
@@ -235,6 +277,11 @@ struct OpdsServersPage {
     .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.MD, bottom: AppSpacing.MD })
     .backgroundColor(this.cardColor())
     .borderRadius(ThemeRuntime.cardRadius())
+    .opacity(ListDissolve.opacity(this.isDissolving(server.id)))
+    .scale(ListDissolve.scale(this.isDissolving(server.id)))
+    .blur(ListDissolve.blur(this.isDissolving(server.id)))
+    .hitTestBehavior(this.isDissolving(server.id) ? HitTestMode.None : HitTestMode.Default)
+    .id(`opds_server_card_${server.id}`)
     .gesture(
       LongPressGesture({ repeat: false })
         .onAction((event: GestureEvent) => {
@@ -326,13 +373,7 @@ struct OpdsServersPage {
 
   @Builder
   serverActionMenu() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor(this.appDarkMode ? '#38000000' : '#18FFFFFF')
-        .backdropBlur(ThemeRuntime.glassBlur('button', 12))
-        .onClick(() => this.closeServerActions())
+    Scroll() {
       Column() {
         this.serverContextActionItem($r('sys.symbol.arrow_clockwise'), '测试连接', this.primaryTextColor(),
           () => this.testActionServer())
@@ -340,40 +381,19 @@ struct OpdsServersPage {
           () => this.editActionServer())
         this.serverContextActionItem($r('sys.symbol.trash'), '删除', ThemeRuntime.dangerColor(this.appDarkMode),
           () => this.confirmDeleteActionServer())
+
       }
-      .width(148)
-      .padding({ top: AppSpacing.SM, bottom: AppSpacing.SM })
-      .backgroundColor(ThemeRuntime.glassPanelColor(this.appDarkMode, '', 'panel'))
-      .borderRadius(ThemeRuntime.glassCornerRadius(14, 'panel'))
-      .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-      .border({ width: ThemeRuntime.glassBorderWidth('panel'),
-        color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'panel') })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('panel'),
-        color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'panel'),
-        offsetX: ThemeRuntime.glassShadowOffsetX('panel'), offsetY: ThemeRuntime.glassShadowOffsetY('panel') })
-      .position({ x: this.contextMenuLeft(148), y: this.contextMenuTop(144) })
+      .width('100%')
     }
-    .width('100%')
-    .height('100%')
+    .width(176)
+    .constraintSize({ maxHeight: ImmersiveMaterialRuntime.popupMenuMaxHeight() })
+    .scrollBar(BarState.Off)
+    .padding(ImmersiveMaterialRuntime.POPUP_MENU_PADDING)
   }
 
   @Builder
   serverContextActionItem(icon: Resource, label: string, color: string, action: () => void) {
-    Row({ space: AppSpacing.MD }) {
-      SymbolGlyph(icon)
-        .fontSize(18)
-        .fontColor([color])
-        .width(24)
-      Text(label)
-        .fontSize(AppFontSize.BODY_LARGE)
-        .fontColor(color)
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(44)
-    .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
-    .alignItems(VerticalAlign.Center)
-    .onClick(action)
+    PopupMenuAction(icon, label, color, action)
   }
 
   @Builder
@@ -593,8 +613,26 @@ struct OpdsServersPage {
     if (confirmation.index !== 1) return;
     await OpdsSecretStore.deletePassword(getContext(this), server.id);
     await OpdsSettingsStore.deleteServer(getContext(this), server.id);
-    this.servers = this.servers.filter((item: OpdsServerConfig): boolean => item.id !== server.id);
+    await this.dissolveAndRemove([server.id], () => {
+      this.servers = this.servers.filter((item: OpdsServerConfig): boolean => item.id !== server.id);
+    });
     HdsFeedback.showToast('书库已删除');
+  }
+
+  isDissolving(id: string): boolean {
+    return this.dissolvingIds.length > 0 && this.dissolvingIds.indexOf(id) >= 0;
+  }
+
+  /** 从确认框里删除：等它退场后消散，播完在补位动画里执行 remove。 */
+  async dissolveAndRemove(ids: string[], remove: () => void): Promise<void> {
+    await ListDissolve.fadeOut(this.getUIContext(), ids, (id: string) => {
+      this.dissolvingIds = [...this.dissolvingIds, id];
+    }, ListDissolve.particles('opds_servers_root', [this.accentColor(), this.primaryTextColor(), this.subTextColor()],
+      (id: string): string => `opds_server_card_${id}`, (): DeleteParticleBurst[] => this.deleteParticleBursts,
+      (bursts: DeleteParticleBurst[]): void => { this.deleteParticleBursts = bursts; }), ListDissolve.AFTER_DIALOG_MS);
+    ListDissolve.commit(this.getUIContext(), remove, () => {
+      this.dissolvingIds = ListDissolve.without(this.dissolvingIds, ids);
+    });
   }
 
   openAddDialog(): void {
@@ -713,16 +751,6 @@ struct OpdsServersPage {
     const height = Number(area.height);
     if (Number.isFinite(width) && width > 0) this.contextViewportWidth = width;
     if (Number.isFinite(height) && height > 0) this.contextViewportHeight = height;
-  }
-
-  contextMenuLeft(menuWidth: number): number {
-    return Math.max(12, Math.min(this.contextMenuX - 18, this.contextViewportWidth - menuWidth - 12));
-  }
-
-  contextMenuTop(menuHeight: number): number {
-    const below = this.contextMenuY + 12;
-    if (below + menuHeight <= this.contextViewportHeight - this.navBarHeight - 12) return below;
-    return Math.max(this.statusBarHeight + 8, this.contextMenuY - menuHeight - 12);
   }
 
   listTopInset(): number {

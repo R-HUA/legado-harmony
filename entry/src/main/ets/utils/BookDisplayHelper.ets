@@ -1,5 +1,6 @@
 import { Book } from '@legado/sourceengine';
 import { CoverUrlNormalizer } from './CoverUrlNormalizer';
+import { GlassTagModifier, ImmersiveTagModifier } from './ImmersiveMaterialRuntime';
 
 class CoverData {
   covers: string[] = [];
@@ -227,6 +228,20 @@ export class BookDisplayHelper {
     const light = ['#3568D4', '#0A7D36', '#A15C00', '#7434A4', '#006C7A', '#B32636'];
     const palette = darkMode ? dark : light;
     return palette[index % palette.length];
+  }
+
+  /** 标签配色里绿色的序号，“已在书架”等表示正向状态的标签用它。 */
+  static readonly TAG_GREEN_INDEX: number = 1;
+
+  /** 彩色标签的沉浸光感底，配色与 getTagBackgroundColor / getTagTextColor 同序号。 */
+  static getTagModifier(index: number, darkMode: boolean): ImmersiveTagModifier {
+    return new ImmersiveTagModifier(BookDisplayHelper.getTagBackgroundColor(index, darkMode),
+      BookDisplayHelper.getTagTextColor(index, darkMode), darkMode);
+  }
+
+  /** 放在图像背景上的白玻璃标签；文字色由调用处按 getTagTextColor 同序号设置。 */
+  static getGlassTagModifier(_index: number, darkMode: boolean): GlassTagModifier {
+    return new GlassTagModifier(darkMode);
   }
 
   static getTagBackgroundColor(index: number, darkMode: boolean): string {

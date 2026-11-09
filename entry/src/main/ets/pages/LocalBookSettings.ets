@@ -16,10 +16,13 @@ import { HdsFeedback } from '../utils/HdsFeedback';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
+import { CollapsingHeader } from '../utils/CollapsingHeader';
+import { CloudAutoSync } from '../account/CloudAutoSync';
 
 @Entry
 @Component
 struct LocalBookSettingsPage {
+  @State headerCollapse: number = 0;
   @StorageLink('appDarkMode') @Watch('refreshTabStyle') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appLightButtonColor') appLightButtonColor: string = '#007DFF';
@@ -57,7 +60,8 @@ struct LocalBookSettingsPage {
   build() {
     Stack() {
       WebBookFetchRuntimeHost()
-      PageScaffold({ title: '添加书籍', scrollable: false, scroller: this.pageScroller, content: () => {
+      PageScaffold({ title: '添加书籍', scrollable: false, scroller: this.pageScroller,
+        externalCollapse: this.headerCollapse, content: () => {
         this.pageContent()
       } })
       BookSourceStageRuntimeHost()
@@ -91,6 +95,8 @@ struct LocalBookSettingsPage {
         .width('100%')
         .layoutWeight(1)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .onDidScroll((_x: number, yOffset: number) => this.trackHeaderCollapse(yOffset))
+        .onScrollStop(() => this.settleHeaderCollapse())
       } else {
         this.localImportPanel()
       }
@@ -108,7 +114,7 @@ struct LocalBookSettingsPage {
           .fontColor(this.primaryTextColor())
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(book.author ? `${book.author} · ${book.totalChapterNum}章` : `${book.totalChapterNum}章`)
+        Text(book.author ? `${book.author} · ${book.totalChapterNum}${LocalBookService.isPdfBook(book) ? '页' : '章'}` : `${book.totalChapterNum}${LocalBookService.isPdfBook(book) ? '页' : '章'}`)
           .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor())
           .maxLines(1)
@@ -116,7 +122,7 @@ struct LocalBookSettingsPage {
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
-      Text(book.type === LocalBookService.TYPE_EPUB ? 'EPUB' : 'TXT')
+      Text(LocalBookService.formatOf(book).toUpperCase())
         .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor())
         .margin({ left: AppSpacing.MD })
@@ -144,9 +150,10 @@ struct LocalBookSettingsPage {
     try {
       const selected = await LocalBookService.chooseBookFiles(getContext(this));
       if (selected.length === 0) return;
-      this.statusText = `正在导入${selected.length}本书...`;
+      this.statusText = `正在导入${selected.length}个文件...`;
       const result = await LocalBookService.importSelectedFiles(getContext(this), selected);
       this.finishImport(result);
+      CloudAutoSync.schedule(getContext(this));
       await this.loadBooks();
     } catch (e) {
       console.error('添加本地书籍失败:', e);
@@ -159,9 +166,12 @@ struct LocalBookSettingsPage {
 
   finishImport(result: LocalBookScanResult): void {
     const failed = result.failed > 0 ? `，${result.failed}本失败` : '';
-    this.statusText = `导入完成：成功${result.imported}本${failed}`;
+    const duplicated = result.duplicates.length > 0 ? `，${result.duplicates.length}本已在书架` : '';
+    const summary = `导入完成：成功${result.imported}本${duplicated}${failed}`;
+    const details = result.duplicates.map((name: string): string => `已在书架：${name}`).concat(result.failures);
+    this.statusText = summary + (details.length ? `\n${details.join('\n')}` : '');
     AppStorage.setOrCreate('shelfUpdateTime', Date.now());
-    HdsFeedback.showToast(this.statusText);
+    HdsFeedback.showToast(summary);
   }
 
   pageColor(): string {
@@ -366,7 +376,7 @@ struct LocalBookSettingsPage {
           Text('暂无已添加书籍')
             .fontSize(AppFontSize.BODY_LARGE)
             .fontColor(this.primaryTextColor())
-          Text('点击下方按钮选择 TXT 或 EPUB 文件')
+          Text('点击下方按钮选择 TXT / EPUB / MOBI / PDF 文件或 ZIP 压缩包')
             .fontSize(AppFontSize.BODY)
             .fontColor(this.subTextColor())
         }
@@ -385,9 +395,11 @@ struct LocalBookSettingsPage {
         .width('100%')
         .layoutWeight(1)
         .clip(true)
+        .onDidScroll((yOffset: number) => this.trackHeaderCollapse(yOffset))
+        .onScrollStop(() => this.settleHeaderCollapse())
       }
 
-      Text('选择 TXT 或 EPUB 文件导入书架')
+      Text('选择 TXT / EPUB / MOBI / PDF 文件或 ZIP 压缩包导入书架')
         .fontSize(AppFontSize.BODY_LARGE)
         .fontColor(this.primaryTextColor())
       Text('支持一次选择多个文件，导入后文件会复制到应用内部存储，不依赖原文件位置。')
@@ -413,5 +425,20 @@ struct LocalBookSettingsPage {
     .width('100%')
     .layoutWeight(1)
     .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXXL, bottom: 32 + this.navBarHeight })
+  }
+
+  /** 非 HDS 设备上自绘顶栏随列表/滚动跟手收起（HDS 原生标题栏自行联动）。 */
+  trackHeaderCollapse(yOffset: number): void {
+    this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+      this.pageScroller.currentOffset().yOffset);
+  }
+
+  settleHeaderCollapse(): void {
+    const target = CollapsingHeader.settle(this.headerCollapse, this.pageScroller.currentOffset().yOffset);
+    if (target !== this.headerCollapse) {
+      animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+        this.headerCollapse = target;
+      });
+    }
   }
 }

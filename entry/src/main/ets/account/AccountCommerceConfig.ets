@@ -18,6 +18,11 @@ export class AccountCommerceConfig {
   static readonly PRODUCT_POINTS_500: string = 'legado_points_500';
   static readonly PRODUCT_POINTS_1000: string = 'legado_points_1000';
 
+  /** 商业服务关闭时，本地独立阅读器直接解锁全部本地能力（主题、离线模型、主题包、方案数量等）。 */
+  static localUnlocked(): boolean {
+    return !AccountCommerceConfig.COMMERCE_ENABLED;
+  }
+
   static isServerConfigured(): boolean {
     const value = AccountCommerceConfig.API_BASE_URL.trim();
     return value.startsWith('https://') && !value.includes('example.com');

@@ -1,8 +1,10 @@
 import { HdsTabs } from '@kit.UIDesignKit';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
+import { ThemeRuntime } from '../theme/ThemeRuntime';
 
 @Component
 export struct ImmersiveBackButton {
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   @Prop icon: Resource = $r('sys.symbol.chevron_left');
   @Prop iconColor: ResourceColor = '#18191C';
   @Prop labelText: string = '';
@@ -14,6 +16,8 @@ export struct ImmersiveBackButton {
   @Prop containerWidth: number = 52;
   @Prop containerHeight: number = 56;
   @Prop startInset: number = 16;
+  /** Mirror the material inset for a trailing toolbar action. */
+  @Prop alignToEnd: boolean = false;
   @Prop materialScale: number = 1;
   @Prop compactLayout: boolean = false;
   @Prop accessibilityLabel: string = '返回';
@@ -33,7 +37,10 @@ export struct ImmersiveBackButton {
         .height(this.materialButtonSize())
         .padding(0)
         .enabled(this.buttonEnabled)
-        .backgroundColor(Color.Transparent)
+        .backgroundColor(ImmersiveMaterialRuntime.surfaceColor(this.immersiveLightLevel, this.darkMode,
+          this.darkMode ? '#191B1F' : '#FFFFFF', true))
+        .border(ImmersiveMaterialRuntime.surfaceBorder(this.immersiveLightLevel, this.darkMode))
+        .shadow(ThemeRuntime.floatingControlShadow(this.darkMode))
         .accessibilityText(this.accessibilityLabel)
         .onClick(() => this.onBack())
       }
@@ -64,7 +71,7 @@ export struct ImmersiveBackButton {
         },
         systemMaterialEffect: {
           materialType: ImmersiveMaterialRuntime.materialType(),
-          materialLevel: ImmersiveMaterialRuntime.materialLevel()
+          materialLevel: ImmersiveMaterialRuntime.materialLevel(this.immersiveLightLevel)
         },
         barSideMargin: 0,
         barBottomMargin: 0,
@@ -88,7 +95,8 @@ export struct ImmersiveBackButton {
       .height(this.materialButtonSize())
       .padding(0)
       .enabled(this.buttonEnabled)
-      .backgroundColor(Color.Transparent)
+      .backgroundColor(ImmersiveMaterialRuntime.surfaceColor(this.immersiveLightLevel, this.darkMode,
+        this.darkMode ? '#191B1F' : '#FFFFFF', true))
       .hitTestBehavior(HitTestMode.Transparent)
       .accessibilityText(this.accessibilityLabel)
       .onClick(() => this.onBack())
@@ -96,8 +104,12 @@ export struct ImmersiveBackButton {
     .width(this.materialButtonSize())
     .height(this.materialButtonSize())
     .borderRadius(this.materialButtonSize() / 2, RenderStrategy.OFFSCREEN)
+    .border(ImmersiveMaterialRuntime.surfaceBorder(this.immersiveLightLevel, this.darkMode))
     .clip(true)
-    .translate({ x: this.startInset * this.normalizedMaterialScale() })
+    .shadow(ThemeRuntime.floatingControlShadow(this.darkMode))
+    .translate({ x: this.alignToEnd ?
+      this.effectiveContainerWidth() - this.materialButtonSize() - this.startInset * this.normalizedMaterialScale() :
+      this.startInset * this.normalizedMaterialScale() })
   }
 
   @Builder

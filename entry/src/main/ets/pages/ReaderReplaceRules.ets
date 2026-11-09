@@ -1,5 +1,6 @@
 import { promptAction, router } from '@kit.ArkUI';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { Book, HttpClient, JavaRegexCompat, ReplaceRuleImport } from '@legado/sourceengine';
 import { ReaderReplaceRule, ReaderReplaceRuleCheck, ReaderReplaceRuleStore } from '../utils/ReaderReplaceRuleStore';
@@ -13,9 +14,15 @@ import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import { util } from '@kit.ArkTS';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { ListDissolve, ListDissolveParticles } from '../utils/ListDissolve';
+import { DeleteParticleBurst, DeleteParticleLayer } from '../components/common/DeleteParticles';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
+import { CollapsingHeader } from '../utils/CollapsingHeader';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
+import { ImmersiveMaterialSurface } from '../components/ImmersiveMaterialSurface';
+import { PopupMenuAction, PopupMenuHeader } from '../components/common/PopupMenuAction';
 
 const REPLACE_RULE_IMPORT_FILE_LIMIT_BYTES: number = 5 * 1024 * 1024;
 const REPLACE_RULE_IMPORT_TIMEOUT_MS: number = 20000;
@@ -31,6 +38,8 @@ class ReplaceRuleFormDraft {
 @Entry
 @Component
 struct ReaderReplaceRulesPage {
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @State headerCollapse: number = 0;
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
@@ -47,9 +56,10 @@ struct ReaderReplaceRulesPage {
   @State showRuleMoreDialog: boolean = false;
   @State showAddRuleDialog: boolean = false;
   private importUrlDialogSession: SystemDialogSession = new SystemDialogSession();
+  private importingDialogSession: SystemDialogSession = new SystemDialogSession();
   @State @Watch('onSystemDialogFlagChanged') showImportUrlDialog: boolean = false;
   @State importUrl: string = '';
-  @State isImporting: boolean = false;
+  @State @Watch('syncIsImporting') isImporting: boolean = false;
   @State actionRuleId: number = 0;
   @State contextMenuX: number = 16;
   @State contextMenuY: number = 96;
@@ -57,6 +67,9 @@ struct ReaderReplaceRulesPage {
   @State contextViewportHeight: number = 720;
   @State selectionMode: boolean = false;
   @State selectedRuleIds: number[] = [];
+  /** 正在消散的规则 id（字符串），见 ListDissolve。 */
+  @State dissolvingRuleKeys: string[] = [];
+  @State deleteParticleBursts: DeleteParticleBurst[] = [];
   @State isBatchOperating: boolean = false;
   @State previewMode: boolean = false;
   @State previewTitle: string = '';
@@ -242,15 +255,17 @@ struct ReaderReplaceRulesPage {
       HdsFeedback.showToast('请先进入选择模式');
       return;
     }
-    const selected = this.rules.filter((rule: ReaderReplaceRule) => this.selectedRuleIds.includes(rule.id));
+    // 内置规则没有匹配内容，导出给其他应用没有意义。
+    const selected = this.rules.filter((rule: ReaderReplaceRule) =>
+      this.selectedRuleIds.includes(rule.id) && !ReaderReplaceRuleStore.isBuiltin(rule));
     if (selected.length === 0) {
-      HdsFeedback.showToast('请先选择规则');
+      HdsFeedback.showToast('请先选择规则（内置规则不导出）');
       return;
     }
     let file: fs.File | null = null;
     try {
       const options: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
-      options.newFileNames = [`legado_replace_rules_${this.exportTimestamp()}.json`];
+      options.newFileNames = [`qingye-replace-rules-${this.exportTimestamp()}.json`];
       options.fileSuffixChoices = ['JSON 文件|.json'];
       const result = await new picker.DocumentViewPicker(getContext(this)).save(options);
       if (!result || result.length === 0) return;
@@ -274,7 +289,7 @@ struct ReaderReplaceRulesPage {
   exportTimestamp(): string {
     const date = new Date();
     const pad = (value: number): string => value < 10 ? `0${value}` : `${value}`;
-    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_` +
+    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-` +
       `${pad(date.getHours())}${pad(date.getMinutes())}`;
   }
 
@@ -287,7 +302,15 @@ struct ReaderReplaceRulesPage {
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
       Column() {
-        this.titleBar()
+        // 顶栏随列表上滑跟手收起、下滑展开，与其他二级页面一致。
+        Column() {
+          this.titleBar()
+        }
+        .width('100%')
+        .height(56 + this.statusBarHeight - (this.editing ? 0 : this.headerCollapse))
+        .clip(true)
+        .opacity(CollapsingHeader.contentOpacity((this.editing ? 0 : this.headerCollapse)))
+        .hitTestBehavior(CollapsingHeader.acceptsTouch((this.editing ? 0 : this.headerCollapse)) ? HitTestMode.Default : HitTestMode.None)
         if (this.editing) {
           this.editorView()
         } else {
@@ -298,40 +321,49 @@ struct ReaderReplaceRulesPage {
       .height('100%')
       .backgroundColor(this.pageColor())
 
-      if (!this.editing && !this.selectionMode && !this.showAddRuleDialog && !this.isImporting) {
-        Button({ type: ButtonType.Circle, stateEffect: true }) {
-          SymbolGlyph($r('sys.symbol.plus'))
-            .fontSize(25)
-            .fontColor([this.accentColor()])
+      if (!this.editing && !this.selectionMode && !this.isImporting) {
+        Stack() {
+          ImmersiveMaterialSurface({
+            surfaceWidth: 52,
+            surfaceHeight: 52,
+            darkMode: this.appDarkMode,
+            fallbackColor: this.cardColor(),
+            glowColor: `#40${this.accentColor().substring(1)}`
+          }) {
+            SymbolGlyph($r('sys.symbol.plus'))
+              .fontSize(25)
+              .fontColor([this.accentColor()])
+          }
         }
         .width(52)
         .height(52)
         .margin({ right: AppSpacing.XXL, bottom: this.navBarHeight + 22 })
-        .backgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode, this.cardColor(), 'button'))
-        .backdropBlur(ThemeRuntime.glassBlur('button', 12))
-        .border({ width: ThemeRuntime.glassBorderWidth('button'), color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'button') })
-        .shadow({ radius: ThemeRuntime.glassShadowRadius('button'), color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'button'), offsetX: ThemeRuntime.glassShadowOffsetX('button'), offsetY: ThemeRuntime.glassShadowOffsetY('button') })
         .accessibilityText('新增替换净化规则')
+        .accessibilityRole(AccessibilityRoleType.BUTTON)
         .onClick(() => this.showAddRuleDialog = true)
+        .bindPopup(this.showAddRuleDialog, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
+          this.addRuleDropdown()
+        }, Placement.TopRight, this.appDarkMode, this.accentColor(), () => {
+          this.showAddRuleDialog = false;
+        }))
       }
 
-      if (this.showAddRuleDialog) {
-        this.addRuleDropdown()
-      }
+      Column()
+        .width(1)
+        .height(1)
+        .position({ x: this.contextMenuX, y: this.contextMenuY })
+        .hitTestBehavior(HitTestMode.None)
+        .bindPopup(this.showRuleActionDialog, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
+          this.ruleActionDialog()
+        }, Placement.BottomLeft, this.appDarkMode, this.accentColor(), () => {
+          this.showRuleActionDialog = false;
+        }))
 
-
-      if (this.isImporting) {
-        this.importingOverlay()
-      }
-
-      if (this.showRuleActionDialog) {
-        this.ruleActionDialog()
-      }
-
-      if (this.showRuleMoreDialog) {
-        this.ruleBatchMorePopupMenu()
+      if (this.deleteParticleBursts.length > 0) {
+        DeleteParticleLayer({ bursts: this.deleteParticleBursts })
       }
     }
+    .id('replace_rules_root')
     .width('100%')
     .height('100%')
     .onAreaChange((_oldValue: Area, newValue: Area) => this.updateContextViewport(newValue))
@@ -365,40 +397,28 @@ struct ReaderReplaceRulesPage {
         .fontColor(this.primaryTextColor())
         .layoutWeight(1)
       if (!this.editing) {
-        Text(this.selectionMode ? '取消' : '选择')
-          .fontSize(AppFontSize.BODY_LARGE)
-          .fontColor(this.primaryTextColor())
-          .width(52)
-          .height(56)
-          .textAlign(TextAlign.Center)
-          .onClick(() => {
+        ImmersiveHeaderAction({
+          label: this.selectionMode ? '取消' : '选择',
+          onTap: () => {
             if (this.selectionMode) {
               this.exitRuleSelectionMode();
             } else {
               this.enterEmptyRuleSelectionMode();
             }
-          })
+          }
+        })
       }
     }
     .width('100%')
     .height(56 + this.statusBarHeight)
     // Keep the action text aligned with the content/search field right edge.
     .padding({ right: AppSpacing.XL, top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
     .alignItems(VerticalAlign.Center)
   }
 
   @Builder
   addRuleDropdown() {
-    Stack({ alignContent: Alignment.BottomEnd }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .onClick(() => {
-          this.showAddRuleDialog = false;
-        })
-
+    Scroll() {
       Column() {
         this.ruleAddActionItem($r('sys.symbol.plus'), '新建规则', () => {
           this.showAddRuleDialog = false;
@@ -412,48 +432,21 @@ struct ReaderReplaceRulesPage {
         this.ruleAddActionItem($r('sys.symbol.download'), '从文件导入', () => {
           this.showAddRuleDialog = false;
           this.importRulesFromFile();
-        }, false)
+        })
+
       }
-      .width(188)
-      .padding({ left: AppSpacing.SM, right: AppSpacing.SM, top: AppSpacing.SM, bottom: AppSpacing.SM })
-      .backgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode, this.cardColor(), 'panel'))
-      .borderRadius(ThemeRuntime.glassCornerRadius(16, 'panel'))
-      .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-      .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'panel') })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('panel'), color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'panel'), offsetX: ThemeRuntime.glassShadowOffsetX('panel'), offsetY: ThemeRuntime.glassShadowOffsetY('panel') })
-      .margin({ right: AppSpacing.XXL, bottom: this.navBarHeight + 82 })
+      .width('100%')
     }
-    .width('100%')
-    .height('100%')
+    .width(188)
+    .constraintSize({ maxHeight: ImmersiveMaterialRuntime.popupMenuMaxHeight() })
+    .scrollBar(BarState.Off)
+    .padding(ImmersiveMaterialRuntime.POPUP_MENU_PADDING)
   }
 
   @Builder
-  ruleAddActionItem(icon: Resource, label: string, action: () => void, showDivider: boolean = true) {
-    Column() {
-      Row({ space: AppSpacing.MD }) {
-        SymbolGlyph(icon)
-          .fontSize(19)
-          .fontColor([this.primaryTextColor()])
-        Text(label)
-          .fontSize(AppFontSize.BODY)
-          .fontColor(this.primaryTextColor())
-          .layoutWeight(1)
-      }
-      .width('100%')
-      .height(42)
-      .padding({ left: AppSpacing.MD, right: AppSpacing.MD })
-      .alignItems(VerticalAlign.Center)
-      .onClick(action)
-      if (showDivider) {
-        Divider()
-          .strokeWidth(0.5)
-          .color(ThemeRuntime.glassBorderColor(this.appDarkMode, 'panel'))
-          .margin({ left: AppSpacing.MD, right: AppSpacing.MD })
-      }
-    }
-    .width('100%')
+  ruleAddActionItem(icon: Resource, label: string, action: () => void) {
+    PopupMenuAction(icon, label, this.primaryTextColor(), action)
   }
-
 
   onSystemDialogFlagChanged(): void {
     if (!this.showImportUrlDialog) this.importUrlDialogSession.close(this.getUIContext());
@@ -519,34 +512,33 @@ struct ReaderReplaceRulesPage {
   @Builder
   importingOverlay() {
     Column() {
-      Column() {
-        LoadingProgress()
-          .width(46)
-          .height(46)
-          .color(this.accentColor())
-        Text('正在导入替换规则...')
-          .fontSize(AppFontSize.BODY_LARGE)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.primaryTextColor())
-          .margin({ top: AppSpacing.LG })
-        Text('请稍候')
-          .fontSize(AppFontSize.BODY)
-          .fontColor(this.subTextColor())
-          .margin({ top: AppSpacing.SM })
-      }
-      .width(210)
-      .padding({ left: AppSpacing.XXXL, right: AppSpacing.XXXL, top: AppSpacing.XXXL, bottom: AppSpacing.XXXL })
-      .backgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode, '', 'overlay'))
-      .borderRadius(ThemeRuntime.glassCornerRadius(16, 'overlay'))
-      .backdropBlur(ThemeRuntime.glassBlur('overlay', 28))
-      .border({ width: ThemeRuntime.glassBorderWidth('overlay'), color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'overlay') })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('overlay'), color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'overlay'), offsetX: ThemeRuntime.glassShadowOffsetX('overlay'), offsetY: ThemeRuntime.glassShadowOffsetY('overlay') })
-      .alignItems(HorizontalAlign.Center)
+      LoadingProgress()
+        .width(46)
+        .height(46)
+        .color(this.accentColor())
+      Text('正在导入替换规则...')
+        .fontSize(AppFontSize.BODY_LARGE)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.primaryTextColor())
+        .margin({ top: AppSpacing.LG })
+      Text('请稍候')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.subTextColor())
+        .margin({ top: AppSpacing.SM })
     }
     .width('100%')
-    .height('100%')
-    .backgroundColor('#80000000')
-    .justifyContent(FlexAlign.Center)
+    .padding({ left: AppSpacing.XXXL, right: AppSpacing.XXXL, top: AppSpacing.XXXL, bottom: AppSpacing.XXXL })
+    .alignItems(HorizontalAlign.Center)
+  }
+
+  syncIsImporting(): void {
+    this.importingDialogSession.sync(this.getUIContext(), this.isImporting, (): void => {
+      this.importingOverlay();
+    }, {
+      autoCancel: false,
+      maskColor: ThemeRuntime.scrimColor(this.appDarkMode),
+      warnTag: '显示导入进度弹窗失败:'
+    });
   }
 
   @Builder
@@ -605,7 +597,9 @@ struct ReaderReplaceRulesPage {
                       this.ruleFallbackSwipeActions(rule)
                     },
                     actionAreaDistance: 128,
-                    onAction: () => this.confirmDelete(rule)
+                    onAction: () => {
+                      if (!ReaderReplaceRuleStore.isBuiltin(rule)) this.confirmDelete(rule);
+                    }
                   },
                   edgeEffect: SwipeEdgeEffect.Spring
                 })
@@ -635,6 +629,18 @@ struct ReaderReplaceRulesPage {
           this.ruleSelectionViewportTop = Number(area.globalPosition.y);
           this.ruleSelectionViewportBottom = this.ruleSelectionViewportTop + Number(area.height);
         })
+        .onDidScroll((yOffset: number) => {
+          this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+            this.ruleListScroller.currentOffset().yOffset);
+        })
+        .onScrollStop(() => {
+          const target = CollapsingHeader.settle(this.headerCollapse, this.ruleListScroller.currentOffset().yOffset);
+          if (target !== this.headerCollapse) {
+            animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+              this.headerCollapse = target;
+            });
+          }
+        })
       }
 
       if (this.selectionMode) {
@@ -646,6 +652,16 @@ struct ReaderReplaceRulesPage {
   }
 
   private ruleSwipeActions(rule: ReaderReplaceRule): HdsSwipeActionOptions {
+    if (ReaderReplaceRuleStore.isBuiltin(rule)) {
+      return { icons: [
+        {
+          icon: new SymbolGlyphModifier(rule.enabled ? $r('sys.symbol.minus_circle') : $r('sys.symbol.checkmark_circle')),
+          backgroundColor: this.buttonColor(),
+          iconOptions: { accessibilityText: rule.enabled ? '禁用规则' : '启用规则' },
+          onAction: () => this.setRuleEnabled(rule.id, !rule.enabled)
+        }
+      ] };
+    }
     return { icons: [
       {
         icon: new SymbolGlyphModifier(rule.enabled ? $r('sys.symbol.minus_circle') : $r('sys.symbol.checkmark_circle')),
@@ -661,7 +677,9 @@ struct ReaderReplaceRulesPage {
   ruleFallbackSwipeActions(rule: ReaderReplaceRule) {
     Row() {
       this.ruleEnableSwipeAction(rule)
-      this.ruleDeleteSwipeAction(rule)
+      if (!ReaderReplaceRuleStore.isBuiltin(rule)) {
+        this.ruleDeleteSwipeAction(rule)
+      }
     }
     .height('100%')
   }
@@ -681,7 +699,7 @@ struct ReaderReplaceRulesPage {
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-        Text(rule.pattern || '未填写匹配规则')
+        Text(ReaderReplaceRuleStore.builtinDescription(rule) || rule.pattern || '未填写匹配规则')
           .fontSize(AppFontSize.BODY)
           .fontColor(this.secondaryTextColor())
           .maxLines(2)
@@ -721,7 +739,11 @@ struct ReaderReplaceRulesPage {
     .backgroundColor(this.cardColor())
     .borderRadius(ThemeRuntime.cardRadius())
     .border({ width: ThemeRuntime.glassBorderWidth(), color: ThemeRuntime.glassBorderColor(this.appDarkMode) })
-    .opacity(rule.enabled ? 1 : 0.5)
+    .opacity(this.isRuleDissolving(rule) ? 0 : (rule.enabled ? 1 : 0.5))
+    .scale(ListDissolve.scale(this.isRuleDissolving(rule)))
+    .blur(ListDissolve.blur(this.isRuleDissolving(rule)))
+    .hitTestBehavior(this.isRuleDissolving(rule) ? HitTestMode.None : HitTestMode.Default)
+    .id(this.ruleCardElementId(`${rule.id}`))
     .gesture(
       LongPressGesture({ repeat: false })
         .onAction((event: GestureEvent) => {
@@ -847,7 +869,7 @@ struct ReaderReplaceRulesPage {
 
   ruleEffectColor(rule: ReaderReplaceRule): string {
     const state = this.ruleEffectCheck(rule).state;
-    if (state === 'effective') return ThemeRuntime.successColor(this.appDarkMode);
+    if (state === 'effective' || state === 'builtin') return ThemeRuntime.successColor(this.appDarkMode);
     if (state === 'invalid') return ThemeRuntime.dangerColor(this.appDarkMode);
     if (state === 'matched') return '#D17A00';
     return this.subTextColor();
@@ -953,6 +975,11 @@ struct ReaderReplaceRulesPage {
         .backgroundColor(this.inputColor())
         .fontColor(this.primaryTextColor())
         .onClick(() => this.showRuleMoreDialog = true)
+        .bindPopup(this.showRuleMoreDialog, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
+          this.ruleBatchMorePopupMenu()
+        }, Placement.TopRight, this.appDarkMode, this.accentColor(), () => {
+          this.showRuleMoreDialog = false;
+        }))
     }
     .width('100%')
     .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.MD, bottom: AppSpacing.LG })
@@ -961,62 +988,61 @@ struct ReaderReplaceRulesPage {
 
   @Builder
   ruleBatchMorePopupMenu() {
-    Stack({ alignContent: Alignment.BottomEnd }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .onClick(() => this.showRuleMoreDialog = false)
-
+    Scroll() {
       Column() {
-        Text(`已选择 ${this.selectedRuleIds.length} 条规则`)
-          .fontSize(AppFontSize.CAPTION)
-          .fontColor(this.subTextColor())
-          .width('100%')
-          .height(34)
-          .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
-          .textAlign(TextAlign.Start)
+        PopupMenuHeader(`已选择 ${this.selectedRuleIds.length} 条规则`, this.subTextColor())
         this.ruleAddActionItem($r('sys.symbol.download'), '导出 JSON', () => {
           this.showRuleMoreDialog = false;
           this.exportRules();
-        }, false)
+        })
       }
-      .width(188)
-      .padding({ left: AppSpacing.SM, right: AppSpacing.SM, top: AppSpacing.XS, bottom: AppSpacing.SM })
-      .backgroundColor(ThemeRuntime.glassPanelColor(this.appDarkMode, '', 'panel'))
-      .borderRadius(ThemeRuntime.glassCornerRadius(16, 'panel'))
-      .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-      .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'panel') })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('panel'), color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'panel'), offsetX: ThemeRuntime.glassShadowOffsetX('panel'), offsetY: ThemeRuntime.glassShadowOffsetY('panel') })
-      .margin({ right: AppSpacing.XL, bottom: this.navBarHeight + 78 })
+      .width('100%')
     }
-    .width('100%')
-    .height('100%')
+    .width(188)
+    .constraintSize({ maxHeight: ImmersiveMaterialRuntime.popupMenuMaxHeight() })
+    .scrollBar(BarState.Off)
+    .padding(ImmersiveMaterialRuntime.POPUP_MENU_PADDING)
   }
 
   @Builder
   editorView() {
     Scroll() {
       Column({ space: AppSpacing.LG }) {
-        this.inputField('规则名称', this.draft.name, '例如：去除章节末广告', (value: string) => {
-          this.draft.name = value;
-          this.refreshDraft();
-        })
-        this.textAreaField('匹配规则', this.draft.pattern, '输入文本或正则表达式', (value: string) => {
-          this.draft.pattern = value;
-          this.refreshDraft();
-        })
-        this.textAreaField('替换为', this.draft.replacement, '留空表示删除匹配内容', (value: string) => {
-          this.draft.replacement = value;
-          this.refreshDraft();
-        })
+        if (ReaderReplaceRuleStore.isBuiltin(this.draft)) {
+          Column({ space: AppSpacing.XS }) {
+            Text(this.draft.name)
+              .fontSize(AppFontSize.BODY_LARGE)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.primaryTextColor())
+              .width('100%')
+            Text('内置规则：' + ReaderReplaceRuleStore.builtinDescription(this.draft) + '。可以限定只对部分书籍生效。')
+              .fontSize(AppFontSize.BODY)
+              .fontColor(this.secondaryTextColor())
+              .width('100%')
+          }
+          .width('100%')
+        } else {
+          this.inputField('规则名称', this.draft.name, '例如：去除章节末广告', (value: string) => {
+            this.draft.name = value;
+            this.refreshDraft();
+          })
+          this.textAreaField('匹配规则', this.draft.pattern, '输入文本或正则表达式', (value: string) => {
+            this.draft.pattern = value;
+            this.refreshDraft();
+          })
+          this.textAreaField('替换为', this.draft.replacement, '留空表示删除匹配内容', (value: string) => {
+            this.draft.replacement = value;
+            this.refreshDraft();
+          })
 
-        Row({ space: AppSpacing.MD }) {
-          this.titleOptionChip()
-          this.contentOptionChip()
-          Blank()
-          this.regexOptionChip()
+          Row({ space: AppSpacing.MD }) {
+            this.titleOptionChip()
+            this.contentOptionChip()
+            Blank()
+            this.regexOptionChip()
+          }
+          .width('100%')
         }
-        .width('100%')
 
         this.textAreaField('特定范围', this.draft.scope, '书名、作者、书源或地址；留空表示全部', (value: string) => {
           this.draft.scope = value;
@@ -1026,9 +1052,11 @@ struct ReaderReplaceRulesPage {
           this.draft.excludeScope = value;
           this.refreshDraft();
         })
-        this.inputField('超时 (ms)', this.timeoutDraft, '3000', (value: string) => {
-          this.timeoutDraft = value.replace(/[^0-9]/g, '').substring(0, 5);
-        }, InputType.Number)
+        if (!ReaderReplaceRuleStore.isBuiltin(this.draft)) {
+          this.inputField('超时 (ms)', this.timeoutDraft, '3000', (value: string) => {
+            this.timeoutDraft = value.replace(/[^0-9]/g, '').substring(0, 5);
+          }, InputType.Number)
+        }
 
         Row({ space: AppSpacing.LG }) {
           Button('取消', { type: ButtonType.Capsule })
@@ -1212,13 +1240,7 @@ struct ReaderReplaceRulesPage {
 
   @Builder
   ruleActionDialog() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor(this.appDarkMode ? '#52000000' : '#26FFFFFF')
-        .backdropBlur(ThemeRuntime.glassBlur('popover', 18))
-        .onClick(() => this.closeRuleActions())
+    Scroll() {
       Column() {
         this.contextActionItem($r('sys.symbol.square_and_pencil'), '修改', this.primaryTextColor(), () => {
           const rule = this.actionRule();
@@ -1237,42 +1259,26 @@ struct ReaderReplaceRulesPage {
           this.closeRuleActions();
           if (rule) this.enterRuleSelectionMode(rule.id);
         })
-        this.contextActionItem($r('sys.symbol.trash'), '删除', ThemeRuntime.dangerColor(this.appDarkMode), () => {
-          const rule = this.actionRule();
-          this.closeRuleActions();
-          if (rule) this.confirmDelete(rule);
-        })
+        if (!this.actionRuleBuiltin()) {
+          this.contextActionItem($r('sys.symbol.trash'), '删除', ThemeRuntime.dangerColor(this.appDarkMode), () => {
+            const rule = this.actionRule();
+            this.closeRuleActions();
+            if (rule) this.confirmDelete(rule);
+          })
+        }
+
       }
-      .width(158)
-      .padding({ top: AppSpacing.SM, bottom: AppSpacing.SM })
-      .backgroundColor(ThemeRuntime.glassPanelColor(this.appDarkMode, '', 'panel'))
-      .borderRadius(ThemeRuntime.glassCornerRadius(14, 'panel'))
-      .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-      .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'panel') })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('panel'), color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'panel'), offsetX: ThemeRuntime.glassShadowOffsetX('panel'), offsetY: ThemeRuntime.glassShadowOffsetY('panel') })
-      .position({ x: this.contextMenuLeft(158), y: this.contextMenuTop(188) })
+      .width('100%')
     }
-    .width('100%')
-    .height('100%')
+    .width(188)
+    .constraintSize({ maxHeight: ImmersiveMaterialRuntime.popupMenuMaxHeight() })
+    .scrollBar(BarState.Off)
+    .padding(ImmersiveMaterialRuntime.POPUP_MENU_PADDING)
   }
 
   @Builder
   contextActionItem(icon: Resource, label: string, color: string, action: () => void) {
-    Row({ space: AppSpacing.MD }) {
-      SymbolGlyph(icon)
-        .fontSize(18)
-        .fontColor([color])
-        .width(24)
-      Text(label)
-        .fontSize(AppFontSize.BODY_LARGE)
-        .fontColor(color)
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(44)
-    .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
-    .alignItems(VerticalAlign.Center)
-    .onClick(action)
+    PopupMenuAction(icon, label, color, action)
   }
 
   filteredRules(): ReaderReplaceRule[] {
@@ -1295,6 +1301,9 @@ struct ReaderReplaceRulesPage {
   }
 
   ruleScopeSummary(rule: ReaderReplaceRule): string {
+    if (ReaderReplaceRuleStore.isBuiltin(rule)) {
+      return rule.scope ? '内置规则 · 限定书籍' : '内置规则';
+    }
     const targets: string[] = [];
     if (rule.applyToTitle) targets.push('标题');
     if (rule.applyToContent) targets.push('正文');
@@ -1377,7 +1386,13 @@ struct ReaderReplaceRulesPage {
 
   async batchDeleteRules(): Promise<void> {
     if (this.selectedRuleIds.length === 0 || this.isBatchOperating) return;
-    const count = this.selectedRuleIds.length;
+    const deletableIds = this.selectedRuleIds.filter((id: number) =>
+      !this.rules.some((rule: ReaderReplaceRule) => rule.id === id && ReaderReplaceRuleStore.isBuiltin(rule)));
+    if (deletableIds.length === 0) {
+      HdsFeedback.showToast('内置规则不能删除，可以禁用');
+      return;
+    }
+    const count = deletableIds.length;
     const result = await promptAction.showDialog({
       title: '删除规则',
       message: `确定删除已选择的 ${count} 条规则吗？`,
@@ -1386,11 +1401,13 @@ struct ReaderReplaceRulesPage {
     if (result.index !== 1) return;
     this.isBatchOperating = true;
     try {
-      const next = this.rules.filter((rule: ReaderReplaceRule) => !this.selectedRuleIds.includes(rule.id));
-      await ReaderReplaceRuleStore.save(getContext(this), next);
-      this.rules = next;
-      this.exitRuleSelectionMode();
-      HdsFeedback.showToast(`已删除 ${count} 条规则`);
+      const ids = [...deletableIds];
+      const next = this.rules.filter((rule: ReaderReplaceRule) => !ids.includes(rule.id));
+      if (await this.dissolveRulesAndSave(ids, next)) {
+        // 列表项的 key 带多选状态，补位动画放完再退出多选，否则其余卡片会整批重建、看不到补位。
+        setTimeout(() => this.exitRuleSelectionMode(), ListDissolve.CLOSE_MS + 40);
+        HdsFeedback.showToast(`已删除 ${count} 条规则`);
+      }
     } finally {
       this.isBatchOperating = false;
     }
@@ -1618,6 +1635,11 @@ struct ReaderReplaceRulesPage {
     return this.rules.find((rule: ReaderReplaceRule) => rule.id === this.actionRuleId);
   }
 
+  actionRuleBuiltin(): boolean {
+    const rule = this.actionRule();
+    return rule ? ReaderReplaceRuleStore.isBuiltin(rule) : false;
+  }
+
   actionRuleEnabled(): boolean {
     const rule = this.actionRule();
     return rule ? rule.enabled : false;
@@ -1630,17 +1652,14 @@ struct ReaderReplaceRulesPage {
     if (Number.isFinite(height) && height > 0) this.contextViewportHeight = height;
   }
 
-  contextMenuLeft(menuWidth: number): number {
-    return Math.max(12, Math.min(this.contextMenuX - 18, this.contextViewportWidth - menuWidth - 12));
-  }
-
-  contextMenuTop(menuHeight: number): number {
-    const below = this.contextMenuY + 12;
-    if (below + menuHeight <= this.contextViewportHeight - this.navBarHeight - 12) return below;
-    return Math.max(this.statusBarHeight + 8, this.contextMenuY - menuHeight - 12);
-  }
-
   async saveDraft(): Promise<void> {
+    if (ReaderReplaceRuleStore.isBuiltin(this.draft)) {
+      // 内置规则只保存书籍范围，其余字段由存储层固定。
+      const next = this.rules.map((rule: ReaderReplaceRule) => rule.id === this.draft.id ?
+        ReaderReplaceRuleStore.cloneRule(this.draft) : rule);
+      await this.finishSaveDraft(next);
+      return;
+    }
     const pattern = (this.draft.pattern || '').trim();
     if (!pattern) {
       HdsFeedback.showToast('请填写匹配规则');
@@ -1669,6 +1688,10 @@ struct ReaderReplaceRulesPage {
     this.draft.timeoutMs = Number.isNaN(timeout) ? 3000 : Math.max(100, Math.min(Math.round(timeout), 10000));
     const next = this.rules.filter((rule: ReaderReplaceRule) => rule.id !== this.draft.id);
     next.push(ReaderReplaceRuleStore.cloneRule(this.draft));
+    await this.finishSaveDraft(next);
+  }
+
+  async finishSaveDraft(next: ReaderReplaceRule[]): Promise<void> {
     await ReaderReplaceRuleStore.save(getContext(this), next);
     this.rules = await ReaderReplaceRuleStore.load(getContext(this), true);
     this.editing = false;
@@ -1687,6 +1710,10 @@ struct ReaderReplaceRulesPage {
   }
 
   async confirmDelete(rule: ReaderReplaceRule): Promise<void> {
+    if (ReaderReplaceRuleStore.isBuiltin(rule)) {
+      HdsFeedback.showToast('内置规则不能删除，可以禁用');
+      return;
+    }
     const result = await promptAction.showDialog({
       title: '删除规则',
       message: `确定删除“${rule.name || '未命名规则'}”吗？`,
@@ -1694,8 +1721,54 @@ struct ReaderReplaceRulesPage {
     });
     if (result.index !== 1) return;
     const next = this.rules.filter((item: ReaderReplaceRule) => item.id !== rule.id);
-    await ReaderReplaceRuleStore.save(getContext(this), next);
-    this.rules = next;
+    await this.dissolveRulesAndSave([rule.id], next);
+  }
+
+  ruleCardElementId(key: string): string {
+    return `replace_rule_card_${key}`;
+  }
+
+  ruleDeleteParticles(): ListDissolveParticles {
+    const particles = new ListDissolveParticles();
+    particles.rootId = 'replace_rules_root';
+    particles.colors = [this.accentColor(), this.primaryTextColor(), this.subTextColor()];
+    particles.elementIdOf = (key: string): string => this.ruleCardElementId(key);
+    particles.show = (bursts: DeleteParticleBurst[]): void => {
+      this.deleteParticleBursts = [...this.deleteParticleBursts, ...bursts];
+    };
+    particles.hide = (ids: number[]): void => {
+      this.deleteParticleBursts = this.deleteParticleBursts.filter((burst: DeleteParticleBurst) => ids.indexOf(burst.id) < 0);
+    };
+    return particles;
+  }
+
+  isRuleDissolving(rule: ReaderReplaceRule): boolean {
+    return this.dissolvingRuleKeys.length > 0 && this.dissolvingRuleKeys.indexOf(`${rule.id}`) >= 0;
+  }
+
+  /** 被删的规则先消散，同时保存；播完在补位动画里换成 next。保存失败时恢复原样。 */
+  async dissolveRulesAndSave(ids: number[], next: ReaderReplaceRule[]): Promise<boolean> {
+    const keys = ids.map((id: number) => `${id}`);
+    // 单条和批量删除都从确认框里点，等它退场再开始。
+    const fade = ListDissolve.fadeOut(this.getUIContext(), keys, (key: string) => {
+      this.dissolvingRuleKeys = [...this.dissolvingRuleKeys, key];
+    }, this.ruleDeleteParticles(), ListDissolve.AFTER_DIALOG_MS);
+    try {
+      await ReaderReplaceRuleStore.save(getContext(this), next);
+    } catch (e) {
+      console.error('删除规则失败:', e);
+      await fade;
+      this.dissolvingRuleKeys = ListDissolve.without(this.dissolvingRuleKeys, keys);
+      HdsFeedback.showToast('删除失败');
+      return false;
+    }
+    await fade;
+    ListDissolve.commit(this.getUIContext(), () => {
+      this.rules = next;
+    }, () => {
+      this.dissolvingRuleKeys = ListDissolve.without(this.dissolvingRuleKeys, keys);
+    });
+    return true;
   }
 
   syncBars(): void {

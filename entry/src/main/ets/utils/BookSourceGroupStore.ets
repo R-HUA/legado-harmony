@@ -1,5 +1,6 @@
 import { Context } from '@kit.AbilityKit';
 import preferences from '@ohos.data.preferences';
+import { SearchExploreSettingsStore } from './SearchExploreSettingsStore';
 
 export class BookSourceGroupStore {
   private static readonly STORE_NAME: string = 'book_source_groups';
@@ -19,7 +20,9 @@ export class BookSourceGroupStore {
       // 旧版本没有记录分组来源：当前没有书源引用的持久分组只能来自用户手动创建。
       userGroups = storedGroups.filter((group: string) => !normalizedSourceGroups.includes(group));
     }
-    const groups = BookSourceGroupStore.normalize(userGroups.concat(normalizedSourceGroups));
+    const activeGroups = BookSourceGroupStore.normalize(userGroups.concat(normalizedSourceGroups));
+    const groups = BookSourceGroupStore.normalize(
+      storedGroups.filter((group: string) => activeGroups.includes(group)).concat(activeGroups));
     await BookSourceGroupStore.save(context, groups, userGroups);
     return groups;
   }
@@ -39,6 +42,11 @@ export class BookSourceGroupStore {
       userGroups.map((group: string) => group === oldName ? newName : group)
     );
     await BookSourceGroupStore.save(context, next, nextUserGroups);
+    try {
+      await SearchExploreSettingsStore.renameChangeSourceGroup(context, oldName, newName);
+    } catch (e) {
+      console.warn('同步换源范围分组名失败:', e);
+    }
     return next;
   }
 
@@ -49,6 +57,26 @@ export class BookSourceGroupStore {
       userGroups.filter((group: string) => group !== groupName)
     );
     await BookSourceGroupStore.save(context, next, nextUserGroups);
+    return next;
+  }
+
+  /** 只读取顺序；发现/搜索只包含部分书源，不能用它们清理全局分组。 */
+  static async loadOrder(context: Context): Promise<string[]> {
+    const store = await preferences.getPreferences(context, BookSourceGroupStore.STORE_NAME);
+    const raw = await store.get(BookSourceGroupStore.KEY_GROUPS, '');
+    const groups = BookSourceGroupStore.decode(typeof raw === 'string' ? raw : '');
+    AppStorage.setOrCreate('bookSourceGroupOrder', JSON.stringify(groups));
+    return groups;
+  }
+
+  static currentOrder(): string[] {
+    return BookSourceGroupStore.decode(AppStorage.get<string>('bookSourceGroupOrder') || '');
+  }
+
+  static async reorder(context: Context, groups: string[]): Promise<string[]> {
+    const next = BookSourceGroupStore.normalize(groups);
+    const userGroups = await BookSourceGroupStore.loadUserGroups(context);
+    await BookSourceGroupStore.save(context, next, userGroups);
     return next;
   }
 
@@ -64,6 +92,7 @@ export class BookSourceGroupStore {
     await store.put(BookSourceGroupStore.KEY_USER_GROUPS, BookSourceGroupStore.encode(userGroups));
     await store.put(BookSourceGroupStore.KEY_USER_GROUPS_READY, true);
     await store.flush();
+    AppStorage.setOrCreate('bookSourceGroupOrder', BookSourceGroupStore.encode(groups));
   }
 
   private static normalize(groups: string[]): string[] {
@@ -74,7 +103,7 @@ export class BookSourceGroupStore {
         result.push(group);
       }
     }
-    return result.sort((a: string, b: string) => a.localeCompare(b));
+    return result;
   }
 
   private static decode(raw: string): string[] {

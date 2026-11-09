@@ -45,6 +45,7 @@ import {
   SyncApiError,
   SyncExchangeBody
 } from './sync.js';
+import { exchangeReadingStats, ReadingStatsRequest } from './readingStats.js';
 import {
   ByteLimitedLruCache,
   decideTtsReplay,
@@ -57,9 +58,10 @@ import {
 } from './ttsTransport.js';
 import {
   cleanupExpiredSyncReceipts,
-  cleanupExpiredTtsUsage
+  cleanupExpiredTtsUsage,
+  cleanupRevokedSyncDevices
 } from './maintenance.js';
-import { InvalidAvatarError, sanitizeAvatarBase64 } from './imageSecurity.js';
+import { registerProfileRoutes } from './profileRoutes.js';
 import { reconcileIapOrders } from './iapReconciliation.js';
 import {
   AccountRateLimitError,
@@ -77,7 +79,15 @@ import {
   sessionExpiresAt,
   signSessionToken
 } from './sessionTokens.js';
-import { AuthBody, RedeemBody, TtsRedeemBody, TtsSynthesizeBody, IapBody, ProfileBody } from './apiModels.js';
+import { AuthBody, RedeemBody, TtsRedeemBody, TtsSynthesizeBody, IapBody } from './apiModels.js';
+import { MembershipError } from './membershipPolicy.js';
+import { membershipPriority, membershipSnapshot } from './membershipService.js';
+import { registerMembershipRoutes } from './membershipRoutes.js';
+import { CloudFileService } from './cloudFileService.js';
+import { registerCloudFileRoutes } from './cloudFileRoutes.js';
+import { createObsStore } from './cloudObjectStore.js';
+import { registerComicColorModelRoutes } from './comicColorModelRoutes.js';
+import { registerLotteryRoutes } from './lotteryRoutes.js';
 
 interface AuthenticatedRequest extends FastifyRequest {
   userId?: string;
@@ -88,7 +98,8 @@ class ApiError extends Error {
   constructor(
     readonly statusCode: number,
     readonly code: string,
-    message: string
+    message: string,
+    readonly retryAfter: number = 0
   ) {
     super(message);
   }
@@ -108,11 +119,10 @@ await app.register(rateLimit, {
   global: true,
   max: config.http.globalRateLimitPerMinute,
   timeWindow: 60_000,
-  errorResponseBuilder: (_request, context) => ({
-    code: 'RATE_LIMITED',
-    message: '请求过于频繁，请稍后重试',
-    retryAfter: context.after
-  })
+  // The plugin throws this value. Return the typed error our handler maps to 429,
+  // with numeric seconds; a plain object would fall through to INTERNAL_ERROR/500.
+  errorResponseBuilder: (_request, context) =>
+    new AccountRateLimitError(Math.max(1, Math.ceil(context.ttl / 1000)))
 });
 type TtsCachedResponse =
   | { kind: 'AUDIO'; audio: Buffer }
@@ -157,8 +167,15 @@ app.addHook('onSend', async (request, reply, payload) => {
 });
 
 app.setErrorHandler((error, _request, reply) => {
-  if (error instanceof ApiError) {
-    void reply.status(error.statusCode).send({ code: error.code, message: error.message });
+  if (error instanceof Error && 'code' in error && error.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+    void reply.status(413).send({ code: 'REQUEST_TOO_LARGE', message: '上传内容过大，请缩小文件后重试' });
+    return;
+  }
+  if (error instanceof ApiError || error instanceof MembershipError) {
+    const retryAfter = error instanceof ApiError ? error.retryAfter : 0;
+    if (retryAfter > 0) reply.header('Retry-After', String(retryAfter));
+    void reply.status(error.statusCode).send({ code: error.code, message: error.message,
+      ...(retryAfter > 0 ? { retryAfter } : {}) });
     return;
   }
   if (error instanceof SyncApiError) {
@@ -183,23 +200,55 @@ app.get('/health', async () => ({
   sisConfigured: isHuaweiSisConfigured()
 }));
 
-app.get<{ Params: { userId: string } }>('/v1/avatars/:userId', async (request, reply) => {
-  const userId = request.params.userId;
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId)) {
-    throw new ApiError(404, 'AVATAR_NOT_FOUND', '头像不存在');
-  }
-  const result = await pool.query<{ avatar_data: Buffer; avatar_mime: string }>(
-    `SELECT avatar_data, avatar_mime
-     FROM app_users
-     WHERE id = $1 AND avatar_data IS NOT NULL`,
-    [userId]
-  );
-  if (!result.rowCount) {
-    throw new ApiError(404, 'AVATAR_NOT_FOUND', '头像不存在');
-  }
-  reply.header('Content-Type', result.rows[0]!.avatar_mime || 'image/jpeg');
-  reply.header('Cache-Control', 'public, max-age=86400');
-  return reply.send(result.rows[0]!.avatar_data);
+registerMembershipRoutes(app, {
+  enabled: config.membershipEnabled,
+  salesPilot: config.membershipSalesPilot,
+  superEnabled: config.cloudFiles.enabled && !!config.cloudFiles.endpoint && !!config.cloudFiles.region &&
+    !!config.cloudFiles.bucket && !!config.cloudFiles.ak && !!config.cloudFiles.sk,
+  authenticate,
+  userId: requiredUserId,
+  transaction: inTransaction,
+  limit: userId => enforceAccountRateLimit(userId, 'membership', config.http.sensitiveRateLimitPerMinute),
+  account: snapshot,
+  wallet: ttsWallet
+});
+
+const obs = config.cloudFiles;
+registerComicColorModelRoutes(app,
+  obs.endpoint && obs.region && obs.bucket && obs.ak && obs.sk ? createObsStore(obs) : null,
+  { authenticate, userId: requiredUserId,
+    limit: userId => enforceAccountRateLimit(userId, 'ai-model-download', 20) });
+const cloudFiles = new CloudFileService(inTransaction,
+  config.membershipEnabled && obs.enabled && obs.endpoint && obs.region && obs.bucket && obs.ak && obs.sk
+    ? createObsStore(obs) : null);
+registerCloudFileRoutes(app, cloudFiles, { authenticate, userId: requiredUserId,
+  limit: userId => enforceAccountRateLimit(userId, 'cloud-files', 120) });
+const cloudMaintenance = setInterval(() => {
+  void cloudFiles.maintenance().catch(error => app.log.error(error, 'cloud file cleanup failed'));
+  if (config.membershipEnabled) void pool.query(`DELETE FROM membership_quotes WHERE id IN (
+    SELECT q.id FROM membership_quotes q WHERE q.expires_at < now()-interval '1 day'
+      AND NOT EXISTS(SELECT 1 FROM membership_orders o WHERE o.quote_id=q.id) LIMIT 1000
+  )`).catch(error => app.log.error(error, 'membership quote cleanup failed'));
+  void pool.query(`DELETE FROM lottery_web_verifications WHERE id IN (
+    SELECT id FROM lottery_web_verifications WHERE expires_at < now()-interval '1 day' LIMIT 1000)`)
+    .then(() => pool.query(`DELETE FROM lottery_web_sessions WHERE token_hash IN (
+      SELECT token_hash FROM lottery_web_sessions WHERE expires_at < now() LIMIT 1000)`))
+    .catch(error => app.log.error(error, 'lottery session cleanup failed'));
+}, 60000);
+cloudMaintenance.unref();
+app.addHook('onClose', async () => { clearInterval(cloudMaintenance); });
+
+registerLotteryRoutes(app, {
+  campaignId: config.lottery.campaignId,
+  pageOrigin: config.lottery.pageOrigin,
+  transaction: inTransaction
+});
+
+registerProfileRoutes(app, {
+  db: pool, membershipEnabled: config.membershipEnabled,
+  authenticate, userId: requiredUserId, transaction: inTransaction,
+  limit: userId => enforceAccountRateLimit(userId, 'profile', config.http.sensitiveRateLimitPerMinute),
+  account: snapshot
 });
 
 app.post<{ Body: AuthBody }>('/v1/auth/huawei', {
@@ -316,6 +365,14 @@ app.post<{ Body: SyncExchangeBody }>(
   }
 );
 
+app.post<{ Body: ReadingStatsRequest }>('/v1/sync/reading-stats', {
+  preHandler: authenticate, bodyLimit: 1024 * 1024
+}, async request => {
+  const userId = requiredUserId(request);
+  await enforceAccountRateLimit(userId, 'reading-stats-exchange', config.http.syncRateLimitPerMinute);
+  return inTransaction(client => exchangeReadingStats(client, userId, request.body));
+});
+
 app.post('/v1/auth/logout', { preHandler: authenticate }, async (request, reply) => {
   const sessionId = (request as AuthenticatedRequest).sessionId!;
   await pool.query(
@@ -361,60 +418,6 @@ app.post<{ Params: { deviceId: string } }>(
   async (request, reply) => {
     await revokeSyncDevice(requiredUserId(request), request.params.deviceId);
     return reply.status(204).send();
-  }
-);
-
-app.post<{ Body: ProfileBody }>(
-  '/v1/me/profile',
-  { preHandler: authenticate },
-  async (request) => {
-    const userId = requiredUserId(request);
-    const displayName = request.body?.displayName?.trim() || '';
-    if (!displayName || Array.from(displayName).length > 30 || /[\u0000-\u001f\u007f]/.test(displayName)) {
-      throw new ApiError(400, 'INVALID_DISPLAY_NAME', '昵称应为 1 至 30 个字符');
-    }
-
-    const removeAvatar = request.body?.removeAvatar === true;
-    const avatarBase64 = request.body?.avatarBase64?.trim() || '';
-    let avatarData: Buffer | null = null;
-    if (!removeAvatar && avatarBase64) {
-      try {
-        avatarData = await sanitizeAvatarBase64(avatarBase64);
-      } catch (error) {
-        if (error instanceof InvalidAvatarError) {
-          throw new ApiError(400, 'INVALID_AVATAR', error.message);
-        }
-        throw error;
-      }
-    }
-
-    await inTransaction(async (client) => {
-      if (removeAvatar) {
-        await client.query(
-          `UPDATE app_users
-           SET display_name = $2, avatar_url = '', avatar_data = NULL,
-               avatar_mime = NULL, profile_customized = TRUE, updated_at = now()
-           WHERE id = $1`,
-          [userId, displayName]
-        );
-      } else if (avatarData) {
-        await client.query(
-          `UPDATE app_users
-           SET display_name = $2, avatar_url = '', avatar_data = $3,
-               avatar_mime = 'image/jpeg', profile_customized = TRUE, updated_at = now()
-           WHERE id = $1`,
-          [userId, displayName, avatarData]
-        );
-      } else {
-        await client.query(
-          `UPDATE app_users
-           SET display_name = $2, profile_customized = TRUE, updated_at = now()
-           WHERE id = $1`,
-          [userId, displayName]
-        );
-      }
-    });
-    return snapshot(pool, userId);
   }
 );
 
@@ -725,7 +728,7 @@ app.post<{ Body: TtsSynthesizeBody }>(
         const statusCode = error.code === 'TTS_RATE_LIMITED'
           ? 429
           : error.code === 'TTS_DAILY_BUDGET_EXHAUSTED' ? 503 : 409;
-        throw new ApiError(statusCode, error.code, error.message);
+        throw new ApiError(statusCode, error.code, error.message, statusCode === 429 ? 2 : 0);
       }
       throw error;
     }
@@ -769,13 +772,14 @@ app.post<{ Body: TtsSynthesizeBody }>(
 
     let releaseTtsSlot: (() => void) | null = null;
     try {
-      releaseTtsSlot = await ttsConcurrency.acquire(userId);
+      const priority = config.membershipEnabled ? await membershipPriority(pool, userId) : false;
+      releaseTtsSlot = await ttsConcurrency.acquire(userId, priority);
     } catch (error) {
       if (!reservation.duplicate) {
         await refundTtsUsage(reservation.usage.id, 'TTS_SERVER_BUSY');
       }
       if (error instanceof TtsServerBusyError) {
-        throw new ApiError(503, 'TTS_SERVER_BUSY', error.message);
+        throw new ApiError(503, 'TTS_SERVER_BUSY', error.message, 2);
       }
       throw error;
     }
@@ -1108,7 +1112,7 @@ async function ttsWallet(db: Queryable, userId: string) {
     `SELECT
        tier,
        COALESCE(SUM(remaining_chars), 0)::bigint AS balance,
-       (extract(epoch FROM MIN(expires_at)) * 1000)::bigint AS next_expiry_ms
+       (extract(epoch FROM MIN(CASE WHEN isfinite(expires_at) THEN expires_at END)) * 1000)::bigint AS next_expiry_ms
      FROM tts_quota_grants
      WHERE user_id = $1
        AND remaining_chars > 0
@@ -1171,17 +1175,22 @@ async function snapshot(db: Queryable, userId: string) {
     [userId]
   );
   const row = account.rows[0]!;
+  const membership = config.membershipEnabled ? await membershipSnapshot(db, userId) : null;
+  const memberThemes = membership?.active ? await db.query<{ theme_id: string }>(
+    "SELECT theme_id FROM theme_catalog WHERE member_included = TRUE AND acquisition = 'POINTS'") : null;
   return {
     userId: row.id,
     displayName: row.display_name,
     avatarUrl: row.has_custom_avatar
-      ? `${config.publicBaseUrl}/v1/avatars/${row.id}?v=${row.updated_at_ms}`
+      ? `${config.publicBaseUrl}/v1/avatars/${row.id}?v=${row.updated_at_ms}&a=${membership?.benefits.animatedAvatar ? 1 : 0}`
       : row.avatar_url,
     points: Number(row.balance),
     paidPoints: Number(row.paid_balance),
     promoPoints: Number(row.promo_balance),
     welcomeGranted: row.welcome_granted,
     iapDebtPoints: Number(row.iap_debt_points),
+    membership,
+    memberThemeIds: memberThemes?.rows.map(item => item.theme_id) ?? [],
     entitlements: entitlements.rows.map((item) => ({
       themeId: item.theme_id,
       expiresAt: Number(item.expires_at_ms)
@@ -1297,13 +1306,14 @@ const ttsReservationTimer = setInterval(() => {
 ttsReservationTimer.unref();
 const runSyncMaintenance = async () => {
   try {
-    const [deletedReceipts, deletedTtsUsage] = await Promise.all([
+    const [deletedReceipts, deletedTtsUsage, deletedDevices] = await Promise.all([
       cleanupExpiredSyncReceipts(config.sync.receiptRetentionDays),
-      cleanupExpiredTtsUsage(config.sis.usageRetentionDays)
+      cleanupExpiredTtsUsage(config.sis.usageRetentionDays),
+      cleanupRevokedSyncDevices()
     ]);
-    if (deletedReceipts > 0 || deletedTtsUsage > 0) {
+    if (deletedReceipts > 0 || deletedTtsUsage > 0 || deletedDevices > 0) {
       app.log.info(
-        { deletedReceipts, deletedTtsUsage },
+        { deletedReceipts, deletedTtsUsage, deletedDevices },
         'deleted expired non-essential history'
       );
     }

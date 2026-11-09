@@ -12,10 +12,14 @@ import { SystemDialogSession } from '../utils/SystemDialogSession';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
+import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
+import { CollapsingHeader } from '../utils/CollapsingHeader';
 
 @Entry
 @Component
 struct SyncDevicesPage {
+  @State headerCollapse: number = 0;
+  private headerScroller: Scroller = new Scroller();
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
@@ -62,7 +66,7 @@ struct SyncDevicesPage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       // 列表铺满整页并从顶栏下方滚过去，上下留白由列表里的占位项提供。
-      PageScaffold({ title: '同步设备', scrollable: false, edgeToEdge: true, content: () => {
+      PageScaffold({ title: '同步设备', scrollable: false, externalCollapse: this.headerCollapse, edgeToEdge: true, content: () => {
         this.pageContent()
       }, actions: () => {
         this.titleActions()
@@ -77,7 +81,7 @@ struct SyncDevicesPage {
 
   @Builder
   pageContent() {
-    List({ space: AppSpacing.MD }) {
+    List({ scroller: this.headerScroller, space: AppSpacing.MD }) {
       ListItem() {
         Row()
           .width('100%')
@@ -187,16 +191,29 @@ struct SyncDevicesPage {
     .width('100%')
     .height('100%')
     .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .onDidScroll((yOffset: number) => {
+      this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+        this.headerScroller.currentOffset().yOffset);
+    })
+    .onScrollStop(() => {
+      const target = CollapsingHeader.settle(this.headerCollapse, this.headerScroller.currentOffset().yOffset);
+      if (target !== this.headerCollapse) {
+        animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+          this.headerCollapse = target;
+        });
+      }
+    })
   }
 
   @Builder
   titleActions() {
-    SymbolGlyph($r('sys.symbol.arrow_clockwise'))
-      .fontSize(20)
-      .fontColor([this.accentColor()])
-      .width(48)
-      .height(48)
-      .onClick(() => this.loadDevices())
+    ImmersiveHeaderAction({
+      icon: $r('sys.symbol.arrow_clockwise'),
+      tint: this.accentColor(),
+      accessibilityLabel: '刷新设备列表',
+      onTap: () => this.loadDevices()
+    })
+      .margin({ right: AppSpacing.XL })
   }
 
   @Builder

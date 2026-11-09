@@ -1,4 +1,5 @@
 import { router } from '@kit.ArkUI';
+import { HomeRoute } from '../utils/HomeRoute';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RecentReadShortcut } from '../utils/RecentReadShortcut';
 import { ReaderFontBootstrap } from '../utils/ReaderFontBootstrap';
@@ -6,9 +7,10 @@ import { ReaderSystemFontHelper } from '../utils/ReaderSystemFontHelper';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { LocalBookService } from '../core/book/LocalBookService';
 import { ThemeStartupCover } from '../components/ThemeStartupCover';
-import { ThemeIds } from '../theme/ThemeModels';
+import { ThemeIds, ThemeStartupTextStyle } from '../theme/ThemeModels';
 import { AppThemeSettingsStore } from '../utils/AppThemeSettingsStore';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { CloudAutoSync } from '../account/CloudAutoSync';
 
 @Entry
 @Component
@@ -22,6 +24,8 @@ struct StartupPage {
   @StorageLink('appCustomDarkStartupTitle') customDarkStartupTitle: string = '开源轻页';
   @StorageLink('appCustomLightStartupSubtitle') customLightStartupSubtitle: string = '';
   @StorageLink('appCustomDarkStartupSubtitle') customDarkStartupSubtitle: string = '';
+  @StorageLink('appCustomLightStartupText') customLightStartupTextRaw: string = '';
+  @StorageLink('appCustomDarkStartupText') customDarkStartupTextRaw: string = '';
   @StorageLink('pendingLocalBookImportNonce') @Watch('onPendingLocalBookImportChanged')
   pendingLocalBookImportNonce: number = 0;
   private jumpTimer: number = -1;
@@ -90,8 +94,14 @@ struct StartupPage {
     }
     if (this.hasPendingBookSourceImport()) {
       // Keep a real home route under the external-import page so Back returns to the app.
-      await router.replaceUrl({ url: 'pages/Index' });
+      await HomeRoute.replaceWithHome(this.getUIContext().getRouter());
       await router.pushUrl({ url: 'pages/BookSource' });
+      return;
+    }
+    if (AppStorage.get<string>('pendingThemeImportUri')) {
+      // 主题页打开时读取待导入的主题包。
+      await HomeRoute.replaceWithHome(this.getUIContext().getRouter());
+      await router.pushUrl({ url: 'pages/ThemeSettings' });
       return;
     }
     if (!RecentReadShortcut.isPending()) {
@@ -99,7 +109,7 @@ struct StartupPage {
       return;
     }
     try {
-      const opened = await RecentReadShortcut.openPending(getContext(this), true);
+      const opened = await RecentReadShortcut.openPending(true);
       if (!opened) {
         await this.replaceToIndex();
       }
@@ -130,6 +140,7 @@ struct StartupPage {
     }
     try {
       const book = await LocalBookService.importExternalBook(getContext(this), uri, format, sourceName);
+      CloudAutoSync.schedule(getContext(this), 5000);
       const opened = await RecentReadShortcut.openBook(book.bookUrl, true);
       if (!opened) await this.replaceToIndex();
     } catch (e) {
@@ -142,7 +153,7 @@ struct StartupPage {
 
   async replaceToIndex(): Promise<void> {
     try {
-      await router.replaceUrl({ url: 'pages/Index' });
+      await HomeRoute.replaceWithHome(this.getUIContext().getRouter());
     } catch (e) {
       console.error('跳转首页失败:', e);
     }
@@ -158,7 +169,11 @@ struct StartupPage {
         customImagePath: this.customStartupImage(),
         titleOverride: this.customStartupTitle(),
         subtitleOverride: this.customStartupSubtitle(),
-        explicitText: this.appThemeId === ThemeIds.CUSTOM
+        explicitText: this.appThemeId === ThemeIds.CUSTOM,
+        titleColor: this.startupTextStyle().titleColor,
+        subtitleColor: this.startupTextStyle().subtitleColor,
+        titleSize: this.startupTextStyle().titleSize,
+        subtitleSize: this.startupTextStyle().subtitleSize
       })
     }
     .width('100%')
@@ -174,6 +189,12 @@ struct StartupPage {
   customStartupImage(): string {
     if (this.appThemeId !== ThemeIds.CUSTOM) return '';
     return this.appDarkMode ? this.customDarkStartupImagePath : this.customLightStartupImagePath;
+  }
+
+  startupTextStyle(): ThemeStartupTextStyle {
+    if (this.appThemeId !== ThemeIds.CUSTOM) return new ThemeStartupTextStyle();
+    return AppThemeSettingsStore.parseStartupText(this.appDarkMode ? this.customDarkStartupTextRaw :
+      this.customLightStartupTextRaw);
   }
 
   customStartupTitle(): string {

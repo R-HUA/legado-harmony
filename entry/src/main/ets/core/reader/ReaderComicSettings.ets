@@ -1,4 +1,5 @@
 import { Context } from '@kit.AbilityKit';
+import { ReaderPageTurnAnimation } from './ReaderPageTurnAnimation';
 import preferences from '@ohos.data.preferences';
 
 /** 漫画阅读方式。条漫为上下连续滚动；ltr/rtl 为单页左右翻页（rtl 为日漫的从右往左）。 */
@@ -61,9 +62,10 @@ export class ReaderComicOption {
 /** 漫画模式的全局设置。阅读方式另有按书覆盖（书籍变量 readerComicReadingMode）。 */
 export class ReaderComicSettings {
   static readonly PAGE_GAPS: number[] = [0, 6, 16];
-  static readonly PRELOAD_COUNTS: number[] = [0, 3, 5, 10];
 
   defaultMode: string = ReaderComicMode.WEBTOON;
+  /** 横向漫画翻页动画，独立保存，避免改变小说的动画偏好。 */
+  pageTurnAnimation: number = ReaderPageTurnAnimation.SLIDE;
   background: string = ReaderComicBackground.BLACK;
   pageGap: number = 0;
   fit: string = ReaderComicFit.WIDTH;
@@ -75,12 +77,26 @@ export class ReaderComicSettings {
   doubleTapZoom: boolean = true;
   /** 横屏或宽屏时翻页模式并排两页。 */
   dualPage: boolean = true;
-  /** 网络图片向后预先下载的张数。 */
-  preloadCount: number = 5;
+  /** 端侧 AI 超分（会员功能）；会员到期后保留开关值，续费后自动恢复。 */
+  superResolution: boolean = false;
+  /** AI 着色与繁→简按书保存；这两项是没单独设置过的书用的默认值。 */
+  colorDefault: boolean = false;
+  textConvertDefault: boolean = false;
+
+  /** 书籍变量 readerComicColorEnabled：'1' 开、'0' 关，空表示没单独设置过、跟随默认值。 */
+  static bookColorEnabled(value: string, settings: ReaderComicSettings): boolean {
+    return value === '1' || (value !== '0' && settings.colorDefault);
+  }
+
+  /** 书籍变量 readerComicTextConvert：'t2s' 开、'off' 关，空表示没单独设置过、跟随默认值。 */
+  static bookTextConvert(value: string, settings: ReaderComicSettings): boolean {
+    return value === 't2s' || (value !== 'off' && settings.textConvertDefault);
+  }
 
   copy(): ReaderComicSettings {
     const next = new ReaderComicSettings();
     next.defaultMode = this.defaultMode;
+    next.pageTurnAnimation = this.pageTurnAnimation;
     next.background = this.background;
     next.pageGap = this.pageGap;
     next.fit = this.fit;
@@ -88,13 +104,16 @@ export class ReaderComicSettings {
     next.infoBar = this.infoBar;
     next.doubleTapZoom = this.doubleTapZoom;
     next.dualPage = this.dualPage;
-    next.preloadCount = this.preloadCount;
+    next.superResolution = this.superResolution;
+    next.colorDefault = this.colorDefault;
+    next.textConvertDefault = this.textConvertDefault;
     return next;
   }
 
   toJson(): string {
     const record: Record<string, Object> = {
       'defaultMode': this.defaultMode,
+      'pageTurnAnimation': this.pageTurnAnimation,
       'background': this.background,
       'pageGap': this.pageGap,
       'fit': this.fit,
@@ -102,7 +121,9 @@ export class ReaderComicSettings {
       'infoBar': this.infoBar,
       'doubleTapZoom': this.doubleTapZoom,
       'dualPage': this.dualPage,
-      'preloadCount': this.preloadCount
+      'superResolution': this.superResolution,
+      'colorDefault': this.colorDefault,
+      'textConvertDefault': this.textConvertDefault
     };
     return JSON.stringify(record);
   }
@@ -113,6 +134,8 @@ export class ReaderComicSettings {
     try {
       const record = JSON.parse(raw) as Record<string, Object>;
       settings.defaultMode = ReaderComicMode.normalize(String(record['defaultMode'] ?? ''));
+      settings.pageTurnAnimation = ReaderPageTurnAnimation.normalize(Number(record['pageTurnAnimation'] ??
+        ReaderPageTurnAnimation.SLIDE));
       settings.background = ReaderComicBackground.normalize(String(record['background'] ?? ''));
       settings.pageGap = ReaderComicSettings.nearest(Number(record['pageGap']), ReaderComicSettings.PAGE_GAPS, 0);
       settings.fit = ReaderComicFit.normalize(String(record['fit'] ?? ''));
@@ -120,8 +143,9 @@ export class ReaderComicSettings {
       settings.infoBar = record['infoBar'] !== false;
       settings.doubleTapZoom = record['doubleTapZoom'] !== false;
       settings.dualPage = record['dualPage'] !== false;
-      settings.preloadCount = ReaderComicSettings.nearest(Number(record['preloadCount']),
-        ReaderComicSettings.PRELOAD_COUNTS, 5);
+      settings.superResolution = record['superResolution'] === true;
+      settings.colorDefault = record['colorDefault'] === true;
+      settings.textConvertDefault = record['textConvertDefault'] === true;
     } catch (_) {
     }
     return settings;

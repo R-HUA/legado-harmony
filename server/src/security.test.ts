@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import sharp from 'sharp';
+import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
+import Fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 
 process.env.DATABASE_URL ||= 'postgresql://test:test@127.0.0.1:5432/test';
 process.env.SESSION_SECRET ||= 'test-session-secret-that-is-long-enough';
@@ -21,6 +25,35 @@ const {
 } = await import('./iap.js');
 const { InvalidAvatarError, sanitizeAvatarBase64 } = await import('./imageSecurity.js');
 const { calculateIapReversal } = await import('./iapReconciliation.js');
+const { AccountRateLimitError } = await import('./security.js');
+
+test('production global limiter and error handler return numeric 429 retry guidance, not 500', async t => {
+  const app = Fastify();
+  t.after(() => app.close());
+  const source = await readFile(new URL('./index.js', import.meta.url), 'utf8');
+  const registrationStart = source.indexOf('await app.register(rateLimit, {');
+  const registration = source.slice(registrationStart + 6, source.indexOf('\n});', registrationStart) + 4);
+  const handlerStart = source.indexOf('app.setErrorHandler(');
+  const handler = source.slice(handlerStart, source.indexOf('\n});', handlerStart) + 4);
+  assert.ok(registrationStart >= 0 && handlerStart >= 0);
+  const sandbox = vm.createContext({ app, rateLimit, AccountRateLimitError,
+    config: { http: { globalRateLimitPerMinute: 2 } },
+    ApiError: class extends Error {}, MembershipError: class extends Error {}, SyncApiError: class extends Error {},
+    Error });
+  await vm.runInContext(registration, sandbox);
+  vm.runInContext(handler, sandbox);
+  app.post('/v1/cloud-files/test/upload-ticket', async () => ({ ready: false }));
+  for (let n = 0; n < 2; n++) {
+    assert.equal((await app.inject({ method: 'POST', url: '/v1/cloud-files/test/upload-ticket' })).statusCode, 200);
+  }
+  const limited = await app.inject({ method: 'POST', url: '/v1/cloud-files/test/upload-ticket' });
+  assert.equal(limited.statusCode, 429);
+  const body = limited.json();
+  assert.equal(body.code, 'RATE_LIMITED');
+  assert.equal(typeof body.retryAfter, 'number');
+  assert.ok(body.retryAfter >= 1 && body.retryAfter <= 60);
+  assert.equal(Number(limited.headers['retry-after']), body.retryAfter);
+});
 
 test('IAP purchase states fail closed', () => {
   assert.equal(isDeliverablePurchaseState({ purchaseState: 0 }), true);

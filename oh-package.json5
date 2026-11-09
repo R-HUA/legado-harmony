@@ -1,14 +1,16 @@
 {
   "modelVersion": "6.1.0",
-  "name": "legado-harmony",
-  "version": "4.0.919",
+  "name": "qingye-reader",
+  "version": "4.6.007",
   "description": "开源轻页",
   "main": "",
   "author": "李其健",
-  "homepage": "https://github.com/wip3l/legado-harmony",
-  "repository": "https://github.com/wip3l/legado-harmony.git",
+  "homepage": "https://github.com/wip3l/qingye-reader",
+  "repository": "https://github.com/wip3l/qingye-reader.git",
   "license": "GPL-3.0",
   "dependencies": {},
-  "devDependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.25"
+  },
   "scripts": {}
 }

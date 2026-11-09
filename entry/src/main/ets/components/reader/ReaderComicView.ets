@@ -1,11 +1,21 @@
+import { ReaderCacheCoordinator } from '../../core/book/ReaderCacheCoordinator';
+import { ReaderImageCache } from '../../core/book/ReaderImageCache';
+import { ReaderImageRecovery } from '../../core/book/ReaderImageRecovery';
 import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
 import image from '@ohos.multimedia.image';
 import { LocalBookService } from '../../core/book/LocalBookService';
+import { ReaderComicColorSession, ComicColorCandidate } from '@legado/aiengine';
 import { ReaderImageMarker } from '../../core/book/ReaderImageMarker';
+import { ReaderImageResults } from '../../core/book/ReaderImageResults';
 import { ReaderContinuousDataSource, ReaderScrollItem } from '../../core/reader/ReaderDataSources';
+import { ReaderComicSuperResolution } from '@legado/aiengine';
+import { ComicChineseConverter } from '@legado/aiengine';
+import { ComicTextLayer, ComicTextPatch } from '@legado/aiengine';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { AppSpacing } from '../../theme/AppSpacing';
+import { ReaderComicProcessing } from '../../core/reader/ReaderComicProcessing';
+import { ReaderComicProcessingBadge } from './ReaderComicProcessingBadge';
 
 /** 图片宽高比缓存与本地文件尺寸探测，漫画视图和小说滚动模式里的整页插图共用。 */
 export class ReaderComicImageSizes {
@@ -30,12 +40,18 @@ export class ReaderComicImageSizes {
     return ratio;
   }
 
+  /** 不是本地文件（网络地址或内嵌 data: 数据），不能按文件探测尺寸。 */
   static isRemote(source: string): boolean {
     return /^(?:https?:|data:)/i.test(source || '');
   }
 
+  /** 真正要走网络的地址；data: 内嵌数据不算，出错时不能提示成网络问题。 */
+  static isNetwork(source: string): boolean {
+    return /^https?:/i.test(source || '');
+  }
+
   static uri(source: string): string {
-    if (!source) return '';
+    if (!source || ReaderImageMarker.failureReason(source) || ReaderImageMarker.pendingRaw(source)) return '';
     if (/^(?:https?:|data:|file:)/i.test(source)) return source;
     try {
       return fileUri.getUriFromPath(source);
@@ -89,6 +105,21 @@ export class ReaderComicImageSizes {
 export class ReaderComicRetryRegistry {
   private readonly handlers: Map<string, () => void> = new Map<string, () => void>();
   private readonly reloaders: Map<string, () => void> = new Map<string, () => void>();
+  private readonly imageStates: Map<string, () => number> = new Map<string, () => number>();
+
+  registerState(key: string, state: () => number): void {
+    this.imageStates.set(key, state);
+  }
+
+  unregisterState(key: string, state: () => number): void {
+    if (this.imageStates.get(key) === state) this.imageStates.delete(key);
+  }
+
+  /** 0 等待解码或挂载，1 可读，-1 加载失败。 */
+  imageState(key: string): number {
+    const state = this.imageStates.get(key);
+    return state ? state() : 0;
+  }
 
   register(key: string, handler: () => void): void {
     this.handlers.set(key, handler);
@@ -127,6 +158,7 @@ export class ReaderComicRetryRegistry {
  */
 @Component
 export struct ReaderComicImageItem {
+  @StorageProp('readerAiProcessingIndicatorEnabled') readerAiProcessingIndicatorEnabled: boolean = true;
   @Prop @Watch('onMarkerChanged') marker: string = '';
   @Prop viewWidth: number = 0;
   @Prop viewHeight: number = 0;
@@ -142,7 +174,20 @@ export struct ReaderComicImageItem {
   @Prop hintColor: string = '#99FFFFFF';
   /** 失败图片登记重试入口用的键；为空时失败提示自身响应点击。 */
   @Prop retryKey: string = '';
+  /** 在屏幕上时用端侧超分替换低清原图（会员功能，调用方已判断权限）。 */
+  @Prop @Watch('onSuperResolutionChanged') superResolution: boolean = false;
+  /** 在屏幕上时识别图中文字，把繁体改写成简体叠在图上（调用方已判断系统能力）。 */
+  @Prop @Watch('onTextConvertChanged') textConvert: boolean = false;
   retryRegistry: ReaderComicRetryRegistry | null = null;
+  processing: ReaderComicProcessing | null = null;
+  private processingOwner: number = ReaderComicProcessing.owner();
+  private enhancing: boolean = false;
+  private translating: boolean = false;
+  colorSession: ReaderComicColorSession | null = null;
+  @State private colorUri: string = '';
+  @State private colorShown: boolean = false;
+  private colorDecoded: boolean = false;
+  private unsubscribeColor: (() => void) | null = null;
   /** 服务器拒绝了这张图（多为签名地址过期）。 */
   onDenied: () => void = () => {};
   @State private ratio: number = 0;
@@ -151,24 +196,74 @@ export struct ReaderComicImageItem {
   @State private loadToken: number = 0;
   /** 服务器拒绝（401/403），多为签名地址过期，重试无用，需要重新抓取本章。 */
   @State private denied: boolean = false;
-  private source: string = '';
+  /** 正文获取时这张图已下载/解密失败：只显示原因，不再加载。 */
+  @State private failure: string = '';
+  /** 超分结果地址；叠在原图上，解码完成后淡入，原图留在下面兜底。 */
+  @State private enhancedUri: string = '';
+  @State private enhancedShown: boolean = false;
+  /** 刚换成超分图时在角上短暂提示一下。 */
+  @State private enhancedBadge: boolean = false;
+  /** 繁→简文字层，坐标按原图像素；叠在原图和超分图之上。 */
+  @State private textPatches: ComicTextPatch[] = [];
+  @State private textImageWidth: number = 0;
+  @State private textImageHeight: number = 0;
+  private textTicket: number = 0;
+  private textAttempted: boolean = false;
+  private visible: boolean = false;
+  /** 仍在列表里（屏幕上或列表预先挂载的相邻项）；超分在此期间都可以进行。 */
+  private mounted: boolean = false;
+  /** 每次重置加一，旧任务的结果作废。 */
+  private enhanceTicket: number = 0;
+  private enhanceAttempted: boolean = false;
+  /** 当前显示的图片来源；渐进加载还没有结果时为空串，显示加载占位。 */
+  @State private source: string = '';
+  /** 渐进加载的图片的原始值，订阅 ReaderImageResults 等结果；不是渐进加载时为空串。 */
+  private pendingRaw: string = '';
+  private releaseCacheFile: (() => void) | null = null;
+  private recovering: boolean = false;
+  private releaseColorCache: (() => void) | null = null;
+  private releaseEnhancedCache: (() => void) | null = null;
+  private unsubscribePending: (() => void) | null = null;
+  /** 已向 ReaderImageResults 登记为屏幕上正等着的图片。 */
+  private pendingVisibleMarked: boolean = false;
+  /** 已登记为屏幕附近的图片：条漫列表只挂载可见区及其缓存项，挂载着就说明马上可能看到。 */
+  private pendingNearMarked: boolean = false;
   private registeredRetryKey: string = '';
   private readonly retryHandler: () => void = (): void => this.retry();
   private readonly reloadHandler: () => void = (): void => this.reload();
+  private readonly imageStateHandler: () => number = (): number =>
+    this.broken || !!this.failure ? -1 : (this.loaded ? 1 : 0);
   private registeredReloadKey: string = '';
 
   aboutToAppear(): void {
+    this.mounted = true;
     this.resetForMarker();
+    this.unsubscribeColor = this.colorSession?.subscribe((): void => this.syncColor()) || null;
+    this.syncColor();
     if (this.retryKey && this.retryRegistry) {
       this.registeredReloadKey = this.retryKey;
       this.retryRegistry.registerReload(this.retryKey, this.reloadHandler);
+      this.retryRegistry.registerState(this.retryKey, this.imageStateHandler);
     }
   }
 
   aboutToDisappear(): void {
+    this.unsubscribeColor?.();
+    this.unsubscribeColor = null;
+    this.mounted = false;
+    this.releaseCacheFile?.();
+    this.releaseCacheFile = null;
+    this.releaseColorCache?.(); this.releaseColorCache = null;
+    this.releaseEnhancedCache?.(); this.releaseEnhancedCache = null;
+    this.visible = false;
+    this.syncProcessing();
+    this.releasePending();
+    this.enhanceTicket++;
+    this.textTicket++;
     this.unregisterRetry();
     if (this.registeredReloadKey && this.retryRegistry) {
       this.retryRegistry.unregisterReload(this.registeredReloadKey, this.reloadHandler);
+      this.retryRegistry.unregisterState(this.registeredReloadKey, this.imageStateHandler);
     }
   }
 
@@ -181,8 +276,126 @@ export struct ReaderComicImageItem {
     this.broken = false;
     this.denied = false;
     this.loaded = false;
+    this.resetEnhancement();
+    this.resetTextLayer();
     this.unregisterRetry();
     this.loadToken++;
+  }
+
+  onSuperResolutionChanged(): void {
+    this.resetEnhancement();
+    this.maybeEnhance();
+  }
+
+  private syncColor(): void {
+    const uri = this.colorSession?.uri(this.source) || '';
+    if (uri && this.colorSession?.moving()) return;
+    if (uri !== this.colorUri) { this.releaseColorCache?.(); this.releaseColorCache = ReaderCacheCoordinator.retainFile(uri); this.colorUri = uri; this.colorShown = false; this.colorDecoded = false; }
+    else if (uri && this.colorDecoded) this.colorShown = true;
+  }
+
+  private resetEnhancement(): void {
+    this.releaseEnhancedCache?.(); this.releaseEnhancedCache = null;
+    this.enhancing = false;
+    this.syncProcessing();
+    this.enhanceTicket++;
+    this.enhanceAttempted = false;
+    this.enhancedUri = '';
+    this.enhancedShown = false;
+    this.enhancedBadge = false;
+  }
+
+  onTextConvertChanged(): void {
+    this.resetTextLayer();
+    this.maybeConvertText();
+  }
+
+  private resetTextLayer(): void {
+    this.translating = false;
+    this.syncProcessing();
+    this.textTicket++;
+    this.textAttempted = false;
+    this.textPatches = [];
+    this.textImageWidth = 0;
+    this.textImageHeight = 0;
+  }
+
+  /** 原图显示出来且在屏幕上时排队识别，每张图只试一次；识别不了或没有可改写的字就保持原图。 */
+  private maybeConvertText(): void {
+    if (!this.textConvert || !this.visible || !this.loaded || this.broken || this.failure ||
+      this.textAttempted || this.ratio <= 0 || !this.source) return;
+    this.textAttempted = true;
+    this.translating = true;
+    this.syncProcessing();
+    const ticket = ++this.textTicket;
+    const active = (): boolean => this.visible && this.textConvert && ticket === this.textTicket;
+    ComicChineseConverter.layer(getContext(this), this.source, active).then((layer: ComicTextLayer): void => {
+      if (ticket !== this.textTicket || !this.textConvert || layer.imageWidth <= 0 || layer.imageHeight <= 0) return;
+      this.textImageWidth = layer.imageWidth;
+      this.textImageHeight = layer.imageHeight;
+      this.textPatches = layer.patches;
+    }).catch((error: Error): void => {
+      if (ticket === this.textTicket && error?.message) console.warn(`[ComicText] 繁→简未完成: ${error.message}`);
+    }).finally((): void => {
+      if (ticket !== this.textTicket) return;
+      this.translating = false;
+      this.syncProcessing();
+    });
+  }
+
+  /** 图片实际显示高度（vp）。 */
+  private displayHeight(): number {
+    if (!this.boxed()) return this.imageHeight();
+    return this.ratio > 0 ? this.displayWidth() * this.ratio : this.boxHeight;
+  }
+
+  private showEnhancedBadge(): void {
+    if (this.enhancedShown) return;
+    this.enhancedShown = true;
+    if (!this.readerAiProcessingIndicatorEnabled) return;
+    this.enhancedBadge = true;
+    const ticket = this.enhanceTicket;
+    setTimeout(() => {
+      if (ticket === this.enhanceTicket) this.enhancedBadge = false;
+    }, 1600);
+  }
+
+  /**
+   * 原图显示出来、比例已知后排队超分，每张图只试一次。列表预先挂载的相邻图也提前处理（排在屏幕上的图之后），
+   * 翻到时多半已经好了；被列表回收才作废。
+   */
+  private maybeEnhance(): void {
+    if (!this.superResolution || !this.mounted || !this.loaded || this.broken || this.failure ||
+      this.enhanceAttempted || this.ratio <= 0 || !this.source) return;
+    this.enhanceAttempted = true;
+    this.enhancing = true;
+    this.syncProcessing();
+    const ticket = ++this.enhanceTicket;
+    const source = this.source;
+    const active = (): boolean => this.mounted && this.superResolution && ticket === this.enhanceTicket;
+    ReaderComicSuperResolution.enhance(source, vp2px(this.displayWidth()), active,
+      (): boolean => this.visible).then((uri: string): void => {
+      if (uri && ticket === this.enhanceTicket && this.superResolution) {
+        this.releaseEnhancedCache?.(); this.releaseEnhancedCache = ReaderCacheCoordinator.retainFile(uri);
+        this.enhancedUri = uri;
+      }
+    }).catch((_: Error): void => {
+    }).finally((): void => {
+      if (ticket !== this.enhanceTicket) return;
+      this.enhancing = false;
+      this.syncProcessing();
+    });
+  }
+
+  private syncProcessing(): void {
+    this.processing?.update(this.processingOwner,
+      this.visible && this.enhancing, this.visible && this.translating);
+  }
+
+  /** 图片实际显示宽度（vp）。 */
+  private displayWidth(): number {
+    if (!this.boxed()) return this.imageWidth();
+    return this.ratio > 0 ? Math.min(this.boxWidth, this.boxHeight / this.ratio) : this.boxWidth;
   }
 
   onMarkerChanged(): void {
@@ -190,13 +403,71 @@ export struct ReaderComicImageItem {
   }
 
   private resetForMarker(): void {
+    this.releasePending();
     const info = ReaderImageMarker.parse(this.marker);
-    this.source = info.source;
+    const raw = ReaderImageMarker.pendingRaw(info.source);
+    if (!raw) {
+      this.applySource(info.source, info.width, info.height);
+      return;
+    }
+    this.pendingRaw = raw;
+    let resolved = ReaderImageResults.current(raw);
+    // 登记已被清理、或处理被取消：再也等不到结果，按失败提示刷新本章。
+    if (!resolved && !ReaderImageResults.isAlive(raw)) resolved = ReaderImageMarker.failureSource('图片加载已中断');
+    if (resolved) {
+      this.applySource(resolved, info.width, info.height);
+      return;
+    }
+    this.applySource('', info.width, info.height);
+    this.unsubscribePending = ReaderImageResults.subscribe(raw, (source: string): void => {
+      if (raw !== this.pendingRaw) return;
+      this.applySource(source, info.width, info.height);
+      this.loadToken++;
+      this.syncPendingVisible();
+    });
+    ReaderImageResults.setNear(raw, true);
+    this.pendingNearMarked = true;
+    this.syncPendingVisible();
+  }
+
+  private releasePending(): void {
+    if (this.unsubscribePending) this.unsubscribePending();
+    this.unsubscribePending = null;
+    if (this.pendingVisibleMarked) ReaderImageResults.setVisible(this.pendingRaw, false);
+    this.pendingVisibleMarked = false;
+    if (this.pendingNearMarked) ReaderImageResults.setNear(this.pendingRaw, false);
+    this.pendingNearMarked = false;
+    this.pendingRaw = '';
+  }
+
+  /** 渐进加载还没结果的图片在屏幕上时登记为可见，调度时排在最前。 */
+  private syncPendingVisible(): void {
+    const marked = this.visible && !!this.pendingRaw && !this.source;
+    if (marked === this.pendingVisibleMarked) return;
+    this.pendingVisibleMarked = marked;
+    ReaderImageResults.setVisible(this.pendingRaw, marked);
+  }
+
+  private applySource(source: string, width: number, height: number): void {
+    this.releaseCacheFile?.();
+    this.releaseCacheFile = ReaderCacheCoordinator.retainFile(source);
+    ReaderImageCache.touch(source);
+    this.colorUri = '';
+    this.colorShown = false;
+    this.source = source;
+    this.syncColor();
+    this.failure = ReaderImageMarker.failureReason(source);
     this.loaded = false;
     this.broken = false;
     this.denied = false;
+    this.resetEnhancement();
+    this.resetTextLayer();
     this.unregisterRetry();
-    let ratio = info.width > 0 && info.height > 0 ? info.height / info.width : 0;
+    if (this.failure) {
+      this.ratio = 0;
+      return;
+    }
+    let ratio = width > 0 && height > 0 ? height / width : 0;
     if (ratio <= 0) ratio = ReaderComicImageSizes.ratio(this.source);
     this.ratio = ratio;
     if (ratio > 0 || !this.source || ReaderComicImageSizes.isRemote(this.source)) return;
@@ -212,6 +483,19 @@ export struct ReaderComicImageItem {
     this.broken = false;
     this.loaded = false;
     this.unregisterRetry();
+    const expected = this.source;
+    if (ReaderImageCache.managed(expected) && !ReaderImageCache.exists(expected)) {
+      if (this.recovering) return;
+      this.recovering = true;
+      ReaderImageRecovery.restore(expected).then((path: string): void => {
+        if (!this.mounted || this.source !== expected) return;
+        if (path) this.applySource(path, 0, 0);
+        else this.broken = true;
+        this.loadToken++;
+      }).catch((): void => { if (this.source === expected) this.broken = true; })
+        .finally((): void => { this.recovering = false; });
+      return;
+    }
     this.loadToken++;
   }
 
@@ -232,6 +516,7 @@ export struct ReaderComicImageItem {
       this.retryRegistry.register(this.retryKey, this.retryHandler);
     }
     const remote = ReaderComicImageSizes.isRemote(this.source);
+    const origin = ReaderComicImageSizes.isNetwork(this.source) ? '网络' : (remote ? '内嵌数据' : '本地');
     let exists = false;
     if (!remote && this.source) {
       try {
@@ -240,8 +525,8 @@ export struct ReaderComicImageItem {
         exists = false;
       }
     }
-    console.error(`[ReaderComic] 图片加载失败 来源=${remote ? '网络' : '本地'} 文件存在=${exists} ` +
-      `message=${error?.message || ''} 路径=${this.source}`);
+    console.error(`[ReaderComic] 图片加载失败 来源=${origin} 文件存在=${exists} ` +
+      `message=${error?.message || ''} 路径=${remote ? this.source.substring(0, 160) : this.source}`);
   }
 
   private imageWidth(): number {
@@ -253,7 +538,8 @@ export struct ReaderComicImageItem {
   private imageHeight(): number {
     // 尺寸未知时使用接近图片宽度的短占位，避免解码失败时每张图片都遗留整屏空白。
     if (this.ratio <= 0 || this.viewWidth <= 0) return Math.max(240, this.viewWidth);
-    const height = Math.max(120, Math.min(24000, this.imageWidth() * this.ratio));
+    // 条漫常把一页切成很短的图片，已知尺寸后不能再套用占位图的最小高度。
+    const height = Math.min(24000, this.imageWidth() * this.ratio);
     // ListItem 会分别把浮点 vp 高度转换为物理像素；先对齐到整数像素，避免相邻项反向取整后露底。
     return px2vp(Math.max(1, Math.round(vp2px(height))));
   }
@@ -268,57 +554,216 @@ export struct ReaderComicImageItem {
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
-      ForEach([this.loadToken], (_token: number) => {
-        Image(ReaderComicImageSizes.uri(this.source))
-          .width(this.boxed() ? '100%' : this.imageWidth())
-          .height(this.boxed() ? '100%' : this.imageHeight() + this.overlap())
-          // 原图比例尚未返回时保持 Contain；比例已知后容器严格等比，Fill 只消除边缘 letterbox。
-          .objectFit(this.boxed() || this.ratio <= 0 ? ImageFit.Contain : ImageFit.Fill)
-          .draggable(false)
-          .onComplete((event) => {
-            if (!event) return;
-            if (event.width > 0 && event.height > 0) {
-              const ratio = ReaderComicImageSizes.remember(this.source, event.width, event.height);
-              if (ratio > 0 && Math.abs(ratio - this.ratio) >= 0.0001) this.ratio = ratio;
-              this.loaded = true;
-            }
-          })
-          .onError((error: ImageError) => this.markBroken(error))
-          .id(this.retryKey ? ReaderComicImageItem.snapshotId(this.retryKey) : '')
-      }, (token: number) => `${token}`)
-
-      if (this.broken) {
+      if (this.failure) {
         Column({ space: AppSpacing.SM }) {
-          Text('⚠ 图片加载失败')
+          Text('⚠ 图片未能显示')
             .fontSize(AppFontSize.BODY)
             .fontColor(this.hintColor)
-          Text(this.denied ? '图片地址已失效，请点右上角刷新本章' :
-            (ReaderComicImageSizes.isRemote(this.source) ? '网络图片加载失败，点击重试' :
-              '文件可能已被移动、删除或尚未重新导入'))
+          Text(this.failure)
             .fontSize(AppFontSize.CAPTION)
             .fontColor(this.hintColor)
             .opacity(0.8)
+            .maxLines(4)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .textAlign(TextAlign.Center)
+          Text('点右上角刷新本章可重新获取')
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.hintColor)
+            .opacity(0.6)
         }
         .width('100%')
-        .onClick(() => this.retry())
-      } else if (!this.loaded) {
-        Column({ space: AppSpacing.MD }) {
-          LoadingProgress()
-            .width(28)
-            .height(28)
-            .color(this.hintColor)
-          if (this.pageLabel) {
-            Text(this.pageLabel)
+        .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
+        .hitTestBehavior(HitTestMode.None)
+      } else {
+        ForEach(this.source ? [this.loadToken] : [], (_token: number) => {
+          Image(ReaderComicImageSizes.uri(this.source))
+            .width(this.boxed() ? '100%' : this.imageWidth())
+            .height(this.boxed() ? '100%' : this.imageHeight() + this.overlap())
+            .translate({ y: -this.overlap() / 2 })
+            // 原图比例尚未返回时保持 Contain；比例已知后容器严格等比，Fill 只消除边缘 letterbox。
+            .objectFit(this.boxed() || this.ratio <= 0 ? ImageFit.Contain : ImageFit.Fill)
+            .draggable(false)
+            .onComplete((event) => {
+              if (!event) return;
+              if (event.width > 0 && event.height > 0) {
+                const ratio = ReaderComicImageSizes.remember(this.source, event.width, event.height);
+                if (ratio > 0 && Math.abs(ratio - this.ratio) >= 0.0001) this.ratio = ratio;
+                this.loaded = true;
+                this.maybeEnhance();
+                this.maybeConvertText();
+              }
+            })
+            .onError((error: ImageError) => this.markBroken(error))
+            .id(this.retryKey ? ReaderComicImageItem.snapshotId(this.retryKey) : '')
+        }, (token: number) => `${token}`)
+
+        if (this.enhancedUri && this.loaded && !this.broken) {
+          Image(this.enhancedUri)
+            .width(this.boxed() ? '100%' : this.imageWidth())
+            .height(this.boxed() ? '100%' : this.imageHeight() + this.overlap())
+            .translate({ y: -this.overlap() / 2 })
+            .objectFit(this.boxed() ? ImageFit.Contain : ImageFit.Fill)
+            .draggable(false)
+            .opacity(this.enhancedShown ? 1 : 0)
+            .animation({ duration: 220, curve: Curve.EaseOut })
+            .hitTestBehavior(HitTestMode.None)
+            .onComplete((event) => {
+              if (event && event.width > 0 && event.height > 0) this.showEnhancedBadge();
+            })
+            .onError((_: ImageError) => {
+              this.enhancedUri = '';
+              this.enhancedShown = false;
+            })
+
+          Text('AI 超分')
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor('#FFFFFF')
+            .backgroundColor('#99000000')
+            .borderRadius(10)
+            .padding({ left: AppSpacing.SM, right: AppSpacing.SM, top: 2, bottom: 2 })
+            .position({ x: '100%', y: 0 })
+            .markAnchor({ x: '100%', y: 0 })
+            .translate({ x: -AppSpacing.SM, y: AppSpacing.SM })
+            .opacity(this.enhancedBadge ? 1 : 0)
+            .visibility(this.readerAiProcessingIndicatorEnabled ? Visibility.Visible : Visibility.None)
+            .animation({ duration: 300, curve: Curve.EaseOut })
+            .hitTestBehavior(HitTestMode.None)
+        }
+
+        if (this.colorUri && this.loaded && !this.broken) {
+          Image(this.colorUri)
+            .width(this.boxed() ? '100%' : this.imageWidth())
+            .height(this.boxed() ? '100%' : this.imageHeight() + this.overlap())
+            .translate({ y: -this.overlap() / 2 })
+            .objectFit(this.boxed() ? ImageFit.Contain : ImageFit.Fill)
+            .draggable(false)
+            .opacity(this.colorShown ? 1 : 0)
+            .hitTestBehavior(HitTestMode.None)
+            .onComplete(() => { this.colorDecoded = true; this.syncColor(); })
+            .onError(() => { this.colorSession?.failed(this.source); this.colorUri = ''; })
+        }
+
+        if (this.textPatches.length > 0 && this.loaded && !this.broken) {
+          this.textLayerOverlay()
+        }
+
+        if (this.broken) {
+          Column({ space: AppSpacing.SM }) {
+            Text('⚠ 图片加载失败')
+              .fontSize(AppFontSize.BODY)
+              .fontColor(this.hintColor)
+            Text(this.denied ? '图片地址已失效，请点右上角刷新本章' :
+              (ReaderComicImageSizes.isNetwork(this.source) ? '网络图片加载失败，点击重试' :
+                (ReaderComicImageSizes.isRemote(this.source) ? '内嵌图片数据无法解码，不是支持的图片格式' :
+                  '图片缓存缺失，点击重试；仍失败请刷新本章，离线时需联网补全')))
               .fontSize(AppFontSize.CAPTION)
               .fontColor(this.hintColor)
+              .opacity(0.8)
           }
+          .width('100%')
+          .onClick(() => this.retry())
+        } else if (!this.loaded) {
+          Column({ space: AppSpacing.MD }) {
+            LoadingProgress()
+              .width(28)
+              .height(28)
+              .color(this.hintColor)
+            if (this.pageLabel) {
+              Text(this.pageLabel)
+                .fontSize(AppFontSize.CAPTION)
+                .fontColor(this.hintColor)
+            }
+          }
+          .hitTestBehavior(HitTestMode.None)
         }
-        .hitTestBehavior(HitTestMode.None)
       }
     }
     .width(this.boxed() ? this.boxWidth : '100%')
-    .height(this.boxed() ? this.boxHeight : this.imageHeight() + this.overlap())
-    .margin({ top: -this.overlap() })
+    // 列表占位始终等于图片高度；接缝补偿只作用于绘制，不用负 margin 参与 ListItem 测量。
+    .height(this.boxed() ? this.boxHeight : this.imageHeight())
+    .clip(false)
+    .onVisibleAreaChange([0, 0.01], (isVisible: boolean, ratio: number) => {
+      const visible = isVisible && ratio > 0;
+      if (visible === this.visible) return;
+      this.visible = visible;
+      this.syncPendingVisible();
+      if (visible) {
+        this.maybeEnhance();
+        this.maybeConvertText();
+      } else {
+        // 文字识别没等到结果就划走：作废排队的任务，下次出现再排。超分继续在后台做完。
+        if (this.textImageWidth <= 0 && this.textAttempted) {
+          this.textTicket++;
+          this.textAttempted = false;
+          this.translating = false;
+        }
+      }
+      this.syncProcessing();
+    })
+  }
+
+  /** 与图片显示区域等大的文字层；每块用原底色盖住原字，再按原字方向、颜色写简体。 */
+  @Builder
+  textLayerOverlay() {
+    Stack() {
+      ForEach(this.textPatches, (patch: ComicTextPatch) => {
+        Text(patch.text)
+          .position({ x: patch.x * this.textScaleX(), y: patch.y * this.textScaleY() })
+          .width(patch.width * this.textScaleX())
+          .height(patch.height * this.textScaleY())
+          .fontSize(`${patch.fontSize * this.textScaleX()}vp`)
+          .maxFontSize(`${patch.fontSize * this.textScaleX()}vp`)
+          .minFontSize(`${patch.fontSize * this.textScaleX() * 0.6}vp`)
+          .maxLines(patch.lines)
+          .heightAdaptivePolicy(TextHeightAdaptivePolicy.LAYOUT_CONSTRAINT_FIRST)
+          .lineHeight(`${patch.lineHeight * this.textScaleY()}vp`)
+          .textOverflow({ overflow: TextOverflow.Clip })
+          .textAlign(TextAlign.Center)
+          .align(Alignment.Center)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(patch.color)
+          .backgroundColor(patch.background)
+          .padding(0)
+      }, (patch: ComicTextPatch) => patch.id)
+    }
+    .width(this.displayWidth())
+    .height(this.displayHeight())
+    .hitTestBehavior(HitTestMode.None)
+  }
+
+  private textScaleX(): number {
+    return this.textImageWidth > 0 ? this.displayWidth() / this.textImageWidth : 0;
+  }
+
+  private textScaleY(): number {
+    return this.textImageHeight > 0 ? this.displayHeight() / this.textImageHeight : 0;
+  }
+}
+
+/**
+ * 不显示任何内容，只在挂载期间把一张渐进加载的图片登记为屏幕附近，让它先于本章其余图片处理。
+ * 翻页模式用它覆盖当前跨页之后要预加载的几页。
+ */
+@Component
+export struct ReaderPendingImageHint {
+  @Prop raw: string = '';
+  private marked: string = '';
+
+  aboutToAppear(): void {
+    this.marked = this.raw;
+    if (this.marked) ReaderImageResults.setNear(this.marked, true);
+  }
+
+  aboutToDisappear(): void {
+    if (this.marked) ReaderImageResults.setNear(this.marked, false);
+    this.marked = '';
+  }
+
+  build() {
+    Stack()
+      .width(0)
+      .height(0)
+      .hitTestBehavior(HitTestMode.None)
   }
 }
 
@@ -390,10 +835,68 @@ export struct ReaderComicInfoBadge {
  */
 @Component
 export struct ReaderComicView {
+  private processing: ReaderComicProcessing = new ReaderComicProcessing();
+  colorSession: ReaderComicColorSession | null = null;
+  private colorTimer: number = -1;
+  private colorStart: number = 0;
+  private colorEnd: number = 0;
+  private colorOffset: number = 0;
+  private colorDirection: number = 1;
+
+  aboutToAppear(): void {
+    this.colorTimer = setInterval((): void => this.updateColorViewport(), 250);
+  }
+
+  aboutToDisappear(): void {
+    clearInterval(this.colorTimer);
+    this.colorSession?.update([]);
+    this.colorSession?.touch(false);
+  }
+
+  private updateColorViewport(): void {
+    if (!this.colorSession || !this.colorSession.foreground || this.viewWidth <= 0 || this.viewHeight <= 0) return;
+    const offset = this.scroller.currentOffset().yOffset;
+    if (Math.abs(offset - this.colorOffset) > 0.5) {
+      this.colorDirection = offset > this.colorOffset ? 1 : -1;
+      this.colorSession.motion();
+    }
+    this.colorOffset = offset;
+    const candidates: ComicColorCandidate[] = [];
+    const height = Math.max(1, this.viewHeight);
+    let first = this.colorEnd;
+    let last = this.colorStart;
+    for (let index = this.colorStart; index <= this.colorEnd && candidates.length < 32; index++) {
+      const item = this.dataSource.itemAt(index);
+      if (!item?.isPage()) continue;
+      const rect = this.scroller.getItemRect(index);
+      const top = (rect.y - height / 2) * this.zoomScale + height / 2 + this.zoomY;
+      const bottom = top + rect.height * this.zoomScale;
+      if (rect.height <= 0 || bottom <= 0 || top >= height) continue;
+      first = Math.min(first, index);
+      last = Math.max(last, index);
+      const center = (Math.max(0, top) + Math.min(height, bottom)) / 2;
+      candidates.push(new ComicColorCandidate(ReaderComicColorSession.source(item.text), true,
+        Math.abs(center - height / 2), `${item.pageIndex + 1}`));
+    }
+    let ahead = 0;
+    let index = (this.colorDirection > 0 ? last : first) + this.colorDirection;
+    while (index >= 0 && index < this.dataSource.totalCount() && ahead < height * 2 && candidates.length < 32) {
+      const item = this.dataSource.itemAt(index);
+      if (item?.isPage()) {
+        const info = ReaderImageMarker.parse(item.text);
+        const source = ReaderComicColorSession.source(item.text);
+        const ratio = info.width > 0 ? info.height / info.width : ReaderComicImageSizes.ratio(source) || 1.5;
+        const imageHeight = Math.max(px2vp(1), Math.min(24000, this.viewWidth * ratio));
+        ahead += (this.fitScreen ? Math.min(height, imageHeight) : imageHeight) * this.zoomScale + this.pageGap;
+        candidates.push(new ComicColorCandidate(ReaderComicColorSession.source(item.text), false, ahead,
+          `${item.pageIndex + 1}`));
+      } else ahead += 150;
+      index += this.colorDirection;
+    }
+    this.colorSession.update(candidates);
+  }
   scroller: ListScroller = new ListScroller();
   dataSource: ReaderContinuousDataSource = new ReaderContinuousDataSource();
-  /** 网络图片向后预先加载的张数（列表在视口外预先构建的项数）。 */
-  @Prop preloadCount: number = 2;
   /** 长按图片：source 为图片地址，reload 让这一项重新加载。 */
   /** 长按图片：source 为图片地址，reload 让这一项重新加载，snapshotId 是这张图的组件 id。 */
   onImageLongPress: (source: string, reload: () => void, snapshotId: string) => void = () => {};
@@ -405,6 +908,13 @@ export struct ReaderComicView {
   @Prop viewHeight: number = 0;
   /** 双击放大/还原。关闭后单击不必等待双击判定，响应更快；双指缩放始终可用。 */
   @Prop doubleTapZoom: boolean = true;
+  /** 自动滚动期间双击控制暂停/继续，结束后恢复双击缩放。 */
+  @Prop autoScrollActive: boolean = false;
+  onAutoScrollToggle: () => void = () => {};
+  onManualInteraction: () => void = () => {};
+  /** 漫画超分（会员功能）。 */
+  @Prop superResolution: boolean = false;
+  @Prop textConvert: boolean = false;
   @Prop surfaceColor: string = '#000000';
   @Prop textColor: string = '#E6E6E6';
   @Prop hintColor: string = '#99FFFFFF';
@@ -427,13 +937,15 @@ export struct ReaderComicView {
   onListAppear: () => void = () => {};
   /** 坐标相对视图左上角。 */
   onTap: (x: number, y: number, width: number, height: number) => void = () => {};
+  /** 手指按下立即停止阅读页驱动的翻屏动画，不等拖动手势识别。 */
+  onTouchStart: () => void = () => {};
   onPanStart: () => void = () => {};
   onPanUpdate: (event: GestureEvent) => void = () => {};
   onPanEnd: (event: GestureEvent) => void = () => {};
   onPanCancel: () => void = () => {};
   /** 缩放倍数变化（1 为未缩放），阅读页据此把“翻一屏”换算成列表内的距离。 */
   onZoomChanged: (scale: number) => void = () => {};
-  private retryRegistry: ReaderComicRetryRegistry = new ReaderComicRetryRegistry();
+  retryRegistry: ReaderComicRetryRegistry = new ReaderComicRetryRegistry();
   static readonly MAX_ZOOM: number = 4;
   static readonly DOUBLE_TAP_ZOOM: number = 2;
   // 缩放以视图中心为基点作用在列表上，平移在缩放之后叠加：屏幕点 = 中心 + 倍数 × (列表点 − 中心) + 平移。
@@ -525,11 +1037,28 @@ export struct ReaderComicView {
 
   /** 点击手势默认不限制移动距离，拖动松手时也会识别成点击；拖过的触摸一律不算点击。 */
   private handleTouch(event: TouchEvent): void {
-    if (event.type === TouchType.Down && event.touches.length <= 1) this.touchDragged = false;
+    if (event.type === TouchType.Down) this.colorSession?.touch(true);
+    if (event.type === TouchType.Up || event.type === TouchType.Cancel) this.colorSession?.touch(false);
+    if (event.type === TouchType.Down && event.touches.length <= 1) {
+      this.touchDragged = false;
+      this.onTouchStart();
+      // 透明交互层截住了触摸，底下 List 收不到按下事件，不能自动停止上一轮惯性。
+      // 原位无动画 scrollTo 会停止原生动画；只在按下时读取位置，不在拖动帧里追逐绝对目标。
+      try {
+        const offset = this.scroller.currentOffset();
+        this.scroller.scrollTo({ xOffset: offset.xOffset, yOffset: offset.yOffset, animation: false });
+      } catch (error) {
+        console.warn('停止漫画惯性滚动失败:', error);
+      }
+    }
   }
 
   private handleDoubleTap(event: GestureEvent): void {
     if (this.touchDragged) return;
+    if (this.autoScrollActive) {
+      this.onAutoScrollToggle();
+      return;
+    }
     if (this.zoomed()) {
       this.resetZoom(true);
       return;
@@ -542,6 +1071,7 @@ export struct ReaderComicView {
 
   private handleLongPress(event: GestureEvent): void {
     if (this.pinching) return;
+    this.onManualInteraction();
     this.touchDragged = true;
     const point = this.tapPoint(event);
     const listX = this.centerX() + (point[0] - this.centerX() - this.zoomX) / this.zoomScale;
@@ -580,6 +1110,7 @@ export struct ReaderComicView {
   }
 
   private handlePinchStart(event: GestureEvent): void {
+    this.onManualInteraction();
     this.pinching = true;
     this.touchDragged = true;
     // 先落下的手指可能已经触发了阅读页的拖动；交给缩放之后不能再滚列表或拉动切章。
@@ -609,6 +1140,7 @@ export struct ReaderComicView {
   }
 
   private handlePanStart(): void {
+    this.onManualInteraction();
     this.panInProgress = true;
     this.touchDragged = true;
     this.panLastX = 0;
@@ -793,6 +1325,7 @@ export struct ReaderComicView {
             } else if (this.isImagePage(item.text)) {
               ReaderComicImageItem({
                 marker: item.text.trim(),
+                colorSession: this.colorSession,
                 viewWidth: this.viewWidth,
                 viewHeight: this.viewHeight,
                 fitScreen: this.fitScreen,
@@ -800,7 +1333,10 @@ export struct ReaderComicView {
                 pageLabel: `${item.pageIndex + 1}`,
                 hintColor: this.hintColor,
                 retryKey: item.key,
+                superResolution: this.superResolution,
+                textConvert: this.textConvert,
                 retryRegistry: this.retryRegistry,
+                processing: this.processing,
                 onDenied: (): void => this.onImageDenied(item.chapterIndex)
               })
             } else {
@@ -823,11 +1359,17 @@ export struct ReaderComicView {
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       .scrollBar(BarState.Off)
       // 预先构建视口外的若干项，网络图片提前开始下载，快速下滑时少见空白占位。
-      .cachedCount(Math.max(2, this.preloadCount))
+      // 只保留少量相邻图片组件；整话网络缓存由阅读器的章节预缓存统一调度。
+      .cachedCount(2)
       .scale({ x: this.zoomScale, y: this.zoomScale })
       .translate({ x: this.zoomX, y: this.zoomY + this.transitionY })
       .opacity(this.transitionOpacity)
-      .onScrollIndex((start: number, end: number) => this.onVisibleRangeChange(start, end))
+      .onScrollIndex((start: number, end: number) => {
+        this.colorStart = start;
+        this.colorEnd = end;
+        this.updateColorViewport();
+        this.onVisibleRangeChange(start, end);
+      })
       .onReachEnd(() => this.onReachEnd())
       .onAppear(() => this.onListAppear())
 
@@ -842,8 +1384,12 @@ export struct ReaderComicView {
           .hitTestBehavior(HitTestMode.None)
       }
 
+      ReaderComicProcessingBadge({ processing: this.processing, colorSession: this.colorSession })
+        .position({ right: 10, bottom: this.infoBottomInset + (this.infoVisible ? 30 : 0) })
+        .hitTestBehavior(HitTestMode.None)
+
       if (this.interactive) {
-        this.interactionLayer(this.doubleTapZoom)
+        this.interactionLayer(this.doubleTapZoom || this.autoScrollActive)
       }
     }
     .width('100%')

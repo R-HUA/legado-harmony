@@ -59,7 +59,19 @@ const bindings = {
   TtsPcmAudioPlayer: PcmPlayer, HttpTtsReader: HttpReader, CloudTtsClient: class { stop() {} }, HttpTTS: class {},
   TtsAudioSession: { async acquire() {}, release() {} },
   getContext() { return {}; },
-  HdsFeedback: { showToast(text) { calls.toasts.push(text); } }
+  HdsFeedback: { showToast(text) { calls.toasts.push(text); } },
+  // Upstream TTS framework collaborators outside the system-voice path under test.
+  // Any MiMo session call is an inert no-op: MiMo stays disabled in these system-voice checks.
+  MimoReadingSession: function () { return new Proxy({}, { get: (_t, key) => key === 'then' ? undefined : () => false }); },
+  PlaybackLoudnessGain: { TTS: 'tts', markSupported() {}, gainFor() { return 1; } },
+  LocalTtsSelection: { current() { return null; }, clear() {} },
+  MimoStore: { load() { return { enabled: false }; }, selectedVoiceKey() { return ''; }, setEnabled() {} },
+  LocalTtsModels: { voiceKey() { return ''; }, memberAllowed() { return true; } },
+  AccountCommerceConfig: { COMMERCE_ENABLED: false },
+  ReaderTtsFloatingSession: { stop() {} },
+  LocalTtsEngine: { cancelAll() {}, isCancelled() { return false; } },
+  connection: { getDefaultNetSync() { return {}; }, getNetCapabilitiesSync() { return { bearerTypes: [] }; },
+    NetBearType: { BEARER_WIFI: 1 } }
 };
 const context = vm.createContext(bindings);
 function load(file) {
@@ -69,6 +81,8 @@ function load(file) {
   Object.assign(bindings, vm.runInContext(stripTypeScriptTypes(source, { mode: 'transform' }) +
     '\n;({' + names.join(',') + '})', context));
 }
+load('utils/TtsVoiceAvailability.ts');
+load('utils/TtsVoiceModels.ets');
 load('utils/TtsSettingsStore.ets');
 load('utils/SystemTtsReader.ets');
 load('utils/TtsVoiceCatalog.ets');
@@ -99,7 +113,8 @@ function page() {
     previewReader: new Reader(), context: {},
     pageActive: true, pageSessionSerial: 1, voiceLoadSerial: 0, downloadSessionSerial: 0,
     previewSessionSerial: 0, voiceSelectionSerial: 0, isLoadingSettings: false,
-    voiceDownloadTask: null, voiceLoadError: '', speedSaveTimerId: -1
+    voiceDownloadTask: null, voiceLoadError: '', speedSaveTimerId: -1,
+    mimoEnabled: false, mimoChoices: [], ttsDisabledVoiceKeys: ''
   });
 }
 async function check(name, action) {

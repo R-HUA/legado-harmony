@@ -1,3 +1,6 @@
+import { ReaderComicTranslationRow } from './ReaderComicTranslationRow';
+import { ComicColorDownloadProgress } from './ComicColorDownloadProgress';
+import { AiAccessPolicy } from '../../account/AiAccessPolicy';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { AppSpacing } from '../../theme/AppSpacing';
@@ -7,7 +10,10 @@ import {
   ReaderComicMode,
   ReaderComicOption
 } from '../../core/reader/ReaderComicSettings';
+import { ComicColorizer, ReaderComicSuperResolutionAccess } from '@legado/aiengine';
 import { ReaderSettingActionRow, ReaderSettingSelectRow, ReaderSettingSwitchRow } from './ReaderSettingRows';
+import { ReaderHaptics } from '../../utils/ReaderHaptics';
+import { ReaderInputKind, ReaderInputScopes } from '../../utils/ReaderInputScopes';
 
 /** 阅读主题下的设置面板配色，由阅读页传入。 */
 export class ReaderComicPanelColors {
@@ -51,7 +57,8 @@ export struct ReaderComicOptionGroup {
             }
             Text(option.label)
               .fontSize(AppFontSize.BODY)
-              .fontColor(this.selected === option.value ? this.colors.accentColor : this.colors.textColor)
+              .fontColor(this.colors.textColor)
+              .fontWeight(this.selected === option.value ? FontWeight.Bold : FontWeight.Regular)
               .maxLines(1)
           }
           .layoutWeight(1)
@@ -74,12 +81,20 @@ export struct ReaderComicOptionGroup {
 /** 漫画「阅读方式」面板。设置的读写都在阅读页，这里只负责显示与回调。 */
 @Component
 export struct ReaderComicModeSettingsPanel {
+  @Prop animationOptions: SelectOption[] = [];
+  @Prop animationSelected: number = 1;
+  onAnimationChange: (index: number) => void = () => {};
   /** 本书当前生效的漫画阅读方式。 */
   @Prop mode: string = ReaderComicMode.WEBTOON;
   @Prop defaultMode: string = ReaderComicMode.WEBTOON;
   @Prop tapTurn: boolean = true;
   @Prop dualPage: boolean = true;
   @Prop volumeTurnPage: boolean = false;
+  @Prop smartKeyTurnPage: boolean = false;
+  /** 设备支持智控键滑动时才显示对应开关。 */
+  @Prop smartKeyTurnSupported: boolean = false;
+  /** 翻页震感按阅读类型存；这里的开关只改漫画一类。 */
+  @StorageProp('readerPageTurnHapticsScope') pageTurnHapticsScope: number = 0;
   @Prop tapZoneSummary: string = '';
   @Prop orientationOptions: SelectOption[] = [];
   @Prop orientationSelected: number = 0;
@@ -90,6 +105,7 @@ export struct ReaderComicModeSettingsPanel {
   onTapTurnChange: (checked: boolean) => void = () => {};
   onConfigureTapZones: () => void = () => {};
   onVolumeTurnChange: (checked: boolean) => void = () => {};
+  onSmartKeyTurnChange: (checked: boolean) => void = () => {};
   onOrientationChange: (index: number) => void = () => {};
   onDualPageChange: (checked: boolean) => void = () => {};
 
@@ -123,7 +139,7 @@ export struct ReaderComicModeSettingsPanel {
 
       Text(this.defaultMode === this.mode ? '已是默认' : '设为默认')
         .fontSize(AppFontSize.BODY)
-        .fontColor(this.defaultMode === this.mode ? this.colors.subTextColor : this.colors.accentColor)
+        .fontColor(this.defaultMode === this.mode ? this.colors.subTextColor : this.colors.textColor)
         .padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.SM, bottom: AppSpacing.SM })
         .borderRadius(16)
         .backgroundColor(this.defaultMode === this.mode ? Color.Transparent :
@@ -149,15 +165,30 @@ export struct ReaderComicModeSettingsPanel {
       this.defaultModeRow()
 
       if (this.paged()) {
-        ReaderSettingSwitchRow({
-          title: '横屏双页',
-          description: '横屏、折叠屏展开等宽屏下两页并排',
-          checked: this.dualPage,
+        ReaderSettingSelectRow({
+          title: '翻页动画',
+          description: '翻页时的切换效果',
+          options: this.animationOptions,
+          selected: this.animationSelected,
+          controlId: 'reader_comic_page_animation_select',
           textColor: this.colors.textColor,
           subTextColor: this.colors.subTextColor,
-          onChange: (checked: boolean): void => this.onDualPageChange(checked)
+          accentColor: this.colors.accentColor,
+          dark: this.colors.dark,
+          menuColor: this.colors.menuColor,
+          onSelect: (index: number): void => this.onAnimationChange(index)
         })
       }
+
+      ReaderSettingSwitchRow({
+        title: '使用双翻页',
+        description: this.paged() ? '宽屏下并排显示两页，关闭后每次显示一页' :
+          '切换为从左往右或从右往左后，宽屏下并排显示两页；条漫不生效',
+        checked: this.dualPage,
+        textColor: this.colors.textColor,
+        subTextColor: this.colors.subTextColor,
+        onChange: (checked: boolean): void => this.onDualPageChange(checked)
+      })
 
       ReaderSettingSwitchRow({
         title: '点击翻页',
@@ -184,11 +215,34 @@ export struct ReaderComicModeSettingsPanel {
 
       ReaderSettingSwitchRow({
         title: '音量键翻页',
-        description: this.paged() ? '音量上/下键翻到上一页/下一页' : '音量上/下键向上/向下翻一屏',
+        description: (this.paged() ? '音量上/下键翻到上一页/下一页' : '音量上/下键向上/向下翻一屏') + '，只改漫画',
         checked: this.volumeTurnPage,
         textColor: this.colors.textColor,
         subTextColor: this.colors.subTextColor,
         onChange: (checked: boolean): void => this.onVolumeTurnChange(checked)
+      })
+
+      if (this.smartKeyTurnSupported) {
+        ReaderSettingSwitchRow({
+          title: '智控键翻页',
+          description: (this.paged() ? '智控键上滑/下滑翻到上一页/下一页' : '智控键上滑/下滑向上/向下翻一屏') + '，只改漫画',
+          checked: this.smartKeyTurnPage,
+          textColor: this.colors.textColor,
+          subTextColor: this.colors.subTextColor,
+          onChange: (checked: boolean): void => this.onSmartKeyTurnChange(checked)
+        })
+      }
+
+      ReaderSettingSwitchRow({
+        title: '翻页震感',
+        description: '翻页时轻震一下，翻到新一话时稍重，只改漫画',
+        checked: ReaderInputScopes.includes(this.pageTurnHapticsScope, ReaderInputKind.COMIC),
+        textColor: this.colors.textColor,
+        subTextColor: this.colors.subTextColor,
+        onChange: (checked: boolean): void => {
+          ReaderHaptics.toggle(this.getUIContext().getHostContext() as Context, ReaderInputKind.COMIC, checked)
+            .catch((e: Error) => console.error('保存翻页震感设置失败:', e));
+        }
       })
 
       ReaderSettingSelectRow({
@@ -212,22 +266,142 @@ export struct ReaderComicModeSettingsPanel {
 /** 漫画「画面设置」面板。 */
 @Component
 export struct ReaderComicDisplaySettingsPanel {
+  @Prop modelStatus: string = '';
+  @Prop modelReceivedBytes: number = 0;
+  @Prop modelTotalBytes: number = 0;
+  onCancelModelDownload: () => void = (): void => {};
+  @StorageProp('aiTrialOpen') trialOpen: boolean = false;
+  @StorageProp('accountLoggedIn') loggedIn: boolean = false;
+  @Prop colorEnabled: boolean = false;
+  @Prop colorAccess: string = '';
+  onColorEnabled: (enabled: boolean) => void = () => {};
   /** 「背景」设置值（组件属性不能叫 background，会与内置属性冲突）。 */
   @Prop surface: string = ReaderComicBackground.BLACK;
   @Prop pageGap: number = 0;
   @Prop fit: string = ReaderComicFit.WIDTH;
-  @Prop preloadCount: number = 5;
   @Prop infoBar: boolean = true;
   @Prop doubleTapZoom: boolean = true;
+  /** 「AI超分」开关的保存值。 */
+  @Prop superResolution: boolean = false;
+  /** ReaderComicSuperResolutionAccess 的取值。 */
+  @Prop superResolutionAccess: string = ReaderComicSuperResolutionAccess.UNSUPPORTED;
+  /** 本书「繁→简」开关的保存值（会员功能）。 */
+  @Prop textConvert: boolean = false;
+  /** ReaderComicSuperResolutionAccess 的取值。 */
+  @Prop textConvertAccess: string = ReaderComicSuperResolutionAccess.UNSUPPORTED;
   /** 「跟随主题」色块显示的阅读主题底色。 */
   @Prop themeBackground: string = '#FFFFFF';
   @Prop colors: ReaderComicPanelColors = new ReaderComicPanelColors();
   onBackgroundChange: (value: string) => void = () => {};
   onPageGapChange: (value: number) => void = () => {};
   onFitChange: (value: string) => void = () => {};
-  onPreloadCountChange: (value: number) => void = () => {};
   onInfoBarChange: (checked: boolean) => void = () => {};
   onDoubleTapZoomChange: (checked: boolean) => void = () => {};
+  onSuperResolutionChange: (checked: boolean) => void = () => {};
+  onTextConvertChange: (checked: boolean) => void = () => {};
+  onOpenMembership: () => void = () => {};
+
+  private aiDescription(description: string, access: string): string {
+    if (access === ReaderComicSuperResolutionAccess.MEMBER_REQUIRED) {
+      return this.trialOpen && !this.loggedIn ? '登录后免费试用，至 11 月 10 日（北京时间）' :
+        '免费试用已结束，开通会员继续使用';
+    }
+    return this.trialOpen ? `${AiAccessPolicy.TRIAL_LABEL}。${description}` : description;
+  }
+
+  @Builder
+  superResolutionRow() {
+    if (this.superResolutionAccess === ReaderComicSuperResolutionAccess.READY) {
+      ReaderSettingSwitchRow({
+        title: 'AI超分',
+        minimumMembership: this.trialOpen ? '' : 'MONTHLY',
+        description: this.aiDescription('借助AI把低清图片放大变清晰，处理好后自动替换；只处理正在看的图，会多耗一些电', this.superResolutionAccess),
+        checked: this.superResolution,
+        textColor: this.colors.textColor,
+        subTextColor: this.colors.subTextColor,
+        onChange: (checked: boolean): void => this.onSuperResolutionChange(checked)
+      })
+    } else if (this.superResolutionAccess === ReaderComicSuperResolutionAccess.MEMBER_REQUIRED) {
+      ReaderSettingActionRow({
+        title: 'AI超分',
+        minimumMembership: this.trialOpen ? '' : 'MONTHLY',
+        description: this.aiDescription('', this.superResolutionAccess),
+        actionText: this.trialOpen && !this.loggedIn ? '登录后免费试用' : '开通会员',
+        textColor: this.colors.textColor,
+        subTextColor: this.colors.subTextColor,
+        buttonColor: this.colors.buttonColor,
+        buttonTextColor: this.colors.buttonTextColor,
+        onAction: (): void => this.onOpenMembership()
+      })
+    } else {
+      ReaderSettingActionRow({
+        title: 'AI超分',
+        minimumMembership: this.trialOpen ? '' : 'MONTHLY',
+        description: '当前系统不支持，需要 API 26 及以上且支持图片超分的设备',
+        actionText: '',
+        textColor: this.colors.textColor,
+        subTextColor: this.colors.subTextColor
+      })
+    }
+  }
+
+  @Builder
+  colorRow() {
+    if (this.colorAccess === ReaderComicSuperResolutionAccess.READY) {
+      ReaderSettingSwitchRow({
+        title: 'AI着色',
+        minimumMembership: this.trialOpen ? '' : 'MONTHLY',
+        description: this.aiDescription('借助AI为黑白漫画着色，当前画面优先；单张超长图暂不支持。开启后暂停AI超分', this.colorAccess),
+        checked: this.colorEnabled,
+        textColor: this.colors.textColor,
+        subTextColor: this.colors.subTextColor,
+        onChange: (checked: boolean): void => this.onColorEnabled(checked)
+      })
+    } else {
+      ReaderSettingActionRow({
+        title: 'AI着色',
+        minimumMembership: this.trialOpen ? '' : 'MONTHLY',
+        description: this.colorAccess === ReaderComicSuperResolutionAccess.MEMBER_REQUIRED ?
+          this.aiDescription('', this.colorAccess) : '当前设备不支持本地着色引擎',
+        actionText: this.colorAccess === ReaderComicSuperResolutionAccess.MEMBER_REQUIRED ?
+          (this.trialOpen && !this.loggedIn ? '登录后免费试用' : '开通会员') : '',
+        textColor: this.colors.textColor,
+        subTextColor: this.colors.subTextColor,
+        buttonColor: this.colors.buttonColor,
+        buttonTextColor: this.colors.buttonTextColor,
+        onAction: (): void => this.onOpenMembership()
+      })
+    }
+    if (this.modelStatus) {
+      Column({ space: 12 }) {
+        Text(this.modelStatus).fontSize(AppFontSize.CAPTION).fontColor(this.colors.textColor).width('100%')
+        if (this.modelTotalBytes > 0) {
+          ComicColorDownloadProgress({ receivedBytes: this.modelReceivedBytes, totalBytes: this.modelTotalBytes,
+            accent: this.colors.accentColor, labelColor: this.colors.subTextColor })
+        } else {
+          LoadingProgress().width(24).height(24).color(this.colors.accentColor)
+        }
+        Button('取消模型下载').onClick(() => { this.onCancelModelDownload(); })
+      }
+      .width('100%')
+      .padding(AppSpacing.MD)
+    }
+  }
+
+  @Builder
+  textConvertRow() {
+    ReaderComicTranslationRow({
+      textConvert: this.textConvert,
+      access: this.textConvertAccess,
+      menuColor: this.colors.menuColor,
+      textColor: this.colors.textColor,
+      subTextColor: this.colors.subTextColor,
+      accentColor: this.colors.accentColor,
+      dark: this.colors.dark,
+      onChange: (enabled: boolean): void => this.onTextConvertChange(enabled),
+      onOpenMembership: (): void => this.onOpenMembership()
+    })
+  }
 
   build() {
     Column({ space: 18 }) {
@@ -259,18 +433,15 @@ export struct ReaderComicDisplaySettingsPanel {
         colors: this.colors,
         onSelect: (value: string): void => this.onFitChange(value)
       })
-      ReaderComicOptionGroup({
-        title: '网络图片预加载',
-        options: [
-          new ReaderComicOption('0', '关闭'),
-          new ReaderComicOption('3', '3 张'),
-          new ReaderComicOption('5', '5 张'),
-          new ReaderComicOption('10', '10 张')
-        ],
-        selected: `${this.preloadCount}`,
-        colors: this.colors,
-        onSelect: (value: string): void => this.onPreloadCountChange(Number(value) || 0)
-      })
+
+      this.superResolutionRow()
+
+      // 本构建不包含漫画 AI 着色：整行隐藏。
+      if (ComicColorizer.supported()) {
+        this.colorRow()
+      }
+
+      this.textConvertRow()
 
       ReaderSettingSwitchRow({
         title: '双击缩放',

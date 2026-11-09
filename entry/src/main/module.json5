@@ -30,7 +30,16 @@
         "name": "ohos.permission.GET_NETWORK_INFO"
       },
       {
+        "name": "ohos.permission.DETECT_GESTURE"
+      },
+      {
         "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
+      },
+      {
+        "name": "ohos.permission.VIBRATE"
+      },
+      {
+        "name": "ohos.permission.ACCESS_BIOMETRIC"
       },
       {
         "name": "ohos.permission.CAMERA",
@@ -54,17 +63,12 @@
         "startWindowBackground": "$color:start_window_background",
         "orientation": "auto_rotation_restricted",
         "launchType": "singleton",
+        "continuable": true,
         "backgroundModes": [
           "audioPlayback",
           "dataTransfer"
         ],
         "exported": true,
-        "metadata": [
-          {
-            "name": "ohos.ability.shortcuts",
-            "resource": "$profile:shortcuts_config"
-          }
-        ],
         "skills": [
           {
             "entities": [
@@ -111,12 +115,42 @@
               },
               {
                 "scheme": "file",
+                "type": "com.adobe.pdf",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "application/pdf",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
                 "type": "application/epub+zip",
                 "linkFeature": "FileOpen"
               },
               {
                 "scheme": "file",
                 "type": "application/x-epub+zip",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "com.amazon.mobi",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "application/x-mobipocket-ebook",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "io.legado.read.qytheme",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "io.legado.read.qybook",
                 "linkFeature": "FileOpen"
               }
             ]

@@ -1,3 +1,4 @@
+import { BookCover } from '../components/book/BookCover';
 import { router, promptAction } from '@kit.ArkUI';
 import { Book } from '@legado/sourceengine';
 import { appDb } from '../model/data/AppDatabase';
@@ -19,6 +20,7 @@ import { OpdsSettingsStore } from '../opds/OpdsSettingsStore';
 import { BookCoverCache } from '../utils/BookCoverCache';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
@@ -85,6 +87,7 @@ struct OpdsBrowsePage {
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
 
+  @StorageProp('searchExploreUseBookshelfCoverGallery') useBookshelfCover: boolean = false;
   @State server: OpdsServerConfig = new OpdsServerConfig();
   @State serverMissing: boolean = false;
   @State stack: OpdsNavFrame[] = [];
@@ -224,18 +227,19 @@ struct OpdsBrowsePage {
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
-        SymbolGlyph($r('sys.symbol.magnifyingglass'))
-          .fontSize(20)
-          .fontColor([this.searchAvailable ? this.accentColor() : this.subTextColor()])
-          .padding(AppSpacing.MD)
-          .onClick(() => this.toggleSearch())
+        ImmersiveHeaderAction({
+          icon: $r('sys.symbol.magnifyingglass'),
+          tint: this.searchAvailable ? this.accentColor() : this.subTextColor(),
+          accessibilityLabel: '搜索书库',
+          onTap: () => this.toggleSearch()
+        })
+          .margin({ right: AppSpacing.XL - AppSpacing.SM })
       }
     }
     .width('100%')
     .height(56 + this.statusBarHeight)
     .padding({ top: this.statusBarHeight, right: AppSpacing.SM })
     .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
     .alignItems(VerticalAlign.Center)
     .position({ x: 0, y: 0 })
     .zIndex(3)
@@ -361,7 +365,6 @@ struct OpdsBrowsePage {
     .width('100%')
     .padding({ top: AppSpacing.SM, bottom: AppSpacing.SM })
     .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
   }
 
   @Builder
@@ -495,28 +498,11 @@ struct OpdsBrowsePage {
 
   @Builder
   entryCover(entry: OpdsEntry) {
-    Stack() {
-      Column() {
-        Text((entry.title || '书').substring(0, 1))
-          .fontSize(AppFontSize.HEADLINE)
-          .fontColor('#FFFFFF')
-      }
+    BookCover({ bookUrl: entry.id, origin: 'opds', name: entry.title, author: entry.authors.join('、'),
+      coverUrl: this.coverOf(entry.artworkThumbnail()), useBookshelfCover: this.useBookshelfCover,
+      placeholderColor: this.accentColor() })
       .width(48)
       .height(64)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.accentColor())
-      if (this.coverOf(entry.artworkThumbnail())) {
-        Image(this.coverOf(entry.artworkThumbnail()))
-          .width(48)
-          .height(64)
-          .objectFit(ImageFit.Cover)
-      }
-    }
-    .width(48)
-    .height(64)
-    .borderRadius(6)
-    .clip(true)
-    .backgroundColor(this.subTextColor())
     .onAppear(() => this.ensureEntryCover(entry))
   }
 
@@ -655,28 +641,11 @@ struct OpdsBrowsePage {
 
   @Builder
   detailCoverView() {
-    Stack() {
-      Column() {
-        Text((this.detailEntry.title || '书').substring(0, 1))
-          .fontSize(30)
-          .fontColor('#FFFFFF')
-      }
+    BookCover({ bookUrl: this.detailEntry.id, origin: 'opds', name: this.detailEntry.title, author: this.detailEntry.authors.join('、'),
+      coverUrl: this.coverOf(this.detailArtworkRaw()), useBookshelfCover: this.useBookshelfCover,
+      placeholderColor: this.accentColor(), cornerRadius: 8 })
       .width(96)
       .height(128)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.accentColor())
-      if (this.coverOf(this.detailArtworkRaw())) {
-        Image(this.coverOf(this.detailArtworkRaw()))
-          .width(96)
-          .height(128)
-          .objectFit(ImageFit.Cover)
-      }
-    }
-    .width(96)
-    .height(128)
-    .borderRadius(8)
-    .clip(true)
-    .backgroundColor(this.subTextColor())
   }
 
   @Builder

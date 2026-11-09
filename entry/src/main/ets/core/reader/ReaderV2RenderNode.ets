@@ -9,14 +9,17 @@ import {
   Position
 } from '@ohos.arkui.node';
 import graphicsText from '@ohos.graphics.text';
+import { ReaderFontStroke } from './ReaderFontStroke';
+import { ReaderRenderFrame } from './ReaderRenderFrame';
 import { ReaderCommentBubblePainter } from './ReaderCommentBubble';
+import { ReaderV2PagePainter } from './ReaderV2PagePainter';
 import {
   ReaderV2PageFragment,
   ReaderV2PageLayout,
   ReaderV2RegexBubbleSegment
 } from './ReaderV2PageLayout';
 
-class ReaderV2PageFrameNode extends FrameNode {
+export class ReaderV2PageFrameNode extends FrameNode {
   private page: ReaderV2PageLayout | null = null;
   private highlightStart: number = -1;
   private highlightEnd: number = -1;
@@ -58,117 +61,48 @@ class ReaderV2PageFrameNode extends FrameNode {
 
   onDraw(context: DrawContext): void {
     if (!this.page) return;
-    const canvas = context.canvas;
-    // Bubble decoration and glyphs must be submitted by the same retained node. The previous ArkUI overlay was
-    // keyed independently from this FrameNode, so a forward/back turn could update the glyph page first while
-    // leaving the old page's bubble rectangles mounted. Painting both layers here also removes dozens of
-    // Row/Image nodes from simulation snapshots on dialogue-heavy chapters.
-    for (const fragment of this.page.fragments) {
-      for (const segment of fragment.regexBubbleSegments) {
-        this.drawRegexBubble(canvas, segment);
-      }
-      for (const bubble of fragment.commentBubbleSegments) {
-        ReaderCommentBubblePainter.paint(canvas, bubble.rect.left, bubble.rect.top, bubble.rect.right,
-          bubble.rect.bottom, bubble.style, bubble.tail);
-      }
-    }
-    for (const fragment of this.page.fragments) {
-      if (!fragment.paragraph) continue;
-      canvas.save();
-      canvas.clipRect({
-        left: fragment.clipRect.left,
-        top: fragment.clipRect.top,
-        right: fragment.clipRect.right,
-        bottom: fragment.clipRect.bottom
-      }, drawing.ClipOp.INTERSECT, true);
-      this.drawRange(canvas, fragment, this.selectionStart, this.selectionEnd, this.selectionColor);
-      this.drawRange(canvas, fragment, this.highlightStart, this.highlightEnd, this.highlightColor);
-      fragment.paragraph.paint(canvas, fragment.paragraphX, fragment.paragraphY);
-      canvas.restore();
-    }
-  }
-
-  // Brush.setColor(number) only exists from API 18; the colour-object overload works on every supported API.
-  private static brushColor(value: number): common2D.Color {
-    const color = value >>> 0;
-    return {
-      alpha: (color >>> 24) & 0xFF,
-      red: (color >>> 16) & 0xFF,
-      green: (color >>> 8) & 0xFF,
-      blue: color & 0xFF
-    };
-  }
-
-  private drawRegexBubble(canvas: drawing.Canvas, segment: ReaderV2RegexBubbleSegment): void {
-    const left = segment.rect.left;
-    const top = segment.rect.top;
-    const right = segment.rect.right;
-    const bottom = segment.rect.bottom;
-    if (right <= left || bottom <= top) return;
-
-    const brush = new drawing.Brush();
-    brush.setColor(ReaderV2PageFrameNode.brushColor(segment.backgroundColor));
-    if (segment.shadowEnabled && segment.shadowRadiusPx > 0) {
-      try {
-        brush.setShadowLayer(drawing.ShadowLayer.create(segment.shadowRadiusPx,
-          segment.shadowOffsetXPx, segment.shadowOffsetYPx, segment.shadowColor));
-      } catch (_) {
-      }
-    }
-    const radius = Math.max(0, Math.min((right - left) / 2, (bottom - top) / 2,
-      segment.radiusTopLeftPx, segment.radiusTopRightPx,
-      segment.radiusBottomRightPx, segment.radiusBottomLeftPx));
-    const roundRect = new drawing.RoundRect({ left: left, top: top, right: right, bottom: bottom }, radius, radius);
-    roundRect.setCorner(drawing.CornerPos.TOP_LEFT_POS, segment.radiusTopLeftPx, segment.radiusTopLeftPx);
-    roundRect.setCorner(drawing.CornerPos.TOP_RIGHT_POS, segment.radiusTopRightPx, segment.radiusTopRightPx);
-    roundRect.setCorner(drawing.CornerPos.BOTTOM_RIGHT_POS,
-      segment.radiusBottomRightPx, segment.radiusBottomRightPx);
-    roundRect.setCorner(drawing.CornerPos.BOTTOM_LEFT_POS,
-      segment.radiusBottomLeftPx, segment.radiusBottomLeftPx);
-    canvas.attachBrush(brush);
-    canvas.drawRoundRect(roundRect);
-    canvas.detachBrush();
-  }
-
-  private drawRange(canvas: drawing.Canvas, fragment: ReaderV2PageFragment,
-    absoluteStart: number, absoluteEnd: number, color: number): void {
-    if (!fragment.paragraph || absoluteStart < 0 || absoluteEnd <= absoluteStart ||
-      absoluteEnd <= fragment.displayStart || absoluteStart >= fragment.displayEnd) return;
-    const localStart = Math.max(0, absoluteStart - fragment.displayStart);
-    const localEnd = Math.min(fragment.localEnd - fragment.localStart,
-      absoluteEnd - fragment.displayStart);
-    if (localEnd <= localStart) return;
-    const boxes = fragment.paragraph.getRectsForRange({ start: localStart, end: localEnd },
-      // MAX follows the full logical line box. With CJK font padding enabled that box contains
-      // noticeably more descent space, making the yellow focus appear shifted downward from the glyphs.
-      // Use the ink-tight vertical bounds so the focus remains visually centred on the spoken text.
-      graphicsText.RectWidthStyle.TIGHT, graphicsText.RectHeightStyle.TIGHT);
-    const brush = new drawing.Brush();
-    brush.setColor(ReaderV2PageFrameNode.brushColor(color));
-    canvas.attachBrush(brush);
-    for (const box of boxes) {
-      const left = Math.max(fragment.clipRect.left, fragment.paragraphX + box.rect.left);
-      const top = Math.max(fragment.clipRect.top, fragment.paragraphY + box.rect.top);
-      const right = Math.min(fragment.clipRect.right, fragment.paragraphX + box.rect.right);
-      const bottom = Math.min(fragment.clipRect.bottom, fragment.paragraphY + box.rect.bottom);
-      if (right > left && bottom > top) canvas.drawRect(left, top, right, bottom);
-    }
-    canvas.detachBrush();
+    // The same painter rasterizes the settled page for simulation turns; see ReaderV2PagePainter.
+    ReaderV2PagePainter.paint(context.canvas, this.page, this.highlightStart, this.highlightEnd,
+      this.highlightColor, this.selectionStart, this.selectionEnd, this.selectionColor);
   }
 }
 
 export class ReaderV2PageNodeController extends NodeController {
+  /** Optional creation probe for device benchmarks; inactive in ordinary reading. */
+  static onNodeCreated: (() => void) | null = null;
   private node: ReaderV2PageFrameNode | null = null;
   private page: ReaderV2PageLayout | null = null;
+  private uiContext: UIContext | null = null;
+  private requestedHost: string = '';
+  private mountedHost: string = '';
+  private bindingSerial: number = 0;
   private highlightStart: number = -1;
   private highlightEnd: number = -1;
   private selectionStart: number = -1;
   private selectionEnd: number = -1;
 
   makeNode(uiContext: UIContext): FrameNode | null {
+    this.uiContext = uiContext;
+    this.mountedHost = this.requestedHost;
+    ReaderV2PageNodeController.onNodeCreated?.();
     this.node = new ReaderV2PageFrameNode(uiContext);
     this.node.update(this.page, this.highlightStart, this.highlightEnd, this.selectionStart, this.selectionEnd);
     return this.node;
+  }
+
+  /** A page-keyed NodeContainer will create its own node; do not rebuild the outgoing node as well. */
+  bindPageToHost(page: ReaderV2PageLayout | null, host: string): void {
+    if (this.requestedHost === host) { this.updatePage(page); return; }
+    this.requestedHost = host;
+    this.page = page;
+    const serial = ++this.bindingSerial;
+    const uiContext = this.uiContext;
+    if (!this.node || !uiContext) return;
+    ReaderRenderFrame.wait(uiContext).then((): void => {
+      if (serial !== this.bindingSerial || this.requestedHost !== host || this.mountedHost === host) return;
+      // Preserve the compatibility repair if an ArkUI version retains the old container despite its new key.
+      this.rebuild();
+    });
   }
 
   updatePage(page: ReaderV2PageLayout | null, forceRebuild: boolean = false): void {
@@ -176,6 +110,7 @@ export class ReaderV2PageNodeController extends NodeController {
     // change during those frames, so invalidating its native RenderNode each time only resubmits identical glyphs
     // and can expose a one-frame baseline/layout fluctuation during rapid turns.
     if (!forceRebuild && this.page === page) return;
+    this.bindingSerial++;
     this.page = page;
     if (this.node) {
       // RenderNode.invalidate() is not sufficient on every HarmonyOS build when a NodeContainer keeps the same
@@ -185,6 +120,16 @@ export class ReaderV2PageNodeController extends NodeController {
       this.rebuild();
     } else {
       this.publish();
+    }
+  }
+
+  /** Window position (vp) of the mounted native page node, so a raster can align with the live glyphs. */
+  nodePositionToWindow(): Position | null {
+    if (!this.node) return null;
+    try {
+      return this.node.getPositionToWindow();
+    } catch (_) {
+      return null;
     }
   }
 

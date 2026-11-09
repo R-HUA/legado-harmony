@@ -4,6 +4,7 @@ import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
 import { util } from '@kit.ArkTS';
 import { AccountCommerceApi } from '../account/AccountCommerceApi';
+import { AccountCommerceConfig } from '../account/AccountCommerceConfig';
 import { AccountSessionStore } from '../account/AccountSessionStore';
 import {
   TtsCatalogResponse,
@@ -13,23 +14,37 @@ import {
 } from '../account/AccountCommerceModels';
 import { HttpTTS, HttpClient } from '@legado/sourceengine';
 import { syncSystemBars } from '../utils/SystemBars';
-import { SystemTtsReader, TtsVoiceOption } from '../utils/SystemTtsReader';
+import { SystemTtsReader } from '../utils/SystemTtsReader';
+import { TtsVoiceOption } from '../utils/TtsVoiceModels';
 import { TtsVoiceCatalog } from '../utils/TtsVoiceCatalog';
 import { AdaptiveIconButton } from '../components/AdaptiveIconButton';
 import { TtsSettings, TtsSettingsStore } from '../utils/TtsSettingsStore';
+import { MimoStore } from '../utils/mimo/MimoStore';
+import { MimoVoiceChoice } from '../core/mimo/MimoVoicePolicy';
+import { ReaderTtsFloatingSession } from '../utils/ReaderTtsFloatingSession';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
+import { SettingNavRow, SettingRow } from '../components/common/SettingRow';
+import { LocalTtsModel, LocalTtsModels } from '../utils/localtts/LocalTtsModels';
+import { LocalTtsSelection } from '../utils/localtts/LocalTtsSelection';
+
+interface TtsSettingsVoiceSelectOption extends SelectOption {
+  key: string;
+  selectVoice: () => void;
+}
 
 const TTS_CUSTOM_VOICE_IMPORT_LIMIT_BYTES: number = 2 * 1024 * 1024;
 
 @Entry
 @Component
 struct TtsSettingsPage {
-  @StorageLink('ttsPerson') ttsPerson: number = 13;
+  @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageLink('ttsPerson') ttsPerson: number = 0;
   @StorageLink('ttsOnline') ttsOnline: number = 1;
   @StorageLink('ttsStyle') ttsStyle: string = '';
   @StorageLink('ttsLanguage') ttsLanguage: string = 'zh-CN';
@@ -38,6 +53,9 @@ struct TtsSettingsPage {
   @StorageLink('ttsCustomVoiceId') @Watch('onCustomVoiceSelectionChanged') ttsCustomVoiceId: string = '';
   @StorageLink('ttsCustomVoices') @Watch('onCustomVoicesStorageChanged') ttsCustomVoices: string = '';
   @StorageLink('ttsCloudVoiceId') ttsCloudVoiceId: string = '';
+  @StorageLink('ttsLocalVoiceId') @Watch('onCustomVoiceSelectionChanged') ttsLocalVoiceId: string = '';
+  @StorageProp('localTtsInstalledIds') @Watch('onCustomVoiceSelectionChanged') localTtsInstalledIds: string = '';
+  @StorageLink('ttsDisabledVoiceKeys') @Watch('onVoiceAvailabilityChanged') ttsDisabledVoiceKeys: string = '';
   @StorageLink('accountLoggedIn') accountLoggedIn: boolean = false;
   @StorageLink('accountPaidPoints') paidPoints: number = 0;
   @StorageLink('accountPromoPoints') promoPoints: number = 0;
@@ -49,7 +67,12 @@ struct TtsSettingsPage {
   @StorageLink('appDarkButtonColor') appDarkButtonColor: string = '#3F8CFF';
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
 
-  @State voices: TtsVoiceOption[] = [TtsSettingsPage.defaultVoice()];
+  @State voices: TtsVoiceOption[] = [TtsVoiceCatalog.defaultVoice()];
+  @StorageProp('mimoEnabled') mimoEnabled: boolean = false;
+  @StorageProp('mimoMulti') mimoMulti: boolean = false;
+  @StorageProp('mimoVoice') mimoVoice: string = '白桦';
+  @StorageProp('mimoVoicesRevision') @Watch('refreshMimoChoices') mimoVoicesRevision: number = 0;
+  @State mimoChoices: MimoVoiceChoice[] = [];
   @State cloudVoices: TtsVoiceInfo[] = [];
   @State ttsCatalog: TtsCatalogResponse = new TtsCatalogResponse();
   @State ttsStandardChars: number = 0;
@@ -66,14 +89,6 @@ struct TtsSettingsPage {
   @State isPreviewing: boolean = false;
   @State isLoadingVoices: boolean = false;
   @State voiceLoadError: string = '';
-  @State downloadingVoiceKey: string = '';
-  @State downloadProgressText: string = '';
-  @State customVoices: HttpTTS[] = [];
-  @State showVoiceDropdown: boolean = false;
-  @State customVoiceImportUrl: string = '';
-  @State isImportingCustomVoices: boolean = false;
-  private speedSaveTimerId: number = -1;
-  private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
   private pageActive: boolean = false;
   private pageSessionSerial: number = 0;
   private voiceLoadSerial: number = 0;
@@ -82,6 +97,14 @@ struct TtsSettingsPage {
   private voiceSelectionSerial: number = 0;
   private isLoadingSettings: boolean = false;
   private voiceDownloadTask: Promise<void> | null = null;
+  @State downloadingVoiceKey: string = '';
+  @State downloadProgressText: string = '';
+  @State customVoices: HttpTTS[] = [];
+  @State showTtsPackages: boolean = false;
+  @State customVoiceImportUrl: string = '';
+  @State isImportingCustomVoices: boolean = false;
+  private speedSaveTimerId: number = -1;
+  private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
 
   aboutToAppear(): void {
     this.activatePage();
@@ -92,7 +115,9 @@ struct TtsSettingsPage {
   onPageShow(): void {
     this.activatePage();
     this.syncBars();
+    this.refreshMimoChoices();
     this.loadSettingsAndVoices();
+    if (AccountCommerceConfig.COMMERCE_ENABLED) this.loadTtsCommerce();
   }
 
   aboutToDisappear(): void {
@@ -105,9 +130,6 @@ struct TtsSettingsPage {
         this.pageContent()
       } })
 
-      if (this.showVoiceDropdown) {
-        this.voiceDropdownMenu()
-      }
     }
     .width('100%')
     .height('100%')
@@ -117,139 +139,105 @@ struct TtsSettingsPage {
 
   @Builder
   pageContent() {
-    this.sectionTitle('朗读音色')
-    this.voiceDropdownSelector()
-
-    Column({ space: AppSpacing.SM }) {
-      Text('系统音色首次使用可能需要联网下载，下载后可离线朗读。')
-        .fontSize(AppFontSize.CAPTION)
-        .fontColor(this.subTextColor())
-        .width('100%')
-      Row() {
-        Text(this.voiceLoadError || (this.isLoadingVoices ? '正在加载系统音色…' : ''))
-          .fontSize(AppFontSize.CAPTION)
-          .fontColor(this.voiceLoadError ? ThemeRuntime.dangerColor(this.appDarkMode) : this.subTextColor())
-          .layoutWeight(1)
-        Text('刷新音色')
-          .fontSize(AppFontSize.CAPTION)
-          .fontColor(this.accentColor())
-          .padding({ left: AppSpacing.LG, top: AppSpacing.SM, bottom: AppSpacing.SM })
-          .enabled(!this.isLoadingVoices && !this.downloadingVoiceKey)
-          .onClick(() => {
-            this.loadVoices();
-          })
-      }
-      .width('100%')
-    }
-    .width('calc(100% - 32vp)')
-    .margin({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.SM })
-
-    this.sectionTitle('自定义音色')
-    Row() {
-      Column() {
-        Text(this.customVoiceSummary())
-          .fontSize(AppFontSize.BODY_LARGE)
-          .fontColor(this.primaryTextColor())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text('导入、启用、禁用、删除自定义音色')
-          .fontSize(AppFontSize.CAPTION)
-          .fontColor(this.subTextColor())
-          .margin({ top: AppSpacing.XS })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Text('管理')
-        .fontSize(AppFontSize.BODY)
-        .fontColor(this.accentColor())
-        .width(52)
-        .textAlign(TextAlign.Center)
-    }
-    .width('calc(100% - 24vp)')
-    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
-    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
-    .borderRadius(ThemeRuntime.cardRadius())
-    .clip(true)
-    .backgroundColor(this.cardColor())
-    .border({ width: { bottom: 0.5 }, color: ThemeRuntime.hairlineColor(this.appDarkMode) })
-    .onClick(() => {
-      router.pushUrl({ url: 'pages/CustomTtsVoiceManager' });
-    })
-
-    this.sectionTitle('朗读倍速')
-    Column() {
-      Row() {
-        Text('倍速')
-          .fontSize(AppFontSize.BODY_LARGE)
-          .fontColor(this.primaryTextColor())
-          .layoutWeight(1)
-        Text(`${this.ttsSpeed.toFixed(1)}x`)
-          .fontSize(AppFontSize.BODY)
-          .fontColor(this.subTextColor())
-      }
-      .width('100%')
-
-      Row({ space: AppSpacing.MD }) {
-        this.speedStepButton($r('sys.symbol.minus'), '降低朗读倍速', this.ttsSpeed > 0.5, () => {
-          this.applySpeed(this.ttsSpeed - 0.1);
-        })
-        Slider({ value: this.ttsSpeed, min: 0.5, max: 2, step: 0.1 })
-          .layoutWeight(1)
-          .showTips(true)
-          .selectedColor(this.accentColor())
-          .sliderInteractionMode(ImmersiveMaterialRuntime.supportsHds() ? SliderInteraction.SLIDE_AND_CLICK_UP : SliderInteraction.SLIDE_ONLY)
-          .onChange((value: number) => {
-            this.applySpeed(value);
-          })
-        this.speedStepButton($r('sys.symbol.plus'), '提高朗读倍速', this.ttsSpeed !== 2, () => {
-          this.applySpeed(this.ttsSpeed + 0.1);
-        })
-      }
-      .width('100%')
-      .margin({ top: AppSpacing.MD })
-
-      Row({ space: AppSpacing.MD }) {
-        this.speedChip(0.8)
-        this.speedChip(1.0)
-        this.speedChip(1.2)
-        this.speedChip(1.5)
-        this.speedChip(2.0)
-      }
-      .width('100%')
-      .margin({ top: AppSpacing.MD })
-    }
-    .width('calc(100% - 24vp)')
-    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
-    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
-    .borderRadius(ThemeRuntime.cardRadius())
-    .clip(true)
-    .backgroundColor(this.cardColor())
-
-    this.sectionTitle('预览')
     Column({ space: AppSpacing.LG }) {
-      Text(this.previewText)
-        .fontSize(AppFontSize.BODY)
-        .lineHeight(22)
-        .fontColor(this.subTextColor())
-        .width('100%')
+      Column() {
+        SettingRow({ title: '朗读音色' }) {
+          this.voiceDropdownSelector()
+        }
+        SettingNavRow({ title: '音色管理', description: '离线音色 / 系统音色 / 云端音色 / 自定义音色', showDivider: false,
+          onTap: (): void => {
+            this.stopPreview();
+            this.getUIContext().getRouter().pushUrl({ url: 'pages/CustomTtsVoiceManager' });
+          } })
+      }.width('100%').backgroundColor(this.cardColor()).borderRadius(ThemeRuntime.cardRadius())
 
-      Button(this.isPreviewing ? '停止试听' : '试听')
+      if (this.voiceLoadError || this.isLoadingVoices) {
+        Row() {
+          Text(this.voiceLoadError || '正在加载系统音色…')
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.voiceLoadError ? ThemeRuntime.dangerColor(this.appDarkMode) : this.subTextColor())
+            .layoutWeight(1)
+          if (this.voiceLoadError) {
+            Text('刷新音色')
+              .fontSize(AppFontSize.CAPTION)
+              .fontColor(this.accentColor())
+              .padding({ left: AppSpacing.LG, top: AppSpacing.SM, bottom: AppSpacing.SM })
+              .enabled(!this.isLoadingVoices && !this.downloadingVoiceKey)
+              .onClick(() => {
+                this.loadVoices();
+              })
+          }
+        }
         .width('100%')
-        .height(42)
-        .backgroundColor(this.isPreviewing ? ThemeRuntime.dangerColor(this.appDarkMode) : this.buttonColor())
-        .fontColor(ThemeRuntime.onAccentColor())
-        .onClick(() => {
-          this.togglePreview();
-        })
-    }
-    .width('calc(100% - 24vp)')
-    .padding(AppSpacing.XL)
-    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
-    .borderRadius(ThemeRuntime.cardRadius())
-    .clip(true)
-    .backgroundColor(this.cardColor())
+        .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
+      }
 
+      Column() {
+        SettingNavRow({ title: 'MiMo 朗读', description: this.mimoEnabled ?
+          (this.mimoMulti ? '已启用 · 自动多角色 · 自带 API Key' : '已启用 · 单音色 · 自带 API Key') :
+          '使用自己的 API Key，自动识别人物与旁白', showDivider: false,
+          onTap: (): void => { this.stopPreview(); router.pushUrl({ url: 'pages/MimoSettings' }); } })
+      }.width('100%').backgroundColor(this.cardColor()).borderRadius(ThemeRuntime.cardRadius())
+
+      Column({ space: AppSpacing.MD }) {
+        Row() {
+          Text('朗读倍速').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium)
+            .fontColor(this.primaryTextColor()).layoutWeight(1)
+          Text(`${this.ttsSpeed.toFixed(1)}×`).fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium)
+            .fontColor(this.accentColor())
+        }.width('100%')
+        Row({ space: AppSpacing.MD }) {
+          this.speedStepButton($r('sys.symbol.minus'), '降低朗读倍速', this.ttsSpeed > 0.5, () => {
+            this.applySpeed(this.ttsSpeed - 0.1);
+          })
+          Slider({ value: this.ttsSpeed, min: 0.5, max: 2, step: 0.1 })
+            .layoutWeight(1).showTips(true).selectedColor(this.accentColor())
+            .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
+            .onChange((value: number) => { this.applySpeed(value); })
+          this.speedStepButton($r('sys.symbol.plus'), '提高朗读倍速', this.ttsSpeed < 2, () => {
+            this.applySpeed(this.ttsSpeed + 0.1);
+          })
+        }.width('100%')
+        Row({ space: AppSpacing.MD }) {
+          this.speedChip(0.8)
+          this.speedChip(1.0)
+          this.speedChip(1.2)
+          this.speedChip(1.5)
+          this.speedChip(2.0)
+        }.width('100%')
+      }.width('100%').padding(AppSpacing.XL).backgroundColor(this.cardColor())
+        .borderRadius(ThemeRuntime.cardRadius())
+
+      if (this.mimoEnabled) {
+        Text('MiMo 的倍速用于指导合成语速，实际节奏会随内容变化。用量计入你的小米账号，不消耗在线朗读字数包。')
+          .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
+      }
+
+      Column({ space: AppSpacing.LG }) {
+        Text('试听').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium)
+          .fontColor(this.primaryTextColor()).width('100%')
+        Text(this.getPreviewText()).fontSize(AppFontSize.BODY).lineHeight(22)
+          .fontColor(this.subTextColor()).width('100%')
+        Button(this.isPreviewing ? '停止试听' : '开始试听').width('100%').height(44)
+          .backgroundColor(this.isPreviewing ? ThemeRuntime.dangerColor(this.appDarkMode) : this.buttonColor())
+          .fontColor(ThemeRuntime.onAccentColor(this.isPreviewing ? ThemeRuntime.dangerColor(this.appDarkMode) : this.buttonColor()))
+          .onClick(() => { this.togglePreview(); })
+      }.width('100%').padding(AppSpacing.XL).backgroundColor(this.cardColor())
+        .borderRadius(ThemeRuntime.cardRadius())
+
+      this.ttsCommerceSection()
+      this.ttsPackagesSection()
+    }.width('100%').constraintSize({ maxWidth: 760 }).padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG })
+  }
+
+  private stopPreview(): void {
+    if (this.isPreviewing) this.previewReader.stop();
+    this.isPreviewing = false;
+  }
+
+  onPageHide(): void {
+    this.stopPreview();
+    this.deactivatePage();
   }
 
   pageColor(): string {
@@ -294,6 +282,14 @@ struct TtsSettingsPage {
     this.selectedVoiceKey = this.currentVoiceKey();
   }
 
+  onVoiceAvailabilityChanged(): void {
+    this.voices = this.voices.filter((voice: TtsVoiceOption): boolean =>
+      TtsVoiceCatalog.systemEnabled(voice, this.ttsDisabledVoiceKeys));
+    this.cloudVoices = this.cloudVoices.filter((voice: TtsVoiceInfo): boolean =>
+      TtsVoiceCatalog.cloudEnabled(voice, this.ttsDisabledVoiceKeys));
+    this.selectedVoiceKey = this.currentVoiceKey();
+  }
+
   enabledCustomVoices(): HttpTTS[] {
     return this.customVoices.filter((voice: HttpTTS) => voice.enabled !== false);
   }
@@ -303,6 +299,11 @@ struct TtsSettingsPage {
   }
 
   selectedVoiceTitle(): string {
+    if (this.mimoEnabled) return MimoStore.selectedVoiceTitle();
+    const localVoice = this.currentLocalVoice();
+    if (localVoice) {
+      return LocalTtsModels.voiceTitle(localVoice);
+    }
     const cloudVoice = this.findCurrentCloudVoice();
     if (cloudVoice) {
       return TtsVoiceCatalog.cloudVoiceTitle(cloudVoice);
@@ -325,160 +326,91 @@ struct TtsSettingsPage {
     return `${this.voiceName(voice)} · 状态待确认`;
   }
 
+  voiceSelectOptions(): TtsSettingsVoiceSelectOption[] {
+    const options: TtsSettingsVoiceSelectOption[] = [];
+    this.mimoChoices.forEach((choice: MimoVoiceChoice): void => {
+      options.push({ value: choice.label, key: choice.key, selectVoice: (): void => this.selectMimoVoice(choice) });
+    });
+    if (this.mimoEnabled) {
+      options.push({ value: 'MiMo 朗读设置', key: 'mimo',
+        selectVoice: (): void => { this.stopPreview(); router.pushUrl({ url: 'pages/MimoSettings' }); } });
+    }
+    LocalTtsModels.selectableModels().forEach((model: LocalTtsModel): void => {
+      options.push({ value: LocalTtsModels.voiceTitle(model), key: LocalTtsModels.voiceKey(model),
+        selectVoice: (): void => { this.applyLocalVoice(model); } });
+    });
+    this.cloudVoices.forEach((voice: TtsVoiceInfo): void => {
+      options.push({ value: TtsVoiceCatalog.cloudVoiceTitle(voice),
+        key: TtsVoiceCatalog.cloudVoiceKey(voice),
+        selectVoice: (): void => { this.applyCloudVoice(voice); } });
+    });
+    this.enabledCustomVoices().forEach((voice: HttpTTS): void => {
+      options.push({ value: TtsVoiceCatalog.customVoiceTitle(voice),
+        key: TtsVoiceCatalog.customVoiceKey(voice),
+        selectVoice: (): void => { this.applyCustomVoice(voice); } });
+    });
+    this.voices.forEach((voice: TtsVoiceOption): void => {
+      options.push({ value: this.voiceTitle(voice), key: TtsVoiceCatalog.voiceKey(voice),
+        selectVoice: (): void => { this.selectVoice(voice); } });
+    });
+    return options;
+  }
+
+  refreshMimoChoices(): void {
+    // Built-in MiMo presets exist before MiMo is set up; list them only while MiMo reading is switched on.
+    try { this.mimoChoices = MimoStore.load().enabled ? MimoStore.voiceChoices().slice() : []; this.selectedVoiceKey = this.currentVoiceKey(); }
+    catch (error) { HdsFeedback.showToast((error as Error).message); }
+  }
+
+  selectMimoVoice(choice: MimoVoiceChoice): void {
+    if (!MimoStore.isConfigured()) { router.pushUrl({ url: 'pages/MimoSettings' }); return; }
+    const activeBook = ReaderTtsFloatingSession.isActive() ? (AppStorage.get<string>('globalTtsBookUrl') || '') : '';
+    this.stopPreview();
+    ReaderTtsFloatingSession.stop();
+    try {
+      if (MimoStore.selectVoice(choice, activeBook)) this.refreshMimoChoices();
+      else router.pushUrl({ url: 'pages/MimoSettings' });
+    } catch (error) { HdsFeedback.showToast((error as Error).message); }
+  }
+
   @Builder
   voiceDropdownSelector() {
-    Row() {
-      Text(this.selectedVoiceTitle())
-        .fontSize(AppFontSize.BODY_LARGE)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-      SymbolGlyph(this.showVoiceDropdown ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
-        .fontSize(18)
-        .fontColor([this.subTextColor()])
-        .width(18)
-    }
-    .width('calc(100% - 24vp)')
-    .height(54)
-    .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
-    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
-    .borderRadius(ThemeRuntime.cardRadius())
-    .backgroundColor(this.cardColor())
-    .onClick(() => {
-      this.showVoiceDropdown = !this.showVoiceDropdown;
-    })
-  }
-
-  @Builder
-  voiceDropdownMenu() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .onClick(() => {
-          this.showVoiceDropdown = false;
-        })
-
-      Column() {
-        Scroll() {
-          Column() {
-            if (this.enabledCustomVoices().length > 0) {
-              this.voiceDropdownSectionTitle('自定义音色')
-              ForEach(this.enabledCustomVoices(), (voice: HttpTTS) => {
-                this.customVoiceDropdownOption(voice, false)
-              }, (voice: HttpTTS) => `${TtsVoiceCatalog.customVoiceKey(voice)}_enabled`)
-            }
-
-            this.voiceDropdownSectionTitle('系统音色')
-            ForEach(this.voices, (voice: TtsVoiceOption) => {
-              this.systemVoiceDropdownOption(voice)
-            }, (voice: TtsVoiceOption) => this.voiceKey(voice))
-
-            if (this.disabledCustomVoices().length > 0) {
-              this.voiceDropdownSectionTitle('已禁用')
-              ForEach(this.disabledCustomVoices(), (voice: HttpTTS) => {
-                this.customVoiceDropdownOption(voice, true)
-              }, (voice: HttpTTS) => `${TtsVoiceCatalog.customVoiceKey(voice)}_disabled`)
-            }
-          }
-          .width('100%')
-        }
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        .width('100%')
-        .constraintSize({ maxHeight: 420 })
-      }
-      .width('calc(100% - 24vp)')
-      .constraintSize({ maxWidth: 560 })
-      .padding({ top: AppSpacing.SM, bottom: AppSpacing.SM })
-      // API 6 changed how backdropBlur composites for custom overlays, so the
-      // translucent glass tint let page content bleed through the voice list.
-      // Use the opaque card surface instead, matching the other settings
-      // dropdown menus, so every option stays readable.
-      .backgroundColor(this.cardColor())
-      .borderRadius(ThemeRuntime.glassCornerRadius(16, 'overlay'))
-      .border({ width: ThemeRuntime.glassBorderWidth('overlay'), color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'overlay') })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('overlay'), color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'overlay'), offsetX: ThemeRuntime.glassShadowOffsetX('overlay'), offsetY: ThemeRuntime.glassShadowOffsetY('overlay') })
-      .position({ x: 12, y: this.statusBarHeight + 108 })
-    }
-    .width('100%')
-    .height('100%')
-  }
-
-  @Builder
-  voiceDropdownSectionTitle(title: string) {
-    Text(title)
-      .fontSize(AppFontSize.CAPTION)
+    Select(this.voiceSelectOptions())
+      .selected(this.voiceSelectOptions().findIndex((option: TtsSettingsVoiceSelectOption): boolean =>
+        option.key === this.selectedVoiceKey))
+      .value(this.selectedVoiceTitle())
+      .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
+      .optionFont({ family: this.applicationFontFamily })
+      .selectedOptionFont({ family: this.applicationFontFamily })
       .fontColor(this.subTextColor())
-      .width('100%')
-      .padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.MD, bottom: AppSpacing.XS })
+      .backgroundColor(Color.Transparent)
+      .arrowPosition(ArrowPosition.END)
+      .constraintSize({ maxWidth: '65%' })
+      .margin({ left: AppSpacing.MD })
+      .padding({ left: 0, right: 0 })
+      .borderRadius(16)
+      .border({ width: 0 })
+      .divider(null)
+      .optionBgColor(Color.Transparent)
+      .optionFontColor(this.primaryTextColor())
+      .selectedOptionFontColor(this.accentColor())
+      .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
+      .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
+      .menuBackgroundBlurStyle(BlurStyle.NONE)
+      .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel))
+      .accessibilityText('朗读音色，' + this.selectedVoiceTitle())
+      .onSelect((index: number): void => {
+        const option = this.voiceSelectOptions()[index];
+        if (option) option.selectVoice();
+      })
   }
 
-  @Builder
-  customVoiceDropdownOption(voice: HttpTTS, disabled: boolean) {
-    Row() {
-      Text(TtsVoiceCatalog.customVoiceTitle(voice))
-        .fontSize(AppFontSize.BODY_LARGE)
-        .fontColor(disabled ? this.subTextColor() : this.primaryTextColor())
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-      if (!disabled && this.isCustomVoiceSelected(voice)) {
-        SymbolGlyph($r('sys.symbol.checkmark'))
-          .fontSize(18)
-          .fontColor([this.accentColor()])
-      }
+  normalizeDefaultOnlineVoice(): void {
+    if (this.ttsOnline === 0 && this.ttsPerson === 0 && !this.ttsStyle &&
+      TtsVoiceCatalog.sameLanguage(this.ttsLanguage || 'zh-CN', 'zh-CN')) {
+      this.ttsOnline = 1;
+      this.saveSettings();
     }
-    .width('100%')
-    .height(46)
-    .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
-    .opacity(disabled ? 0.5 : 1)
-    .onClick(() => {
-      if (disabled) {
-        return;
-      }
-      this.showVoiceDropdown = false;
-      this.applyCustomVoice(voice);
-    })
-  }
-
-  @Builder
-  systemVoiceDropdownOption(voice: TtsVoiceOption) {
-    Row() {
-      Text(this.voiceTitle(voice))
-        .fontSize(AppFontSize.BODY_LARGE)
-        .fontColor((voice.available || voice.downloadable) ? this.primaryTextColor() : this.subTextColor())
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-      if (this.isVoiceDownloading(voice)) {
-        Text(this.downloadProgressText || '下载中')
-          .fontSize(AppFontSize.CAPTION)
-          .fontColor(this.accentColor())
-      } else if (this.isVoiceSelected(voice)) {
-        SymbolGlyph($r('sys.symbol.checkmark'))
-          .fontSize(18)
-          .fontColor([this.accentColor()])
-      } else if (!voice.available && voice.downloadable) {
-        Text('下载')
-          .fontSize(AppFontSize.CAPTION)
-          .fontColor(this.accentColor())
-      }
-    }
-    .width('100%')
-    .height(46)
-    .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
-    .opacity((voice.available || voice.downloadable) ? 1 : 0.5)
-    .onClick(() => {
-      if (!voice.available && !voice.downloadable) {
-        return;
-      }
-      this.showVoiceDropdown = false;
-      this.selectVoice(voice);
-    })
   }
 
   async loadSettingsAndVoices(): Promise<void> {
@@ -615,7 +547,8 @@ struct TtsSettingsPage {
     this.ttsInstalledVoiceKeys = settings.installedVoiceKeys;
     this.ttsCustomVoiceId = settings.customVoiceId;
     this.ttsCustomVoices = settings.customVoices;
-    this.ttsCloudVoiceId = '';
+    this.ttsCloudVoiceId = settings.cloudVoiceId;
+    this.ttsDisabledVoiceKeys = settings.disabledVoiceKeys;
     this.customVoices = SystemTtsReader.parseCustomVoices(settings.customVoices);
   }
 
@@ -630,6 +563,7 @@ struct TtsSettingsPage {
     settings.customVoiceId = this.ttsCustomVoiceId;
     settings.customVoices = this.ttsCustomVoices;
     settings.cloudVoiceId = this.ttsCloudVoiceId;
+    settings.disabledVoiceKeys = this.ttsDisabledVoiceKeys;
     return settings;
   }
 
@@ -650,18 +584,28 @@ struct TtsSettingsPage {
     this.isLoadingVoices = true;
     this.voiceLoadError = '';
     try {
-      const voices = await SystemTtsReader.listAvailableVoices();
+      const results = await Promise.all([
+        SystemTtsReader.listAvailableVoices(),
+        // Local build: no upstream cloud catalog request while commerce is disabled.
+        AccountCommerceConfig.COMMERCE_ENABLED ? AccountCommerceApi.fetchTtsCatalog().catch(() => null) :
+          Promise.resolve(null)
+      ]);
       if (!this.isPageSessionCurrent(session) || serial !== this.voiceLoadSerial) {
         return;
       }
-      this.cloudVoices = [];
-      this.ttsCloudVoiceId = '';
-      this.voices = this.mergeWithDefaultVoice(voices);
+      const voices = results[0] as TtsVoiceOption[];
+      const catalog = results[1];
+      this.cloudVoices = catalog ? catalog.voices.filter((voice: TtsVoiceInfo): boolean =>
+        TtsVoiceCatalog.cloudEnabled(voice, this.ttsDisabledVoiceKeys)) : [];
+      if (!catalog) this.ttsCloudVoiceId = '';
+      this.voices = this.mergeWithDefaultVoice(voices)
+        .filter((voice: TtsVoiceOption): boolean => TtsVoiceCatalog.systemEnabled(voice, this.ttsDisabledVoiceKeys));
       this.selectedVoiceKey = this.currentVoiceKey();
     } catch (error) {
       if (!this.isPageSessionCurrent(session) || serial !== this.voiceLoadSerial) {
         return;
       }
+      // 查询失败保留当前选择（含自定义、离线模型），只提示刷新。
       console.warn('加载系统音色失败:', error);
       this.voiceLoadError = '系统音色加载失败，请点击刷新重试';
     } finally {
@@ -669,6 +613,11 @@ struct TtsSettingsPage {
         this.isLoadingVoices = false;
       }
     }
+  }
+
+  firstAvailableVoice(): TtsVoiceOption {
+    return this.voices.find((voice: TtsVoiceOption) => voice.available) || this.voices[0] ||
+      TtsVoiceCatalog.defaultVoice();
   }
 
   async selectVoice(voice: TtsVoiceOption): Promise<void> {
@@ -687,6 +636,8 @@ struct TtsSettingsPage {
   }
 
   applyVoice(voice: TtsVoiceOption, stopPreview: boolean): void {
+    if (!TtsVoiceCatalog.systemEnabled(voice, this.ttsDisabledVoiceKeys)) return;
+    if (stopPreview && this.mimoEnabled) MimoStore.setEnabled(false);
     if (stopPreview && this.isPreviewing) {
       this.previewReader.stop();
       this.isPreviewing = false;
@@ -699,8 +650,33 @@ struct TtsSettingsPage {
     this.ttsLanguage = voice.language;
     this.ttsCustomVoiceId = '';
     this.ttsCloudVoiceId = '';
+    LocalTtsSelection.clear(this.context);
     this.selectedVoiceKey = this.voiceKey(voice);
     this.saveSettings();
+  }
+
+  currentLocalVoice(): LocalTtsModel | undefined {
+    if (!this.ttsLocalVoiceId || this.localTtsInstalledIds === undefined) return undefined;
+    return LocalTtsSelection.current();
+  }
+
+  applyLocalVoice(model: LocalTtsModel): void {
+    if (!LocalTtsModels.memberAllowed()) {
+      HdsFeedback.showToast(LocalTtsModels.MEMBER_REQUIRED);
+      router.pushUrl({ url: 'pages/MemberBenefits' });
+      return;
+    }
+    if (this.mimoEnabled) MimoStore.setEnabled(false);
+    if (this.isPreviewing) {
+      this.previewReader.stop();
+      this.isPreviewing = false;
+    }
+    LocalTtsSelection.select(this.context, model.id);
+    this.ttsCustomVoiceId = '';
+    this.ttsCloudVoiceId = '';
+    this.selectedVoiceKey = LocalTtsModels.voiceKey(model);
+    this.saveSettings();
+    HdsFeedback.showToast(`已启用 ${model.name}`);
   }
 
   applyCustomVoice(voice: HttpTTS): void {
@@ -708,6 +684,7 @@ struct TtsSettingsPage {
       HdsFeedback.showToast('该自定义音色已禁用');
       return;
     }
+    if (this.mimoEnabled) MimoStore.setEnabled(false);
     if (this.isPreviewing) {
       this.previewReader.stop();
       this.isPreviewing = false;
@@ -716,7 +693,27 @@ struct TtsSettingsPage {
     this.previewSessionSerial++;
     this.ttsCustomVoiceId = String(voice.id);
     this.ttsCloudVoiceId = '';
+    LocalTtsSelection.clear(this.context);
     this.selectedVoiceKey = TtsVoiceCatalog.customVoiceKey(voice);
+    this.saveSettings();
+    HdsFeedback.showToast(`已启用 ${voice.name}`);
+  }
+
+  applyCloudVoice(voice: TtsVoiceInfo): void {
+    if (!TtsVoiceCatalog.cloudEnabled(voice, this.ttsDisabledVoiceKeys)) return;
+    if (!AccountSessionStore.isLoggedIn()) {
+      HdsFeedback.showToast('请先登录华为账号后使用云端音色');
+      return;
+    }
+    if (this.mimoEnabled) MimoStore.setEnabled(false);
+    if (this.isPreviewing) {
+      this.previewReader.stop();
+      this.isPreviewing = false;
+    }
+    this.ttsCloudVoiceId = voice.id;
+    this.ttsCustomVoiceId = '';
+    LocalTtsSelection.clear(this.context);
+    this.selectedVoiceKey = `cloud_${voice.id}`;
     this.saveSettings();
     HdsFeedback.showToast(`已启用 ${voice.name}`);
   }
@@ -819,6 +816,36 @@ struct TtsSettingsPage {
     return this.isCurrentVoice(voice);
   }
 
+  applyInstalledOverrides(voices: TtsVoiceOption[]): TtsVoiceOption[] {
+    const options: TtsVoiceOption[] = [];
+    for (const voice of voices) {
+      options.push(this.isLocallyInstalledVoice(voice) ? TtsVoiceCatalog.markInstalled(voice) : voice);
+    }
+    return options;
+  }
+
+  markVoiceInstalled(voice: TtsVoiceOption): void {
+    const key = TtsVoiceCatalog.installedKey(voice);
+    if (!key || this.installedVoiceKeyExists(key)) {
+      return;
+    }
+    this.ttsInstalledVoiceKeys = this.ttsInstalledVoiceKeys ?
+      `${this.ttsInstalledVoiceKeys}\n${key}` : key;
+    this.saveSettings();
+  }
+
+  isLocallyInstalledVoice(voice: TtsVoiceOption): boolean {
+    return this.installedVoiceKeyExists(TtsVoiceCatalog.installedKey(voice));
+  }
+
+  installedVoiceKeyExists(key: string): boolean {
+    if (!key) {
+      return false;
+    }
+    const keys = this.ttsInstalledVoiceKeys.split('\n');
+    return keys.includes(key);
+  }
+
   voiceTitle(voice: TtsVoiceOption): string {
     const name = this.voiceName(voice);
     if (this.isVoiceDownloading(voice)) {
@@ -832,6 +859,11 @@ struct TtsSettingsPage {
   }
 
   currentVoiceKey(): string {
+    if (MimoStore.load().enabled) return MimoStore.selectedVoiceKey();
+    const localVoice = this.currentLocalVoice();
+    if (localVoice) {
+      return LocalTtsModels.voiceKey(localVoice);
+    }
     if (this.ttsCloudVoiceId) {
       return `cloud_${this.ttsCloudVoiceId}`;
     }
@@ -849,7 +881,7 @@ struct TtsSettingsPage {
   }
 
   isCurrentVoice(voice: TtsVoiceOption): boolean {
-    if (this.ttsCustomVoiceId || this.ttsCloudVoiceId) {
+    if (this.ttsCustomVoiceId || this.ttsCloudVoiceId || this.currentLocalVoice()) {
       return false;
     }
     return this.normalizeVoiceId(voice.id) === this.normalizeVoiceId(this.ttsPerson) && voice.online === 1 &&
@@ -1018,19 +1050,10 @@ struct TtsSettingsPage {
   }
 
   @Builder
-  sectionTitle(title: string) {
-    Text(title)
-      .fontSize(AppFontSize.BODY)
-      .fontColor(this.subTextColor())
-      .width('100%')
-      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXL, bottom: AppSpacing.MD })
-  }
-
-  @Builder
   ttsCommerceSection() {
     Column({ space: AppSpacing.LG }) {
       Row() {
-        Text(this.accountLoggedIn ? '当前额度' : '登录后可查看额度并兑换')
+        Text('在线朗读额度')
           .fontSize(AppFontSize.BODY_LARGE)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor())
@@ -1078,47 +1101,69 @@ struct TtsSettingsPage {
           .width('100%')
       }
 
-      ForEach(this.ttsCatalog.packages, (item: TtsPackageInfo) => {
-        Row({ space: AppSpacing.MD }) {
-          Column({ space: AppSpacing.XS }) {
-            Text(`${item.tier === 'PREMIUM' ? '精品' : '标准'} · ${this.formatTtsChars(item.chars)}`)
-              .fontSize(AppFontSize.BODY_LARGE)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.primaryTextColor())
-            Text(`${item.validDays} 天有效`)
-              .fontSize(AppFontSize.CAPTION)
-              .fontColor(this.subTextColor())
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
 
-          Button(this.redeemingTtsSku === item.sku ? '兑换中' : `${item.points} 点`)
-            .height(34)
-            .fontSize(AppFontSize.BODY)
-            .enabled(!this.redeemingTtsSku && this.accountLoggedIn && this.paidPoints >= item.points)
-            .fontColor(ThemeRuntime.onAccentColor())
-            .backgroundColor(this.accentColor())
-            .onClick(() => {
-              this.redeemTtsPackage(item);
-            })
-        }
-        .width('100%')
-        .padding({ left: AppSpacing.LG, right: AppSpacing.MD, top: AppSpacing.MD, bottom: AppSpacing.MD })
-        .borderRadius(ThemeRuntime.mediumRadius())
-        .backgroundColor(this.inputColor())
-      }, (item: TtsPackageInfo) => item.sku)
-
-      Text('标准音色每次按 100 字向上取整，精品音色每次按 50 字向上取整；相同音色、文字和倍速会优先使用本地缓存。')
-        .fontSize(AppFontSize.CAPTION)
-        .lineHeight(17)
-        .fontColor(this.subTextColor())
-        .width('100%')
     }
-    .width('calc(100% - 24vp)')
+    .width('100%')
     .padding(AppSpacing.XL)
-    .margin({ left: AppSpacing.LG, right: AppSpacing.LG, bottom: AppSpacing.XXXL })
     .borderRadius(ThemeRuntime.cardRadius())
-    .backgroundColor(this.cardColor())
+    .backgroundColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
+  }
+
+  @Builder
+  ttsPackagesSection() {
+    Column({ space: AppSpacing.LG }) {
+      Row() {
+        Column({ space: AppSpacing.XS }) {
+          Text('兑换字数包').fontSize(AppFontSize.BODY_LARGE).fontWeight(FontWeight.Medium).fontColor(this.primaryTextColor())
+          Text('查看套餐、点数与有效期').fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        SymbolGlyph(this.showTtsPackages ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
+          .fontSize(18).fontColor([this.subTextColor()])
+      }.width('100%').constraintSize({ minHeight: 44 })
+        .accessibilityText(this.showTtsPackages ? '收起兑换字数包' : '展开兑换字数包')
+        .onClick(() => { this.showTtsPackages = !this.showTtsPackages; })
+      if (this.showTtsPackages) {
+        if (this.ttsCatalog.packages.length === 0) {
+          Text(this.ttsCommerceLoading ? '正在加载套餐' : '暂无可用套餐，请刷新后重试')
+            .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
+        }
+        ForEach(this.ttsCatalog.packages, (item: TtsPackageInfo) => {
+          Row({ space: AppSpacing.MD }) {
+            Column({ space: AppSpacing.XS }) {
+              Text(`${item.tier === 'PREMIUM' ? '精品' : '标准'} · ${this.formatTtsChars(item.chars)}`)
+                .fontSize(AppFontSize.BODY_LARGE)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.primaryTextColor())
+              Text(`${item.validDays} 天有效`)
+                .fontSize(AppFontSize.CAPTION)
+                .fontColor(this.subTextColor())
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+
+            Button(this.redeemingTtsSku === item.sku ? '兑换中' : `${item.points} 点`)
+              .height(34)
+              .fontSize(AppFontSize.BODY)
+              .enabled(!this.redeemingTtsSku && this.accountLoggedIn && this.paidPoints >= item.points)
+              .fontColor(ThemeRuntime.onAccentColor())
+              .backgroundColor(this.accentColor())
+              .onClick(() => {
+                this.redeemTtsPackage(item);
+              })
+          }
+          .width('100%')
+          .padding({ left: AppSpacing.LG, right: AppSpacing.MD, top: AppSpacing.MD, bottom: AppSpacing.MD })
+          .borderRadius(ThemeRuntime.mediumRadius())
+          .backgroundColor(this.inputColor())
+        }, (item: TtsPackageInfo) => item.sku)
+
+        Text('标准音色每次按 100 字向上取整，精品音色每次按 50 字向上取整；相同音色、文字和倍速会优先使用本地缓存。')
+          .fontSize(AppFontSize.CAPTION)
+          .lineHeight(17)
+          .fontColor(this.subTextColor())
+          .width('100%')
+      }
+    }.width('100%').padding(AppSpacing.XL).backgroundColor(this.cardColor()).borderRadius(ThemeRuntime.cardRadius())
   }
 
   @Builder
@@ -1130,23 +1175,22 @@ struct TtsSettingsPage {
       Text(this.ttsWalletLoaded
         ? this.formatTtsChars(premium ? this.ttsPremiumChars : this.ttsStandardChars)
         : '--')
-        .fontSize(AppFontSize.TITLE)
+        .fontSize(AppFontSize.HEADLINE)
         .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
+        .fontColor(this.accentColor())
       Text(this.ttsWalletLoaded
         ? ((premium ? this.ttsPremiumNextExpiry : this.ttsStandardNextExpiry)
           ? `${new Date((premium ? this.ttsPremiumNextExpiry : this.ttsStandardNextExpiry) as number)
             .toLocaleDateString()} 到期`
           : '暂无额度')
         : (this.ttsWalletError ? '同步失败' : '正在同步'))
-        .fontSize(AppFontSize.MICRO)
+        .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor())
     }
     .alignItems(HorizontalAlign.Start)
     .layoutWeight(1)
-    .padding(AppSpacing.LG)
+    .padding({ top: AppSpacing.MD, bottom: AppSpacing.MD })
     .borderRadius(ThemeRuntime.mediumRadius())
-    .backgroundColor(this.inputColor())
   }
 
   async togglePreview(): Promise<void> {
@@ -1164,19 +1208,22 @@ struct TtsSettingsPage {
       HdsFeedback.showToast('当前自定义音色不可用，请先检查音色配置');
       return;
     }
-    if (!this.ttsCustomVoiceId) {
+    if (!this.ttsCustomVoiceId && !this.mimoEnabled && !this.currentLocalVoice()) {
       const voice = this.findCurrentVoice();
       if (!voice || !voice.available) {
         HdsFeedback.showToast(voice && voice.downloadable ? '请先下载当前音色再试听' : '当前音色不可用，请刷新后重试');
         return;
       }
     }
+    if (this.mimoEnabled) ReaderTtsFloatingSession.stop();
     const session = this.pageSessionSerial;
     const serial = ++this.previewSessionSerial;
     const errorMessage = this.ttsCustomVoiceId ? '自定义音色试听失败，请检查音色配置' : '试听失败，请刷新音色后重试';
     try {
       this.isPreviewing = true;
       await this.previewReader.start(this.getPreviewText(), {
+        mimo: this.mimoEnabled,
+        mimoBook: 'preview',
         cloudVoiceId: this.findCurrentCloudVoice()?.id || '',
         cloudVoiceName: this.findCurrentCloudVoice()?.name || '',
         cloudVoiceTier: this.findCurrentCloudVoice()?.tier || 'STANDARD',
@@ -1219,12 +1266,12 @@ struct TtsSettingsPage {
     Stack({ alignContent: Alignment.Center }) {
       Text(`${value.toFixed(1)}x`)
         .fontSize(AppFontSize.BODY)
-        .fontColor(Math.abs(this.ttsSpeed - value) < 0.01 ? '#FFFFFF' : this.primaryTextColor())
+        .fontColor(Math.abs(this.ttsSpeed - value) < 0.01 ? this.accentColor() : this.primaryTextColor())
     }
         .layoutWeight(1)
-      .height(32)
-      .borderRadius(16)
-      .backgroundColor(Math.abs(this.ttsSpeed - value) < 0.01 ? this.accentColor() : this.inputColor())
+      .height(40)
+      .borderRadius(ThemeRuntime.buttonRadius())
+      .backgroundColor(Math.abs(this.ttsSpeed - value) < 0.01 ? ThemeRuntime.accentSurfaceColor(this.appDarkMode) : this.inputColor())
       .onClick(() => {
         this.applySpeed(value);
       })
@@ -1276,10 +1323,6 @@ struct TtsSettingsPage {
     }
   }
 
-  onPageHide(): void {
-    this.deactivatePage();
-  }
-
   activatePage(): void {
     if (!this.pageActive) {
       this.pageActive = true;
@@ -1298,7 +1341,6 @@ struct TtsSettingsPage {
     this.isLoadingVoices = false;
     this.downloadingVoiceKey = '';
     this.downloadProgressText = '';
-    this.showVoiceDropdown = false;
     this.previewReader.shutdown();
     this.isPreviewing = false;
   }
@@ -1307,14 +1349,15 @@ struct TtsSettingsPage {
     return this.pageActive && this.pageSessionSerial === session;
   }
 
-  static defaultVoice(): TtsVoiceOption {
-    const option = new TtsVoiceOption();
-    option.id = 13;
-    option.name = '聆小珊';
-    option.online = 1;
-    option.language = 'zh-CN';
-    option.gender = 'female';
-    return option;
+  isSameVoiceOption(left: TtsVoiceOption, right: TtsVoiceOption): boolean {
+    if (this.normalizeVoiceId(left.id) !== this.normalizeVoiceId(right.id) || left.online !== right.online ||
+      !TtsVoiceCatalog.sameLanguage(left.language || 'zh-CN', right.language || 'zh-CN')) {
+      return false;
+    }
+    if (TtsVoiceCatalog.isKnownVoiceId(left.id)) {
+      return true;
+    }
+    return (left.style || '') === (right.style || '');
   }
 
   mergeWithDefaultVoice(voices: TtsVoiceOption[]): TtsVoiceOption[] {
@@ -1338,15 +1381,8 @@ struct TtsSettingsPage {
     return options;
   }
 
-  isSameVoiceOption(left: TtsVoiceOption, right: TtsVoiceOption): boolean {
-    if (this.normalizeVoiceId(left.id) !== this.normalizeVoiceId(right.id) || left.online !== right.online ||
-      !TtsVoiceCatalog.sameLanguage(left.language || 'zh-CN', right.language || 'zh-CN')) {
-      return false;
-    }
-    if (TtsVoiceCatalog.isKnownVoiceId(left.id)) {
-      return true;
-    }
-    return (left.style || '') === (right.style || '');
+  normalizeVoiceId(id: number): number {
+    return id === 0 ? 13 : id;
   }
 
   shouldPreferVoiceOption(candidate: TtsVoiceOption, current: TtsVoiceOption): boolean {
@@ -1363,18 +1399,6 @@ struct TtsSettingsPage {
       return candidate.downloadable;
     }
     return candidate.id === 13 && current.id === 0;
-  }
-
-  normalizeVoiceId(id: number): number {
-    return id === 0 ? 13 : id;
-  }
-
-  voiceName(voice: TtsVoiceOption): string {
-    const id = this.normalizeVoiceId(voice.id);
-    if (id === 13) return '聆小珊';
-    if (id === 21) return '凌飞哲';
-    if (id === 8 && TtsVoiceCatalog.sameLanguage(voice.language || 'zh-CN', 'en-US')) return '美国英语 Laura';
-    return voice.name || '系统音色';
   }
 
   voiceGenderText(voice: TtsVoiceOption): string {
@@ -1394,5 +1418,23 @@ struct TtsSettingsPage {
   voiceKey(voice: TtsVoiceOption): string {
     const style = TtsVoiceCatalog.isKnownVoiceId(voice.id) ? '' : (voice.style || '');
     return `${this.normalizeVoiceId(voice.id)}_${voice.online}_${TtsVoiceCatalog.normalizeLanguage(voice.language || 'zh-CN')}_${style}`;
+  }
+
+  voiceName(voice: TtsVoiceOption): string {
+    const id = this.normalizeVoiceId(voice.id);
+    if (id === 13) return '聆小珊';
+    if (id === 21) return '凌飞哲';
+    if (id === 8 && TtsVoiceCatalog.sameLanguage(voice.language || 'zh-CN', 'en-US')) return '美国英语 Laura';
+    return voice.name || '系统音色';
+  }
+
+  static defaultVoice(): TtsVoiceOption {
+    const option = new TtsVoiceOption();
+    option.id = 13;
+    option.name = '聆小珊';
+    option.online = 1;
+    option.language = 'zh-CN';
+    option.gender = 'female';
+    return option;
   }
 }

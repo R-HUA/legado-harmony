@@ -2,16 +2,129 @@
   "app": {
     "bundleName": "io.legado.read",
     "vendor": "legado",
-    "versionCode": 4000919,
-    "versionName": "4.0.919",
+    "versionCode": 4060007,
+    "versionName": "4.6.007",
     "bundleType": "app",
-    "debug": false,
     "icon": "$media:layered_image",
     "label": "$string:app_name",
-    "buildVersion": "4000919",
+    "buildVersion": "4060007",
     "distributedNotificationEnabled": true,
     "keepAlive": false,
     "minAPIVersion": 20,
-    "targetAPIVersion": 26
+    "targetAPIVersion": 26,
+    "alternateIcons": [
+      {
+        "name": "nostalgic",
+        "icon": "$media:ic_app_nostalgic_layered"
+      },
+      {
+        "name": "warm_book",
+        "icon": "$media:ic_app_warm_book"
+      },
+      {
+        "name": "flowing_pages",
+        "icon": "$media:ic_app_flowing_pages"
+      },
+      {
+        "name": "azure_book",
+        "icon": "$media:ic_app_azure_book"
+      },
+      {
+        "name": "night_neon",
+        "icon": "$media:ic_app_night_neon"
+      },
+      {
+        "name": "minimal_line",
+        "icon": "$media:ic_app_minimal_line"
+      },
+      {
+        "name": "ink_wash",
+        "icon": "$media:ic_app_ink_wash"
+      },
+      {
+        "name": "pixel_retro",
+        "icon": "$media:ic_app_pixel_retro"
+      },
+      {
+        "name": "theme_classic_blue",
+        "icon": "$media:ic_app_theme_classic_blue"
+      },
+      {
+        "name": "theme_warm_paper",
+        "icon": "$media:ic_app_theme_warm_paper"
+      },
+      {
+        "name": "theme_forest_mist",
+        "icon": "$media:ic_app_theme_forest_mist"
+      },
+      {
+        "name": "theme_ink_wash",
+        "icon": "$media:ic_app_theme_ink_wash"
+      },
+      {
+        "name": "theme_neon_night",
+        "icon": "$media:ic_app_theme_neon_night"
+      },
+      {
+        "name": "theme_strawberry_cream",
+        "icon": "$media:ic_app_theme_strawberry_cream"
+      },
+      {
+        "name": "theme_crimson_archive",
+        "icon": "$media:ic_app_theme_crimson_archive"
+      },
+      {
+        "name": "theme_plum_tea",
+        "icon": "$media:ic_app_theme_plum_tea"
+      },
+      {
+        "name": "theme_rose_letter",
+        "icon": "$media:ic_app_theme_rose_letter"
+      },
+      {
+        "name": "theme_moon_crane",
+        "icon": "$media:ic_app_theme_moon_crane"
+      },
+      {
+        "name": "theme_sword_frost",
+        "icon": "$media:ic_app_theme_sword_frost"
+      },
+      {
+        "name": "theme_qingluan_water",
+        "icon": "$media:ic_app_theme_qingluan_water"
+      },
+      {
+        "name": "theme_cat_pipi",
+        "icon": "$media:ic_app_theme_cat_pipi"
+      },
+      {
+        "name": "theme_azure_mecha",
+        "icon": "$media:ic_app_theme_azure_mecha"
+      },
+      {
+        "name": "theme_starwish_magic",
+        "icon": "$media:ic_app_theme_starwish_magic"
+      },
+      {
+        "name": "theme_letterpress_page",
+        "icon": "$media:ic_app_theme_letterpress_page"
+      },
+      {
+        "name": "theme_obsidian_archive",
+        "icon": "$media:ic_app_theme_obsidian_archive"
+      },
+      {
+        "name": "theme_custom",
+        "icon": "$media:ic_app_theme_custom"
+      },
+      {
+        "name": "theme_neon_harbor",
+        "icon": "$media:ic_app_theme_neon_harbor"
+      },
+      {
+        "name": "theme_celestial_vault",
+        "icon": "$media:ic_app_theme_celestial_vault"
+      }
+    ]
   }
 }

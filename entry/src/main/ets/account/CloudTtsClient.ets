@@ -10,6 +10,7 @@ import { sleepMs } from '@legado/sourceengine';
 class CloudTtsErrorBody {
   code: string = '';
   message: string = '';
+  retryAfter: number = 0;
 }
 
 export class CloudTtsTiming {
@@ -77,9 +78,10 @@ export class CloudTtsClient {
       }
     }
 
-    const requestId = util.generateRandomUUID();
+    let requestId = util.generateRandomUUID();
     let lastError: Error = new Error('在线语音合成失败');
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (generation !== this.generation) throw new Error('在线语音合成已停止');
       try {
         const responseBuffer = await this.requestAudio(requestId, voiceId, text, normalizedSpeed);
         if (generation !== this.generation) {
@@ -95,11 +97,19 @@ export class CloudTtsClient {
         lastError = error as Error;
         const apiError = error as AccountApiError;
         const retryable = apiError.errorCode === 'TTS_REQUEST_IN_PROGRESS' ||
-          apiError.statusCode === 0 || apiError.statusCode >= 500;
+          apiError.errorCode === 'TTS_REQUEST_REFUNDED' || apiError.statusCode === 429 ||
+          apiError.statusCode === 0 || (apiError.statusCode >= 500 &&
+          apiError.errorCode !== 'TTS_DAILY_BUDGET_EXHAUSTED' && apiError.errorCode !== 'TTS_NOT_CONFIGURED');
         if (!retryable || attempt >= 2 || generation !== this.generation) {
           break;
         }
-        await sleepMs(600 + attempt * 600);
+        // Only an explicit refund permits a new billable identity. Ambiguous transport failures
+        // retain the original ID so a response lost in transit never creates a second charge.
+        if (apiError.errorCode === 'TTS_SERVER_BUSY' || apiError.errorCode === 'TTS_REQUEST_REFUNDED') {
+          requestId = util.generateRandomUUID();
+        }
+        await sleepMs(Math.max(600 * Math.pow(2, attempt), (Number(apiError.retryAfterSeconds) || 0) * 1000) +
+          Math.floor(Math.random() * 300));
       }
     }
     throw lastError;
@@ -153,13 +163,17 @@ export class CloudTtsClient {
         throw new AccountApiError(
           body.message || `在线语音请求失败（${statusCode}）`,
           statusCode,
-          body.code
+          body.code,
+          Math.min(60, Math.max(0, Number(body.retryAfter) || 0))
         );
       }
       if (!buffer.byteLength) {
         throw new AccountApiError('在线语音响应为空', 502, 'EMPTY_TTS_AUDIO');
       }
       return buffer;
+    } catch (error) {
+      if (error instanceof AccountApiError) throw error;
+      throw new AccountApiError((error as Error).message || '在线语音网络连接失败', 0, 'TTS_NETWORK_ERROR');
     } finally {
       this.clients = this.clients.filter((item: http.HttpRequest) => item !== client);
       try {

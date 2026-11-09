@@ -9,12 +9,16 @@ import { AppDatabase } from '../model/data/AppDatabase';
 import { SearchCoordinator } from '../core/book/SearchCoordinator';
 import { ExploreCoordinator, ExploreEntry } from '../core/book/ExploreCoordinator';
 import { WebBookService } from '../core/book/WebBookService';
+import { ReaderImageRequest } from '../core/book/ReaderImageScheduler';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
+import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
+import { NativeSourceService, NativeCommentPage, HttpClient, ReaderActionMarker, ReaderActionData } from '@legado/sourceengine';
+import { NativeCommentPageView } from '../components/NativeCommentPageView';
 
 class BookSourceDebugExportReport {
   reportVersion: number = 1;
@@ -22,6 +26,7 @@ class BookSourceDebugExportReport {
   sourceUrl: string = '';
   sourceName: string = '';
   stage: string = '';
+  summary: string[] = [];
   session: BookSourceDebugSession = new BookSourceDebugSession();
 }
 
@@ -30,6 +35,7 @@ class BookSourceDebugClipboardReport {
   sourceUrl: string = '';
   stage: string = '';
   status: string = '';
+  summary: string[] = [];
   session: BookSourceDebugSession = new BookSourceDebugSession();
   content: string = '';
 }
@@ -43,6 +49,7 @@ struct BookSourceDebugPage {
   @State keyword: string = '';
   @State stage: string = SourceRuntimeStage.SEARCH;
   @State running: boolean = false;
+  @State checkLargeToc: boolean = false;
   @State status: string = '准备就绪';
   @State session: BookSourceDebugSession = new BookSourceDebugSession();
   @State keyboardInset: number = 0;
@@ -50,6 +57,15 @@ struct BookSourceDebugPage {
   @State debugContent: string = '';
   @State debugSearchLinks: string[] = [];
   @State debugExploreLinks: string[] = [];
+  @State inlineActions: ReaderActionData[] = [];
+  @State inlineSummary: string = '';
+  @State inlineBusy: boolean = false;
+  @State inlinePreviewVisible: boolean = false;
+  @State inlinePreview: NativeCommentPage = new NativeCommentPage();
+  private inlineBook: Book | null = null;
+  private inlineChapter: BookChapter | null = null;
+  private inlineDebug: BookSourceDebugContext | null = null;
+  private inlineSerial: number = 0;
   private coordinator: SearchCoordinator | null = null;
   private initialized: boolean = false;
   private keyboardWindow: window.Window | null = null;
@@ -84,6 +100,9 @@ struct BookSourceDebugPage {
   }
 
   onPageHide(): void {
+    this.inlineSerial++;
+    this.inlineBusy = false;
+    this.inlinePreviewVisible = false;
     if (this.running) this.coordinator?.cancel();
     this.unregisterKeyboardAvoidance();
   }
@@ -100,6 +119,17 @@ struct BookSourceDebugPage {
     .height('100%')
     .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    .bindSheet($$this.inlinePreviewVisible, this.inlinePreviewContent(), {
+      height: `${Math.round(this.inlinePreview.height * 100)}%`,
+      detents: [`${Math.round(this.inlinePreview.height * 100)}%`, SheetSize.LARGE], showClose: true,
+      backgroundColor: this.appDarkMode ? '#18191B' : '#FFFFFF'
+    })
+  }
+
+  @Builder
+  inlinePreviewContent() {
+    NativeCommentPageView({ page: this.inlinePreview, darkMode: this.appDarkMode,
+      onDisplay: (state: string, message: string): void => this.inlineDisplayChanged(state, message) })
   }
 
   @Builder
@@ -115,13 +145,14 @@ struct BookSourceDebugPage {
 
   @Builder
   titleActions() {
-    Text('导出报告').fontSize(AppFontSize.BODY).fontColor(this.accentColor())
-      .width(88)
-      .height(56)
-      .textAlign(TextAlign.Center)
-      .margin({ right: AppSpacing.LG })
+    // 没有报告时仍可点，由导出流程给出提示。
+    ImmersiveHeaderAction({
+      label: '导出报告',
+      tint: this.accentColor(),
+      onTap: () => this.exportDebugReport()
+    })
+      .margin({ right: AppSpacing.XL })
       .opacity(this.hasDebugReport() ? 1 : 0.45)
-      .onClick(() => this.exportDebugReport())
   }
 
   @Builder
@@ -159,6 +190,15 @@ struct BookSourceDebugPage {
       TextInput({ text: this.keyword, placeholder: this.stageInputPlaceholder() })
         .height(44).width('100%').fontColor(this.primaryTextColor())
         .backgroundColor(this.inputColor()).onChange((value: string) => this.keyword = value)
+      if (this.stage === 'full' || this.stage === SourceRuntimeStage.TOC) {
+        Row({ space: AppSpacing.MD }) {
+          Text(this.checkLargeToc ? '目录检查：最多 3000 章' : '目录检查：前 32 章')
+            .fontSize(AppFontSize.BODY).fontColor(this.subTextColor()).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.checkLargeToc })
+            .enabled(!this.running).selectedColor(this.accentColor())
+            .onChange((value: boolean): void => { this.checkLargeToc = value; })
+        }.width('100%')
+      }
       Row({ space: AppSpacing.MD }) {
         Button(this.running ? '取消调试' : '开始调试', { type: ButtonType.Capsule })
           .layoutWeight(1).height(44).enabled(this.running || !!this.source.bookSourceUrl)
@@ -200,6 +240,18 @@ struct BookSourceDebugPage {
           this.debugLinkItem(url, SourceRuntimeStage.SEARCH)
         }, (url: string) => `search_${url}`)
       }
+      if (this.inlineActions.length > 0) {
+        Text(this.inlineSummary || `内联页面入口 ${this.inlineActions.length} 个，点击后生成并预览`)
+          .fontSize(AppFontSize.BODY).fontColor(this.subTextColor())
+        ForEach(this.inlineActions, (action: ReaderActionData, index: number) => {
+          Button(`${index + 1}. ${action.title || action.label} · 预览`)
+            .enabled(!this.running && !this.inlineBusy)
+            .onClick(() => this.previewInlineAction(action))
+        }, (action: ReaderActionData) => action.url)
+        if (this.inlineBusy) {
+          Button('取消页面生成').onClick((): void => { this.inlineSerial++; this.inlineBusy = false; })
+        }
+      }
       if (this.debugExploreLinks.length > 0) {
         Text('发现链接（点击填入）').fontSize(AppFontSize.BODY).fontWeight(FontWeight.Medium)
           .fontColor(this.primaryTextColor()).width('100%')
@@ -236,19 +288,30 @@ struct BookSourceDebugPage {
         .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
         .copyOption(CopyOptions.LocalDevice)
       ForEach(step.requests, (item: BookSourceDebugNetworkTrace) => {
-        Text(`${item.method} ${item.url}\nHTTP ${item.statusCode} · ${item.responseBytes} 字符 · ${item.elapsedMs}ms${item.error ? `\n${item.error}` : ''}`)
+        Text(`${item.requestId} ${item.method} ${item.url}\n${item.transport} · ${item.statusCodeAvailable ? 'HTTP ' + item.statusCode : '原始 HTTP 状态未知（抓取状态 ' + item.statusCode + '）'} · ${item.responseChars} 字符 · ${item.elapsedMs}ms${item.error ? `\n${item.error}` : ''}`)
           .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
           .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
           .copyOption(CopyOptions.LocalDevice)
         Text(`Cookie：${item.cookieNames.length > 0 ? item.cookieNames.join('、') : '未携带'}（仅显示名称）`)
           .fontSize(12).fontColor(this.subTextColor()).width('100%')
+        Text(`状态依据：${item.statusCodeAvailable ? '原始 HTTP 状态' : '原始 HTTP 状态未知'} · ${item.errorCode || ''} ${item.errorStage || ''}\n网页耗时：宿主 ${item.hostWaitMs || 0} / 排队 ${item.queueMs || 0} / 加载 ${item.renderMs || 0} ms\n尝试：${item.attempts || item.transport} · 策略重试 ${item.retryAttempt} 次${item.retryReason ? '\n' + item.retryReason : ''}\n传给传输层的请求头：${JSON.stringify(item.requestHeaders)}\n响应头：${item.headersAvailable ? JSON.stringify(item.responseHeaders) : '当前通道未取得'}\n网络字节数：${item.responseBytes >= 0 ? item.responseBytes : '未测量'}`)
+          .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
+          .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE).copyOption(CopyOptions.LocalDevice)
+        if (item.waitStage) {
+          Text(`结束时等待阶段：${item.waitStage}`).fontSize(AppFontSize.CAPTION)
+            .fontColor(this.subTextColor()).width('100%')
+        }
         if (item.bodyPreview) {
+          if (item.bodyIsSnapshot) {
+            Text(`失败页面快照${item.snapshotTruncated ? '（已截断）' : ''} · 等待阶段：${item.waitStage || '未知'}`)
+              .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
+          }
           Text(`响应预览：${item.bodyPreview}`).fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor())
             .width('100%').maxLines(8)
             .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
             .copyOption(CopyOptions.LocalDevice)
         }
-      }, (item: BookSourceDebugNetworkTrace) => `${item.method}_${item.url}_${item.elapsedMs}`)
+      }, (item: BookSourceDebugNetworkTrace) => `${item.requestId}_${item.method}_${item.url}_${item.elapsedMs}`)
       ForEach(step.rules, (item: BookSourceDebugRuleTrace) => {
         Text(`${item.field} [${item.ruleType}] 匹配 ${item.matchedCount}/${item.inputCount} · ${item.elapsedMs}ms\n规则：${item.rule}${item.error ? `\n${item.error}` : ''}${item.outputPreview ? `\n结果：${item.outputPreview}` : ''}`)
           .fontSize(AppFontSize.CAPTION).fontColor(this.subTextColor()).width('100%')
@@ -310,6 +373,7 @@ struct BookSourceDebugPage {
       return;
     }
     if (!this.source.bookSourceUrl) return;
+    this.clearInlineDebug();
     this.running = true;
     this.status = '执行中';
     this.debugContent = '';
@@ -392,7 +456,9 @@ struct BookSourceDebugPage {
   private async runTocDebug(debug: BookSourceDebugContext): Promise<void> {
     const book = this.createDebugBook();
     debug.beginStep(SourceRuntimeStage.TOC, '书籍目录');
-    const chapters = await new WebBookService().getChapterList(this.source, book, 32, false, debug);
+    const chapterLimit = this.checkLargeToc ? 3000 : 32;
+    debug.setOutput('chapterLimit', String(chapterLimit));
+    const chapters = await new WebBookService().getChapterList(this.source, book, chapterLimit, false, debug);
     debug.setOutput('chapterCount', String(chapters.length));
     if (chapters.length > 0) {
       debug.setOutput('firstChapter', chapters[0].title);
@@ -411,6 +477,7 @@ struct BookSourceDebugPage {
     debug.setOutput('正文替换净化规则', this.source.contentRule.replaceRegex || '未配置');
     const content = await new WebBookService().getContent(this.source, book, chapter, null, debug);
     this.debugContent = content;
+    this.collectInlineActions(content, book, chapter, debug);
     debug.setOutput('contentLength', String(content.length));
     debug.finishStep(content.length > 0 ? 'passed' : 'failed', content.length > 0 ? '' : '正文规则返回空结果');
   }
@@ -451,14 +518,18 @@ struct BookSourceDebugPage {
     debug.finishStep(fullBook.name || fullBook.tocUrl ? 'passed' : 'failed',
       fullBook.name || fullBook.tocUrl ? '' : '详情未提取出书籍信息');
     debug.beginStep(SourceRuntimeStage.TOC, '书籍目录');
-    const chapters = await service.getChapterList(this.source, fullBook, 32, false, debug);
+    const chapterLimit = this.checkLargeToc ? 3000 : 32;
+    debug.setOutput('chapterLimit', String(chapterLimit));
+    const chapters = await service.getChapterList(this.source, fullBook, chapterLimit, false, debug);
     debug.setOutput('chapterCount', String(chapters.length));
     debug.finishStep(chapters.length > 0 ? 'passed' : 'failed', chapters.length > 0 ? '' : '目录为空');
     if (chapters.length === 0) return;
     debug.beginStep(SourceRuntimeStage.CONTENT, '章节正文');
     debug.setOutput('正文替换净化规则', this.source.contentRule.replaceRegex || '未配置');
-    const content = await service.getContent(this.source, fullBook, chapters[0], null, debug);
+    const content = await service.getContent(this.source, fullBook, chapters[0], null, debug,
+      ReaderImageRequest.DEFAULT, chapters[1]?.url || '');
     this.debugContent = content;
+    this.collectInlineActions(content, fullBook, chapters[0], debug);
     debug.setOutput('contentLength', String(content.length));
     debug.finishStep(content.length > 0 ? 'passed' : 'failed', content.length > 0 ? '' : '正文为空');
   }
@@ -496,11 +567,67 @@ struct BookSourceDebugPage {
   }
 
   private clearDebugResult(): void {
+    this.clearInlineDebug();
     this.session = new BookSourceDebugSession();
     this.debugContent = '';
     this.debugSearchLinks = [];
     this.debugExploreLinks = [];
     this.status = '准备就绪';
+  }
+
+  private clearInlineDebug(): void {
+    this.inlineSerial++;
+    this.inlineBusy = false;
+    this.inlineActions = [];
+    this.inlineSummary = '';
+    this.inlinePreviewVisible = false;
+    this.inlineBook = null;
+    this.inlineChapter = null;
+    this.inlineDebug = null;
+  }
+
+  private collectInlineActions(content: string, book: Book, chapter: BookChapter, debug: BookSourceDebugContext): void {
+    const actions: ReaderActionData[] = [];
+    let offset = 0;
+    while (offset < content.length && actions.length < 300) {
+      const match = ReaderActionMarker.findFirst(content, offset);
+      if (!match) break;
+      offset = match.end;
+      if (NativeCommentPage.isAction(match.data.url)) actions.push(match.data);
+    }
+    this.inlineActions = actions;
+    this.inlineBook = book;
+    this.inlineChapter = chapter;
+    this.inlineDebug = debug;
+    if (actions.length) debug.setOutput('内联页面', `${actions.length} 个入口，点击预览后取数并生成 HTML`);
+  }
+
+  private async previewInlineAction(action: ReaderActionData): Promise<void> {
+    if (!this.inlineBook || !this.inlineChapter || this.inlineBusy) return;
+    const serial = ++this.inlineSerial;
+    const debug = this.inlineDebug;
+    this.inlineBusy = true;
+    debug?.beginStep(SourceRuntimeStage.CONTENT, '内联评论页生成');
+    try {
+      const page = await NativeSourceService.getCommentPage(this.source, new HttpClient(10000), this.inlineBook,
+        this.inlineChapter, action.url, (): boolean => serial !== this.inlineSerial, debug);
+      if (serial !== this.inlineSerial) return;
+      this.inlineSummary = page.html ? `HTML ${NativeCommentPage.bytes(page.html)} 字节 / data ${NativeCommentPage.bytes(page.dataJson)} 字节` :
+        `页面生成失败：${page.error}；备用地址：${page.fallbackUrl}`;
+      debug?.setOutput('内联页面结果', this.inlineSummary);
+      debug?.finishStep(page.html ? 'passed' : 'failed', page.error);
+      if (page.html) { this.inlinePreview = page; this.inlinePreviewVisible = true; }
+    } catch (error) {
+      if (serial !== this.inlineSerial) return;
+      this.inlineSummary = error instanceof Error ? error.message : '评论预览失败';
+      debug?.finishStep('failed', this.inlineSummary);
+      HdsFeedback.showToast(this.inlineSummary);
+    } finally {
+      if (serial === this.inlineSerial) {
+        this.inlineBusy = false;
+        if (debug) this.publishSession(debug);
+      }
+    }
   }
 
   private fillDebugLink(url: string, stage: string): void {
@@ -529,6 +656,7 @@ struct BookSourceDebugPage {
     report.sourceUrl = this.source.bookSourceUrl || this.sourceUrl;
     report.stage = this.stage;
     report.status = this.status;
+    report.summary = this.reportSummary();
     report.session = this.session;
     report.content = this.debugContent;
     const serialized = JSON.stringify(report, null, 2);
@@ -548,8 +676,35 @@ struct BookSourceDebugPage {
       HdsFeedback.showToast('复制失败，请稍后重试');
     }
   }
+  /** 页面生成成功不等于显示成功：显示另记一步，超时、出错或中途关闭都写回调试记录。 */
+  private inlineDisplayChanged(state: string, message: string): void {
+    const debug = this.inlineDebug;
+    if (!debug) return;
+    if (state === 'start') {
+      debug.beginStep(SourceRuntimeStage.CONTENT, '内联评论页显示');
+      return;
+    }
+    debug.finishStep(state === 'ready' ? 'passed' : state, message);
+    this.publishSession(debug);
+  }
+
   private publishSession(debug: BookSourceDebugContext): void {
     this.session = JSON.parse(JSON.stringify(debug.session)) as BookSourceDebugSession;
+  }
+
+  private reportSummary(): string[] {
+    const lines: string[] = [`${this.session.sessionId} · ${this.session.status} · 全链路 ${this.session.elapsedMs} ms`];
+    for (const step of this.session.steps.slice(0, 8)) {
+      const chapterCount = step.outputs['chapterCount'];
+      lines.push(`${step.stage} · ${step.status} · 阶段 ${step.elapsedMs} ms` +
+        (chapterCount ? ` · chapterCount=${chapterCount} · 检查上限=${step.outputs['chapterLimit'] || '未知'}` : ''));
+      const timings = step.rules.filter((rule: BookSourceDebugRuleTrace): boolean =>
+        rule.ruleType === 'script' && rule.rule === 'timing').slice(0, 2);
+      for (const timing of timings) {
+        lines.push(`${timing.field.substring(0, 80)} · ${timing.outputPreview.substring(0, 180)}`);
+      }
+    }
+    return lines;
   }
   private hasDebugReport(): boolean {
     return this.session.steps.length > 0 || this.session.logs.length > 0;
@@ -565,7 +720,7 @@ struct BookSourceDebugPage {
     this.exporting = true;
     try {
       const options: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
-      options.newFileNames = [`legado_book_source_debug_${this.exportTimestamp()}.json`];
+      options.newFileNames = [`qingye-book-source-debug-${this.exportTimestamp()}.json`];
       options.fileSuffixChoices = ['JSON 文件|.json'];
       const result = await new picker.DocumentViewPicker(getContext(this)).save(options);
       if (!result || result.length === 0) return;
@@ -577,6 +732,7 @@ struct BookSourceDebugPage {
       report.sourceUrl = BookSourceDebugRedactor.url(this.source.bookSourceUrl || this.sourceUrl);
       report.sourceName = this.source.bookSourceName || BookSourceDebugRedactor.url(session.sourceName);
       report.stage = this.stage;
+      report.summary = this.reportSummary();
       report.session = session;
       const json = JSON.stringify(report, null, 2);
       const bytes = new util.TextEncoder().encodeInto(json);
@@ -599,7 +755,7 @@ struct BookSourceDebugPage {
   private exportTimestamp(): string {
     const now = new Date();
     const pad = (value: number): string => value.toString().padStart(2, '0');
-    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_` +
+    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-` +
       `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   }
 

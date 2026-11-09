@@ -39,15 +39,20 @@ interface FoldGeometry {
  * Apache-2.0）。原实现用 NodeContainer + RenderNode + @ohos.graphics.drawing 绘制；这里改用
  * 仓库既有的 Canvas 管线，几何点位、路径、阴影着色与官方保持一致。
  *
+ * 单页不用官方的卷曲构造，而是平面折页（drawFlatFold）：纸边上的一个抓取点被手指拖着走，
+ * 折线是抓取点与其当前位置连线的中垂线，折线外侧的纸张按折线镜像盖回当前页上。上/下部起手抓
+ * 页角，中部起手抓右边缘与手指同高的点，因此拖动时手指上下移动会让折线跟着倾斜。纸背是当前页的
+ * 镜像贴图加一层薄罩色，能透出背面的正文与背景图。
+ *
  * 与官方示例的差异：
  * 1. 官方由手指的页角坐标驱动。本实现的翻页状态仍由进度驱动（进度 0 表示纸张平铺，1 表示完全翻出），
- *    起始区域按手指落点取上/中/下；单页从上角或下角起手拖动时，页角点跟随手指（见 dragCorner），
- *    松手后从松手位置滑到终点或弹回页角。点击翻页、中部起手和双页没有手指页角，按进度走固定轨迹。
+ *    起始区域按手指落点取上/中/下；单页拖动时抓取点跟随手指（见 dragCorner），松手后从松手位置
+ *    滑到终点或弹回原处。点击翻页按进度走固定轨迹。
  * 2. 官方只在右侧卷曲；向前翻页时这里对整个画布做一次水平镜像，把折角移到左侧，仅在绘制纸张
  *    正面贴图时再抵消一次镜像，保证正文文字不被镜像。阴影旋转角仍按官方公式在原始坐标系中计算，
  *    这样镜像后不会出现错位的斜向阴影。
- * 3. 左右双页时翻动的是半页纸：先按官方几何把纸角卷起，进度后段让纸张绕书脊做几何位移
- *    （正面横向按 cos 压缩到书脊，背面再从书脊向另一列按 |cos| 展开），不使用淡入淡出。
+ * 3. 左右双页复用同一套平折几何和跟手轨迹，纸张宽度取半页，折起部分可跨过书脊。
+ *    纸背使用目标对开页对应列的贴图，终点精确落在另一列，正文不镜像。
  * 4. 纸背罩色、阴影和纸边描线由当前主题的纸张底色推导，不再使用官方固定的米黄与深灰，
  *    夜间主题下折页同样能看出层次。
  */
@@ -58,17 +63,14 @@ export class ReaderEmulationFlipPainter {
   private readonly horizontalShadowMaxWidth: number = 30;
   private readonly horizontalShadowRightExtend: number = 70;
   private readonly finishedProgress: number = 0.995;
-  // 页角点的总行程（页宽的倍数）。纸背一直画到折线为止，折线移出左边缘需要页角点越过左边缘
+  // 双页卷曲页角点的总行程（页宽的倍数）。纸背一直画到折线为止，折线移出左边缘需要页角点越过左边缘
   // 约一个页宽；取 2.1 时折线在进度约 0.94 处从页面顶角扫出窗口，提交目标页时不会有残留的
   // 纸条突然消失。
   private readonly travelOvershoot: number = 2.1;
-  // 双页：绕书脊的翻转从该进度开始，到进度 1 恰好转满 180°。
-  private readonly doublePageSpineStart: number = 0.15;
-  // 双页：卷角只轻轻卷起一点，主体运动交给绕书脊的翻转，避免纸面被折角切掉太多、
-  // 正文看起来不跟着纸张走。
-  private readonly doublePageFoldCap: number = 0.25;
   // 页角从页面角落移到手指下方的过渡距离（vp）：拖动刚开始时页角还在角上，拖过这段距离后贴住手指。
   private readonly cornerFollowRamp: number = 56;
+  // 卷曲带（C/J 到折线 EH 的距离）最宽占页宽的比例；拖动较短时仍按官方的 AF/4。
+  private readonly curlBandMaxRatio: number = 0.08;
   private static readonly CORNER_TRAJECTORY: number = 0;
   private static readonly CORNER_DRAGGING: number = 1;
   private static readonly CORNER_RELEASED: number = 2;
@@ -83,6 +85,13 @@ export class ReaderEmulationFlipPainter {
   private releaseCornerX: number = 0;
   private releaseCornerY: number = 0;
   private releaseProgress: number = 0;
+  // 拖动起手时手指的纵坐标；中部起手的平折抓取点取右边缘上的这一高度。
+  private grabY: number = -1;
+  // 中部起手时折线相对竖直方向的最大倾斜（tan 值），手指稍微上下晃动不会把整页斜着折过去。
+  private readonly flatTiltLimit: number = 0.42;
+  // 平折的抓取点终点在左边缘外 flatTravelEnd 个页宽处：折线刚好在动画结束时扫出左边缘，
+  // 不像卷曲那样多走一段空行程，否则可见的后半程会被压缩得很快。
+  private readonly flatTravelEnd: number = 1.02;
   // 官方样例的绘制坐标是 px，本绘制器使用 vp；阴影的绝对像素常量需要按该比例换算。
   private vpPerPx: number = 1;
   // paperColor 为官方米黄兜底色；其余颜色由 applyPalette 按主题纸色推导。
@@ -97,12 +106,14 @@ export class ReaderEmulationFlipPainter {
   private creaseShadowColor: string = 'rgba(17,17,17,0.42)';
   private edgeShadowColor: string = 'rgba(17,17,17,0.3)';
   private paperEdgeColor: string = 'rgba(0,0,0,0.1)';
-  private highlightColor: string = 'rgba(255,255,255,0.1)';
-  private highlightClearColor: string = 'rgba(255,255,255,0)';
+  // 平折纸背的薄罩色：夜间主题提亮一点，日间主题用纸色压淡背面的镜像文字，像纸张透墨。
+  private flatBackWashColor: string = 'rgba(245,235,215,0.45)';
+  private flatFlapCreaseColor: string = 'rgba(17,17,17,0.1)';
+  private flatFlapShadowColor: string = 'rgba(17,17,17,0.22)';
 
   /**
    * 按主题纸色推导折页用色。纸背是纸色稍微压暗（夜间主题为提亮）后的不透明罩色，
-   * 只隐约透出背面的镜像文字；夜间主题的阴影更重，并靠高光和纸边描线区分层次。
+   * 只隐约透出背面的镜像文字；夜间主题的阴影更重，并靠纸边描线区分层次。
    */
   private applyPalette(paperColor: string, dark: boolean): void {
     const key = `${paperColor}_${dark ? 1 : 0}`;
@@ -112,6 +123,9 @@ export class ReaderEmulationFlipPainter {
     this.paletteKey = key;
     this.darkPaper = dark;
     const rgb = this.parseColor(paperColor);
+    // A page is opaque even when its snapshot/artwork has alpha. Otherwise the live destination below
+    // bleeds through the unturned paper. Keep alpha only in the shadows and the paper-back ink wash.
+    this.activePaperColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
     const shift = dark ? 22 : -16;
     const tintR = Math.max(0, Math.min(255, rgb[0] + shift));
     const tintG = Math.max(0, Math.min(255, rgb[1] + shift));
@@ -123,7 +137,10 @@ export class ReaderEmulationFlipPainter {
     this.creaseShadowColor = dark ? 'rgba(0,0,0,0.66)' : 'rgba(17,17,17,0.42)';
     this.edgeShadowColor = dark ? 'rgba(0,0,0,0.55)' : 'rgba(17,17,17,0.3)';
     this.paperEdgeColor = dark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.12)';
-    this.highlightColor = dark ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.22)';
+    this.flatBackWashColor = dark ? 'rgba(255,255,255,0.1)' :
+      `rgba(${Math.max(0, rgb[0] - 6)},${Math.max(0, rgb[1] - 6)},${Math.max(0, rgb[2] - 6)},0.45)`;
+    this.flatFlapCreaseColor = dark ? 'rgba(0,0,0,0.22)' : 'rgba(17,17,17,0.1)';
+    this.flatFlapShadowColor = dark ? 'rgba(0,0,0,0.4)' : 'rgba(17,17,17,0.22)';
   }
 
   // 支持 #RGB、#RRGGBB、#AARRGGBB 与 rgb()/rgba()；无法识别时退回官方米黄。
@@ -157,6 +174,9 @@ export class ReaderEmulationFlipPainter {
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       return;
     }
+    if (this.cornerMode !== ReaderEmulationFlipPainter.CORNER_DRAGGING) {
+      this.grabY = y;
+    }
     this.fingerX = x;
     this.fingerY = y;
     this.cornerMode = ReaderEmulationFlipPainter.CORNER_DRAGGING;
@@ -164,7 +184,7 @@ export class ReaderEmulationFlipPainter {
 
   /**
    * 松手：冻结当前页角点。之后进度继续增大时页角从这里滑向翻出终点，进度减小时弹回页面角落，
-   * 与松手前的画面连续。没有跟手绘制过（点击翻页、中部起手、双页）时回到固定轨迹。
+   * 与松手前的画面连续。没有跟手绘制过（点击翻页等）时回到固定轨迹。
    */
   releaseCorner(): void {
     if (this.cornerMode !== ReaderEmulationFlipPainter.CORNER_DRAGGING || this.lastCornerProgress < 0) {
@@ -181,6 +201,21 @@ export class ReaderEmulationFlipPainter {
   clearCorner(): void {
     this.cornerMode = ReaderEmulationFlipPainter.CORNER_TRAJECTORY;
     this.lastCornerProgress = -1;
+    this.grabY = -1;
+  }
+
+  /**
+   * 单页平折松手后抓取点还要走的路程占全程（右边缘到终点）的比例，供页面按剩余的可见行程定补完时长。
+   * 拖动的翻页进度只记手指位移，抓取点却直接贴着手指，两者差得很多，按进度算时长会让补完显得过快。
+   * 没有松手位置（点击翻页等）时返回 -1。
+   */
+  flatRemainingFraction(width: number, leafOrigin: number = 0): number {
+    if (this.cornerMode !== ReaderEmulationFlipPainter.CORNER_RELEASED || this.lastCornerProgress < 0) {
+      return -1;
+    }
+    const safeWidth = Math.max(1, width);
+    const endX = leafOrigin > 0 ? -leafOrigin : -this.flatTravelEnd * safeWidth;
+    return Math.max(0, Math.min(1, (this.releaseCornerX - endX) / (safeWidth - endX)));
   }
 
   draw(context: CanvasRenderingContext2D, page: image.PixelMap, backPage: image.PixelMap | null,
@@ -189,8 +224,7 @@ export class ReaderEmulationFlipPainter {
     paperColor: string, dark: boolean): void {
     this.vpPerPx = vpPerPx > 0 ? vpPerPx : 1;
     // 折页背面必须用当前主题的纸张底色，否则会和页面底色不一致，看起来像另一块纸贴在上面。
-    this.activePaperColor = paperColor && paperColor.length > 0 ? paperColor : this.paperColor;
-    this.applyPalette(this.activePaperColor, dark);
+    this.applyPalette(paperColor && paperColor.length > 0 ? paperColor : this.paperColor, dark);
     const width = Math.max(1, canvasWidth);
     const height = Math.max(1, canvasHeight);
     const curl = Math.max(0, Math.min(1, progress));
@@ -200,209 +234,306 @@ export class ReaderEmulationFlipPainter {
       return;
     }
     if (doublePage) {
-      this.drawDoublePage(context, page, backPage, width, height, curl, direction, region,
-        Math.max(1, columnWidth), rightOrigin);
+      const leafWidth = Math.max(1, columnWidth);
+      if (curl <= 0 || curl >= 1) {
+        const texture = curl <= 0 ? page : backPage;
+        const origin = (curl <= 0 ? direction > 0 : direction < 0) ? rightOrigin : 0;
+        if (texture) {
+          context.fillStyle = this.activePaperColor;
+          context.fillRect(origin, 0, leafWidth, height);
+          context.drawImage(texture, origin, 0, leafWidth, height);
+        }
+        return;
+      }
+      this.drawFlatFold(context, page, leafWidth, height, curl, direction, region, backPage, width, rightOrigin);
       return;
     }
     if (curl <= 0.004 || curl >= this.finishedProgress) {
       // 平铺与翻出到底都不再需要卷曲层：前者直接铺满当前页，后者由底层目标页接管。
       if (curl <= 0.004) {
+        context.fillStyle = this.activePaperColor;
+        context.fillRect(0, 0, width, height);
         context.drawImage(page, 0, 0, width, height);
       }
       return;
     }
-    if (region === ReaderEmulationFlipRegion.MIDDLE && !doublePage) {
-      // 中部起手：沿竖直折线把整页卷过去。
-      this.drawVerticalFold(context, page, width, height, curl, direction);
-      return;
-    }
-    const geometry = this.buildGeometry(width, height, curl, region, true, direction < 0);
-    if (!geometry) {
-      context.drawImage(page, 0, 0, width, height);
-      return;
-    }
-    if (this.isFoldOutOfWindow(geometry, height)) {
-      return;
-    }
-    // 向前翻页：整体水平镜像，把右侧折角搬到左侧。镜像变换是自逆的，绘制正文贴图时再应用一次即可抵消。
-    const mirrored = direction < 0;
-    context.save();
-    if (mirrored) {
-      context.translate(width, 0);
-      context.scale(-1, 1);
-    }
-    this.drawPathBShadow(context, geometry, width, height);
-    this.drawPathC(context, page, geometry, width, height);
-    this.drawPathAContent(context, page, geometry, width, height, mirrored);
-    context.restore();
+    this.drawFlatFold(context, page, width, height, curl, direction, region);
   }
 
   /**
-   * 左右双页：翻动的是半页纸。向后翻时右半页绕书脊向左翻，向前翻时整体水平镜像翻动左半页。
-   * 官方几何是平面折角，无法表达"纸翻过去落在另一列"，因此进度后段叠加一次绕书脊的几何位移：
-   * 正面按 cos 向书脊压缩，转过 90° 后背面页从书脊向另一列按 |cos| 展开；两者在书脊处宽度
-   * 同时归零，交接连续，且全程是纯几何变换而非透明度过渡。
+   * 单页平面折页。镜像后的坐标系里抓取点 G 总在右边缘，T 是它此刻被拖到的位置：
+   * 折线为 GT 的中垂线，G 一侧的纸张抬起、露出底层目标页，并按折线镜像成纸背盖在当前页上。
    */
-  private drawDoublePage(context: CanvasRenderingContext2D, page: image.PixelMap, backPage: image.PixelMap | null,
-    width: number, height: number, curl: number, direction: number, region: number, leafWidth: number,
-    rightOrigin: number): void {
+  private drawFlatFold(context: CanvasRenderingContext2D, page: image.PixelMap, width: number, height: number,
+    curl: number, direction: number, region: number, backPage: image.PixelMap | null = null,
+    spreadWidth: number = width, leafOrigin: number = 0): void {
+    const doublePage = leafOrigin > 0;
     const mirrored = direction < 0;
-    // 书脊取整个对开页的中心，右半页绕它转到 180° 时正好铺满左列。
-    const spineX = width / 2;
-    const fraction = this.doublePageSpineFraction(curl);
-    const cos = Math.cos(Math.PI * fraction);
-    const foldCurl = Math.min(this.doublePageFoldCap, curl * 1.1);
-    if (cos > 0.0005) {
+    const grab = this.flatGrabPoint(width, height, region);
+    const target = this.flatFoldTarget(width, height, curl, region, grab, mirrored, spreadWidth, leafOrigin);
+    const span = Math.hypot(grab.x - target.x, grab.y - target.y);
+    if (span < 0.5) {
+      const origin = mirrored ? spreadWidth - leafOrigin - width : leafOrigin;
+      context.fillStyle = this.activePaperColor;
+      context.fillRect(origin, 0, width, height);
+      context.drawImage(page, origin, 0, width, height);
+      return;
+    }
+    const normal: FoldPoint = { x: (grab.x - target.x) / span, y: (grab.y - target.y) / span };
+    const mid: FoldPoint = { x: (grab.x + target.x) / 2, y: (grab.y + target.y) / 2 };
+    const sheet: FoldPoint[] = [{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: height }, { x: 0, y: height }];
+    const flat = this.clipHalfPlane(sheet, mid, normal, false);
+    const lifted = this.clipHalfPlane(sheet, mid, normal, true);
+    const flap = lifted.map((point: FoldPoint): FoldPoint => this.reflectPoint(point, mid, normal));
+    const flatPath = this.polygonPath(flat);
+    const liftedPath = this.polygonPath(lifted);
+    const flapPath = this.polygonPath(flap);
+    // 双页落地时恢复目标页原色，阴影随纸张放平消失；单页保持原有透墨效果。
+    const foldLift = doublePage ? Math.sin(Math.PI * Math.max(0, Math.min(1, span / (width + leafOrigin)))) : 1;
+
+    // 向前翻页：整体水平镜像，把右侧折角搬到左侧。镜像变换是自逆的，绘制正文贴图时再应用一次即可抵消。
+    context.save();
+    if (mirrored) {
+      context.translate(spreadWidth, 0);
+      context.scale(-1, 1);
+    }
+    context.translate(leafOrigin, 0);
+    // 1) 尚未抬起的当前页。
+    if (flat.length >= 3) {
       context.save();
+      context.clip(flatPath);
+      context.fillStyle = this.activePaperColor;
+      context.fill(flatPath);
       if (mirrored) {
         context.translate(width, 0);
         context.scale(-1, 1);
       }
-      // 纸张只能出现在书脊右侧（镜像后为左侧），避免压到相邻页的正文。
-      context.beginPath();
-      context.rect(spineX, 0, width - spineX, height);
-      context.clip();
-      // 纸张抬起后在下层页面上的投影：贴着纸的外侧边，抬得越高越宽。
-      const lift = Math.sin(Math.PI * fraction);
-      const freeEdgeX = spineX + cos * (rightOrigin + leafWidth - spineX);
-      this.fillHorizontalGradient(context, freeEdgeX, freeEdgeX + leafWidth * 0.14 * lift, 0, height,
-        this.edgeShadowColor, this.shadowLightColor);
-      // 绕书脊转动：横向按 cos 压缩，书脊是变换不动点。
-      context.translate(spineX, 0);
-      context.scale(cos, 1);
-      context.translate(-spineX, 0);
-      context.translate(rightOrigin, 0);
-      if (foldCurl <= 0.004) {
-        if (mirrored) {
-          context.translate(leafWidth, 0);
-          context.scale(-1, 1);
-        }
-        context.drawImage(page, 0, 0, leafWidth, height);
-      } else {
-        // 双页纸只有半页宽，官方竖折构造会退化，中部一并按底角折处理。
-        const leafRegion = region === ReaderEmulationFlipRegion.MIDDLE ?
-          ReaderEmulationFlipRegion.BOTTOM : region;
-        const geometry = this.buildGeometry(leafWidth, height, foldCurl, leafRegion, false, mirrored);
-        if (!geometry) {
-          if (mirrored) {
-            context.translate(leafWidth, 0);
-            context.scale(-1, 1);
-          }
-          context.drawImage(page, 0, 0, leafWidth, height);
-        } else {
-          this.drawPathBShadow(context, geometry, leafWidth, height);
-          this.drawPathC(context, page, geometry, leafWidth, height);
-          this.drawPathAContent(context, page, geometry, leafWidth, height, mirrored);
-        }
-      }
-      // 纸面随转角背光变暗，转到 90° 时最暗；矩形关于列中线对称，不受上面抵消镜像的影响。
-      context.fillStyle = `rgba(0,0,0,${(this.turnShadeStrength() * (1 - cos)).toFixed(3)})`;
-      context.fillRect(0, 0, leafWidth, height);
+      context.drawImage(page, 0, 0, width, height);
       context.restore();
-    } else if (backPage) {
-      // 背面页从书脊向另一列展开：宽度为 |cos| 个列宽。
-      // 书脊侧的边从书脊（90°）平滑过渡到落地列的边沿（180°），保证 180° 时与目标列严格对齐。
-      const revealed = Math.min(leafWidth, -cos * leafWidth);
-      if (revealed > 0.5) {
-        const backFraction = Math.max(0, (fraction - 0.5) / 0.5);
-        const lift = Math.sin(Math.PI * fraction);
-        const shadowWidth = leafWidth * 0.14 * lift;
-        const shade = `rgba(0,0,0,${(this.turnShadeStrength() * (1 + cos)).toFixed(3)})`;
-        if (direction > 0) {
-          const pinRight = spineX + (leafWidth - spineX) * backFraction;
-          const left = pinRight - revealed;
-          this.fillHorizontalGradient(context, left - shadowWidth, left, 0, height,
-            this.shadowLightColor, this.edgeShadowColor);
-          context.drawImage(backPage, left, 0, revealed, height);
-          context.fillStyle = shade;
-          context.fillRect(left, 0, revealed, height);
-        } else {
-          const pinLeft = spineX + (rightOrigin - spineX) * backFraction;
-          const right = pinLeft + revealed;
-          this.fillHorizontalGradient(context, right, right + shadowWidth, 0, height,
-            this.edgeShadowColor, this.shadowLightColor);
-          context.drawImage(backPage, pinLeft, 0, revealed, height);
-          context.fillStyle = shade;
-          context.fillRect(pinLeft, 0, revealed, height);
-        }
-      }
     }
-  }
-
-  // 双页纸张转到侧立时的最大压暗程度。
-  private turnShadeStrength(): number {
-    return this.darkPaper ? 0.42 : 0.26;
-  }
-
-  // 在 [left, right] 的竖条内从左到右填充一段水平线性渐变。
-  private fillHorizontalGradient(context: CanvasRenderingContext2D, left: number, right: number, top: number,
-    height: number, leftColor: string, rightColor: string): void {
-    if (right - left <= 0.5) {
+    if (lifted.length < 3) {
+      context.restore();
       return;
     }
-    const gradient = context.createLinearGradient(left, 0, right, 0);
-    gradient.addColorStop(0, leftColor);
-    gradient.addColorStop(1, rightColor);
-    context.fillStyle = gradient;
-    context.fillRect(left, top, right - left, height);
+    // 2) 折线处落在目标页上的投影：贴着折线，纸翻得越开越宽。
+    context.save();
+    context.globalAlpha = doublePage ? foldLift * 0.55 : 1;
+    const creaseShadowWidth = Math.min(width * (doublePage ? 0.12 : 0.07), span * 0.3);
+    context.fillStyle = this.easedGradient(context, mid, normal, creaseShadowWidth, this.creaseShadowColor);
+    context.fill(liftedPath);
+    // 3) 纸背在当前页上的投影：沿纸背的每条外侧纸边向外落一窄条。
+    if (doublePage || flat.length >= 3) {
+      const receivingPath = doublePage ? this.polygonPath([{ x: -leafOrigin, y: 0 },
+        { x: width, y: 0 }, { x: width, y: height }, { x: -leafOrigin, y: height }]) : flatPath;
+      this.drawFlapEdgeShadows(context, receivingPath, lifted, flap, mid, normal,
+        Math.min(width * (doublePage ? 0.06 : 0.03), span * 0.12));
+    }
+    context.restore();
+    // 4) 单页用当前页透墨；双页用目标背页，先抵消落地时的水平镜像。
+    context.save();
+    context.clip(flapPath);
+    context.fillStyle = this.activePaperColor;
+    context.fill(flapPath);
+    const dot = mid.x * normal.x + mid.y * normal.y;
+    context.transform(1 - 2 * normal.x * normal.x, -2 * normal.x * normal.y, -2 * normal.x * normal.y,
+      1 - 2 * normal.y * normal.y, 2 * dot * normal.x, 2 * dot * normal.y);
+    if (backPage ? !mirrored : mirrored) {
+      context.translate(width, 0);
+      context.scale(-1, 1);
+    }
+    context.drawImage(backPage ? backPage : page, 0, 0, width, height);
+    context.restore();
+    context.save();
+    context.globalAlpha = foldLift;
+    context.fillStyle = this.flatBackWashColor;
+    context.fill(flapPath);
+    // 纸背靠折线一侧略暗，提示纸张在这里弯折。
+    const flapCreaseWidth = Math.min(width * 0.1, span * 0.25);
+    const inward: FoldPoint = { x: -normal.x, y: -normal.y };
+    context.fillStyle = this.easedGradient(context, mid, inward, flapCreaseWidth, this.flatFlapCreaseColor);
+    context.fill(flapPath);
+    this.strokeFlapEdges(context, lifted, flap, mid, normal);
+    context.restore();
+    context.restore();
   }
 
-  private doublePageSpineFraction(progress: number): number {
-    const value = Math.max(0, Math.min(1,
-      (progress - this.doublePageSpineStart) / (1 - this.doublePageSpineStart)));
-    return value * value * (3 - 2 * value);
+  // 平折的抓取点（镜像后坐标系）：上/下部起手抓对应页角，中部起手抓右边缘与起手手指同高的点。
+  private flatGrabPoint(width: number, height: number, region: number): FoldPoint {
+    if (region === ReaderEmulationFlipRegion.TOP) {
+      return { x: width, y: 0 };
+    }
+    if (region === ReaderEmulationFlipRegion.MIDDLE && this.grabY >= 0) {
+      return { x: width, y: Math.max(0, Math.min(height, this.grabY)) };
+    }
+    return { x: width, y: height };
   }
 
   /**
-   * 页角点。followFinger 为 true 且正在拖动时取手指位置，松手后在松手位置与终点（或页面角落）之间插值，
-   * 其余情况按进度走固定轨迹。返回值在镜像后的坐标系里（折角总在右侧）。
+   * 抓取点此刻的位置。拖动时贴住手指（起手一小段距离内从纸边平滑过渡过去），并受纸张不可拉长的约束；
+   * 松手后从松手位置直线滑到翻出终点或弹回抓取点；没有手指时按进度走固定轨迹。
    */
-  private cornerPoint(width: number, height: number, progress: number, topCorner: boolean,
-    followFinger: boolean, mirrored: boolean): FoldPoint {
-    const trajectory = this.trajectoryCorner(width, height, progress, topCorner);
-    if (!followFinger || this.cornerMode === ReaderEmulationFlipPainter.CORNER_TRAJECTORY) {
-      return trajectory;
+  private flatFoldTarget(width: number, height: number, progress: number, region: number, grab: FoldPoint,
+    mirrored: boolean, spreadWidth: number = width, leafOrigin: number = 0): FoldPoint {
+    const corner = region !== ReaderEmulationFlipRegion.MIDDLE || this.grabY < 0;
+    const endX = leafOrigin > 0 ? -leafOrigin : -this.flatTravelEnd * width;
+    if (this.cornerMode === ReaderEmulationFlipPainter.CORNER_TRAJECTORY) {
+      // 没有手指时抓取点随进度匀速走完全程，节奏完全交给动画曲线，折线不会在收尾时越走越快。
+      const trajectoryX = width + (endX - width) * progress;
+      if (corner) {
+        const arcY = this.cornerArcY(width, height, trajectoryX, endX, grab.y <= 0);
+        // 单页的轨迹为避免退化保留 1vp；双页必须在终点完全放平，才能与对面的正文重合。
+        return { x: trajectoryX, y: leafOrigin > 0 ? arcY + (grab.y <= 0 ? -1 : 1) : arcY };
+      }
+      return { x: trajectoryX, y: grab.y };
     }
-    const cornerY = topCorner ? 0 : height;
-    const edgeY = topCorner ? 1 : height - 1;
-    let x = trajectory.x;
-    let y = trajectory.y;
+    let x = grab.x;
+    let y = grab.y;
     if (this.cornerMode === ReaderEmulationFlipPainter.CORNER_DRAGGING) {
-      const fingerX = mirrored ? width - this.fingerX : this.fingerX;
-      // 拖动刚开始时页角还在角上，随拖动距离平滑移到手指下方，避免起手瞬间整张纸跳到手指处。
-      const ramp = Math.max(0, Math.min(1, progress * width / this.cornerFollowRamp));
+      const fingerX = (mirrored ? spreadWidth - this.fingerX : this.fingerX) - leafOrigin;
+      // 拖动刚开始时抓取点还在纸边上，随拖动距离平滑移到手指下方，避免起手瞬间整张纸跳到手指处。
+      const ramp = Math.max(0, Math.min(1, progress * spreadWidth / this.cornerFollowRamp));
       const follow = ramp * ramp * (3 - 2 * ramp);
-      x = width + (fingerX - width) * follow;
-      y = cornerY + (this.fingerY - cornerY) * follow;
-      // 纸张不能被拉长：页角到书脊同侧端点的距离不超过页宽，超出时沿连线收回到圆上。
-      const spineDistance = Math.hypot(x, y - cornerY);
-      if (spineDistance > width) {
-        x = x * width / spineDistance;
-        y = cornerY + (y - cornerY) * width / spineDistance;
+      x = Math.min(grab.x - 0.5, grab.x + (fingerX - grab.x) * follow);
+      y = Math.max(0, Math.min(height, grab.y + (this.fingerY - grab.y) * follow));
+      if (!corner) {
+        const maxTilt = (grab.x - x) * this.flatTiltLimit;
+        y = Math.max(grab.y - maxTilt, Math.min(grab.y + maxTilt, y));
+      }
+      // 纸张不能被拉长：书脊一侧的两个页角不能被掀起，抓取点到它们的距离不超过原来的距离。
+      for (let pass = 0; pass < 2; pass++) {
+        for (let index = 0; index < 2; index++) {
+          const spineY = index === 0 ? 0 : height;
+          const limit = Math.hypot(grab.x, grab.y - spineY);
+          const distance = Math.hypot(x, y - spineY);
+          if (distance > limit) {
+            x = x * limit / distance;
+            y = spineY + (y - spineY) * limit / distance;
+          }
+        }
       }
     } else if (progress >= this.releaseProgress) {
-      // 松手后继续翻出：从松手位置直线滑到固定轨迹的终点，纸张在进度到 1 之前完全扫出窗口。
+      // 松手后继续翻出：从松手位置直线滑到终点，折线逐渐立直并在进度到 1 之前扫出窗口。
       const remaining = Math.max(0.0001, 1 - this.releaseProgress);
       const t = Math.max(0, Math.min(1, (progress - this.releaseProgress) / remaining));
-      const endX = (1 - this.travelOvershoot) * (width - 1);
       x = this.releaseCornerX + (endX - this.releaseCornerX) * t;
-      y = this.releaseCornerY + (edgeY - this.releaseCornerY) * t;
+      y = this.releaseCornerY + (grab.y - this.releaseCornerY) * t;
     } else {
-      // 松手后弹回：从松手位置回到页面角落。
+      // 松手后弹回：从松手位置回到抓取点。
       const t = Math.max(0, Math.min(1, progress / Math.max(0.0001, this.releaseProgress)));
-      x = width + (this.releaseCornerX - width) * t;
-      y = cornerY + (this.releaseCornerY - cornerY) * t;
+      x = grab.x + (this.releaseCornerX - grab.x) * t;
+      y = grab.y + (this.releaseCornerY - grab.y) * t;
     }
-    x = Math.min(width - 1, x);
-    y = topCorner ? Math.max(1, y) : Math.min(height - 1, y);
     this.lastCornerX = x;
     this.lastCornerY = y;
     this.lastCornerProgress = progress;
     return { x: x, y: y };
   }
 
+  // 保留多边形在半平面 (p - origin)·normal >= 0（positive）或 <= 0 内的部分。
+  private clipHalfPlane(polygon: FoldPoint[], origin: FoldPoint, normal: FoldPoint, positive: boolean): FoldPoint[] {
+    const result: FoldPoint[] = [];
+    const sign = positive ? 1 : -1;
+    for (let index = 0; index < polygon.length; index++) {
+      const current = polygon[index];
+      const next = polygon[(index + 1) % polygon.length];
+      const currentSide = sign * ((current.x - origin.x) * normal.x + (current.y - origin.y) * normal.y);
+      const nextSide = sign * ((next.x - origin.x) * normal.x + (next.y - origin.y) * normal.y);
+      if (currentSide >= 0) {
+        result.push(current);
+      }
+      if ((currentSide >= 0) !== (nextSide >= 0)) {
+        const t = currentSide / (currentSide - nextSide);
+        result.push({ x: current.x + (next.x - current.x) * t, y: current.y + (next.y - current.y) * t });
+      }
+    }
+    return result;
+  }
+
+  private reflectPoint(point: FoldPoint, origin: FoldPoint, normal: FoldPoint): FoldPoint {
+    const side = (point.x - origin.x) * normal.x + (point.y - origin.y) * normal.y;
+    return { x: point.x - 2 * side * normal.x, y: point.y - 2 * side * normal.y };
+  }
+
+  private polygonPath(polygon: FoldPoint[]): Path2D {
+    const path = new Path2D();
+    if (polygon.length === 0) {
+      return path;
+    }
+    path.moveTo(polygon[0].x, polygon[0].y);
+    for (let index = 1; index < polygon.length; index++) {
+      path.lineTo(polygon[index].x, polygon[index].y);
+    }
+    path.closePath();
+    return path;
+  }
+
+  // 被抬起部分的边里，不在折线上的就是纸张原来的外边，镜像后成为纸背的外侧纸边。
+  private isFoldEdge(start: FoldPoint, end: FoldPoint, mid: FoldPoint, normal: FoldPoint): boolean {
+    const startSide = (start.x - mid.x) * normal.x + (start.y - mid.y) * normal.y;
+    const endSide = (end.x - mid.x) * normal.x + (end.y - mid.y) * normal.y;
+    return Math.abs(startSide) < 0.5 && Math.abs(endSide) < 0.5;
+  }
+
+  private drawFlapEdgeShadows(context: CanvasRenderingContext2D, flatPath: Path2D, lifted: FoldPoint[],
+    flap: FoldPoint[], mid: FoldPoint, normal: FoldPoint, shadowWidth: number): void {
+    if (shadowWidth <= 0.5) {
+      return;
+    }
+    let centerX = 0;
+    let centerY = 0;
+    for (let index = 0; index < flap.length; index++) {
+      centerX += flap[index].x / flap.length;
+      centerY += flap[index].y / flap.length;
+    }
+    context.save();
+    context.clip(flatPath);
+    for (let index = 0; index < lifted.length; index++) {
+      const next = (index + 1) % lifted.length;
+      if (this.isFoldEdge(lifted[index], lifted[next], mid, normal)) {
+        continue;
+      }
+      const start = flap[index];
+      const end = flap[next];
+      const length = Math.hypot(end.x - start.x, end.y - start.y);
+      if (length < 0.5) {
+        continue;
+      }
+      // 纸边的外法线：垂直于纸边、背离纸背中心。
+      let outX = -(end.y - start.y) / length;
+      let outY = (end.x - start.x) / length;
+      if ((start.x - centerX) * outX + (start.y - centerY) * outY < 0) {
+        outX = -outX;
+        outY = -outY;
+      }
+      const out: FoldPoint = { x: outX, y: outY };
+      const strip = this.polygonPath([start, end, { x: end.x + outX * shadowWidth, y: end.y + outY * shadowWidth },
+        { x: start.x + outX * shadowWidth, y: start.y + outY * shadowWidth }]);
+      context.fillStyle = this.easedGradient(context, start, out, shadowWidth, this.flatFlapShadowColor);
+      context.fill(strip);
+    }
+    context.restore();
+  }
+
+  // 纸背的外侧纸边描一条细线，把纸背和下层页面分开。
+  private strokeFlapEdges(context: CanvasRenderingContext2D, lifted: FoldPoint[], flap: FoldPoint[], mid: FoldPoint,
+    normal: FoldPoint): void {
+    context.save();
+    context.beginPath();
+    for (let index = 0; index < lifted.length; index++) {
+      const next = (index + 1) % lifted.length;
+      if (this.isFoldEdge(lifted[index], lifted[next], mid, normal)) {
+        continue;
+      }
+      context.moveTo(flap[index].x, flap[index].y);
+      context.lineTo(flap[next].x, flap[next].y);
+    }
+    context.lineWidth = Math.max(0.5, this.vpPerPx);
+    context.strokeStyle = this.paperEdgeColor;
+    context.stroke();
+    context.restore();
+  }
+
   private trajectoryCorner(width: number, height: number, progress: number, topCorner: boolean): FoldPoint {
-    const radius = this.cornerRadiusRatio * width;
     // 起步时页角与进度 1:1 同行，后段逐渐加速，到进度 1 时走完 travelOvershoot 个页宽。
     const travel = progress * (1 + (this.travelOvershoot - 1) * progress * progress);
     const endX = (1 - this.travelOvershoot) * (width - 1);
@@ -412,6 +543,12 @@ export class ReaderEmulationFlipPainter {
     // 不是正常翻折。这里始终按上/下角做带圆弧约束的斜向折角（对应 calcPointAByTouchPoint）。
     // 页角先沿圆弧抬到最高点，之后按余弦平滑回落到页边：折线逐渐立直并从侧边扫出窗口，
     // 不会像整段半圆那样在收尾处突然立直。
+    return { x: ax, y: this.cornerArcY(width, height, ax, endX, topCorner) };
+  }
+
+  // 页角沿轨迹走到 ax 时的纵坐标：先沿圆弧抬起，越过圆心后按余弦回落，到 endX 时回到页边。
+  private cornerArcY(width: number, height: number, ax: number, endX: number, topCorner: boolean): number {
+    const radius = this.cornerRadiusRatio * width;
     const centerX = width - radius;
     let offset = 0;
     if (ax >= centerX) {
@@ -420,15 +557,14 @@ export class ReaderEmulationFlipPainter {
       const fall = Math.min(1, (centerX - ax) / Math.max(1, centerX - endX));
       offset = radius * Math.cos(fall * Math.PI / 2);
     }
-    return { x: ax, y: Math.max(1, Math.min(height - 1, topCorner ? offset : height - offset)) };
+    return Math.max(1, Math.min(height - 1, topCorner ? offset : height - offset));
   }
 
-  private buildGeometry(width: number, height: number, progress: number, region: number, followFinger: boolean,
-    mirrored: boolean): FoldGeometry | null {
+  private buildGeometry(width: number, height: number, progress: number, region: number): FoldGeometry | null {
     const topCorner = region === ReaderEmulationFlipRegion.TOP;
     const f: FoldPoint = { x: width, y: topCorner ? 0 : height };
     const middleCorner = false;
-    const a = this.cornerPoint(width, height, progress, topCorner, followFinger, mirrored);
+    const a = this.trajectoryCorner(width, height, progress, topCorner);
     const g: FoldPoint = { x: (a.x + f.x) / 2, y: (a.y + f.y) / 2 };
     const denominatorE = f.x - g.x;
     const denominatorH = f.y - g.y;
@@ -437,14 +573,18 @@ export class ReaderEmulationFlipPainter {
     }
     const e: FoldPoint = { x: g.x - (f.y - g.y) * (f.y - g.y) / denominatorE, y: f.y };
     const h: FoldPoint = { x: f.x, y: g.y - (f.x - g.x) * (f.x - g.x) / denominatorH };
-    const c: FoldPoint = { x: e.x - (f.x - e.x) / 2, y: f.y };
-    const j: FoldPoint = { x: f.x, y: h.y - (f.y - h.y) / 2 };
+    // 官方让卷曲起点 C/J 离折线 EH 的距离恒为 AF/4，页角拖得越远卷曲越粗：可见折线 DI 退到 EH 内侧
+    // AF/8，正面页的切口在折线两端甩出折页尖很远，看起来上下折叠处对不齐。这里把卷曲宽度封顶。
+    const aToF = Math.max(0.0001, Math.hypot(f.x - a.x, f.y - a.y));
+    const curlScale = 1 + Math.min(0.5, 2 * this.curlBandMaxRatio * width / aToF);
+    const c: FoldPoint = { x: f.x + (e.x - f.x) * curlScale, y: f.y };
+    const j: FoldPoint = { x: f.x, y: f.y + (h.y - f.y) * curlScale };
     const b = this.intersectionPoint(a, e, c, j);
     const k = this.intersectionPoint(a, h, c, j);
     const d: FoldPoint = { x: (c.x + 2 * e.x + b.x) / 4, y: (2 * e.y + c.y + b.y) / 4 };
     const i: FoldPoint = { x: (j.x + 2 * h.x + k.x) / 4, y: (2 * h.y + j.y + k.y) / 4 };
-    // 几何点保持原值，阴影角度和纸背镜像都依赖它们；纸张快翻出时 H/J/K 会远离窗口，
-    // 只在生成路径时再收回到窗口外的有限范围（见 pathPoint）。
+    // 正面曲线、纸背折线与阴影共用原始几何点。分别收缩离屏控制点会改变曲线，
+    // 让中点 D/I 脱离纸背边界，产生错位楔形；离屏部分交给画布统一裁剪。
     return {
       a: a,
       b: b,
@@ -494,52 +634,15 @@ export class ReaderEmulationFlipPainter {
     return Math.abs((a * point.x + b * point.y + c) / length);
   }
 
-  // 对应 checkDrawingAreaInWindow：折线完全移出窗口后停止绘制纸张。
-  private isFoldOutOfWindow(geometry: FoldGeometry, height: number): boolean {
-    const deltaX = geometry.d.x - geometry.i.x;
-    if (Math.abs(deltaX) < 0.0001) {
-      return true;
-    }
-    const slope = (geometry.d.y - geometry.i.y) / deltaX;
-    const intercept = geometry.d.y - slope * geometry.d.x;
-    if (geometry.topCorner && intercept > height) {
-      return true;
-    }
-    return !geometry.topCorner && intercept < 0;
-  }
-
-  /**
-   * 路径用的顶点：远离窗口的点沿它与 anchor 的连线收回到窗口外的有限范围。
-   * 只钳制单个坐标会改变连线的斜率，纸张快翻出时会在窗口里留下一块错位的楔形。
-   */
-  private pathPoint(point: FoldPoint, anchor: FoldPoint, width: number, height: number): FoldPoint {
-    const minX = -2 * width;
-    const maxX = 3 * width;
-    const minY = -2 * height;
-    const maxY = 3 * height;
-    if (point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY) {
-      return point;
-    }
-    const dx = point.x - anchor.x;
-    const dy = point.y - anchor.y;
-    let scale = 1;
-    if (dx > 0.0001) scale = Math.min(scale, (maxX - anchor.x) / dx);
-    if (dx < -0.0001) scale = Math.min(scale, (minX - anchor.x) / dx);
-    if (dy > 0.0001) scale = Math.min(scale, (maxY - anchor.y) / dy);
-    if (dy < -0.0001) scale = Math.min(scale, (minY - anchor.y) / dy);
-    scale = Math.max(0, scale);
-    return { x: anchor.x + dx * scale, y: anchor.y + dy * scale };
-  }
-
   private pathA(geometry: FoldGeometry, width: number, height: number): Path2D {
     const path = new Path2D();
     const a = geometry.a;
     const b = geometry.b;
     const c = geometry.c;
     const e = geometry.e;
-    const k = this.pathPoint(geometry.k, a, width, height);
-    const h = this.pathPoint(geometry.h, k, width, height);
-    const j = this.pathPoint(geometry.j, k, width, height);
+    const k = geometry.k;
+    const h = geometry.h;
+    const j = geometry.j;
     if (geometry.topCorner) {
       // drawing.Path 在 reset() 后首个 lineTo 隐含从 (0,0) 起画，因此 pathA 是整页减去折角。
       path.moveTo(0, 0);
@@ -569,8 +672,8 @@ export class ReaderEmulationFlipPainter {
     const a = geometry.a;
     const b = geometry.b;
     const d = geometry.d;
-    const k = this.pathPoint(geometry.k, a, width, height);
-    const i = this.pathPoint(geometry.i, d, width, height);
+    const k = geometry.k;
+    const i = geometry.i;
     path.moveTo(i.x, i.y);
     path.lineTo(d.x, d.y);
     path.lineTo(b.x, b.y);
@@ -584,7 +687,7 @@ export class ReaderEmulationFlipPainter {
   private strokePaperEdge(context: CanvasRenderingContext2D, geometry: FoldGeometry, width: number,
     height: number): void {
     const a = geometry.a;
-    const k = this.pathPoint(geometry.k, a, width, height);
+    const k = geometry.k;
     context.save();
     context.beginPath();
     context.moveTo(geometry.b.x, geometry.b.y);
@@ -598,7 +701,7 @@ export class ReaderEmulationFlipPainter {
 
   // 对应 drawPathC：纸张背面区域 + 反射内容 + 背页阴影。
   private drawPathC(context: CanvasRenderingContext2D, page: image.PixelMap, geometry: FoldGeometry,
-    width: number, height: number): void {
+    width: number, height: number, mirrored: boolean): void {
     const path = this.pathC(geometry, width, height);
     context.save();
     context.fillStyle = this.activePaperColor;
@@ -616,6 +719,11 @@ export class ReaderEmulationFlipPainter {
       context.translate(e.x, e.y);
       context.transform(-(1 - 2 * sin * sin), 2 * sin * cos, 2 * sin * cos, 1 - 2 * sin * sin, 0, 0);
       context.translate(-e.x, -e.y);
+      // Reflect the same source sheet as the front when turning toward the previous page.
+      if (mirrored) {
+        context.translate(width, 0);
+        context.scale(-1, 1);
+      }
       context.drawImage(page, 0, 0, width, height);
       context.restore();
     }
@@ -785,93 +893,25 @@ export class ReaderEmulationFlipPainter {
   }
 
   /**
-   * 中部起手的竖折：折线竖直、随拖动从一侧扫到另一侧，折过去的半页以镜像形式盖在另一侧。
-   * 官方 A–K 构造在竖折时会把折页退化成一条窄竖条，因此这里用显式的竖折几何。
+   * 从 origin 沿 direction 方向 length 长度内，由 color（最深）按 (1-t)² 衰减到全透明的线性渐变；
+   * 起点之外取最深色、终点之外全透明，填充时需用路径限定范围。
+   * 两端都是线性渐变时，起止处的亮度折点会被眼睛放大成一条硬边，多段并排就成了条纹。
    */
-  private drawVerticalFold(context: CanvasRenderingContext2D, page: image.PixelMap, width: number, height: number,
-    curl: number, direction: number): void {
-    // 折线始终从页面一侧起步、随拖动 1:1 扫过整页，与起手位置无关。
-    const creaseX = direction > 0 ? (1 - curl) * width : curl * width;
-    // 1) 尚未折起的当前页部分（保持原样、正文正向）。
-    const flatLeft = direction > 0 ? 0 : creaseX;
-    const flatWidth = direction > 0 ? creaseX : width - creaseX;
-    if (flatWidth > 0.5) {
-      context.save();
-      context.beginPath();
-      context.rect(flatLeft, 0, flatWidth, height);
-      context.clip();
-      context.drawImage(page, 0, 0, width, height);
-      context.restore();
+  private easedGradient(context: CanvasRenderingContext2D, origin: FoldPoint, direction: FoldPoint, length: number,
+    color: string): CanvasGradient {
+    const rgba = color.match(/^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$/i);
+    const rgb = rgba ? `${rgba[1]},${rgba[2]},${rgba[3]}` : '0,0,0';
+    const alpha = rgba ? Number(rgba[4]) : 0.3;
+    const extent = Math.max(0.5, length);
+    const gradient = context.createLinearGradient(origin.x, origin.y, origin.x + direction.x * extent,
+      origin.y + direction.y * extent);
+    const steps = 6;
+    for (let index = 0; index <= steps; index++) {
+      const t = index / steps;
+      const strength = (1 - t) * (1 - t);
+      gradient.addColorStop(t, `rgba(${rgb},${(alpha * strength).toFixed(4)})`);
     }
-    // 2) 折过去的纸背：以折线为轴镜像。
-    const flapLeft = Math.max(0, direction > 0 ? 2 * creaseX - width : creaseX);
-    const flapRight = Math.min(width, direction > 0 ? creaseX : 2 * creaseX);
-    const flapWidth = flapRight - flapLeft;
-    if (flapWidth > 0.5) {
-      context.save();
-      context.beginPath();
-      context.rect(flapLeft, 0, flapWidth, height);
-      context.clip();
-      context.fillStyle = this.activePaperColor;
-      context.fillRect(flapLeft, 0, flapWidth, height);
-      context.translate(2 * creaseX, 0);
-      context.scale(-1, 1);
-      context.drawImage(page, 0, 0, width, height);
-      context.restore();
-
-      context.save();
-      context.beginPath();
-      context.rect(flapLeft, 0, flapWidth, height);
-      context.clip();
-      context.fillStyle = this.backTintColor;
-      context.fillRect(flapLeft, 0, flapWidth, height);
-      context.restore();
-    }
-    // 纸张抬起的高度：两端贴着页面，翻到一半时最高，投影随之变宽。
-    const lift = Math.sin(Math.PI * curl);
-    if (flapWidth > 0.5) {
-      // 3) 纸背的柱面明暗：靠近折线处背光最暗，中段迎光有一道高光，外侧纸边略微压暗。
-      context.save();
-      context.beginPath();
-      context.rect(flapLeft, 0, flapWidth, height);
-      context.clip();
-      // 渐变按整张纸背的宽度铺开，纸边滑出窗口后只是被裁掉，明暗不会被挤压。
-      const creaseSide = creaseX;
-      const edgeSide = direction > 0 ? 2 * creaseX - width : 2 * creaseX;
-      const shade = context.createLinearGradient(creaseSide, 0, edgeSide, 0);
-      shade.addColorStop(0, this.shadowBackDeepColor);
-      shade.addColorStop(0.22, this.shadowLightColor);
-      shade.addColorStop(0.45, this.highlightClearColor);
-      shade.addColorStop(0.62, this.highlightColor);
-      shade.addColorStop(0.8, this.highlightClearColor);
-      shade.addColorStop(0.82, this.shadowLightColor);
-      shade.addColorStop(1, this.paperEdgeColor);
-      context.fillStyle = shade;
-      context.fillRect(flapLeft, 0, flapWidth, height);
-      context.restore();
-
-      // 4) 纸的外侧边落在当前页上的投影。纸边滑出窗口后不再需要。
-      const edgeShadowWidth = Math.min(width * 0.07, 84) * lift;
-      const edgeVisible = direction > 0 ? 2 * creaseX - width > 0 : 2 * creaseX < width;
-      if (edgeVisible) {
-        if (direction > 0) {
-          this.fillHorizontalGradient(context, flapLeft - edgeShadowWidth, flapLeft, 0, height,
-            this.shadowLightColor, this.edgeShadowColor);
-        } else {
-          this.fillHorizontalGradient(context, flapRight, flapRight + edgeShadowWidth, 0, height,
-            this.edgeShadowColor, this.shadowLightColor);
-        }
-      }
-    }
-    // 5) 折线处落在目标页上的投影。
-    const shadowWidth = Math.min(width * 0.10, 120) * (0.45 + 0.55 * lift);
-    if (direction > 0) {
-      this.fillHorizontalGradient(context, creaseX, creaseX + shadowWidth, 0, height,
-        this.creaseShadowColor, this.shadowLightColor);
-    } else {
-      this.fillHorizontalGradient(context, creaseX - shadowWidth, creaseX, 0, height,
-        this.shadowLightColor, this.creaseShadowColor);
-    }
+    return gradient;
   }
 
   private rotationDegrees(deltaX: number, deltaY: number): number {

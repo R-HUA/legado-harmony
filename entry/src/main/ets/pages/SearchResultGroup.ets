@@ -16,6 +16,7 @@ struct SearchResultGroupPage {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('searchExploreShowResultCover') showResultCover: boolean = true;
+  @StorageLink('searchExploreShowResultCoverBackground') showResultCoverBackground: boolean = true;
   @StorageLink('searchExploreUseBookshelfCoverGallery') useBookshelfCoverGallery: boolean = false;
   @StorageLink('searchExploreShowResultTags') showResultTags: boolean = true;
   @StorageLink('searchExplorePromptAddToShelfOnBack') promptAddToShelfOnBack: boolean = true;
@@ -48,10 +49,12 @@ struct SearchResultGroupPage {
       if (this.books.length > 0) {
         SearchBookResultList({
           books: this.books,
+          markTraditional: true,
           scroller: this.scroller,
           shelfBookKeys: this.shelfBookKeys,
           busyBookKeys: this.busyBookKeys,
           showResultCover: this.showResultCover,
+          showResultCoverBackground: this.showResultCoverBackground,
           useBookshelfCoverGallery: this.useBookshelfCoverGallery,
           showResultTags: this.showResultTags,
           pageColor: this.pageColor(),
@@ -112,8 +115,6 @@ struct SearchResultGroupPage {
       .height(56 + this.statusBarHeight)
       .padding({ left: AppSpacing.XS, right: AppSpacing.XL, top: this.statusBarHeight })
       .alignItems(VerticalAlign.Center)
-      .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-      .backdropBlur(ThemeRuntime.topBarBlur())
       .zIndex(2)
     }
     .width('100%')
@@ -145,9 +146,8 @@ struct SearchResultGroupPage {
         change = await SearchBookShelfHelper.removeFromShelf(getContext(this), book);
         this.shelfBookKeys = SearchBookShelfHelper.withoutKey(this.shelfBookKeys, change.requestKey);
       } else {
-        change = await SearchBookShelfHelper.addToShelf(getContext(this), book);
-        this.shelfBookKeys = SearchBookShelfHelper.withAddedKey(
-          this.shelfBookKeys, change.shelfKey || change.requestKey);
+        change = await SearchBookShelfHelper.addToShelf(getContext(this), book, this.getUIContext());
+        this.applyAddedChange(change);
       }
     } catch (e) {
       console.error('更新聚合搜索结果书架状态失败:', e);
@@ -160,12 +160,15 @@ struct SearchResultGroupPage {
   async readBook(book: SearchBook): Promise<void> {
     const key = SearchBookShelfHelper.keyOf(book);
     if (!key || this.busyBookKeys.includes(key)) return;
+    let shelfKey = key;
     if (!SearchBookShelfHelper.isInShelf(book, this.shelfBookKeys)) {
       this.busyBookKeys = SearchBookShelfHelper.withAddedKey(this.busyBookKeys, key);
       try {
-        const change = await SearchBookShelfHelper.addToShelf(getContext(this), book);
-        this.shelfBookKeys = SearchBookShelfHelper.withAddedKey(
-          this.shelfBookKeys, change.shelfKey || change.requestKey);
+        const change = await SearchBookShelfHelper.addToShelf(getContext(this), book, this.getUIContext());
+        this.applyAddedChange(change);
+        // Declined switching the shelf copy of the same work to this result.
+        if (!change.shelfKey) return;
+        shelfKey = change.shelfKey;
       } catch (e) {
         console.error('准备阅读书籍失败:', e);
         HdsFeedback.showToast('书籍准备失败，请稍后重试');
@@ -174,12 +177,20 @@ struct SearchResultGroupPage {
         this.busyBookKeys = SearchBookShelfHelper.withoutKey(this.busyBookKeys, key);
       }
     }
-    const shelfBook = await SearchBookShelfHelper.findShelfBookByKey(key, true);
+    const shelfBook = await SearchBookShelfHelper.findShelfBookByKey(shelfKey, true);
     if (!shelfBook?.bookUrl) {
       HdsFeedback.showToast('书籍准备失败，请稍后重试');
       return;
     }
     router.pushUrl({ url: 'pages/ReadBook', params: { bookUrl: shelfBook.bookUrl } });
+  }
+
+  applyAddedChange(change: SearchBookShelfChange): void {
+    let keys = this.shelfBookKeys;
+    if (change.replacedKey && change.replacedKey !== change.shelfKey) {
+      keys = SearchBookShelfHelper.withoutKey(keys, change.replacedKey);
+    }
+    this.shelfBookKeys = SearchBookShelfHelper.withAddedKey(keys, change.shelfKey);
   }
 
   openBook(book: SearchBook): void {
