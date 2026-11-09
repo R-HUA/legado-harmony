@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
 import { readEtsModule } from './lib/ets-module-staging.mjs';
 
-function fixture(api = 26) {
+function fixture(api = 26, { timerSkewMs = 0 } = {}) {
   const calls = [], replies = [], cookies = [], traces = [];
   const state = { api, attach: true, destroyed: 0 };
   const http = {
@@ -59,7 +59,10 @@ function fixture(api = 26) {
     }
   };
   const context = vm.createContext({
-    console, ArrayBuffer, Uint8Array, setTimeout, clearTimeout, setInterval, clearInterval, http, url:{URL},
+    console, ArrayBuffer, Uint8Array, clearTimeout,
+    // Real timers can fire slightly before Date.now() reaches the scheduled time; timerSkewMs makes
+    // that deterministic for the deadline checks.
+    setTimeout: timerSkewMs ? (fn, ms, ...args) => setTimeout(fn, Math.max(0, (ms || 0) - timerSkewMs), ...args) : setTimeout, setInterval, clearInterval, http, url:{URL},
     deviceInfo: { get sdkApiVersion() { return state.api; } },
     util: { TextDecoder: { create: encoding => ({ decodeWithStream: bytes => new TextDecoder(encoding).decode(bytes) }) } },
     CookieStore: { forSource: () => ({ getCookie: () => state.cookie || '', getRequestCookie: () => state.requestCookie ?? state.cookie ?? '', setCookies: (url, value) => cookies.push({ url, value }), saveAsync() {} }) },
@@ -70,6 +73,12 @@ function fixture(api = 26) {
       fetch: async req => { state.webRequests = (state.webRequests || 0) + 1; state.webRequest = req;
         return { url: 'https://web.example/final', success: true, statusCode: 200, body: 'web', headers: {} }; } }) },
     BookSourceDebugNetworkTrace: class {},
+    // AnalyzeUrl.fetch asks this for `@js:` header rules; the fixture sources use literal headers.
+    BookSourceHeaderRuntime: {
+      script: header => { const raw = (header || '').trim(); if (/^@?js\s*:/i.test(raw)) return raw.replace(/^@?js\s*:/i, '');
+        const block = /^<js>([\s\S]*)<\/js>$/i.exec(raw); return block ? block[1] : ''; },
+      resolve: async () => { throw new Error('unexpected @js header rule in network fixture'); }
+    },
     RequestSessionSupport: { emptyConfig: () => ({}), apply() {} },
     VerificationSupport: { shouldRequestBrowserVerification: () => false, sourceCookieHeader: () => '' },
     RateLimitAcquireResult: { Acquired: 0, Cancelled: 1, RateLimited: 2 },
@@ -234,6 +243,15 @@ for (const binary of [false, true]) {
   await client.execute({...request(), useWebView:true, deadlineAt:deadline});
   assert.equal(f.state.webRequest.deadlineAt, deadline);
   assert.ok(f.state.webRequest.timeoutMs <= 500, 'browser timeout must not be stretched to client default');
+}
+{
+  // The deadline timer may fire before Date.now() reaches deadlineAt; work that obtains the browser
+  // session afterwards must still treat the request as expired.
+  const f = fixture(26, { timerSkewMs: 20 }); const client = new f.HttpClient(); let release;
+  f.state.webGate = new Promise(resolve => { release = resolve; });
+  assert.match((await client.execute({...request(), useWebView:true, deadlineAt:Date.now()+50})).error, /2300028/);
+  release(); await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.state.webRequests || 0, 0, 'an early deadline timer must still stop navigation after the browser session');
 }
 // Production NativeHost -> AnalyzeUrl -> HttpClient -> SDK receives the script timeout (not just its JSON field).
 {
