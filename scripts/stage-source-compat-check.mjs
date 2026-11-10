@@ -34,11 +34,15 @@ const { BookSourceExecutionJournal, BookSourceHostActionKind } = load('book/Book
 const { BookSourceRuntimeStore } = load('book/BookSourceRuntimeStore.ts', ['BookSourceRuntimeStore'], { SourceEngineHost });
 BookSourceRuntimeStore.install(db);
 const { SourceScriptNotice } = load('book/SourceScriptNotice.ts', ['SourceScriptNotice'], { SourceRuntimeStage });
+const { STAGE_SCRIPT_PARSER_SOURCE } = load('book/StageScriptParserSource.ts', ['STAGE_SCRIPT_PARSER_SOURCE']);
+const { StageScriptCompletion } = load('book/StageScriptCompletion.ts', ['StageScriptCompletion'],
+  { STAGE_SCRIPT_PARSER_SOURCE });
 const cookieJar = { getCookie: () => cookieValue };
 const bindings = {
   SourceRuntimeStage, BookSourceRuntimeRouter, BookSource, BookChapter, HttpClient,
   BookSourceExecutionJournal, BookSourceHostActionKind, SourceEngineHost, BookSourceRuntimeStore, SourceScriptNotice,
   CookieStore: { forSource: () => cookieJar },
+  StageScriptCompletion,
   util: {
     TextEncoder: class { encodeInto(s) { return Buffer.from(s); } },
     Base64Helper: class { encodeToStringSync(s) { return Buffer.from(s).toString('base64'); } }
@@ -51,7 +55,7 @@ const { WebBookService } = load('book/WebBookService.ts', ['WebBookService'], {
   ...bindings, BookUrlResolver, RuleContext, RuleFieldRequest,
   EncodedSourceUrl: { decode: () => null },
   BookSourceStageWebRuntime: { get: () => ({ async waitUntilAvailable() { return true; } }) },
-  AnalyzeUrl: class { async fetch() { return { success: true, body: '{}', url: 'https://example.test/api' }; } },
+  AnalyzeUrl: class { setCancelCheck() { return this; } async fetch() { return { success: true, body: '{}', url: 'https://example.test/api' }; } },
   RuleBatchExecutionRequest: class {},
   RuleValue: { jsonValue: (r) => r },
   CooperativeScheduler: { createTimeSlice: () => ({ async checkpoint() {} }) },

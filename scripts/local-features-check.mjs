@@ -20,7 +20,7 @@ const bindings = {
 };
 function load(file) {
   const raw = fs.readFileSync(new URL('../entry/src/main/ets/' + file, import.meta.url), 'utf8');
-  const names = [...raw.matchAll(/export (?:class|enum) (\w+)/g)].map(match => match[1]);
+  const names = [...raw.matchAll(/export (?:class|enum|function|const) (\w+)/g)].map(match => match[1]);
   const source = raw.replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
   Object.assign(bindings, vm.runInNewContext(stripTypeScriptTypes(source, { mode: 'transform' }) +
     '\n;({' + names.join(',') + '})', bindings));
@@ -42,6 +42,8 @@ await api.fetchSyncDevices('token');
 assert.equal(requests.length, 2);
 assert.ok(requests.every(url => url.includes('/v1/sync/')));
 load('theme/ThemeModels.ets');
+load('theme/share/ThemePackageFormat.ts');
+load('theme/ThemePackRegistry.ets');
 load('theme/BuiltinThemeRegistry.ets');
 load('account/ThemeAccessPolicy.ets');
 for (const theme of bindings.BuiltinThemeRegistry.all()) {
@@ -50,6 +52,7 @@ for (const theme of bindings.BuiltinThemeRegistry.all()) {
   assert.equal(bindings.ThemeAccessPolicy.canUseBubbleStyle(theme.light.regexEmphasis.bubbleStyle), true);
 }
 assert.equal(bindings.BuiltinThemeRegistry.isFree('unknown-theme'), false);
+load('utils/TtsVoiceAvailability.ts');
 load('utils/TtsSettingsStore.ets');
 const settings = bindings.TtsSettingsStore.fromStorage();
 assert.equal(settings.cloudVoiceId, '');

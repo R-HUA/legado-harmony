@@ -6,8 +6,9 @@
 
 import { loadReaderModules } from './lib/load-reader-modules.mjs';
 
-const { EpubHtmlConverter, EpubImageRef, EpubChapterPlanner, EpubTocEntry, ReaderImageMarker, cleanup } =
-  await loadReaderModules();
+const { EpubHtmlConverter, EpubImageRef, EpubChapterPlanner, EpubChapterSegment, EpubTocEntry, ReaderImageMarker,
+  ReaderActionMarker, EpubNoteLink, EpubTextOffsetMap, EpubOriginalDocument, EpubOriginalPiece, EpubOriginalPosition,
+  EpubOriginalSpot, EpubOriginalScript, EpubOriginalLayoutOptions, ReaderNightImage, cleanup } = await loadReaderModules();
 
 let failures = 0;
 const check = (condition, message, detail = '') => {
@@ -227,6 +228,225 @@ try {
   // 漫画识别
   const comic = plan([1, 2, 3, 4, 5].map((n) => ({ path: `/b/${n}.xhtml`, body: '<img src="cover.jpg"/>' })), []);
   check(comic.isComicDominant(), '纯图 spine 识别为漫画');
+
+  // 锚点索引：与逐个正则查找的结果一致
+  {
+    const body = `<p>id="fake"</p><div class="x" id="a1">一</div><a name='n1'></a>` +
+      '<span xml:id="x1">二</span><p id="a1">重复</p><h2 title="t" id="h-1.2">三</h2><br/>';
+    equal(EpubHtmlConverter.findAnchorOffset(body, 'a1'), body.indexOf('<div class="x"'), '同名 id 取第一次出现');
+    equal(EpubHtmlConverter.findAnchorOffset(body, 'n1'), body.indexOf('<a name='), 'name 属性与单引号');
+    equal(EpubHtmlConverter.findAnchorOffset(body, 'x1'), body.indexOf('<span'), 'xml:id');
+    equal(EpubHtmlConverter.findAnchorOffset(body, 'h-1.2'), body.indexOf('<h2'), '含正则特殊字符的 id');
+    equal(EpubHtmlConverter.findAnchorOffset(body, 'fake'), -1, '正文文字里的 id= 不算锚点');
+    equal(EpubHtmlConverter.findAnchorOffset(body, ' a1 '), body.indexOf('<div class="x"'), '查找前去掉首尾空白');
+    equal(EpubHtmlConverter.findAnchorOffset(body, ''), 0, '空 id 表示文件开头');
+    equal(EpubHtmlConverter.findAnchorOffset('<p id="z">另一个文件</p>', 'a1'), -1, '换了 body 重新建索引');
+    equal(EpubHtmlConverter.findAnchorOffset(body, 'x1'), body.indexOf('<span'), '切回原 body 仍正确');
+  }
+
+  console.log('note links');
+  {
+    // 链接解析桩：同文件锚点记到 ch1.xhtml，其它文件按 href 原样。
+    const resolveLink = (href) => EpubNoteLink.create(href.startsWith('#') ? 'Text/ch1.xhtml' :
+      `Text/${EpubHtmlConverter.withoutFragment(href)}`, EpubHtmlConverter.fragmentOf(href));
+    const withNotes = (body) => EpubHtmlConverter.convertBody(body, resolve, '', '', resolveLink).content;
+    // 标记显示成 {文字→文件#锚点}，便于断言。
+    const readable = (text) => text.replace(/\[\[LEGADO_READER_ACTION_V3:[^\]]+\]\]/g, (raw) => {
+      const data = ReaderActionMarker.parse(raw);
+      const target = data ? EpubNoteLink.parse(data.url) : null;
+      return target ? `{${data.label}→${target.path}#${target.fragment}}` : raw;
+    });
+    const plainOf = (text) => text.replace(/\[\[LEGADO_READER_ACTION_V3:[^\]]+\]\]/g,
+      (raw) => ReaderActionMarker.parse(raw).label);
+
+    const epub3 = '<p>正文<a epub:type="noteref" href="#fn1">1</a>继续。</p>' +
+      '<aside epub:type="footnote" id="fn1"><p>注释一</p></aside><p>下一段</p>';
+    equal(readable(withNotes(epub3)), '正文{1→Text/ch1.xhtml#fn1}继续。\n\n下一段',
+      'EPUB3 noteref 变成注释标记，被引用的 aside 脚注不再留在正文里');
+    equal(readable(withNotes('<p>正文<sup><a href="#n2">2</a></sup>，<a href="notes.xhtml#n3">[3]</a>，' +
+      '见<a href="ch2.xhtml#s1">第二章</a>。</p>')),
+      '正文{²→Text/ch1.xhtml#n2}，{[3]→Text/notes.xhtml#n3}，见第二章。',
+      '上标编号与跨文件尾注识别为注释，普通章节链接仍是文字');
+    equal(readable(withNotes('<p>多看<a class="duokan-footnote" href="#df-1"><img src="gaiji.png"/></a>文字</p>' +
+      '<ol class="duokan-footnote-content"><li id="df-1"><p><a href="#dfref-1">◎</a>多看注释</p></li></ol>')),
+      '多看{注→Text/ch1.xhtml#df-1}文字', '只有图标的注释显示成“注”，多看注释列表不留在正文里');
+    equal(readable(withNotes('<p id="r1"><a href="text.xhtml#ref1">[1]</a>尾注条目</p><p>正文<a href="#x">①</a>。</p>')),
+      '[1]尾注条目\n\n正文{①→Text/ch1.xhtml#x}。', '尾注列表开头返回正文的编号不当注释');
+    equal(readable(withNotes('<p>见<a href="#fn9" epub:type="noteref">1</a></p><aside epub:type="footnote" id="other">' +
+      '<p>无人引用</p></aside>')), '见{1→Text/ch1.xhtml#fn9}\n\n无人引用', '没被引用的 aside 照常显示');
+    equal(EpubHtmlConverter.convertBody(epub3, resolve).content, '正文1继续。\n\n注释一\n\n下一段',
+      '不传链接解析时与以前的转换结果一致');
+
+    const notes = '<aside epub:type="footnote" id="fn1"><p><a epub:type="backlink" href="#r">1</a>. 注释一内容</p></aside>' +
+      '<p class="note"><a id="n5" href="#r5">[5]</a>第五条注释</p>' +
+      '<p><a id="n6"></a>第六条<br/><a id="n7"></a>第七条</p>' +
+      '<div><a id="n8"></a></div><p>第八条在后面一段</p>';
+    const note = (id) => EpubHtmlConverter.convertNote(notes, id, resolve).content;
+    equal(note('fn1'), '注释一内容', 'aside 注释去掉返回链接与开头标点');
+    equal(note('n5'), '第五条注释', '锚点在段内链接上时取整段并去掉编号');
+    equal(note('n6'), '第六条', '同一段里排着多条注释时只取到下一个锚点');
+    equal(note('n7'), '第七条', '同一段里的最后一条注释');
+    equal(note('n8'), '第八条在后面一段', '锚点所在块没有文字时取后面一段');
+    equal(note('missing'), '', '找不到锚点时返回空');
+
+    const oldText = EpubHtmlConverter.convertBody(epub3, resolve).content;
+    const newText = withNotes(epub3);
+    equal(plainOf(newText), '正文1继续。\n\n下一段', '标记换回显示文字后只少了脚注块');
+    equal(EpubTextOffsetMap.map(oldText, newText, 2), 2, '注释编号之前的偏移不变');
+    const afterNote = newText.indexOf('继续');
+    equal(EpubTextOffsetMap.map(oldText, newText, oldText.indexOf('继续')), afterNote, '注释编号之后的偏移跳过标记');
+    equal(EpubTextOffsetMap.map(oldText, newText, oldText.indexOf('下一段')), newText.indexOf('下一段'),
+      '被去掉的脚注块之后的偏移对齐到新正文');
+    equal(EpubTextOffsetMap.map(oldText, newText, oldText.indexOf('注释一') + 1), newText.indexOf('下一段'),
+      '落在被去掉的脚注块里的偏移归到它后面');
+    equal(readable(withNotes('<p>页<a id="pg1"/>码<a href="#n1">1</a>。</p><p id="n1">注</p>')),
+      '页码{1→Text/ch1.xhtml#n1}。\n\n注', '没有结束标签的 <a id/> 不吞掉后面的注释链接');
+
+    // 单文件几千条注释：每个注释链接都查锚点是否在 aside 里，不能每次从头扫文件。
+    const count = 8000;
+    const parts = [];
+    for (let n = 0; n < count; n++) parts.push(`<p>正文${n}<a href="#n${n}" id="r${n}">[${n}]</a>继续。</p><a id="p${n}"></a>`);
+    parts.push('<aside>');
+    for (let n = 0; n < count; n++) parts.push(`<p id="n${n}"><a href="#r${n}">[${n}]</a>注释${n}</p>`);
+    parts.push('</aside>');
+    EpubHtmlConverter.clearAnchorIndex();
+    const started = performance.now();
+    const big = withNotes(parts.join(''));
+    const elapsed = performance.now() - started;
+    equal((big.match(/\[\[LEGADO_READER_ACTION_V3:/g) || []).length, count, `${count} 个注释编号都换成注释标记`);
+    // 改前同一用例约 15 秒（主线程卡死被系统杀掉），改后约 200ms。
+    check(elapsed < 1500, `单文件 ${count} 条注释转换耗时 ${elapsed.toFixed(0)}ms`);
+  }
+
+  console.log('original layout');
+  {
+    const piece = new EpubOriginalPiece();
+    piece.path = 'OEBPS/Text/ch1.xhtml';
+    piece.html = '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" lang="zh"><head><title>x</title>' +
+      '<link rel="stylesheet" href="../Styles/main.css"/><link rel="alternate stylesheet" href="../Styles/alt.css"/>' +
+      '<style>p{background:url(../Images/bg.png)}</style><script src="a.js"></script></head>' +
+      '<body class="c1"><h1 id="t">标题</h1><p>正文<a href="#fn1">1</a><a id="p2"/>后文<img src="../Images/a.jpg"/></p>' +
+      '<div style="background-image:url(\'../Images/b.png\')" onclick="x()">x</div><a href="http://e.com">外</a>' +
+      '<a href="/OEBPS/x.xhtml">根</a><script>alert(1)</script><p id="end">尾</p></body></html>';
+    const segment = new EpubChapterSegment();
+    segment.path = piece.path;
+    segment.endId = 'end';
+    const html = EpubOriginalDocument.build([piece], [segment], EpubOriginalScript.injection(new EpubOriginalLayoutOptions()),
+      '第一章');
+    const origin = EpubOriginalDocument.ORIGIN;
+    check(html.includes(`<link rel="stylesheet" href="${origin}/OEBPS/Styles/main.css">`), '样式表地址改成虚拟站点的绝对地址');
+    check(!html.includes('alt.css'), '备用样式表不引入');
+    check(html.includes(`url(${origin}/OEBPS/Images/bg.png)`) && html.includes(`url('${origin}/OEBPS/Images/b.png')`),
+      '<style> 与内联样式里的 url() 都改写');
+    check(html.includes(`href="${origin}/OEBPS/Text/ch1.xhtml#fn1"`), '本文件锚点链接带上文件路径，点开时能找到目标');
+    check(html.includes(`href="${origin}/OEBPS/x.xhtml"`) && html.includes('href="http://e.com"'), '根路径改写，外部链接不动');
+    check(html.includes('<a id="p2"></a>后文'), '非空元素的自闭合写法改成成对标签');
+    check(!/alert\(1\)|a\.js|onclick/.test(html), '书里的脚本与事件属性都去掉');
+    check(html.includes('<body class="c1">') && html.includes('lang="zh"') && !html.includes('id="end"'),
+      '保留 html/body 属性，按锚点只取本章片段');
+    equal(EpubOriginalDocument.pathOf(`${origin}/OEBPS/Text/ch%201.xhtml#fn1`), 'OEBPS/Text/ch 1.xhtml', '虚拟地址还原路径');
+    equal(EpubOriginalDocument.pathOf(`${origin}/../secret`), '', '越出解压目录的地址不放行');
+    equal(EpubOriginalDocument.pathOf('https://example.com/a.css'), '', '其它站点不放行');
+    check(EpubOriginalDocument.isChapterUrl(EpubOriginalDocument.chapterUrl(3, 7)), '章节文档地址可识别');
+    check(EpubOriginalDocument.isScript('OEBPS/js/a.js'), '脚本文件识别为不放行');
+    let scriptOk = true;
+    try {
+      new Function(EpubOriginalScript.injection(new EpubOriginalLayoutOptions()).script);
+    } catch (error) {
+      scriptOk = false;
+      console.error(error);
+    }
+    check(scriptOk, '注入脚本语法正确');
+    const tricky = new EpubOriginalLayoutOptions();
+    tricky.target.kind = 'spot';
+    tricky.target.snippet = '$&</script>';
+    const trickyScript = EpubOriginalScript.injection(tricky).script;
+    check(!trickyScript.includes('</script>') && trickyScript.includes('$&'), '定位文字里的 </script> 与 $& 不破坏脚本');
+    const baseScript = EpubOriginalScript.injection(new EpubOriginalLayoutOptions()).script;
+    check(/speechInfo: speechInfo, ttsMark: ttsMark, ttsClear: ttsClear/.test(baseScript), '朗读取字、高亮与清除接口挂在 __legado 上');
+    equal(EpubOriginalScript.ttsMarkColor('#0A59F7', false), 'rgba(10,89,247,0.3)', '朗读高亮色：#RRGGBB 浅色');
+    equal(EpubOriginalScript.ttsMarkColor('#FF3D7BFF', true), 'rgba(61,123,255,0.42)', '朗读高亮色：#AARRGGBB 去掉透明度');
+    check(EpubOriginalScript.ttsMarkColor('bogus', false).startsWith('rgba('), '朗读高亮色：无法解析时用默认色');
+
+    // 夜间图片：深色时各模式给插图的滤镜，以及自动模式的判断。
+    const nightStyle = (mode) => {
+      const options = new EpubOriginalLayoutOptions();
+      options.forceDark = true;
+      options.nightImage = mode;
+      return EpubOriginalScript.injection(options);
+    };
+    check(nightStyle('original').style.includes('img,video,canvas,svg image') &&
+      nightStyle('original').style.includes('invert(1) hue-rotate(180deg)!important'), '夜间图片保持原色：插图反回来');
+    check(nightStyle('dim').style.includes('brightness(0.8) invert(1)'), '夜间图片调暗：先压暗再反回来');
+    check(!nightStyle('invert').style.includes('invert(1)'), '夜间图片反色：插图不再反回来');
+    const autoInjection = nightStyle('auto');
+    check(autoInjection.style.includes('[data-legado-night="invert"]{filter:none') &&
+      autoInjection.script.includes('"auto":true'), '夜间图片自动：默认调暗、标记为反色的不加滤镜，脚本开启判断');
+    check(!nightStyle('bogus').style.includes('brightness('), '未知取值按保持原色处理');
+    const lightOptions = new EpubOriginalLayoutOptions();
+    lightOptions.nightImage = 'invert';
+    check(!EpubOriginalScript.injection(lightOptions).style.includes('invert('), '浅色时不加任何反色样式');
+    let autoScriptOk = true;
+    try {
+      new Function(autoInjection.script);
+    } catch (error) {
+      autoScriptOk = false;
+      console.error(error);
+    }
+    check(autoScriptOk, '自动模式注入脚本语法正确');
+    const pixels = (count, rgba) => {
+      const data = new Uint8Array(count * 4);
+      for (let i = 0; i < count; i++) data.set(rgba(i), i * 4);
+      return data;
+    };
+    check(ReaderNightImage.shouldInvert(pixels(400, (i) => i % 10 === 0 ? [20, 20, 20, 255] : [250, 250, 250, 255])),
+      '白底黑线的图判为反色');
+    check(!ReaderNightImage.shouldInvert(pixels(400, (i) => [40 + (i % 120), 90, 160 - (i % 80), 255])),
+      '深色彩色照片不反色');
+    check(!ReaderNightImage.shouldInvert(pixels(400, (i) => i % 3 === 0 ? [230, 60, 60, 255] : [245, 245, 245, 255])),
+      '浅底但大面积彩色的插画不反色');
+    check(ReaderNightImage.shouldInvert(pixels(400, (i) => i % 8 === 0 ? [0, 0, 0, 255] : [0, 0, 0, 0])),
+      '透明底黑线稿按白底合成后判为反色');
+    const invert = ReaderNightImage.invertMatrix();
+    const apply = (rgb) => [0, 1, 2].map((row) => Math.max(0, Math.min(1,
+      invert[row * 5] * rgb[0] + invert[row * 5 + 1] * rgb[1] + invert[row * 5 + 2] * rgb[2] + invert[row * 5 + 4])));
+    check(apply([1, 1, 1]).every((v) => Math.abs(v - 0.08) < 0.01) && apply([0, 0, 0]).every((v) => Math.abs(v - 0.92) < 0.01),
+      '反色矩阵：白变深灰、黑变浅灰');
+    const red = apply([0.9, 0.1, 0.1]);
+    check(red[0] > red[1] && red[0] > red[2], '反色矩阵保留色相（红仍偏红）');
+
+    const content = `标题\n\n正文${ReaderActionMarker.create('1', 'legado-epub-note:a#b')}后文¹ 很长的一段内容在这里继续写下去，` +
+      '一直写到足够长的位置。';
+    const spot = EpubOriginalPosition.spotAt(content, content.indexOf('后文'));
+    check(spot.snippet.startsWith('后文1很长'), '普通阅读器偏移换成紧凑文字片段（上标统一成数字、去掉空白）');
+    equal(EpubOriginalPosition.offsetFor(content, spot), content.indexOf('后文'), '片段换回同一个偏移');
+    const webSpot = new EpubOriginalSpot();
+    webSpot.snippet = '很长的一段内容在这里继续写下去';
+    webSpot.fraction = 0.5;
+    equal(EpubOriginalPosition.offsetFor(content, webSpot), content.indexOf('很长'), '网页回报的片段找到普通正文里的位置');
+    const missing = new EpubOriginalSpot();
+    missing.snippet = '完全不存在的文字片段';
+    missing.fraction = 1;
+    check(EpubOriginalPosition.offsetFor(content, missing) > content.indexOf('很长'), '找不到片段时按比例定位');
+  }
+
+  // 单文件上千章：按锚点切章不再随章数平方增长
+  {
+    const count = 3000;
+    const parts = [];
+    const entries = [];
+    for (let n = 1; n <= count; n++) {
+      parts.push(`<h2 id="c${n}">第${n}章</h2><p>${'正文'.repeat(40)}</p>`);
+      entries.push(toc('/big.xhtml', `c${n}`, `第${n}章`));
+    }
+    const started = performance.now();
+    const planned = plan([{ path: '/big.xhtml', body: parts.join('') }], entries);
+    const elapsed = performance.now() - started;
+    equal(planned.chapters.length, count, '单文件 3000 个目录锚点切成 3000 章');
+    equal(planned.chapters[count - 1].title, `第${count}章`, '最后一章标题正确');
+    // 改前同一用例约 1.4 秒（每切一章都从头正则扫描整个文件），改后约 50ms。
+    check(elapsed < 800, `单文件 3000 章切章耗时 ${elapsed.toFixed(0)}ms`);
+  }
 } finally {
   cleanup();
 }

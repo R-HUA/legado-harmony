@@ -1,5 +1,7 @@
 import { ReaderActionData, ReaderActionMarker, ReaderActionMatch } from '@legado/sourceengine';
+import { EpubNoteLink } from '../book/EpubNoteLink';
 import { ReaderImageMarker } from '../book/ReaderImageMarker';
+import { ReaderTitleSplit, ReaderTitleSplitSettings } from './ReaderTitleSplit';
 
 /**
  * V2 阅读文档只保存语义和稳定偏移，不保存任何 ArkUI 组件状态。
@@ -35,6 +37,8 @@ export class ReaderV2InlineAction {
   sourceEnd: number = 0;
   /** Display offset where the drawn bubble starts, after the leading gap. */
   bubbleStart: number = 0;
+  /** EPUB 注释编号：显示原来的编号文字（不画气泡），点开弹出注释正文。 */
+  note: boolean = false;
 
   constructor(id: string, marker: string, label: string, data: ReaderActionData,
     displayStart: number, displayEnd: number, sourceStart: number, sourceEnd: number) {
@@ -45,6 +49,7 @@ export class ReaderV2InlineAction {
       displayStart + ReaderV2InlineAction.LABEL_GAP.length : displayStart;
     this.title = data.title || '';
     this.url = data.url || '';
+    this.note = EpubNoteLink.isNote(this.url);
     this.displayStart = displayStart;
     this.displayEnd = displayEnd;
     this.sourceStart = sourceStart;
@@ -81,6 +86,8 @@ export class ReaderV2Block {
   sourceStart: number = 0;
   sourceEnd: number = 0;
   title: boolean = false;
+  /** 0 is the original/first title segment, 1 is the enlarged second segment. */
+  titleSegment: number = 0;
   /** 1-6 表示章内小标题，0 表示普通段落。 */
   headingLevel: number = 0;
   image: ReaderV2ImageRef | null = null;
@@ -271,7 +278,7 @@ export class ReaderV2DocumentParser {
   static readonly IMAGE_PLACEHOLDER: string = '\uFFFC';
 
   static parse(source: string, chapterIndex: number, chapterTitle: string,
-    headings: ReaderV2HeadingHint[] = []): ReaderV2Document {
+    headings: ReaderV2HeadingHint[] = [], titleSplit: ReaderTitleSplitSettings | null = null): ReaderV2Document {
     const document = new ReaderV2Document();
     document.chapterIndex = chapterIndex;
     document.chapterTitle = (chapterTitle || '').trim();
@@ -367,8 +374,30 @@ export class ReaderV2DocumentParser {
 
     document.displayText = display;
     ReaderV2DocumentParser.buildBlocks(document, headings);
+    if (titleSplit) ReaderV2DocumentParser.splitTitleBlocks(document, titleSplit);
     document.identity = ReaderV2DocumentParser.hashIdentity(document.sourceText, chapterIndex);
     return document;
+  }
+
+  private static splitTitleBlocks(document: ReaderV2Document, settings: ReaderTitleSplitSettings): void {
+    if (settings.mode === 'off') return;
+    const blocks: ReaderV2Block[] = [];
+    for (const block of document.blocks) {
+      const cut = block.title ? ReaderTitleSplit.offset(document.chapterTitle, settings) : -1;
+      if (cut <= 0 || cut >= block.text.length) {
+        blocks.push(block);
+        continue;
+      }
+      const boundary = block.displayStart + cut;
+      const sourceBoundary = document.sourceOffsetForDisplay(boundary);
+      const first = new ReaderV2Block(`${block.id}_title_first`, block.text.substring(0, cut),
+        block.displayStart, boundary, block.sourceStart, sourceBoundary, true);
+      const second = new ReaderV2Block(`${block.id}_title_second`, block.text.substring(cut),
+        boundary, block.displayEnd, sourceBoundary, block.sourceEnd, true);
+      second.titleSegment = 1;
+      blocks.push(first, second);
+    }
+    document.blocks = blocks;
   }
 
   private static normalizeSource(source: string): string {
@@ -376,6 +405,8 @@ export class ReaderV2DocumentParser {
   }
 
   private static actionLabel(match: ReaderActionMatch): string {
+    // 注释编号就是正文原来的文字，原样显示，正文与加入注释链接以前逐字一致。
+    if (EpubNoteLink.isNote(match.data.url)) return match.data.label || EpubNoteLink.ICON_LABEL;
     const configured = (match.data.label || '').trim();
     const count = configured.match(/(99\+|\d+)\s*$/);
     if (count && count[1]) {

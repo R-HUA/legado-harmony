@@ -1,5 +1,7 @@
 import { ThemeAccessPolicy } from '../../account/ThemeAccessPolicy';
+import { ReaderFontWeight } from '../../core/reader/ReaderFontWeight';
 import { HexColor } from '../../utils/HexColor';
+import { isPackThemeId } from '../../theme/share/ThemePackageFormat';
 
 export class ReaderRegexFontRule {
   id: string = '';
@@ -8,6 +10,7 @@ export class ReaderRegexFontRule {
   fontMode: string = 'global';
   fontFamily: string = '';
   fontSize: number = 20;
+  fontWeight: number = 400;
   emphasisMode: string = 'inherit';
   bubbleStyleId: string = 'inherit';
   emphasisColor: string = '';
@@ -33,6 +36,7 @@ export class ReaderRegexLegacySettings {
   fontMode: string = 'global';
   fontFamily: string = '';
   fontSize: number = 20;
+  fontWeight: number = 400;
   shadowColor: string = '';
 }
 
@@ -96,6 +100,7 @@ export class ReaderRegexFontCodec {
       rule.fontMode = ReaderRegexFontCodec.normalizeFontMode(item.fontMode);
       rule.fontFamily = item.fontFamily || '';
       rule.fontSize = ReaderRegexFontCodec.normalizeFontSize(item.fontSize);
+      rule.fontWeight = ReaderFontWeight.normalize(item.fontWeight);
       const legacyEmphasisMode = (item.emphasisMode || '').trim();
       rule.emphasisMode = ReaderRegexFontCodec.normalizeEmphasisMode(
         item.emphasisMode,
@@ -150,13 +155,18 @@ export class ReaderRegexFontCodec {
 
   static normalizeBubbleStyleId(styleId: string): string {
     const value = (styleId || '').trim();
+    // 主题包自带的气泡：pack:<packageId>。包没装时由 ThemeAccessPolicy.accessibleBubbleStyle 换成可用样式。
+    if (isPackThemeId(value)) {
+      return value;
+    }
     if (value === 'inherit' || value === 'qq-soft' || value === 'qq-solid' || value === 'capsule' ||
       value === 'paper' || value === 'neon' || value === 'classic-glass' || value === 'warm-scroll' ||
       value === 'forest-dew' || value === 'ink-brush' || value === 'neon-pulse' || value === 'strawberry-ribbon' ||
       value === 'crimson-stamp' || value === 'celadon-slip' || value === 'rose-frame' ||
       value === 'moon-halo' || value === 'sword-talisman' || value === 'qingluan-jade' ||
       value === 'pipi-soft-paw' || value === 'mecha-comm' || value === 'starwish-ribbon' ||
-      value === 'pencil-mark') {
+      value === 'pencil-mark' || value === 'gilded-orbit' || value === 'harbor-postcard' ||
+      value === 'celestial-orbit') {
       return value;
     }
     // Compatibility with early theme drafts.
@@ -348,6 +358,15 @@ export class ReaderRegexBubbleStyleResolver {
       context.surfaceColor,
       context.darkMode ? '#111318' : '#FFFFFF'
     );
+    if (isPackThemeId(result.bubbleStyleId)) {
+      // 主题包的气泡只带端饰和边框，底色与文字色跟主题强调色走，形状固定为圆角。
+      result.backgroundColor = result.mode === 'custom' ? base :
+        ReaderRegexBubbleStyleResolver.mix(surface, base, context.darkMode ? 0.30 : 0.18);
+      result.textColor = ReaderRegexBubbleStyleResolver.contrastTextColor(
+        ReaderRegexBubbleStyleResolver.mix(surface, base, context.darkMode ? 0.30 : 0.18));
+      ReaderRegexBubbleStyleResolver.setUniformRadius(result, 8);
+      return;
+    }
     if (result.bubbleStyleId === 'classic-glass') {
       result.backgroundColor = ReaderRegexBubbleStyleResolver.mix(surface, base, context.darkMode ? 0.28 : 0.16);
       result.textColor = context.darkMode ? '#DCEBFF' : '#234D72';
@@ -492,6 +511,30 @@ export class ReaderRegexBubbleStyleResolver {
       ReaderRegexBubbleStyleResolver.addShadow(result, 0.5, '#88B4935C', -0.5, 0.5);
       return;
     }
+    if (result.bubbleStyleId === 'harbor-postcard') {
+      // Preserve the theme palette while honoring the rule's custom bubble color.
+      result.backgroundColor = result.mode === 'custom' ? base : (context.darkMode ? '#3B3048' : '#EEDBD7');
+      result.textColor = result.mode === 'custom' ? ReaderRegexBubbleStyleResolver.contrastTextColor(base) :
+        (context.darkMode ? '#FFE5D5' : '#643244');
+      ReaderRegexBubbleStyleResolver.setRadii(result, 3, 8, 3, 8);
+      return;
+    }
+    if (result.bubbleStyleId === 'gilded-orbit') {
+      // A dark foil bookplate with folded ribbon caps; the stored style ID stays compatible.
+      result.backgroundColor = result.mode === 'custom' ? base : (context.darkMode ? '#463B2A' : '#292620');
+      result.textColor = result.mode === 'custom' ? ReaderRegexBubbleStyleResolver.contrastTextColor(base) :
+        (context.darkMode ? '#F4E3BF' : '#F2DEAE');
+      ReaderRegexBubbleStyleResolver.setRadii(result, 2, 9, 9, 2);
+      return;
+    }
+    if (result.bubbleStyleId === 'celestial-orbit') {
+      // A midnight enamel plate between two star caps; deeper navy on dark pages.
+      result.backgroundColor = result.mode === 'custom' ? base : (context.darkMode ? '#2C3866' : '#1E2A4F');
+      result.textColor = result.mode === 'custom' ? ReaderRegexBubbleStyleResolver.contrastTextColor(base) :
+        (context.darkMode ? '#F4E3BF' : '#F1E3BF');
+      ReaderRegexBubbleStyleResolver.setUniformRadius(result, 9);
+      return;
+    }
     if (result.bubbleStyleId === 'pencil-mark') {
       // A highlighter stroke over print: flat colour, square ends, no glow.
       const paper = context.darkMode ? '#1B2320' : '#FBF8F1';
@@ -600,17 +643,17 @@ export class ReaderRegexBubbleStyleResolver {
   }
 
   static normalizeColor(value: string, fallback: string): string {
-    return HexColor.normalize(value, fallback, '#007DFF');
+    return HexColor.normalizeAlpha(value, fallback);
   }
 
   static withAlpha(color: string, alpha: number): string {
     const normalized = ReaderRegexBubbleStyleResolver.normalizeColor(color, '#007DFF');
-    return `#${ReaderRegexBubbleStyleResolver.componentToHex(alpha)}${normalized.substring(1)}`;
+    return HexColor.withOpacity(normalized, alpha / 255 * HexColor.alpha(normalized) / 255);
   }
 
   static mix(first: string, second: string, secondRatio: number): string {
-    const a = ReaderRegexBubbleStyleResolver.normalizeColor(first, '#FFFFFF');
-    const b = ReaderRegexBubbleStyleResolver.normalizeColor(second, '#007DFF');
+    const a = HexColor.rgb(ReaderRegexBubbleStyleResolver.normalizeColor(first, '#FFFFFF'));
+    const b = HexColor.rgb(ReaderRegexBubbleStyleResolver.normalizeColor(second, '#007DFF'));
     const ratio = Math.max(0, Math.min(secondRatio, 1));
     const red = ReaderRegexBubbleStyleResolver.channel(a, 1) * (1 - ratio) +
       ReaderRegexBubbleStyleResolver.channel(b, 1) * ratio;
@@ -618,13 +661,14 @@ export class ReaderRegexBubbleStyleResolver {
       ReaderRegexBubbleStyleResolver.channel(b, 3) * ratio;
     const blue = ReaderRegexBubbleStyleResolver.channel(a, 5) * (1 - ratio) +
       ReaderRegexBubbleStyleResolver.channel(b, 5) * ratio;
-    return `#${ReaderRegexBubbleStyleResolver.componentToHex(red)}` +
+    const rgb = `#${ReaderRegexBubbleStyleResolver.componentToHex(red)}` +
       `${ReaderRegexBubbleStyleResolver.componentToHex(green)}` +
       `${ReaderRegexBubbleStyleResolver.componentToHex(blue)}`;
+    return HexColor.alpha(second) < 255 ? HexColor.withOpacity(rgb, HexColor.alpha(second) / 255) : rgb;
   }
 
   static contrastTextColor(backgroundColor: string): string {
-    const color = ReaderRegexBubbleStyleResolver.normalizeColor(backgroundColor, '#007DFF');
+    const color = HexColor.rgb(ReaderRegexBubbleStyleResolver.normalizeColor(backgroundColor, '#007DFF'));
     const red = ReaderRegexBubbleStyleResolver.channel(color, 1) / 255;
     const green = ReaderRegexBubbleStyleResolver.channel(color, 3) / 255;
     const blue = ReaderRegexBubbleStyleResolver.channel(color, 5) / 255;

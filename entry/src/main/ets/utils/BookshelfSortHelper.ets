@@ -1,12 +1,55 @@
 import { Book } from '@legado/sourceengine';
 
 export class BookshelfSortHelper {
+  /**
+   * 从书架打开的书在阅读期间按打开时的阅读时间排：阅读页保存进度、书架在后面刷新都不会把它挪走，
+   * 关书时封面才缩得回点开的那一格；回到书架后由书架放开，再把它挪到新位置。进程内单例。
+   */
+  private static heldReadTimes: Map<string, number> = new Map<string, number>();
+
+  static holdReadTime(book: Book): void {
+    BookshelfSortHelper.heldReadTimes.clear();
+    if (!book.bookUrl) return;
+    BookshelfSortHelper.heldReadTimes.set(book.bookUrl, BookshelfSortHelper.getBookReadTime(book));
+  }
+
+  static heldReadTime(bookUrl: string): number | undefined {
+    return BookshelfSortHelper.heldReadTimes.get(bookUrl);
+  }
+
+  static releaseReadTimes(): void {
+    BookshelfSortHelper.heldReadTimes.clear();
+  }
+
+  static getBookUpdateTime(book: Book): number {
+    return Number.isFinite(book.confirmedChapterUpdateTime) ? Math.max(0, book.confirmedChapterUpdateTime) : 0;
+  }
+
   static sortByRecentRead(books: Book[]): Book[] {
     return [...books].sort((a: Book, b: Book) => BookshelfSortHelper.compareRecentRead(a, b));
   }
 
   static getRecentReadBooks(books: Book[], count: number): Book[] {
     return BookshelfSortHelper.sortByRecentRead(books).slice(0, Math.max(0, count));
+  }
+
+  /** 只从当前可见快照选真实读过的书，未读书不补位；去重在截取之前。 */
+  static getPinnedRecentReadBooks(books: Book[], count: number): Book[] {
+    const sorted = [...books].filter((book: Book) => !!book.bookUrl.trim() &&
+      BookshelfSortHelper.getBookReadTime(book) > 0);
+    sorted.sort((a: Book, b: Book) => BookshelfSortHelper.compareRecentRead(a, b) ||
+      a.bookUrl.localeCompare(b.bookUrl));
+    const seen = new Set<string>();
+    const result: Book[] = [];
+    const limit = Number.isInteger(count) && count >= 1 && count <= 5 ? count : 1;
+    for (const book of sorted) {
+      const key = book.bookUrl.trim();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(book);
+      if (result.length === limit) break;
+    }
+    return result;
   }
 
   static compareRecentRead(a: Book, b: Book): number {
@@ -40,6 +83,8 @@ export class BookshelfSortHelper {
    * explicit lastReadTime is preferred and durChapterTime is the fallback evidence of a real read.
    */
   static getBookReadTime(book: Book): number {
+    const held = BookshelfSortHelper.heldReadTimes.get(book.bookUrl);
+    if (held !== undefined) return held;
     const lastReadTime = BookshelfSortHelper.parseBookTime(book.getVariable('lastReadTime'));
     if (lastReadTime > 0) {
       return lastReadTime;

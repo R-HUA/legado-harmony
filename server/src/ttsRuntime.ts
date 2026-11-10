@@ -18,6 +18,8 @@ export function decideTtsReplay(status: string, cacheHit: boolean): TtsReplayDec
 
 interface QueueItem {
   userId: string;
+  member: boolean;
+  enqueuedAt: number;
   resolve: (release: () => void) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -28,16 +30,19 @@ export class TtsConcurrencyLimiter {
   private active = 0;
   private readonly activeByUser = new Map<string, number>();
   private readonly queue: QueueItem[] = [];
+  private memberStreak = 0;
 
   constructor(
     private readonly maxConcurrent: number,
     private readonly maxConcurrentPerUser: number,
     private readonly queueLimit: number,
-    private readonly queueTimeoutMs: number
+    private readonly queueTimeoutMs: number,
+    private readonly now: () => number = Date.now
   ) {}
 
-  acquire(userId: string): Promise<() => void> {
-    if (this.canStart(userId)) {
+  acquire(userId: string, member = false): Promise<() => void> {
+    this.dispatch();
+    if (this.canStart(userId) && !this.queue.some(item => !item.settled && this.canStart(item.userId))) {
       return Promise.resolve(this.start(userId));
     }
     if (this.queue.length >= this.queueLimit) {
@@ -46,6 +51,8 @@ export class TtsConcurrencyLimiter {
     return new Promise((resolve, reject) => {
       const item: QueueItem = {
         userId,
+        member,
+        enqueuedAt: this.now(),
         resolve,
         reject,
         settled: false,
@@ -95,10 +102,18 @@ export class TtsConcurrencyLimiter {
 
   private dispatch(): void {
     while (this.active < this.maxConcurrent) {
-      const index = this.queue.findIndex((item) =>
-        !item.settled && this.canStart(item.userId));
+      const eligible = (item: QueueItem) => !item.settled && this.canStart(item.userId);
+      const normal = this.queue.findIndex(item => eligible(item) && !item.member);
+      const member = this.queue.findIndex(item => eligible(item) && item.member);
+      const oldest = this.queue.findIndex(eligible);
+      // No new concurrency or preemption. Three member turns then one normal turn;
+      // an aging request gets the next available slot regardless of its class.
+      const aged = oldest >= 0 && this.now() - this.queue[oldest]!.enqueuedAt >= Math.min(3000, this.queueTimeoutMs / 2);
+      const index = aged ? oldest : normal >= 0 && (this.memberStreak >= 3 || member < 0)
+        ? normal : member >= 0 ? member : oldest;
       if (index < 0) return;
       const item = this.queue.splice(index, 1)[0]!;
+      this.memberStreak = item.member ? Math.min(3, this.memberStreak + 1) : 0;
       item.settled = true;
       clearTimeout(item.timer);
       item.resolve(this.start(item.userId));

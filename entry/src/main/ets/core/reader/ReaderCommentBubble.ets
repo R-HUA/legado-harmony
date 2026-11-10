@@ -2,6 +2,8 @@ import drawing from '@ohos.graphics.drawing';
 import common2D from '@ohos.graphics.common2D';
 import graphicsText from '@ohos.graphics.text';
 import image from '@ohos.multimedia.image';
+import { ReaderV2Color } from './ReaderV2Style';
+import { ReaderCommentBubbleSize } from './ReaderCommentBubbleSize';
 
 /**
  * Resolved look of a paragraph-comment / 本章说 bubble: a speech bubble with a tail whose shape, colours and small
@@ -44,8 +46,7 @@ class ReaderCommentBubbleSpec {
   }
 }
 
-// Light pages get a solid bubble with light text and dark pages a pale bubble with dark text, so the comment
-// count always reads opposite to the theme's dialogue bubble, which is a soft tint of the page in both modes.
+// Generic styles keep a solid bubble; the default capsule is resolved below as a transparent ink outline.
 const PLAIN_SPEC: ReaderCommentBubbleSpec = new ReaderCommentBubbleSpec(false, 0.5, '',
   [0xFF8A9099, 0xFF6F757E, 0xFFFFFFFF, 0, 0], [0xFFC9CDD3, 0xFF9AA0A8, 0xFF2A2E33, 0, 0]);
 
@@ -85,13 +86,22 @@ const COMMENT_BUBBLE_SPECS: Map<string, ReaderCommentBubbleSpec> = new Map<strin
     [0xFF2F6FB3, 0xFF17324F, 0xFFF0F8FF, 0xFFE8731F, 0], [0xFF102238, 0xFF9CC4EC, 0xFFE4F8FC, 0xFFE8731F, 0])],
   ['starwish-ribbon', new ReaderCommentBubbleSpec(false, 0.5, 'star',
     [0xFF6D52A8, 0xFF4A3570, 0xFFFBF6FF, 0xFFE3BE58, 0], [0xFFD9C6F2, 0xFF6D52A8, 0xFF4A3570, 0xFFE3BE58, 0])],
+  ['gilded-orbit', new ReaderCommentBubbleSpec(false, 0.12, 'folio',
+    [0xFF292620, 0xFFC5A36A, 0xFFF2DEAE, 0xFFC5A36A, 0xFF292620],
+    [0xFFDEC79A, 0xFFAF925E, 0xFF30291E, 0xFFAF925E, 0xFFF7E8C5])],
+  ['celestial-orbit', new ReaderCommentBubbleSpec(false, 0.12, 'folio',
+    [0xFF1E2A4F, 0xFFC9A962, 0xFFF1E3BF, 0xFFC9A962, 0xFF1E2A4F],
+    [0xFFD8C79F, 0xFFA88B55, 0xFF1B2340, 0xFFA88B55, 0xFFF4E8CB])],
+  ['harbor-postcard', new ReaderCommentBubbleSpec(false, 0.12, 'postcard',
+    [0xFF994057, 0xFF76364C, 0xFFFFF3E9, 0xFF83BDB9, 0xFFFAF3E9],
+    [0xFFE9B4A2, 0xFFB77B7E, 0xFF38283B, 0xFF387C7A, 0xFFFAF3E9])],
   ['pencil-mark', new ReaderCommentBubbleSpec(false, 0.15, 'sketch',
     [0xFF2F5D48, 0xFF1F3F31, 0xFFFFF3CF, 0x992F5D48, 0], [0xFFF1DE8A, 0xFF7A6A2E, 0xFF2B2620, 0x99F1DE8A, 0])]
 ]);
 
 export class ReaderCommentBubbleStyles {
-  /** Styles without their own bubble (the plain default theme and the generic emphasis styles) share PLAIN_SPEC. */
-  static resolve(styleId: string, dark: boolean): ReaderCommentBubbleStyle {
+  /** Resolve theme artwork, using the reader's current ink for the default capsule outline. */
+  static resolve(styleId: string, dark: boolean, readerTextColor: string = ''): ReaderCommentBubbleStyle {
     const id = (styleId || '').trim().toLowerCase();
     const spec = COMMENT_BUBBLE_SPECS.get(id) ?? PLAIN_SPEC;
     const colors = dark ? spec.dark : spec.light;
@@ -105,6 +115,17 @@ export class ReaderCommentBubbleStyles {
     style.ornament = spec.ornament;
     style.ornamentColor = colors[3];
     style.ornamentAltColor = colors[4];
+    if (id === 'capsule') {
+      // A rounded rectangle with slightly flat sides rather than a full pill, like a hand-drawn speech bubble.
+      style.radiusRatio = 0.4;
+      // Alpha blends the reader's ink with any page colour or image.
+      const ink = ReaderV2Color.parse(readerTextColor, dark ? 0xFFE1E1E1 : 0xFF262626);
+      const alpha = Math.round(((ink >>> 24) & 0xFF) * (dark ? 0.55 : 0.45));
+      const outline = ((alpha << 24) | (ink & 0x00FFFFFF)) >>> 0;
+      style.fill = 0;
+      style.stroke = outline;
+      style.text = outline;
+    }
     return style;
   }
 }
@@ -128,6 +149,11 @@ export class ReaderCommentBubblePainter {
     return fontSizePx * 1.32;
   }
 
+  /** Distance from the bubble body's bottom to the tail tip, shared by painting and alignment. */
+  static tailHeightFor(bodyHeight: number, style: ReaderCommentBubbleStyle): number {
+    return bodyHeight * (style.ornament === 'folio' ? 0.26 : (style.styleId === 'capsule' ? 0.13 : 0.3));
+  }
+
   /** Room ornaments and the tail may use outside the bubble rect, as a fraction of its height. */
   static readonly OVERHANG_RATIO: number = 0.38;
 
@@ -139,15 +165,11 @@ export class ReaderCommentBubblePainter {
     if (w <= 0 || h <= 0) return;
     const body = ReaderCommentBubblePainter.bodyPath(left, top, right, bottom, style, tail);
 
-    const brush = new drawing.Brush();
-    brush.setAntiAlias(true);
-    brush.setColor(ReaderCommentBubblePainter.color(style.fill));
-    canvas.attachBrush(brush);
-    canvas.drawPath(body);
-    canvas.detachBrush();
+    ReaderCommentBubblePainter.fillPath(canvas, body, style.fill);
 
     if (((style.stroke >>> 24) & 0xFF) > 0) {
-      const pen = ReaderCommentBubblePainter.pen(style.stroke, Math.max(1, h * 0.07));
+      const pen = ReaderCommentBubblePainter.pen(style.stroke,
+        Math.max(1, h * (style.ornament === 'folio' ? 0.045 : (style.styleId === 'capsule' ? 0.065 : 0.07))));
       canvas.attachPen(pen);
       canvas.drawPath(body);
       canvas.detachPen();
@@ -159,7 +181,7 @@ export class ReaderCommentBubblePainter {
   static renderLabel(style: ReaderCommentBubbleStyle, label: string, fontSizePx: number): ReaderCommentBubbleImage | null {
     try {
       const textStyle: graphicsText.TextStyle = {
-        fontSize: fontSizePx,
+        fontSize: ReaderCommentBubbleSize.labelFontSize(label, fontSizePx),
         fontWeight: graphicsText.FontWeight.W500,
         color: ReaderCommentBubblePainter.color(style.text),
         locale: 'zh-Hans'
@@ -175,10 +197,12 @@ export class ReaderCommentBubblePainter {
       const textHeight = paragraph.getHeight();
       const h = ReaderCommentBubblePainter.heightFor(fontSizePx);
       const padX = fontSizePx * 0.42;
-      const w = Math.max(h, textWidth + padX * 2);
+      const w = ReaderCommentBubbleSize.isCount(label) ? ReaderCommentBubbleSize.countWidth(fontSizePx, style.styleId) :
+        Math.max(h, textWidth + padX * 2);
       const margin = Math.ceil(h * ReaderCommentBubblePainter.OVERHANG_RATIO);
       const width = Math.ceil(w + margin * 2);
-      const height = Math.ceil(h + margin * 2);
+      // ImageSpan centres the whole bitmap: include the tail below the body so previews match the reader.
+      const height = Math.ceil(h + ReaderCommentBubblePainter.tailHeightFor(h, style) + margin * 2);
       const options: image.InitializationOptions = {
         size: { width: width, height: height },
         pixelFormat: image.PixelMapFormat.RGBA_8888,
@@ -201,7 +225,21 @@ export class ReaderCommentBubblePainter {
     const w = right - left;
     const h = bottom - top;
     const body = new drawing.Path();
-    if (style.cut) {
+    if (style.ornament === 'folio' && style.radiusPx < 0) {
+      // A folded ex-libris label. Preserve a source's explicit corner-radius choice.
+      const c = Math.min(h * 0.20, w / 4);
+      const r = h * 0.10;
+      body.moveTo(left + r, top);
+      body.lineTo(right - c, top);
+      body.lineTo(right, top + c);
+      body.lineTo(right, bottom - r);
+      body.quadTo(right, bottom, right - r, bottom);
+      body.lineTo(left + c, bottom);
+      body.lineTo(left, bottom - c);
+      body.lineTo(left, top + r);
+      body.quadTo(left, top, left + r, top);
+      body.close();
+    } else if (style.cut) {
       const c = Math.min(h * 0.26, w / 3);
       body.moveTo(left + c, top);
       body.lineTo(right - c, top);
@@ -215,15 +253,36 @@ export class ReaderCommentBubblePainter {
     } else {
       const wanted = style.radiusPx >= 0 ? style.radiusPx : h * style.radiusRatio;
       const r = Math.max(0, Math.min(wanted, h / 2, w / 2));
-      body.addRoundRect(new drawing.RoundRect({ left: left, top: top, right: right, bottom: bottom }, r, r));
+      // The default capsule's corners are taller than wide, so its sides keep curving like a speech bubble.
+      const ry = style.styleId === 'capsule' ? h / 2 : r;
+      body.addRoundRect(new drawing.RoundRect({ left: left, top: top, right: right, bottom: bottom }, r, ry));
     }
-    if (tail) {
+    if (tail && style.styleId === 'capsule') {
+      // The tail grows out of the bottom-left corner: a steep outer edge leaves the corner arc and a concave inner
+      // edge flattens back into the bottom line.
+      const tailBottom = bottom + ReaderCommentBubblePainter.tailHeightFor(h, style);
+      const tailPath = new drawing.Path();
+      tailPath.moveTo(left + h * 0.13, bottom - h * 0.16);
+      tailPath.lineTo(left + h * 0.25, tailBottom);
+      tailPath.quadTo(left + h * 0.34, bottom + h * 0.01, left + h * 0.54, bottom - h * 0.02);
+      tailPath.lineTo(left + h * 0.54, bottom - h * 0.3);
+      tailPath.close();
+      body.op(tailPath, drawing.PathOp.UNION);
+    } else if (tail) {
       // The tail's base sits inside the body and the two are merged, so the outline runs around both as one shape.
       const baseLeft = left + Math.min(w * 0.34, h * 0.42);
+      const tailBottom = bottom + ReaderCommentBubblePainter.tailHeightFor(h, style);
       const tailPath = new drawing.Path();
       tailPath.moveTo(baseLeft, bottom - h * 0.25);
       tailPath.lineTo(baseLeft + h * 0.36, bottom - h * 0.25);
-      tailPath.lineTo(baseLeft - h * 0.1, bottom + h * 0.3);
+      if (style.ornament === 'folio') {
+        // A small notched bookmark tail, within the same measured overhang as other comments.
+        tailPath.lineTo(baseLeft + h * 0.30, tailBottom);
+        tailPath.lineTo(baseLeft + h * 0.12, bottom + h * 0.16);
+        tailPath.lineTo(baseLeft - h * 0.06, tailBottom);
+      } else {
+        tailPath.lineTo(baseLeft - h * 0.1, tailBottom);
+      }
       tailPath.close();
       body.op(tailPath, drawing.PathOp.UNION);
     }
@@ -236,6 +295,39 @@ export class ReaderCommentBubblePainter {
     const main = style.ornamentColor;
     const alt = style.ornamentAltColor;
     switch (style.ornament) {
+      case 'postcard': {
+        const envelope = new drawing.Path();
+        envelope.moveTo(left + h * 0.02, top - h * 0.08);
+        envelope.lineTo(left + h * 0.33, top - h * 0.08);
+        envelope.lineTo(left + h * 0.33, top + h * 0.14);
+        envelope.lineTo(left + h * 0.02, top + h * 0.14);
+        envelope.close();
+        ReaderCommentBubblePainter.fillPath(canvas, envelope, main);
+        const fold = new drawing.Path();
+        fold.moveTo(left + h * 0.03, top - h * 0.06);
+        fold.lineTo(left + h * 0.175, top + h * 0.04);
+        fold.lineTo(left + h * 0.32, top - h * 0.06);
+        canvas.attachPen(ReaderCommentBubblePainter.pen(alt, Math.max(0.8, h * 0.025)));
+        canvas.drawPath(fold);
+        canvas.detachPen();
+        break;
+      }
+      case 'folio': {
+        // The ribbon sits on the outer corner, clear of even a one-digit comment count.
+        const ribbon = new drawing.Path();
+        ribbon.moveTo(right - h * 0.25, top - h * 0.18);
+        ribbon.lineTo(right + h * 0.06, top - h * 0.18);
+        ribbon.lineTo(right + h * 0.06, top + h * 0.28);
+        ribbon.lineTo(right - h * 0.095, top + h * 0.18);
+        ribbon.lineTo(right - h * 0.25, top + h * 0.28);
+        ribbon.close();
+        ReaderCommentBubblePainter.fillPath(canvas, ribbon, main);
+        const pen = ReaderCommentBubblePainter.pen(alt, Math.max(0.7, h * 0.035));
+        canvas.attachPen(pen);
+        canvas.drawLine(right - h * 0.17, top - h * 0.06, right - h * 0.02, top - h * 0.06);
+        canvas.detachPen();
+        break;
+      }
       case 'star':
         ReaderCommentBubblePainter.fillPath(canvas, ReaderCommentBubblePainter.starPath(right - h * 0.06, top + h * 0.02,
           h * 0.36), main);

@@ -10,6 +10,17 @@
 
 `Resource`、背景图片、封面和图标由 `ThemeAssetRegistry` 按 ID 解析，不写入 Preferences。
 
+桌面图标由 `AppIconManager` 单独管理，使用 API 26 的 `bundleManager.getAlternateIcons()` /
+`setAlternateIcon()`，资源位于 `AppScope/resources/base/media`，并在 `app.json5` 的
+`alternateIcons` 中声明。新增主题时必须同时添加同名图标选项；现有图标 ID 保持稳定。
+应用主题弹窗的“应用主题图标”默认选中（自定义方案使用“自定义主题”图标），关闭则保留当前桌面图标。
+低于 API 26 的设备尝试切换时提示“该能力需要鸿蒙7及以上”，其余主题内容仍正常应用。
+主题详情显示配套图标预览，当前使用卡片显示系统实际启用的桌面图标。
+新增的 12 套主题桌面图标（含自定义主题）已使用即梦重绘为 1024×1024 PNG，直接注册到 `alternateIcons`，预览和桌面共用同一资源。
+星愿魔法来自 `dreamina` CLI，其余 11 套来自画布 CLI；模型、提示词、任务与资源标识、裁切和校验摘要记录在 `scripts/assets/theme-icon-generation.json`。
+`node scripts/generate-theme-desktop-icons.mjs` 仅生成缺少 PNG 的矢量回退资源；脚本会跳过已有 PNG 的主题，避免覆盖已重绘素材。
+运行 `node scripts/app-icon-check.mjs` 检查图标注册、主题覆盖、版本门控和切换状态。
+
 ## 目录与职责
 
 ```text
@@ -20,6 +31,10 @@ entry/src/main/ets/theme/
 ├── ThemeAssetRegistry.ets      # assetId / iconPackId / styleId 到 Resource 的映射
 └── TtsPanelThemeStyles.ets     # 各主题朗读/有声书面板背景的插画与配色
 
+├── ThemePackRegistry.ets       # 已安装主题包（pack:<packageId>）的进程内注册表与令牌拼装
+└── share/                      # .qytheme 主题包的格式、校验、导入导出
+
+entry/src/main/ets/utils/ThemePackStore.ets           # 主题包素材落盘与冷启动加载
 entry/src/main/ets/utils/AppThemeSettingsStore.ets   # 主题选择与颜色覆盖的持久化
 entry/src/main/ets/account/ThemeAccessPolicy.ets     # 主题与专属气泡样式的归属关系
 entry/src/main/ets/components/ReaderThemeBackground.ets  # 阅读页主题背景组件
@@ -34,11 +49,13 @@ entry/src/main/resources/base/media/
 ├── theme_folder_art_*          # 平铺模式分组文件夹插画（450 × 660）
 ├── theme_logo_*                # 主题标识 SVG（64 × 64）
 ├── theme_startup_*             # 启动封面
-├── ic_theme_<pack>_*           # 导航图标包，每包四个 24 × 24 SVG
+├── ic_theme_<pack>_*           # 导航图标包，每包五个 24 × 24 SVG（星穹御藏是带选中态的位图）
 └── regex_frame_* / regex_cap_* # 主题专属正则气泡的边框与端饰
 ```
 
 ## 内置主题
+
+`neon-harbor`（霓港来信）为原创复古都市动画主题，含 11 张即梦位图、浅深阅读角饰、导航和桌面图标、`harbor-postcard` 正则及段评气泡。其听书背景使用 720 × 520 JPG，与现有 SVG 共用资源接口和渐隐组件。素材清单见 [生成记录](../scripts/assets/neon-harbor-generation.json)，校验使用 `scripts/neon-harbor-check.mjs`，主题目录迁移为 `server/migrations/024_neon_harbor_theme.sql`。
 
 主题 ID 定义在 `ThemeIds`，是写入设置、云同步和服务端主题目录的稳定标识，发布后不能改名。
 
@@ -65,7 +82,7 @@ entry/src/main/resources/base/media/
 | `navigation` | `ThemeNavigationTokens` | 悬浮底栏的 `iconPackId`。 |
 | `startup` | `ThemeStartupTokens` | 启动封面的 `styleId`。 |
 | `radius` | `ThemeRadiusTokens` | `small`、`medium`、`large`、`card`、`button`、`bubble` 圆角。 |
-| `glass` | `ThemeGlassTokens` | 玻璃材质：`panel`、`popover`、`button`、`overlay`、`menu` 五种表面各自的模糊半径和圆角，以及浅深色的着色透明度、边框和阴影。 |
+| `glass` | `ThemeGlassTokens` | 面板着色透明度、边框和阴影；内部令牌，不开放给自定义方案和主题包，自定义方案跟随完整配色的来源主题（`glassThemeId` 只为兼容旧数据保留）。 |
 
 `ThemeVariant` 的三组令牌：
 
@@ -81,7 +98,7 @@ entry/src/main/resources/base/media/
 正则规则级设置 > 用户颜色/字体覆盖 > 当前主题浅深变体 > plain-default 回退
 ```
 
-`ThemeRuntime.applyPack()` 发布令牌时，主题中缺失或非法的值会逐项回退到 `plain-default`，并递增 `KEY_THEME_REVISION` 通知组件刷新。组件应通过 `ThemeRuntime.pageColor(darkMode)`、`ThemeRuntime.glassBlur(surface)` 这类访问器读取令牌，不要直接读取 `ThemePack`。
+`ThemeRuntime.applyPack()` 发布令牌时，主题中缺失或非法的值会逐项回退到 `plain-default`，并递增 `KEY_THEME_REVISION` 通知组件刷新。组件应通过 `ThemeRuntime.pageColor(darkMode)`、`ThemeRuntime.glassPanelColor(darkMode)` 这类访问器读取令牌，不要直接读取 `ThemePack`。
 
 阅读页保留原有的米黄、素白、青绿和自定义配色，“应用主题”对应稳定索引 `ReaderThemeHelper.APP_THEME_INDEX`。只有选中该项时，主题的阅读背景和阅读文字色才生效。
 
@@ -169,6 +186,7 @@ BuiltinThemeRegistry.register(theme);
 | 分组文件夹插画 | `theme_folder_art_<id>.jpg` | 450 × 660 | `themeShelfFolder()` |
 | 主题标识 | `theme_logo_<id>.svg` | `viewBox="0 0 64 64"` | `themeLogo()` |
 | 启动封面 | `theme_startup_<id>` | 841 × 1870 JPG 竖屏插画；底部约 1/5 叠加文案，不放主体 | `startupBackground()` |
+| 首页背景（可选） | `home_bg_<id>_light.jpg` / `_dark.jpg` | 1080 × 1350 JPG；画面集中在上部，下半部分接近纯底色 | `homeBackdrop()` |
 | 导航图标包 | `ic_theme_<pack>_<tab>.svg` | `viewBox="0 0 24 24"`，单色纯黑填充 | `navigationIcon()` |
 | 正则气泡边框 / 端饰 | `regex_frame_<style>.svg` / `regex_cap_<style>.svg` | — | `regexBubbleFrame()` / `regexBubbleCap()` |
 
@@ -202,6 +220,17 @@ BuiltinThemeRegistry.register(theme);
 - 阅读页的朗读面板沿用阅读配色的文字色，只有阅读配色选中“应用主题”时才使用主题面板背景，其余配色保持玻璃面板。
 - 自定义主题通过部件来源 `ThemeComponentSourceIds.ttsPanelThemeId` 选择面板背景来自哪个主题（`ThemeRuntime.ttsPanelThemeId()`）。该字段是后加的，旧方案里为空，读取时回退到 `readerThemeId`。
 
+### 首页背景
+
+书架、发现和我的三个页签顶部可以铺一张主题背景图，由 `components/home/HomeThemeBackdrop.ets` 绘制：图片贴顶、按宽度铺满（宽高比 `ThemeAssetRegistry.HOME_BACKDROP_ASPECT`，即 4:5），不随列表滚动，叠一层按页面底色计算的渐变向下淡出。书架整张显示，发现（包括其中的搜索层）只衬在标题区，我的衬在资料卡后面，强度依次减弱。
+
+1. 添加浅色、深色两张 `home_bg_<id>_*.jpg`。画面放在上部约四成，下面要能自然过渡到 `pageColor`；不要放文字。深色图的亮部要克制，渐变在深色下压得更重。
+2. 在 `ThemeAssetRegistry.homeBackdrop()` 中增加分支。没有分支的主题保持纯底色。
+
+页面里铺满整页的层（列表、网格、下拉刷新、滚动区）用 `ThemeRuntime.homeSurfaceColor()` 作底色：有背景图时透明，否则是 `pageColor`。顶栏毛玻璃 `HeaderBackdrop` 的 `reveal` 按列表实际滚动距离（`CollapsingHeader.backdropReveal()`）显现，列表在顶部时背景一直透到状态栏。用户可以在“其他设置 › 外观 › 主题背景图”关掉（`HomeBackdropSettingsStore`）。
+
+自定义主题通过部件来源 `ThemeComponentSourceIds.homeBackdropThemeId` 选择背景来自哪个主题（`ThemeRuntime.homeBackdropThemeId()`），选没有背景图的主题即不显示。该字段是后加的，旧方案里为空，读取时回退到 `startupThemeId`。主题包的 `parts.homeBackdrop` 只取对应模式的那一张，浅深色不互相借用。
+
 ### 主题封面与书架边框
 
 1. 添加封面、边框和文件夹插画资源。封面底图是完整插画，不叠加书名或作者。
@@ -212,18 +241,44 @@ BuiltinThemeRegistry.register(theme);
 
 ### 导航图标包
 
-图标包固定包含 `bookshelf`、`explore`、`search`、`mine` 四个图标，路径使用纯黑填充，由 ArkUI 的 `fillColor` 注入主题色。
+图标包包含 `bookshelf`、`explore`、`mine` 三个固定页签和可选第四个页签 `listen`、`footprint`（其他设置 › 底栏）共五个底栏图标，路径使用纯黑填充，由 ArkUI 的 `fillColor` 注入主题色。`fillColor` 只对填充轮廓可靠，线条要先描成轮廓：“听”“足迹”两枚图标由 `scripts/generate-extra-tab-icons.mjs`（pathkit 描边）生成，星穹御藏的位图由 `scripts/generate-celestial-extra-tab-icons.py` 生成。主题包没带 `listen` / `footprint` 时，`navigationIcon()` 回退到包的 `navFallbackIconPackId`（基底主题的图标包）。
 
 新增图标包时：
 
 1. 在 `ThemeAssetRegistry` 中增加 `ICON_PACK_*` 常量。
 2. 在 `normalizeIconPackId()` 中放行该 ID，否则会回退到 `classic`。
-3. 在 `navigationIcon()` 的分支中增加映射。
+3. 在 `navigationIcon()` 的分支中增加映射，五个页签都要有（`theme-framework-check` 会检查 `listen`、`footprint` 是否齐全）。
 4. 把 `ThemePack.navigation.iconPackId` 指向新 ID。
 
 当前可用的图标包 ID：`classic`、`rounded`、`ink`、`strawberry`、`crimson`、`plum`、`rose`、`crane`、`sword-frost`、`qingluan-water`、`cat-pipi`、`azure-mecha`、`starwish-magic`、`letterpress-page`。
 
 桌面应用图标由 `AppIconManager` 独立管理，不随主题切换。
+
+## 方案级覆盖
+
+自定义方案除了按部件选来源主题，还能逐项覆盖两组令牌，字段在 `AppThemeSettings` 里：`customLightPalette` / `customDarkPalette`（`ThemeColorOverrides`，页面、卡片、输入框、正副文字、分割线、危险色七项）和 `customLightEmphasis` / `customDarkEmphasis`（`ThemeEmphasisOverrides`，强调方式、气泡样式、强调底色与文字色）。空值表示跟随来源主题；`AppThemeSettingsStore.customTheme()` 在取完来源令牌后由 `applyOverrides()` 盖上去，强调色与按钮色仍是独立字段。同一套机制还有：`customAppFontFamily`（界面字体，取字体库里某款字体的 family，`applyOverrides()` 写进 `ThemePack.fontFamily`，`ReaderFontBootstrap.registerThemeFont()` 在应用方案时把它注册进字体表）、`customRadius`（`ThemeRadiusOverrides`，六档圆角逐项覆盖，-1 表示跟随）、`customLightStartupText` / `customDarkStartupText`（`ThemeStartupTextStyle`，启动封面主副标题的颜色与字号，空值与 0 表示默认）和 `customPreviewImagePath`（方案卡片预览图，本机文件，与启动封面图一样不同步、随包导出，存在 `files/theme_previews/`）。这些字段以 JSON 字符串持久化，随方案同步；导出时若有任何覆盖，清单 `requires` 加 `scheme-overrides-v1`，老版本应用会提示更新而不是丢掉颜色。导入时方案覆盖里用不了的气泡样式改回跟随，并列入预览提示。
+
+## 方案自有素材包
+
+编辑器里上传的封面、书架边框、文件夹插画、导航图标、朗读面板插画、首页背景、气泡端饰与边框、阅读角饰或整图背景由 `utils/SchemeAssetService.ets` 收进方案自己的素材包：`theme_packs/custom-<随机>/`，与导入的主题包同一套存储（`ThemePackStore.importAsset()` 负责嗅探类型、限大小、SVG 自包含检查并按内容哈希命名），同样注册为 `pack:<packageId>`，方案的 `packageId` 指向它。上传后编辑器把对应部件来源（封面与图标两种模式一起，面板插画和首页背景按当前模式）指向这个包；包内气泡通过方案的强调覆盖 `bubbleStyle` 生效；阅读背景素材写进 `parts.light/dark.reader`，方案只把 `customLight/DarkReaderBackgroundAssetId` 指向 `pack:<id>:light/dark`，阅读来源主题与文字色不变。第一次上传时该部件原来所选的主题记为包的 `baseTheme`，没上传的那部分素材继续取自它；移除后来源退回 `baseTheme`，所有部件都移掉时整个包卸载、方案解绑。方案本身由主题包安装而来时直接写进那个包。导出时按格式 2 随包打出去（`packageId` 就是这个包的 ID，不算混搭），删除方案时由 `cleanupImportedFiles()` 一并清理。
+
+编辑器按素材槽逐个管理：封面可单张替换、删除和调整顺序（`replaceCover` / `removeCover` / `moveCover`），书架边框、文件夹、气泡边框、主题标识（`parts.logo`）各自可移除，浅深色分开的阅读背景素材、朗读面板和首页背景可以 `copyToOtherMode()` 复制到另一种模式。朗读面板三色只在这个模式已有自传插画时可改（直接改 `parts.ttsPanelLight/Dark`）；整图铺放改 `parts.light/dark.reader.imageFit`。阅读底色、正文、页眉页脚与内容明暗是方案设置里的 `customLight/DarkReader*`，换阅读来源时整组重置为来源主题的值。
+
+导航图标可以逐个上传，`parts.navigation` 在本机允许只有几张：`InstalledThemePack.hasAnyNavigation()` 为真时底栏就用包里的图标，缺的页签取 `ThemePackRecord.navFallbackIconPackId`（第一次上传时导航来源主题的内置图标包，只存在本机 `pack.json`，不进包格式）。“听”“足迹”两个页签的图标可以不传，同样回退到它。主题包格式仍要求书架、发现、我的三个普通图标齐全，所以 `ThemePackageService.packParts()` 导出时丢掉没传齐的 `navigation`。
+
+位图素材上传前经过 `components/theme/ThemeImageCropper.ets` 取景：在解码后的工作图上按槽位比例裁剪，输出到缓存目录再交给 `importAsset()`（沙箱路径直接按路径复制）。复制方案由 `SchemeAssetService.duplicateScheme()` 完成：自有素材包用 `ThemePackStore.copyPack()` 复制成新 `custom-<随机>` 包，设置里的 `pack:<旧 ID>` 引用全部换成新 ID，启动封面、预览图和阅读排版档案（含绑定标记）各复制一份。方案的作者与说明（`CustomThemeScheme.author` / `description`）由编辑器“方案信息”写入，导出时进清单。
+
+## 导入的主题包
+
+用户导入带素材的 `.qytheme`（格式 2，作者按 [主题包开发指南](theme-package-format.md) 制作）时，包里的部件在本机注册为一个主题，ID 为 `pack:<packageId>`；导入得到的自定义方案各部件来源都指向它，与内置主题一样参与 `ThemeComponentSourceIds` 的混搭。
+
+- `ThemePackStore.loadInstalled()` 在 `EntryAbility` 读取主题设置之前把 `files/theme_packs/<packageId>/pack.json` 全部读入并注册到 `ThemePackRegistry`。记录里只存 parts 和素材的相对路径，每次启动按当前 `baseTheme` 重新拼出 `ThemePack`，基底主题改了也能跟上。基底主题的资源会整套随包生效，所以导入时 `restrictBaseTheme()` 与部件来源同一规则检查权益：导入方用不了的基底换成 `plain-default` 并列入预览的“已替换”。
+- `BuiltinThemeRegistry.findById()` 对 `pack:` ID 到注册表取主题；`normalizeBuiltinId()` 对 `pack:` ID 原样保留，缺包时只回退显示、不改写方案里的来源（同步到没装包的设备时方案不会被破坏）。`all()` 只返回内置主题，主题商店列表不会出现包。
+- `ThemeAssetRegistry` 的各个解析函数遇到 `pack:` ID 返回包目录里文件的 `file://` URI；阅读背景用 `pack:<packageId>:light` / `:dark` 作素材键，角饰模式与内置主题走同一条装饰路径，整图模式由 `ReaderThemeHelper` 转成用户图片的那条路径。`navigationIcon()`、`themeLogo()` 和 `TtsPanelThemeStyle.artwork` 因此是 `ResourceStr`。自绘翻页纹理的 `ReaderRasterAssets.media()` 对字符串来源改从文件解码。
+- 包内气泡的样式 ID 就是 `pack:<packageId>`：`ReaderRegexFontCodec.normalizeBubbleStyleId()` 原样保留，`ReaderRegexBubbleStyleResolver` 用统一的圆角预设配端饰，`ThemeAccessPolicy` 以“包已安装”为可用条件。
+- 访问策略：已安装的包随方案走，不另设权益，会员过期后已导入的方案照常使用；导出和导入主题包本身仍要求有效会员。
+- `CustomThemeScheme.packageId` 记录方案来自哪个包：同一个 `packageId` 再次导入时原位更新（可以更新正在使用的方案，导入后重新应用），删除或替换方案后 `ThemePackageService.cleanupImportedFiles()` 清掉没有方案再引用的包目录。
+- 导出：方案由包安装而来、或部件里选了某个已安装的包时按格式 2 导出，包内素材复制进包，方案里指向它的来源写成 `pack:self`；混搭别人的包时换新 `packageId` 并把原包记进 `credits`。不带包内素材的方案仍按格式 1 导出，老版本应用可以导入。基底或任一部件来源用了 `SuperExclusiveThemes` 里的终身超级会员专属主题时不允许导出（`ThemePackageService.exclusiveThemeBlockingExport()`，入口弹窗说明，`planExport()` / `buildPackage()` 再兜底拒绝）。
 
 ## 正则气泡
 
@@ -266,6 +321,14 @@ BuiltinThemeRegistry.register(theme);
 全部内置主题与部件免费开放，账号商业入口暂停，既有同步数据保留。
 
 ## 验证
+
+### 终身超级会员领取型主题
+
+`obsidian-archive`（曜金藏书）和 `celestial-vault`（星穹御藏）是终身超级会员手动领取的专属主题，名单集中在 `SuperExclusiveThemes.IDS`（客户端）与 `SUPER_CLAIM_THEME_IDS`（服务端 `themeCatalog.ts`），目录行为 `acquisition = 'SUPER_CLAIM'`。它们不能套用普通主题的点数购买、会员主题库自动授权或试用逻辑；授权同时要求终身超级会员身份和这套主题一年内的有效领取记录，每套单独领取，到期后才能再次领取。自定义方案的底子或任一部件用到某套专属主题而没有它的领取记录时，会退回默认主题，配套桌面图标也会复原。
+
+曜金藏书使用 `gilded-orbit` 气泡、矢量阅读角饰和即梦位图。星穹御藏使用 `celestial-orbit` 气泡，阅读角饰、朗读面板插画和底栏图标都是位图；它的图标包 `celestial-vault` 是唯一带选中态的内置图标包，底栏只显示图标、不显示文字（与主题包的 `labels: hidden` 相同）。新增专属主题时：加进上述两份名单，服务端补一条 `SUPER_CLAIM` 目录迁移，再在 `AppScope/app.json5` 登记配套桌面图标。
+
+修改相关入口时，保持 `ThemeAccessPolicy`、自定义部件选择、`ThemeTrialManager`、`AppIconManager` 和 `MembershipThemeGuard` 的一致性。领取接口与数据库迁移以 `server/src` 和 `server/migrations` 中的实现为准；素材生成与校验记录位于 `scripts/assets/`。
 
 运行主题回归脚本：
 

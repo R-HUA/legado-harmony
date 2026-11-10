@@ -1,12 +1,20 @@
+import { ReaderImageRecovery } from './ReaderImageRecovery';
+import { appDb } from '../../model/data/AppDatabase';
+import { ReaderImageCache } from './ReaderImageCache';
+import { ReaderImageReferences } from './ReaderImageReferences';
 import { SourceEngineHost, Book, BookChapter, BookSource, ContentRule, HttpClient, HttpResponse, AnalyzeUrl, AnalyzeRule, RuleContext, VerificationSupport, EncodedSourceUrl, BookUrlResolver, BookFieldSanitizer, AjaxRuleCompat, JavaRegexCompat, JsRuntime, ScriptEngine, ScriptEngineContext, SourceRuntimeStage, BookSourceStageWebRuntime, StageWebRuntimeRequest, ReaderActionMarker, CookieStore, RuleExecutionService, RuleBatchExecutionRequest, RuleFieldRequest, CooperativeScheduler, RuleExecutionTarget, RuleValue, BookSourceDebugContext, LogText, NativeSourceService, NetworkErrorText } from '@legado/sourceengine';
 import { util } from '@kit.ArkTS';
 import { BookSourceDataUrlSupport } from './BookSourceDataUrlSupport';
 import { ReaderImageMarker } from './ReaderImageMarker';
-import { ComicImagePipeline, ComicImageRequestContext } from './ComicImagePipeline';
+import { ComicImagePipeline, ComicImageRequestContext, ComicImageTiming } from './ComicImagePipeline';
+import { ReaderImageRequest, ReaderImageScheduler } from './ReaderImageScheduler';
+import { ReaderImageResults } from './ReaderImageResults';
 import { BookSourceInteractionPostProcessor } from './BookSourceInteractionPostProcessor';
 import { BookSourceAudioWebRuntime } from './BookSourceAudioWebRuntime';
 import { AudioRuleSupport } from './AudioRuleSupport';
+import { AudioUrlResolver } from './AudioUrlResolver';
 import { BookSourceMetadataSupport } from './BookSourceMetadataSupport';
+import { VideoPlaybackSource, VideoPlaybackSupport } from './VideoPlaybackSupport';
 
 class ContentPageData {
   content: string = '';
@@ -16,17 +24,70 @@ class ContentPageData {
 export class WebBookService {
   static readonly GENERIC_TOC_FALLBACK_KEY: string = '__genericTocFallback';
   private http: HttpClient;
-  private activeContentRuleOwners: Set<string> = new Set();
+  private activeRuleOwners: Set<string> = new Set();
 
-  constructor() {
+  private preparationCancelled: (() => boolean) | null;
+  private requireCompleteCatalog: boolean;
+
+  constructor(preparationCancelled: (() => boolean) | null = null, requireCompleteCatalog: boolean = false) {
     this.http = new HttpClient(10000);
+    this.preparationCancelled = preparationCancelled;
+    this.requireCompleteCatalog = requireCompleteCatalog;
+  }
+
+  private checkPreparation(): void {
+    if (this.preparationCancelled && this.preparationCancelled()) throw new Error('已取消换源');
+  }
+
+  private isPreparationCancelled(): boolean {
+    return this.preparationCancelled ? this.preparationCancelled() : false;
+  }
+
+  /** Repair known resources without refetching the chapter; legacy hash-only references fall back in the engine. */
+  async restoreCachedImages(source: BookSource, text: string, cancelled: () => boolean): Promise<string> {
+    text = ReaderImageCache.normalize(text);
+    for (const path of ReaderImageReferences.paths(text)) {
+      if (ReaderImageCache.exists(path)) continue;
+      const row = await appDb.imageResource(path);
+      if (!row?.raw || row.sourceUrl !== source.bookSourceUrl) continue;
+      if (cancelled()) return text;
+      try {
+        const next = await ReaderImageRecovery.restore(path, source);
+        if (ReaderImageCache.exists(next)) text = ReaderImageReferences.replace(text, path, next);
+      } catch (_) { /* One chapter refresh can renew expired URLs; never destroy the old chapter on failure. */ }
+    }
+    return text;
   }
 
   cancelPendingRequests(): void {
     this.http.cancelAll();
-    for (const ownerId of this.activeContentRuleOwners) {
+    for (const ownerId of this.activeRuleOwners) {
       RuleExecutionService.get().cancelOwner(ownerId);
     }
+  }
+
+  async getVideoContent(source: BookSource, book: Book, chapter: BookChapter,
+    cancelled: () => boolean): Promise<VideoPlaybackSource> {
+    const video = new VideoPlaybackSource();
+    try {
+      if (NativeSourceService.isNative(source)) {
+        const result = await NativeSourceService.getVideoContent(source, this.http, book, chapter, cancelled);
+        if (cancelled()) return video;
+        video.url = VideoPlaybackSupport.httpUrl(result.text);
+        video.pageUrl = VideoPlaybackSupport.httpUrl(result.videoPage || '');
+        video.headers = result.mediaHeaders;
+        video.error = result.mediaError || '';
+      } else {
+        // 兼容书源沿用“地址,{"headers":{…}}”的写法，整串交给播放器会被当成一个打不开的地址。
+        const options = AudioRuleSupport.splitRequestOptions(await this.getContent(source, book, chapter, cancelled));
+        video.url = VideoPlaybackSupport.httpUrl(options.url);
+        if (video.url) video.headers = AudioUrlResolver.videoHeaders(video.url, source, options.headers);
+      }
+      if (!video.url && !video.error) video.error = '没有取到有效的视频地址';
+    } catch (error) {
+      if (!cancelled()) video.error = (error as Error).message || '视频地址解析失败';
+    }
+    return video;
   }
 
   private contentRequestCanceled(shouldCancel: (() => boolean) | null): boolean {
@@ -35,10 +96,11 @@ export class WebBookService {
 
   async getBookInfo(source: BookSource, book: Book,
     debugContext: BookSourceDebugContext | null = null): Promise<Book> {
+    this.checkPreparation();
     if (NativeSourceService.isNative(source)) {
       // 原生书源不经过脚本引擎，也不套用兼容书源的各类兜底修补。
       try {
-        return await NativeSourceService.getBookInfo(source, this.http, book, debugContext);
+        return await NativeSourceService.getBookInfo(source, this.http, book, debugContext, (): boolean => this.isPreparationCancelled());
       } catch (e) {
         console.warn('[WS] native book info failed:', source.bookSourceName, (e as Error).message);
         SourceEngineHost.setError(source, (e as Error).message || '详情解析失败');
@@ -53,9 +115,10 @@ export class WebBookService {
       return await BookSourceDataUrlSupport.getBookInfo(this.http, source, book);
     }
     console.log('[WS] getBookInfo');
-    const au = new AnalyzeUrl(source, this.http);
+    const au = new AnalyzeUrl(source, this.http).setCancelCheck((): boolean => this.isPreparationCancelled());
     const resp = EncodedSourceUrl.canHandle(book.bookUrl) ?
       await this.fetchEncodedDataUrl(book.bookUrl, source) : await au.fetch(book.bookUrl, undefined, debugContext);
+    this.checkPreparation();
     console.log('[WS] getBookInfo resp:', resp.success, 'len:', resp.body.length);
     if (this.requestVerificationIfNeeded(source, book.bookUrl, resp.body, resp.statusCode, source.bookInfoRule.init,
       resp.error || '')) {
@@ -115,13 +178,17 @@ export class WebBookService {
     fieldRequest.debugContext = debugContext;
     let fieldValues: Record<string, string> = {};
     try {
+      this.checkPreparation();
+      this.activeRuleOwners.add(fieldRequest.ownerId);
       const batch = await RuleExecutionService.get().executeBatch(fieldRequest);
+      this.checkPreparation();
       if (batch.errors.length > 0) {
         console.warn('[WS] book info field errors:', source.bookSourceName, batch.errors.join('; '));
       }
       if (batch.values.length > 0) fieldValues = batch.values[0];
       if (batch.contextValues.length > 0) ctx.loadFromJson(batch.contextValues[0]);
     } finally {
+      this.activeRuleOwners.delete(fieldRequest.ownerId);
       RuleExecutionService.get().clearOwner(fieldRequest.ownerId);
     }
     book.name = BookFieldSanitizer.prefer(fieldValues['name'] || '', book.name);
@@ -267,11 +334,12 @@ export class WebBookService {
   async getChapterList(source: BookSource, book: Book, maxChapters: number = 0,
     allowGenericFallback: boolean = true,
     debugContext: BookSourceDebugContext | null = null): Promise<BookChapter[]> {
+    this.checkPreparation();
     SourceEngineHost.setError(source, '');
     if (NativeSourceService.isNative(source)) {
       try {
         const nativeChapters = await NativeSourceService.getChapterList(source, this.http, book,
-          maxChapters > 0 ? Math.max(1, Math.round(maxChapters)) : 0, debugContext);
+          maxChapters > 0 ? Math.max(1, Math.round(maxChapters)) : 0, debugContext, (): boolean => this.isPreparationCancelled(), this.requireCompleteCatalog);
         if (nativeChapters.length === 0) {
           SourceEngineHost.setError(source, '目录规则没有匹配到章节');
         }
@@ -290,7 +358,7 @@ export class WebBookService {
     }
     console.log('[WS] getChapterList');
     const tocUrl = this.resolveTocUrl(source, book);
-    const au = new AnalyzeUrl(source, this.http);
+    const au = new AnalyzeUrl(source, this.http).setCancelCheck((): boolean => this.isPreparationCancelled());
     let resp = EncodedSourceUrl.canHandle(tocUrl) ?
       await this.fetchEncodedDataUrl(tocUrl, source) : await au.fetch(tocUrl, undefined, debugContext);
     if (!resp.success || !resp.body) {
@@ -375,13 +443,24 @@ export class WebBookService {
       await this.fetchEncodedDataUrl(pageUrl, source) : await au.fetch(pageUrl, undefined, debugContext);
 
     for (let page = 0; page < 1000; page++) {
-      if (!currentResp.success || !currentResp.body) break;
+      this.checkPreparation();
+      if (!currentResp.success || !currentResp.body) {
+        if (this.requireCompleteCatalog) throw new Error('目录分页加载失败，已保留原书源');
+        break;
+      }
       const pageKey = this.urlWithoutFragment(currentResp.url || currentUrl);
-      if (seenPageUrls.has(pageKey)) break;
+      if (seenPageUrls.has(pageKey)) {
+        if (this.requireCompleteCatalog) throw new Error('目录分页循环，已保留原书源');
+        break;
+      }
       seenPageUrls.add(pageKey);
       if (chapterLimit > 0 && chapters.length >= chapterLimit) break;
       const pageChapters = await parsePage(currentResp, currentUrl, page === 0);
-      if (pageChapters === null) break;
+      this.checkPreparation();
+      if (pageChapters === null) {
+        if (this.requireCompleteCatalog) throw new Error('目录需要网页验证，已保留原书源');
+        break;
+      }
       if (page === 0 && !tocRule.nextTocUrl && hasStageRule && pageChapters.length > 0) {
         // A script-built single-page catalog is returned exactly as the script produced it.
         const lastError = SourceEngineHost.getError(source) || '';
@@ -401,7 +480,11 @@ export class WebBookService {
         if (!nextKey || seenPageUrls.has(nextKey) || pendingUrls.indexOf(nextUrl) >= 0) continue;
         pendingUrls.push(nextUrl);
       }
+      this.checkPreparation();
       if (pendingUrls.length === 0) break;
+      if (this.requireCompleteCatalog && (page === 999 || pendingUrls.length > 1000 - seenPageUrls.size)) {
+        throw new Error('目录分页超过限制，已保留原书源');
+      }
       if (pendingUrls.length === 1) {
         currentUrl = pendingUrls[0];
         currentResp = await fetchPage(currentUrl);
@@ -412,6 +495,7 @@ export class WebBookService {
       const remainingPages = pendingUrls.slice(0, Math.max(0, 1000 - seenPageUrls.size));
       let stopped = false;
       for (let offset = 0; offset < remainingPages.length && !stopped; offset += WebBookService.TOC_PAGE_FETCH_BATCH) {
+        this.checkPreparation();
         const batchUrls = remainingPages.slice(offset, offset + WebBookService.TOC_PAGE_FETCH_BATCH);
         const batchResponses = await Promise.all(batchUrls.map((url: string): Promise<HttpResponse | null> =>
           fetchPage(url).catch((error: Error): null => {
@@ -421,9 +505,15 @@ export class WebBookService {
         for (let index = 0; index < batchUrls.length; index++) {
           const listedResp = batchResponses[index];
           seenPageUrls.add(this.urlWithoutFragment(batchUrls[index]));
-          if (!listedResp || !listedResp.success || !listedResp.body) continue;
+          this.checkPreparation();
+          if (!listedResp || !listedResp.success || !listedResp.body) {
+            if (this.requireCompleteCatalog) throw new Error('目录分页加载失败，已保留原书源');
+            continue;
+          }
           const listedChapters = await parsePage(listedResp, batchUrls[index], false);
+          this.checkPreparation();
           if (listedChapters === null) {
+            if (this.requireCompleteCatalog) throw new Error('目录需要网页验证，已保留原书源');
             stopped = true;
             break;
           }
@@ -533,7 +623,10 @@ export class WebBookService {
     let fieldValues: Record<string, string>[] = [];
     let contextValues: string[] = [];
     try {
+      this.checkPreparation();
+      this.activeRuleOwners.add(fieldRequest.ownerId);
       const batch = await RuleExecutionService.get().executeBatch(fieldRequest);
+      this.checkPreparation();
       fieldValues = batch.values;
       contextValues = batch.contextValues;
       console.info(`[WS] toc fields items=${items.length} elapsed=${batch.elapsedMs}ms yields=${batch.yieldedCount}`);
@@ -542,13 +635,16 @@ export class WebBookService {
         // A failed chapterUrl rule silently empties every chapter; surface the cause on the
         // catalog page instead of a generic 暂无目录.
         SourceEngineHost.setError(source, `目录字段解析失败：${batch.errors[0]}`);
+        if (this.requireCompleteCatalog) throw new Error('目录字段解析失败：' + batch.errors[0]);
       }
     } finally {
+      this.activeRuleOwners.delete(fieldRequest.ownerId);
       RuleExecutionService.get().clearOwner(fieldRequest.ownerId);
     }
     const parsingSlice = CooperativeScheduler.createTimeSlice();
     for (let i = 0; i < items.length; i++) {
       if (i > 0) await parsingSlice.checkpoint();
+      this.checkPreparation();
       const values = i < fieldValues.length ? fieldValues[i] : {};
       const chap = new BookChapter();
       chap.title = this.cleanChapterTitle(values['chapterName'] || `第${startIndex + i + 1}章`);
@@ -593,28 +689,36 @@ export class WebBookService {
     return chapters;
   }
 
+  /**
+   * imageRequest 决定正文图片的调度优先级，以及是否先返回待加载标记，见 ReaderImageRequest。
+   * nextChapterUrl 是目录里下一章的地址：“正文下一页”翻到它就停，不把后面的章节拼进本章。
+   */
   async getContent(source: BookSource, book: Book, chapter: BookChapter,
     shouldCancel: (() => boolean) | null = null,
-    debugContext: BookSourceDebugContext | null = null): Promise<string> {
+    debugContext: BookSourceDebugContext | null = null,
+    imageRequest: ReaderImageRequest = ReaderImageRequest.DEFAULT,
+    nextChapterUrl: string = ''): Promise<string> {
     if (NativeSourceService.isNative(source)) {
-      return await this.getNativeContent(source, book, chapter, shouldCancel, debugContext);
+      return await this.getNativeContent(source, book, chapter, shouldCancel, debugContext, imageRequest);
     }
     // `ruleContent.audioUrl` is the dedicated media-address rule of an audio source. It takes
     // precedence over `content`, which remains the fallback when it yields nothing.
     const audioUrlRule = this.isAudioContent(source, book) ? (source.contentRule.audioUrl || '').trim() : '';
     if (audioUrlRule) {
       const preferred = await this.getContentWithRules(this.sourceWithContentRule(source, audioUrlRule),
-        book, chapter, shouldCancel, debugContext);
+        book, chapter, shouldCancel, debugContext, ReaderImageRequest.DEFAULT, nextChapterUrl);
       if (preferred || this.contentRequestCanceled(shouldCancel) ||
         !(source.contentRule.content || '').trim()) {
         return preferred;
       }
     }
-    return await this.getContentWithRules(source, book, chapter, shouldCancel, debugContext);
+    return await this.getContentWithRules(source, book, chapter, shouldCancel, debugContext, imageRequest,
+      nextChapterUrl);
   }
 
   private async getNativeContent(source: BookSource, book: Book, chapter: BookChapter,
-    shouldCancel: (() => boolean) | null, debugContext: BookSourceDebugContext | null = null): Promise<string> {
+    shouldCancel: (() => boolean) | null, debugContext: BookSourceDebugContext | null = null,
+    imageRequest: ReaderImageRequest = ReaderImageRequest.DEFAULT): Promise<string> {
     SourceEngineHost.setError(source, '');
     try {
       const result = await NativeSourceService.getContent(source, this.http, book, chapter,
@@ -624,15 +728,18 @@ export class WebBookService {
       if (result.kind === 'images' && result.images.length > 0) {
         // 漫画图片按显式图片列表处理，地址后附带的请求头选项会在取图时生效。
         return await this.normalizeReaderContent(source, '',
-          result.baseUrl || chapter.url || book.bookUrl || source.bookSourceUrl, result.images);
+          result.baseUrl || chapter.url || book.bookUrl || source.bookSourceUrl, result.images,
+          (): boolean => this.contentRequestCanceled(shouldCancel), imageRequest);
       }
       if (!result.text.trim()) {
         SourceEngineHost.setError(source, '正文规则没有取到内容');
         return '';
       }
       return await this.normalizeReaderContent(source, result.text,
-        result.baseUrl || chapter.url || book.bookUrl || source.bookSourceUrl);
+        result.baseUrl || chapter.url || book.bookUrl || source.bookSourceUrl, [],
+        (): boolean => this.contentRequestCanceled(shouldCancel), imageRequest);
     } catch (e) {
+      if (this.contentRequestCanceled(shouldCancel)) return '';
       console.warn('[WS] native content failed:', source.bookSourceName, (e as Error).message);
       SourceEngineHost.setError(source, (e as Error).message || '正文解析失败');
       return '';
@@ -654,7 +761,9 @@ export class WebBookService {
 
   private async getContentWithRules(source: BookSource, book: Book, chapter: BookChapter,
     shouldCancel: (() => boolean) | null = null,
-    debugContext: BookSourceDebugContext | null = null): Promise<string> {
+    debugContext: BookSourceDebugContext | null = null,
+    imageRequest: ReaderImageRequest = ReaderImageRequest.DEFAULT,
+    nextChapterUrl: string = ''): Promise<string> {
     if (this.contentRequestCanceled(shouldCancel)) return '';
     // Validation and reader diagnostics must describe the current content request, not a
     // stale error left by a previous catalog/script stage.
@@ -675,7 +784,7 @@ export class WebBookService {
       return await this.normalizeReaderContent(source,
         this.applyContentReplaceRule(interactiveContent, source.contentRule.replaceRegex, shortcutContext, chapter,
           debugContext),
-        chapter.url || book.bookUrl || source.bookSourceUrl);
+        chapter.url || book.bookUrl || source.bookSourceUrl, [], (): boolean => false, imageRequest);
     }
     const isAudioContent = source.bookSourceType === 1 || (Number(book.type) & 32) !== 0;
     if (isAudioContent) {
@@ -700,7 +809,7 @@ export class WebBookService {
       if (this.contentRequestCanceled(shouldCancel)) return '';
       return await this.normalizeReaderContent(source,
         this.applyContentReplaceRule(interactiveContent, source.contentRule.replaceRegex,
-          new RuleContext(), chapter, debugContext), chapter.url);
+          new RuleContext(), chapter, debugContext), chapter.url, [], (): boolean => false, imageRequest);
     }
     if (this.stageRuleCode(source.contentRule.content || '')) {
       // The complete content script was already executed in ArkWeb. Retrying an empty/error result
@@ -709,7 +818,7 @@ export class WebBookService {
     }
     console.log('[WS] getContent');
     if (this.contentRequestCanceled(shouldCancel)) return '';
-    const au = new AnalyzeUrl(source, this.http);
+    const au = new AnalyzeUrl(source, this.http).setCancelCheck((): boolean => this.isPreparationCancelled());
     let resp = EncodedSourceUrl.canHandle(chapter.url) ?
       await this.fetchEncodedDataUrl(chapter.url, source) : await au.fetch(chapter.url, undefined, debugContext);
     if (this.contentRequestCanceled(shouldCancel)) return '';
@@ -737,6 +846,7 @@ export class WebBookService {
     const contentRule = source.contentRule;
     const parts: string[] = [];
     const seenPageUrls = new Set<string>();
+    const nextChapterKey = this.contentPageKey(nextChapterUrl);
     let currentUrl = resp.url || chapter.url;
     let currentResp = resp;
     let totalLength = 0;
@@ -754,7 +864,7 @@ export class WebBookService {
         page === 0 ? this.getChapterBaseUrl(chapter, book, source) : currentUrl,
         book.bookUrl || source.bookSourceUrl);
       const pageData = await this.parseContentPage(source, book, chapter, currentResp.body, baseUrl, ctx,
-        shouldCancel, debugContext);
+        shouldCancel, debugContext, imageRequest);
       if (this.contentRequestCanceled(shouldCancel)) return '';
       if (!pageData.content && isAudioContent) {
         // The content rule found nothing; `sourceRegex` may still select the stream from the
@@ -770,6 +880,8 @@ export class WebBookService {
       if (!contentRule.nextContentUrl || !pageData.nextUrl) break;
       const nextKey = this.urlWithoutFragment(pageData.nextUrl);
       if (seenPageUrls.has(nextKey)) break;
+      // 很多站点在本章末页把“下一页”换成“下一章”，规则照样取得到；翻到下一章就停，否则会把后面几章拼进本章。
+      if (nextChapterKey && this.contentPageKey(pageData.nextUrl) === nextChapterKey) break;
       currentUrl = pageData.nextUrl;
       currentResp = EncodedSourceUrl.canHandle(currentUrl) ?
         await this.fetchEncodedDataUrl(currentUrl, source) : await au.fetch(currentUrl, undefined, debugContext);
@@ -781,7 +893,8 @@ export class WebBookService {
 
   private async parseContentPage(source: BookSource, book: Book, chapter: BookChapter, body: string,
     baseUrl: string, ctx: RuleContext, shouldCancel: (() => boolean) | null = null,
-    debugContext: BookSourceDebugContext | null = null): Promise<ContentPageData> {
+    debugContext: BookSourceDebugContext | null = null,
+    imageRequest: ReaderImageRequest = ReaderImageRequest.DEFAULT): Promise<ContentPageData> {
     const data = new ContentPageData();
     if (this.contentRequestCanceled(shouldCancel)) return data;
     const contentRule = source.contentRule;
@@ -810,9 +923,11 @@ export class WebBookService {
     fieldRequest.timeoutMs = 20000;
     fieldRequest.debugContext = debugContext;
     let values: Record<string, string> = {};
-    this.activeContentRuleOwners.add(fieldRequest.ownerId);
     try {
+      this.checkPreparation();
+      this.activeRuleOwners.add(fieldRequest.ownerId);
       const batch = await RuleExecutionService.get().executeBatch(fieldRequest);
+      this.checkPreparation();
       if (this.contentRequestCanceled(shouldCancel)) return data;
       if (batch.values.length > 0) values = batch.values[0];
       if (batch.contextValues.length > 0) ctx.loadFromJson(batch.contextValues[0]);
@@ -820,7 +935,7 @@ export class WebBookService {
         console.warn('[WS] content field errors:', source.bookSourceName, batch.errors.join('; '));
       }
     } finally {
-      this.activeContentRuleOwners.delete(fieldRequest.ownerId);
+      this.activeRuleOwners.delete(fieldRequest.ownerId);
       RuleExecutionService.get().clearOwner(fieldRequest.ownerId);
     }
     data.nextUrl = values['nextContentUrl'] || '';
@@ -853,7 +968,13 @@ export class WebBookService {
     if (!content && imageRuleValues.length === 0) return data;
     content = this.applyContentReplaceRule(content, contentRule.replaceRegex, ctx, chapter, debugContext);
     if (this.contentRequestCanceled(shouldCancel)) return data;
-    data.content = await this.normalizeReaderContent(source, content, baseUrl, imageRuleValues);
+    // 切走章节时图片下载随之停止，不再把整章图片下完。
+    try {
+      data.content = await this.normalizeReaderContent(source, content, baseUrl, imageRuleValues,
+        (): boolean => this.contentRequestCanceled(shouldCancel), imageRequest);
+    } catch (e) {
+      if (!this.contentRequestCanceled(shouldCancel)) throw e as Error;
+    }
     if (this.contentRequestCanceled(shouldCancel)) data.content = '';
     return data;
   }
@@ -892,7 +1013,7 @@ export class WebBookService {
     const requestUrl = urlAnalyze.getString(plan.urlRule, true);
     if (!requestUrl || !/^https?:\/\//.test(requestUrl)) return '';
 
-    const response = await new AnalyzeUrl(source, this.http).fetch(requestUrl);
+    const response = await new AnalyzeUrl(source, this.http).setCancelCheck((): boolean => this.isPreparationCancelled()).fetch(requestUrl);
     if (!response.success || !response.body) return '';
 
     return AjaxRuleCompat.applyReplaceChain(response.body, plan.jsCode);
@@ -1340,7 +1461,8 @@ export class WebBookService {
   }
 
   private async normalizeReaderContent(source: BookSource, content: string, baseUrl: string,
-    imageRuleValues: string[] = []): Promise<string> {
+    imageRuleValues: string[] = [], cancelled: () => boolean = (): boolean => false,
+    imageRequest: ReaderImageRequest = ReaderImageRequest.DEFAULT): Promise<string> {
     // Artwork of a source that declares browser headers must be fetched with those same headers and
     // the page URL as Referer; otherwise a protected image host answers the challenge page and every
     // illustration fails even though the chapter text itself loaded fine.
@@ -1348,7 +1470,8 @@ export class WebBookService {
     const explicitImages = this.collectReaderImageUrls(imageRuleValues, baseUrl, true);
     if (explicitImages.length > 0) {
       return await this.materializeReaderImageMarkers(source,
-        explicitImages.map((url: string): string => ReaderImageMarker.create(url)).join('\n\n'), imageContext);
+        explicitImages.map((url: string): string => ReaderImageMarker.create(url)).join('\n\n'), cancelled,
+        imageRequest, imageContext);
     }
 
     let value = content || '';
@@ -1385,7 +1508,8 @@ export class WebBookService {
       .replace(/&amp;/g, '&')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
-    return await this.materializeReaderImageMarkers(source, ReaderActionMarker.limit(normalized), imageContext);
+    return await this.materializeReaderImageMarkers(source, ReaderActionMarker.limit(normalized), cancelled,
+      imageRequest, imageContext);
   }
 
   private convertReaderNativeActions(_source: BookSource, content: string, _baseUrl: string): string {
@@ -1407,12 +1531,23 @@ export class WebBookService {
     if (!/<(?:div|span)\b[^>]*\brs-native\b/i.test(value)) return value;
     return value.replace(/<(div|span)\b[^>]*\brs-native\b[^>]*>([\s\S]*?)<\/\1>/gi,
       (_all: string, _tagName: string, inner: string): string => {
-        const comment = /<comment\b([^>]*)>/i.exec(inner || '');
-        const text = this.decodeHtmlEntities((inner || '').replace(/<comment\b[^>]*>/gi, '')
+        // Clickable images inside the paragraph (hot-comment cards) were already turned into
+        // action markers; keep them after the paragraph and its comment bubble.
+        const cards: string[] = [];
+        let rest = inner || '';
+        let card = ReaderActionMarker.findFirst(rest);
+        while (card) {
+          cards.push(card.marker);
+          rest = rest.substring(0, card.start) + rest.substring(card.end);
+          card = ReaderActionMarker.findFirst(rest, card.start);
+        }
+        const comment = /<comment\b([^>]*)>/i.exec(rest);
+        const text = this.decodeHtmlEntities(rest.replace(/<comment\b[^>]*>/gi, '')
           .replace(/<[^>]+>/g, '')).trim();
-        if (!comment) return text ? `${text}\n` : '';
-        const marker = this.readerActionMarkerFromCommentAttributes(comment[1] || '');
-        return `${text}${marker}\n`;
+        const marker = comment ? this.readerActionMarkerFromCommentAttributes(comment[1] || '') : '';
+        const lines = cards.map((item: string): string => `${item}\n`).join('');
+        if (!text && !marker) return lines;
+        return `${text}${marker}\n${lines}`;
       });
   }
 
@@ -1423,6 +1558,8 @@ export class WebBookService {
    */
   private convertReaderImageScriptActions(content: string): string {
     return (content || '').replace(/<img\b[^>]*>/gi, (tag: string): string => {
+      const clickMarker = this.readerActionMarkerFromClickableImage(tag);
+      if (clickMarker) return `${clickMarker}\n`;
       const data = /data:image\/[A-Za-z0-9.+-]+;base64,([A-Za-z0-9+/=]+),(\{[\s\S]*\})/i.exec(tag);
       if (!data || !data[2]) return tag;
       const action = this.readerImageOptionString(data[2], 'click') ||
@@ -1496,6 +1633,42 @@ export class WebBookService {
     return '';
   }
 
+  /** The first few `<text>` labels of a data-URI SVG card, joined; used to name its action. */
+  private readerDataImageText(encoded: string): string {
+    try {
+      const bytes = new util.Base64Helper().decodeSync(encoded || '');
+      const svg = util.TextDecoder.create('utf-8').decodeWithStream(bytes, { stream: false });
+      const labels = (svg.match(/<text\b[^>]*>([^<]{1,48})<\/text>/gi) || []).slice(0, 4);
+      return labels.map((item: string): string => this.decodeHtmlEntities(item.replace(/<[^>]+>/g, '')).trim())
+        .join(' ');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /**
+   * iOS-style Legado markup puts the action on the image itself:
+   * `<img src="data:image/svg+xml;base64,…" onClick="java.startBrowser('url')"/>` (hot-comment and
+   * chapter-comment cards). Turn the card into a reader action that opens the page; the label comes
+   * from the card's own wording. Images without such an action are left to the image pipeline.
+   */
+  private readerActionMarkerFromClickableImage(tag: string): string {
+    const press = /\b(?:onPress|onClick)\s*=\s*(["'])([\s\S]*?)\1/i.exec(tag || '');
+    if (!press) return '';
+    const action = /java\.(?:showReadingBrowser|startBrowserDp|startBrowser|showBrowser)\(\s*(["'])([\s\S]*?)\1/i
+      .exec(this.decodeHtmlEntities(press[2] || ''));
+    const url = action && action[2] ? action[2] : '';
+    if (!/^https?:\/\//i.test(url)) return '';
+    // Only generated SVG cards are controls; a real picture with a link stays a picture.
+    const svg = /\bsrc\s*=\s*["']data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)/i.exec(tag);
+    if (!svg) return '';
+    const wording = this.readerDataImageText(svg[1] || '');
+    const count = this.readerDataImageLabel(svg[1] || '');
+    const label = /本章说|章评|章末/.test(wording) ? '章评' : (/热评|神评/.test(wording) ? '热评' :
+      (count ? `段评 ${count}` : '评论'));
+    return ReaderActionMarker.create(label, url, label === '章评' ? '章评' : (label === '热评' ? '热评' : '段评'));
+  }
+
   private readerActionMarkerFromCommentAttributes(attrs: string): string {
     const countMatch = /\bcount\s*=\s*["']([^"']*)["']/i.exec(attrs || '');
     const identMatch = /\bident\s*=\s*["']([^"']*)["']/i.exec(attrs || '');
@@ -1507,13 +1680,15 @@ export class WebBookService {
     if (!url) return '';
     const rawTitle = this.decodeHtmlEntities(actionMatch && actionMatch[4] ? actionMatch[4] : '');
     const count = this.decodeHtmlEntities(countMatch && countMatch[1] ? countMatch[1] : '');
-    const isComment = /\/comments(?:[/?#]|$)|\/idea_comment(?:[/?#]|$)|\/get_review(?:[/?#]|$)/i.test(url);
-    const title = isComment ? (rawTitle ? `段评 · ${rawTitle}` : '段评') : (rawTitle || '打开');
-    const label = isComment ? (count ? `段评 ${count}` : '段评') : (count ? `${title} ${count}` : title);
+    // `<comment>` is the paragraph-comment tag of Legado-compatible readers, whatever the page's path.
+    const title = rawTitle ? `段评 · ${rawTitle}` : '段评';
+    const label = count ? `段评 ${count}` : '段评';
     return ReaderActionMarker.create(label, url, title);
   }
 
   private async materializeReaderImageMarkers(source: BookSource, content: string,
+    cancelled: () => boolean = (): boolean => false,
+    imageRequest: ReaderImageRequest = ReaderImageRequest.DEFAULT,
     context: ComicImageRequestContext | null = null): Promise<string> {
     if (!content || !content.includes(ReaderImageMarker.PREFIX)) return content;
     const pattern = new RegExp(`${this.escapeRegex(ReaderImageMarker.PREFIX)}([^\\]]+)` +
@@ -1528,15 +1703,69 @@ export class WebBookService {
       }
     }
     if (values.length === 0) return content;
-    const resolved: Record<string, string> = {};
-    for (let start = 0; start < values.length; start += 4) {
-      const batch = values.slice(start, start + 4);
-      const paths = await Promise.all(batch.map((value: string): Promise<string> =>
-        ComicImagePipeline.materialize(this.http, source, value, context)));
-      for (let index = 0; index < batch.length; index++) {
-        resolved[batch[index]] = paths[index] || batch[index];
+    let failed = 0;
+    const started = Date.now();
+    const startedAs = imageRequest.priority() < ReaderImageScheduler.BACKGROUND ? '当前章' : '后台';
+    let firstDoneMs = -1;
+    let cacheHits = 0;
+    let downloadMs = 0;
+    let scriptMs = 0;
+    let decryptMs = 0;
+    // 一张图下载或解密失败只影响这一张：原因写进它的标记由阅读器显示，其余图片照常显示。
+    const processImage = async (value: string, index: number, stop: () => boolean): Promise<string> => {
+      if (stop()) throw new Error(HttpClient.CANCELLED_ERROR);
+      const timing = new ComicImageTiming();
+      let result: string;
+      try {
+        result = await ComicImagePipeline.materialize(this.http, source, value, true, stop, index, timing, context) || value;
+      } catch (e) {
+        const message = (e as Error)?.message || String(e);
+        if (stop() || message === HttpClient.CANCELLED_ERROR) throw e as Error;
+        failed++;
+        console.warn(`[ReaderImage] 第 ${index + 1} 张图片处理失败: ${message}`);
+        result = ReaderImageMarker.failureSource(message);
       }
+      imageRequest.hold(result);
+      if (firstDoneMs < 0) firstDoneMs = Date.now() - started;
+      if (timing.cacheHit) cacheHits++;
+      downloadMs += timing.downloadMs;
+      scriptMs += timing.scriptMs;
+      decryptMs += timing.decryptMs;
+      return result;
+    };
+    const report = (mode: string): void => {
+      console.info(`[ReaderImageTiming] 本章 ${values.length} 张（${mode}，开始时为${startedAs}）：` +
+        `首张完成 ${firstDoneMs}ms，全部完成 ${Date.now() - started}ms，缓存命中 ${cacheHits} 张，失败 ${failed} 张；` +
+        `累计 下载 ${downloadMs}ms 脚本(含排队) ${scriptMs}ms 解密 ${decryptMs}ms`);
+      if (failed > 0) console.warn(`[ReaderImage] 本章 ${values.length} 张图片中 ${failed} 张未能显示`);
+    };
+
+    if (imageRequest.deferred) {
+      // 渐进：图片全部交给后台，正文先带着待加载标记返回；屏幕上的图片排在最前。
+      const stop = imageRequest.deferredCancelled;
+      const jobs = values.map((value: string, index: number): Promise<void> =>
+        ReaderImageResults.load(value, (): Promise<string> => ReaderImageScheduler.run(
+          (): number => ReaderImageResults.priority(value, imageRequest.priority),
+          stop, (): Promise<string> => processImage(value, index, stop))));
+      Promise.all(jobs).then((): void => {
+        if (!stop()) report('渐进');
+      });
+      return content.replace(pattern, (_all: string, encoded: string): string => {
+        try {
+          return ReaderImageMarker.create(ReaderImageMarker.pendingSource(decodeURIComponent(encoded)));
+        } catch (_) {
+          return _all;
+        }
+      });
     }
+
+    // 整章：图片一次交给全局调度，按顺序排队，全部处理完才返回正文。
+    const resolved: Record<string, string> = {};
+    await Promise.all(values.map((value: string, index: number): Promise<void> =>
+      ReaderImageScheduler.run(imageRequest.priority, cancelled, async (): Promise<void> => {
+        resolved[value] = await processImage(value, index, cancelled);
+      })));
+    report('整章');
     return content.replace(pattern, (_all: string, encoded: string): string => {
       try {
         const raw = decodeURIComponent(encoded);
@@ -1713,6 +1942,7 @@ export class WebBookService {
   private async runStageRule(source: BookSource, book: Book, rawRule: string, content: string,
     baseUrl: string, stage: string, chapter: BookChapter | null = null,
     variables: Record<string, string> = {}, debugContext: BookSourceDebugContext | null = null): Promise<string> {
+    this.checkPreparation();
     const code = this.stageRuleCode(rawRule);
     if (!code) return '';
     // A complete stage script is already excluded from the synchronous page parser. Execute it
@@ -1723,7 +1953,9 @@ export class WebBookService {
       SourceEngineHost.setError(source, `${stage} 阶段脚本运行环境未就绪`);
       return '';
     }
+    this.checkPreparation();
     const request = new StageWebRuntimeRequest();
+    request.ownerId = stage + '_switch_stage_' + Date.now() + '_' + book.bookUrl;
     request.applyStageBudget(stage);
     request.source = source;
     request.book = book;
@@ -1736,7 +1968,9 @@ export class WebBookService {
     request.variables = { ...variables, ...(chapter ? EncodedSourceUrl.scalarVariables(chapter.url) : {}) };
     request.debugContext = debugContext;
     try {
+      this.activeRuleOwners.add(request.ownerId);
       const result = await runtime.execute(request);
+      this.checkPreparation();
       let value = result.value || '';
       const trailingRule = this.stageTrailingRule(rawRule);
       if (value && trailingRule) {
@@ -1752,7 +1986,12 @@ export class WebBookService {
       console.warn('[WS] stage runtime failed:', source.bookSourceName, stage, error);
       const message = error instanceof Error ? error.message : String(error || '');
       SourceEngineHost.setError(source, `${stage} 阶段：${message || '脚本执行失败'}`);
+      this.checkPreparation();
+      if (this.requireCompleteCatalog) throw error;
       return '';
+    } finally {
+      this.activeRuleOwners.delete(request.ownerId);
+      RuleExecutionService.get().clearOwner(request.ownerId);
     }
   }
 
@@ -1775,13 +2014,17 @@ export class WebBookService {
     request.timeoutMs = 15000;
     request.debugContext = debugContext;
     try {
+      this.checkPreparation();
+      this.activeRuleOwners.add(request.ownerId);
       const batch = await RuleExecutionService.get().executeBatch(request);
+      this.checkPreparation();
       if (batch.contextValues.length > 0) ctx.loadFromJson(batch.contextValues[0]);
       if (batch.errors.length > 0) {
         console.warn('[WS] single field error:', source.bookSourceName, stage, batch.errors.join('; '));
       }
       return batch.values.length > 0 ? batch.values[0]['value'] || '' : '';
     } finally {
+      this.activeRuleOwners.delete(request.ownerId);
       RuleExecutionService.get().clearOwner(request.ownerId);
     }
   }
@@ -1810,10 +2053,14 @@ export class WebBookService {
     request.debugContext = debugContext;
     const urls: string[] = [];
     try {
+      this.checkPreparation();
+      this.activeRuleOwners.add(request.ownerId);
       const batch = await RuleExecutionService.get().executeBatch(request);
+      this.checkPreparation();
       if (batch.contextValues.length > 0) ctx.loadFromJson(batch.contextValues[0]);
       if (batch.errors.length > 0) {
         console.warn('[WS] toc next urls error:', source.bookSourceName, batch.errors.join('; '));
+        if (this.requireCompleteCatalog) throw new Error('目录分页规则失败：' + batch.errors[0]);
       }
       const raw = batch.values.length > 0 ? batch.values[0]['value'] || '' : '';
       const listedValues = this.parseStringListValue(raw);
@@ -1828,7 +2075,10 @@ export class WebBookService {
       }
     } catch (error) {
       console.warn('[WS] toc next urls failed:', source.bookSourceName, (error as Error).message);
+      this.checkPreparation();
+      if (this.requireCompleteCatalog) throw error;
     } finally {
+      this.activeRuleOwners.delete(request.ownerId);
       RuleExecutionService.get().clearOwner(request.ownerId);
     }
     if (urls.length > 0) return urls;
@@ -1951,18 +2201,24 @@ export class WebBookService {
     fieldRequest.debugContext = debugContext;
     let parsedFields: Record<string, string>[] = [];
     try {
+      this.checkPreparation();
+      this.activeRuleOwners.add(fieldRequest.ownerId);
       const batch = await RuleExecutionService.get().executeBatch(fieldRequest);
+      this.checkPreparation();
       parsedFields = batch.values;
       if (batch.contextValues.length > 0) ctx.loadFromJson(batch.contextValues[batch.contextValues.length - 1]);
       if (batch.errors.length > 0) {
         console.warn('[WS] stage toc field errors:', source.bookSourceName, batch.errors.join('; '));
+        if (this.requireCompleteCatalog) throw new Error('目录字段解析失败：' + batch.errors[0]);
       }
     } finally {
+      this.activeRuleOwners.delete(fieldRequest.ownerId);
       RuleExecutionService.get().clearOwner(fieldRequest.ownerId);
     }
     const parsingSlice = CooperativeScheduler.createTimeSlice();
     for (let index = 0; index < records.length; index++) {
       if (index > 0) await parsingSlice.checkpoint();
+      this.checkPreparation();
       const record = records[index];
       const fields = index < parsedFields.length ? parsedFields[index] : {};
       const isVolume = fields['isVolume'] === 'true' || fields['isVolume'] === '1' ||
@@ -2017,7 +2273,7 @@ export class WebBookService {
       // this value to the content script as bytes; mirror that contract without interpreting it.
       content = this.textToHex(virtualChapterPayload);
     } else {
-      const response = await new AnalyzeUrl(source, this.http).fetch(chapter.url, undefined, debugContext);
+      const response = await new AnalyzeUrl(source, this.http).setCancelCheck((): boolean => this.isPreparationCancelled()).fetch(chapter.url, undefined, debugContext);
       if (!response.success || !response.body) return '';
       content = response.body;
       // Preserve POST options for scripts which rebuild the chapter request after login.
@@ -2034,7 +2290,7 @@ export class WebBookService {
   }
 
   private resolvedAudioChapterUrl(source: BookSource, book: Book, chapter: BookChapter): string {
-    const analyzer = new AnalyzeUrl(source, this.http);
+    const analyzer = new AnalyzeUrl(source, this.http).setCancelCheck((): boolean => this.isPreparationCancelled());
     const config = analyzer.parse(chapter.url || '');
     const value = config.url || chapter.url || '';
     // Headers the catalog rule attached to the address (`url,{"headers":{...}}`) belong to the
@@ -2058,7 +2314,7 @@ export class WebBookService {
    * address. The page is loaded by the same isolated WebView transport as `webView: true` requests.
    */
   private async resolveAudioWebJsUrl(source: BookSource, chapter: BookChapter, webJs: string): Promise<string> {
-    const analyzer = new AnalyzeUrl(source, this.http);
+    const analyzer = new AnalyzeUrl(source, this.http).setCancelCheck((): boolean => this.isPreparationCancelled());
     analyzer.parse(chapter.url || '');
     const request = analyzer.buildRequest();
     if (!/^https?:\/\//i.test(request.url || '')) {
@@ -2281,6 +2537,16 @@ export class WebBookService {
   private urlWithoutFragment(url: string): string {
     const index = (url || '').indexOf('#');
     return index >= 0 ? url.substring(0, index) : (url || '');
+  }
+
+  /** 比较正文分页与章节地址用：去掉请求参数后缀（`,{...}`）、锚点和末尾斜杠。 */
+  private contentPageKey(url: string): string {
+    let key = (url || '').trim();
+    const optionsIndex = key.indexOf(',{');
+    if (optionsIndex > 0) key = key.substring(0, optionsIndex);
+    key = this.urlWithoutFragment(key).trim();
+    while (key.length > 1 && key.endsWith('/')) key = key.substring(0, key.length - 1);
+    return key;
   }
 
   private seedSourceVariables(ctx: RuleContext, source: BookSource): void {

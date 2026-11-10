@@ -2,6 +2,8 @@ import { PoolClient } from 'pg';
 import { Buffer } from 'node:buffer';
 import { config } from './config.js';
 import { inTransaction, pool } from './db.js';
+import { cloudQuotaBytes, membershipSnapshot } from './membershipService.js';
+import { SourceQuota, sourceQuotaError } from './sourceQuota.js';
 
 export class SyncApiError extends Error {
   constructor(
@@ -41,6 +43,7 @@ interface NormalizedOperation {
   operation: 'upsert' | 'delete';
   baseRevision: number;
   payload: unknown | null;
+  payloadBytes: number;
 }
 
 interface EntityRow {
@@ -65,6 +68,9 @@ export interface SyncQuotaUsage {
   changeBytes: number;
   dailyWrites: number;
   initialSyncActive?: boolean;
+  sourceQuota?: SourceQuota;
+  entityByteLimit?: number;
+  cloudRemaining?: number;
 }
 
 const UUID_PATTERN =
@@ -88,6 +94,9 @@ const DEVICE_KINDS = new Set(['phone', 'tablet', '2in1', 'foldable', 'unknown'])
 const MAX_OPERATIONS = 100;
 const MAX_PAYLOAD_BYTES = 64 * 1024;
 const MAX_BOOK_SOURCE_PAYLOAD_BYTES = 512 * 1024;
+// Technical ceiling for permanent super members. A conflict acknowledgement echoes the remote
+// payload and must stay below half of the 2 MiB response budget, so this is not unbounded.
+export const MAX_SUPER_BOOK_SOURCE_PAYLOAD_BYTES = 960 * 1024;
 // Keep each exchange useful for initial downloads. The response byte budget
 // still caps large book-source payloads below this count when necessary.
 const PULL_LIMIT = 100;
@@ -99,6 +108,20 @@ export async function exchangeSync(userId: string, body: SyncExchangeBody) {
       'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
       [`sync-user:${userId}`]
     );
+    const oversizedSource = request.operations.some((operation) =>
+      operation.entityType === 'book_source' && operation.payloadBytes > MAX_BOOK_SOURCE_PAYLOAD_BYTES);
+    const member = config.membershipEnabled &&
+      (config.membershipSourceLimitsEnabled || config.cloudFiles.enabled || oversizedSource)
+      ? await membershipSnapshot(client, userId) : null;
+    const superMember = member?.active === true && member.state?.sku === 'SUPER_LIFETIME';
+    // Resolve the account limit before rejecting a source, including sources above 960 KiB.
+    // Legacy clients use this same endpoint and display the returned message verbatim.
+    const maxBookSourceBytes = superMember ? MAX_SUPER_BOOK_SOURCE_PAYLOAD_BYTES : MAX_BOOK_SOURCE_PAYLOAD_BYTES;
+    if (request.operations.some(operation =>
+      operation.entityType === 'book_source' && operation.payloadBytes > maxBookSourceBytes)) {
+      throw new SyncApiError(413, 'SYNC_PAYLOAD_TOO_LARGE',
+        `单项同步数据不能超过 ${Math.round(maxBookSourceBytes / 1024)}KB`);
+    }
     await registerDevice(
       client,
       userId,
@@ -110,6 +133,25 @@ export async function exchangeSync(userId: string, body: SyncExchangeBody) {
       request.cursor
     );
     const quota = await loadSyncQuotaUsage(client, userId);
+    const memberEntityBytes = Math.max(config.sync.maxEntityBytesPerUser, 320 * 1024 ** 2);
+    if (member && config.membershipSourceLimitsEnabled) {
+      const sources = await client.query(`SELECT count(*) AS count FROM sync_entities
+        WHERE user_id=$1 AND entity_type='book_source' AND deleted_at IS NULL`, [userId]);
+      quota.sourceQuota = { count: Number(sources.rows[0].count),
+        maxCount: member.benefits.sourceCount, maxBytes: member.benefits.sourceBytes };
+      quota.entityByteLimit = member.active ? memberEntityBytes : config.sync.maxEntityBytesPerUser;
+    }
+    // Cloud storage is shared even while per-tier source limits are disabled for rollout.
+    if (superMember) {
+      const used = await client.query(`SELECT
+        COALESCE((SELECT sum(bytes) FROM cloud_files WHERE user_id=$1),0) AS file_bytes,
+        COALESCE((SELECT sum(octet_length(payload::text)) FROM sync_entities
+          WHERE user_id=$1 AND entity_type='book_source' AND deleted_at IS NULL),0) AS source_bytes`, [userId]);
+      const sourceBytes = Number(used.rows[0].source_bytes);
+      quota.cloudRemaining = await cloudQuotaBytes(client, userId) - Number(used.rows[0].file_bytes) - sourceBytes;
+      // Sources may grow only into the shared cloud space; other sync data keeps the member budget.
+      quota.entityByteLimit = memberEntityBytes + sourceBytes + Math.max(0, quota.cloudRemaining);
+    }
 
     const acknowledgements = [];
     const receipts = await existingReceipts(
@@ -240,13 +282,16 @@ export async function listSyncDevices(userId: string) {
 }
 
 export async function syncSummary(userId: string) {
-  const result = await pool.query<{ active_count: string }>(
-    `SELECT count(*)::bigint AS active_count
+  const result = await pool.query<{ active_count: string; source_count: string }>(
+    `SELECT count(*)::bigint AS active_count,
+       count(*) FILTER (WHERE entity_type='book_source')::bigint AS source_count
      FROM sync_entities
      WHERE user_id = $1 AND deleted_at IS NULL`,
     [userId]
   );
-  return { activeEntityCount: Number(result.rows[0]?.active_count || 0) };
+  return { activeEntityCount: Number(result.rows[0]?.active_count || 0),
+    sourceCount: Number(result.rows[0]?.source_count || 0),
+    membershipLimitsEnabled: config.membershipEnabled && config.membershipSourceLimitsEnabled };
 }
 
 export async function renameSyncDevice(userId: string, deviceId: string, deviceName: string): Promise<void> {
@@ -307,11 +352,14 @@ function normalizeExchange(body: SyncExchangeBody) {
     deviceKind: normalizeDeviceKind(body.deviceKind),
     conflictPolicy: body.conflictPolicy === 'local' ? 'local' : 'cloud',
     cursor,
-    operations: sourceOperations.map(normalizeOperation)
+    // The route bounds the entire request body. Defer only the book-source size check
+    // until exchangeSync resolves membership; other entity limits still apply here.
+    operations: sourceOperations.map(operation => normalizeOperation(operation, null))
   };
 }
 
-export function normalizeOperation(source: SyncOperationBody): NormalizedOperation {
+export function normalizeOperation(source: SyncOperationBody,
+  maxBookSourceBytes: number | null = MAX_BOOK_SOURCE_PAYLOAD_BYTES): NormalizedOperation {
   const opId = source?.opId?.trim() || '';
   if (!UUID_PATTERN.test(opId)) {
     throw new SyncApiError(400, 'INVALID_OPERATION_ID', '同步操作标识无效');
@@ -332,16 +380,17 @@ export function normalizeOperation(source: SyncOperationBody): NormalizedOperati
     throw new SyncApiError(400, 'INVALID_BASE_REVISION', '同步基础版本无效');
   }
   let payload: unknown | null = null;
+  let payloadBytes = 0;
   if (source.operation === 'upsert') {
     if (!source.payload || typeof source.payload !== 'object' || Array.isArray(source.payload)) {
       throw new SyncApiError(400, 'INVALID_SYNC_PAYLOAD', '同步数据内容无效');
     }
     const serialized = JSON.stringify(source.payload);
-    const maxPayloadBytes = entityType === 'book_source' ?
-      MAX_BOOK_SOURCE_PAYLOAD_BYTES : MAX_PAYLOAD_BYTES;
-    if (Buffer.byteLength(serialized, 'utf8') > maxPayloadBytes) {
-      const limit = entityType === 'book_source' ? '512KB' : '64KB';
-      throw new SyncApiError(413, 'SYNC_PAYLOAD_TOO_LARGE', `单项同步数据不能超过 ${limit}`);
+    const maxPayloadBytes = entityType === 'book_source' ? maxBookSourceBytes : MAX_PAYLOAD_BYTES;
+    payloadBytes = Buffer.byteLength(serialized, 'utf8');
+    if (maxPayloadBytes !== null && payloadBytes > maxPayloadBytes) {
+      throw new SyncApiError(413, 'SYNC_PAYLOAD_TOO_LARGE',
+        `单项同步数据不能超过 ${Math.round(maxPayloadBytes / 1024)}KB`);
     }
     payload = source.payload;
   }
@@ -351,11 +400,12 @@ export function normalizeOperation(source: SyncOperationBody): NormalizedOperati
     entityId,
     operation: source.operation,
     baseRevision,
-    payload
+    payload,
+    payloadBytes
   };
 }
 
-async function registerDevice(
+export async function registerDevice(
   client: PoolClient,
   userId: string,
   deviceId: string,
@@ -500,7 +550,26 @@ async function applyOperation(
     currentPayloadBytes,
     nextPayloadBytes
   );
-  ensureSyncQuota(nextQuota);
+  const source = quota.sourceQuota;
+  if (operation.entityType === 'book_source') {
+    const existed = !!current && !current.deleted;
+    const message = source ? sourceQuotaError(source, existed, currentPayloadBytes, nextPayloadBytes) : null;
+    if (message) return { opId: operation.opId, accepted: false, revision: currentRevision,
+      sequenceId: null, error: { code: 'SYNC_SOURCE_QUOTA_EXCEEDED', message } };
+    if (quota.cloudRemaining !== undefined) {
+      const sizes = await client.query(`SELECT COALESCE(octet_length($1::jsonb::text),0) AS before,
+        COALESCE(octet_length($2::jsonb::text),0) AS after`,
+        [existed ? JSON.stringify(current!.payload) : null, operation.payload === null ? null : JSON.stringify(operation.payload)]);
+      const delta = Number(sizes.rows[0].after) - Number(sizes.rows[0].before);
+      if (delta > 0 && delta > quota.cloudRemaining) return { opId: operation.opId, accepted: false,
+        revision: currentRevision, sequenceId: null, error: { code: 'SYNC_SOURCE_QUOTA_EXCEEDED', message: '书源与云文件共用的云空间已满' } };
+      quota.cloudRemaining -= delta;
+      nextQuota.cloudRemaining = quota.cloudRemaining;
+    }
+    if (source) source.count += (nextPayloadBytes > 0 ? 1 : 0) - (existed ? 1 : 0);
+  }
+  // After a downgrade, reducing existing storage remains possible.
+  ensureSyncQuota(nextQuota, quota);
 
   const revision = currentRevision + 1;
   const payloadJson = operation.payload === null ? null : JSON.stringify(operation.payload);
@@ -639,7 +708,7 @@ async function persistSyncQuotaUsage(
   );
 }
 
-export function ensureSyncQuota(usage: SyncQuotaUsage): void {
+export function ensureSyncQuota(usage: SyncQuotaUsage, previous?: SyncQuotaUsage): void {
   const dailyWriteLimit = usage.initialSyncActive === true ?
     config.sync.initialMaxDailyWritesPerUser : config.sync.maxDailyWritesPerUser;
   if (usage.dailyWrites > dailyWriteLimit) {
@@ -649,7 +718,8 @@ export function ensureSyncQuota(usage: SyncQuotaUsage): void {
   }
   if (
     usage.entityCount > config.sync.maxEntitiesPerUser
-    || usage.entityBytes > config.sync.maxEntityBytesPerUser
+    || (usage.entityBytes > (usage.entityByteLimit ?? config.sync.maxEntityBytesPerUser)
+      && (!previous || usage.entityBytes > previous.entityBytes))
     || usage.changeCount > config.sync.maxChangesPerUser
     || usage.changeBytes > config.sync.maxChangeBytesPerUser
   ) {
@@ -669,7 +739,10 @@ export function calculateNextSyncQuota(
     changeCount: current.changeCount + (entityExists ? 0 : 1),
     changeBytes: 0,
     dailyWrites: current.dailyWrites + 1,
-    initialSyncActive: current.initialSyncActive
+    initialSyncActive: current.initialSyncActive,
+    ...(current.sourceQuota ? { sourceQuota: current.sourceQuota } : {}),
+    ...(current.entityByteLimit ? { entityByteLimit: current.entityByteLimit } : {}),
+    ...(current.cloudRemaining !== undefined ? { cloudRemaining: current.cloudRemaining } : {})
   };
 }
 

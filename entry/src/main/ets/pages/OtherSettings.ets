@@ -1,8 +1,12 @@
 import { SettingsSelect } from '../components/SettingsSelect';
-import { router } from '@kit.ArkUI';
+import { ImmersiveLightSettingsStore } from '../utils/ImmersiveLightSettingsStore';
+import { SmartGripSettingsStore } from '../utils/SmartGripSettingsStore';
+import { HomeBackdropSettingsStore } from '../utils/HomeBackdropSettingsStore';
+import { promptAction, router } from '@kit.ArkUI';
 import pasteboard from '@ohos.pasteboard';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { lanReaderServer } from '../core/lan/LanReaderServer';
 import { LanReaderPasswordStore } from '../core/lan/LanReaderPasswordStore';
 import { HdsFeedback } from '../utils/HdsFeedback';
@@ -10,13 +14,27 @@ import { PageScaffold } from '../components/common/PageScaffold';
 import { SettingNavRow, SettingRow, SettingSwitchRow } from '../components/common/SettingRow';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
+import { ReaderCacheBudget, ReaderCacheCleanup } from '../core/book/ReaderCacheBudget';
+import { ReaderCacheBudgetPolicy } from '../core/book/ReaderCacheBudgetPolicy';
+import { AudioOfflineStore } from '../core/book/AudioOfflineStore';
+import { NetworkSettingsStore } from '../utils/NetworkSettingsStore';
+import { HomeTabBarSettingsStore } from '../utils/HomeTabBarSettingsStore';
 
 @Entry
 @Component
 struct OtherSettingsPage {
+  @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
+  @StorageLink('networkForceHttp1') networkForceHttp1: boolean = false;
+  @StorageLink('readerImageConcurrency') readerImageConcurrency: number = 4;
+  @State savingNetwork: boolean = false;
+  @State savingImageConcurrency: boolean = false;
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageLink('smartGripEnabled') smartGripEnabled: boolean = true;
+  @StorageLink('homeBackdropEnabled') homeBackdropEnabled: boolean = true;
+  @StorageProp('homeTabBarStyle') homeTabBarStyle: string = 'floating';
+  @StorageProp('homeExtraTab') homeExtraTab: string = 'none';
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
   @StorageLink('lanReaderEnabled') lanReaderEnabled: boolean = false;
@@ -27,6 +45,16 @@ struct OtherSettingsPage {
   @StorageProp('lanReaderPasswordUnreadable') lanReaderPasswordUnreadable: boolean = false;
   @StorageLink('lanReaderBackgroundStatus') lanReaderBackgroundStatus: string = '未启动';
   @State lanReaderPasswordDraft: string = '';
+  /** -1 表示还在统计。 */
+  @State textCacheBytes: number = -1;
+  @State comicCacheBytes: number = -1;
+  @State offlineBytes: number = -1;
+  @State audioOfflineBytes: number = -1;
+  @State audioOfflineAutoBytes: number = 0;
+  @State audioOfflineBooks: number = 0;
+  @State audioOfflineChapters: number = 0;
+  @State cacheClearing: boolean = false;
+  @State savingImmersiveLight: boolean = false;
 
   aboutToAppear(): void {
     this.lanReaderPasswordDraft = this.lanReaderPasswordUnreadable ? '' : this.lanReaderPassword;
@@ -35,6 +63,7 @@ struct OtherSettingsPage {
 
   onPageShow(): void {
     this.syncBars();
+    this.refreshCacheUsage();
   }
 
   build() {
@@ -62,11 +91,64 @@ struct OtherSettingsPage {
       SettingNavRow({
         title: '数据导出',
         description: '将书源、书架、进度、本地图书和设置导出为备份',
-        showDivider: false,
         onTap: () => {
           router.pushUrl({ url: 'pages/DataBackup', params: { mode: 'export' } });
         }
       })
+      SettingNavRow({
+        title: '导入安卓阅读备份',
+        description: '导入安卓版阅读导出的 ZIP 备份，恢复书源、书架、阅读进度和记录',
+        showDivider: false,
+        onTap: () => {
+          this.getUIContext().getRouter().pushUrl({
+            url: 'pages/DataBackup',
+            params: { mode: 'import', sourceFormat: 'legado-android' }
+          });
+        }
+      })
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    this.sectionTitle('缓存')
+    Column() {
+      SettingRow({
+        title: '小说自动缓存',
+        description: this.cacheUsageText(this.textCacheBytes, ReaderCacheBudget.TEXT_LIMIT_BYTES,
+          '正文数据量；超限清理最久未用的章节，离线内容另计，使用中可暂时超限'),
+        onTap: () => this.confirmClearCache(true)
+      }) {
+        this.cacheClearLabel()
+      }
+      SettingRow({
+        title: '漫画自动缓存',
+        description: this.cacheUsageText(this.comicCacheBytes, ReaderCacheBudget.COMIC_LIMIT_BYTES,
+          '原图和处理结果合计；离线原图另计，使用中可暂时超限'),
+        showDivider: false,
+        onTap: () => this.confirmClearCache(false)
+      }) {
+        this.cacheClearLabel()
+      }
+      SettingRow({
+        title: '离线内容',
+        description: (this.offlineBytes === -2 ? '统计失败，重新进入后重试' : this.offlineBytes < 0 ? '正在统计…' : ReaderCacheBudgetPolicy.formatBytes(this.offlineBytes)) +
+          '\n手动缓存的正文与漫画原图，不参与自动清理',
+        onTap: () => this.confirmClearOffline()
+      }) {
+        this.cacheClearLabel()
+      }
+      SettingRow({
+        title: '有声书离线音频',
+        description: this.audioOfflineUsageText() +
+          '\n手动下载的不参与自动清理；边听边下的听完自动删除。下载选项在“阅读与收听 › 有声书”',
+        showDivider: false,
+        onTap: () => this.confirmClearAudioOffline()
+      }) {
+        this.cacheClearLabel()
+      }
     }
     .width('calc(100% - 24vp)')
     .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
@@ -95,18 +177,57 @@ struct OtherSettingsPage {
     .clip(true)
     .backgroundColor(this.cardColor())
 
-    this.sectionTitle('外观')
+    this.sectionTitle('交互')
     Column() {
-      SettingNavRow({
-        title: '磨砂玻璃',
-        description: '预设、模糊、透明度、边框、阴影',
-        onTap: () => {
-          router.pushUrl({ url: 'pages/GlassSettings' });
+      SettingSwitchRow({
+        title: '智感握姿',
+        description: '根据左右手握持，自动调整导航栏和部分操作按钮的位置；需设备支持',
+        isOn: this.smartGripEnabled,
+        showDivider: false,
+        onChange: (value: boolean) => {
+          SmartGripSettingsStore.save(getContext(this), value).catch((error: Error) => {
+            console.warn('保存智感握姿设置失败:', error);
+            HdsFeedback.showToast('保存失败，请重试');
+          });
         }
       })
-      SettingRow({ title: '沉浸光感', description: '沉浸材质的光感强度' }) {
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    this.sectionTitle('底栏')
+    Column() {
+      SettingRow({ title: '底栏样式', description: this.tabBarStyleDescription() }) {
+        this.tabBarStyleSelect()
+      }
+      SettingRow({
+        title: '更多底栏项目',
+        description: '在发现和我的之间加一个页签：“听”汇集正在播放、有声书和朗读设置，“足迹”展示本周阅读统计和书签',
+        showDivider: false
+      }) {
+        this.extraTabSelect()
+      }
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    this.sectionTitle('外观')
+    Column() {
+      SettingRow({ title: '沉浸光感', description: this.immersiveLightLevelDescription() }) {
         this.immersiveLightLevelSelect()
       }
+      SettingSwitchRow({
+        title: '主题背景图',
+        description: '主题自带背景图时，铺在书架、发现、搜索和我的页顶部',
+        isOn: this.homeBackdropEnabled,
+        onChange: (value: boolean) => { this.setHomeBackdropEnabled(value); }
+      })
       SettingNavRow({
         title: '字体设置',
         description: '全局字体、自定义字体',
@@ -131,12 +252,30 @@ struct OtherSettingsPage {
 
     this.sectionTitle('兼容与诊断')
     Column() {
+      SettingRow({ title: '图片下载并发', description: '默认 4 张；网络较快时可提高，图片站限流或加载不稳时调回 4 张' }) {
+        Select([{ value: '4 张' }, { value: '8 张' }, { value: '12 张' }])
+          .selected(Math.max(0, [4, 8, 12].indexOf(this.readerImageConcurrency)))
+          .value(`${this.readerImageConcurrency} 张`)
+          .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
+          .optionFont({ family: this.applicationFontFamily })
+          .selectedOptionFont({ family: this.applicationFontFamily })
+          .fontColor(this.primaryTextColor())
+          .backgroundColor(Color.Transparent)
+          .enabled(!this.savingImageConcurrency)
+          .onSelect((index: number) => { this.saveImageConcurrency([4, 8, 12][index] || 4); })
+      }
+      SettingSwitchRow({
+        title: 'HTTP/1.1 兼容模式',
+        description: '书源连接反复出现传输错误时可尝试开启，对后续原生网络请求生效',
+        isOn: this.networkForceHttp1,
+        onChange: (value: boolean) => { this.saveHttpCompatibility(value); }
+      })
       SettingNavRow({
-        title: '脚本引擎迁移',
-        description: 'QuickJS 影子校验、灰度路由、自动回退状态',
+        title: '后台脚本线程验证',
+        description: '检查 QuickJS 后台线程的响应、超时取消与并发',
         showDivider: false,
         onTap: () => {
-          router.pushUrl({ url: 'pages/QuickJsDiagnostics' });
+          router.pushUrl({ url: 'pages/ScriptThreadProbe' });
         }
       })
     }
@@ -149,6 +288,30 @@ struct OtherSettingsPage {
 
   pageColor(): string {
     return ThemeRuntime.pageColor(this.appDarkMode);
+  }
+
+  private async saveHttpCompatibility(value: boolean): Promise<void> {
+    if (this.savingNetwork) return;
+    this.savingNetwork = true;
+    try {
+      await NetworkSettingsStore.save(this.getUIContext().getHostContext()!, value);
+    } catch (_) {
+      HdsFeedback.showToast('网络设置保存失败，请重试');
+    } finally {
+      this.savingNetwork = false;
+    }
+  }
+
+  private async saveImageConcurrency(value: number): Promise<void> {
+    if (this.savingImageConcurrency) return;
+    this.savingImageConcurrency = true;
+    try {
+      await NetworkSettingsStore.saveImageConcurrency(this.getUIContext().getHostContext()!, value);
+    } catch (_) {
+      HdsFeedback.showToast('图片并发设置保存失败，请重试');
+    } finally {
+      this.savingImageConcurrency = false;
+    }
   }
 
   cardColor(): string {
@@ -171,6 +334,12 @@ struct OtherSettingsPage {
     return ThemeRuntime.accentColor(this.appDarkMode);
   }
 
+  /** 弱档设备上跟随系统会按均衡渲染，在说明里告诉用户。 */
+  immersiveLightLevelDescription(): string {
+    return this.immersiveLightLevel === 'adaptive' && ImmersiveMaterialRuntime.deviceMaterialWeak() ?
+      '本机材质档位为弱，跟随系统时按均衡显示' : '沉浸材质的光感强度';
+  }
+
   immersiveLightLevelOptions(): SelectOption[] {
     return [
       { value: '跟随系统' },
@@ -189,16 +358,158 @@ struct OtherSettingsPage {
     return index >= 0 ? index : 0;
   }
 
-  setImmersiveLightLevel(index: number): void {
-    const values = this.immersiveLightLevelValues();
-    const next = index >= 0 && index < values.length ? values[index] : values[0];
-    if (this.immersiveLightLevel === next) return;
-    this.immersiveLightLevel = next;
+  setHomeBackdropEnabled(enabled: boolean): void {
+    if (this.homeBackdropEnabled === enabled) return;
+    HomeBackdropSettingsStore.save(getContext(this), enabled).catch((error: Error) => {
+      console.warn('保存首页背景设置失败:', error);
+      HdsFeedback.showToast('保存失败，请重试');
+    });
+    // 首页各页签按主题版本号重建，背景层和透明的列表底色一起切换。
     const revision = AppStorage.get<number>('themeRevision') ?? 0;
     AppStorage.setOrCreate('themeRevision', revision + 1);
   }
 
+  async setImmersiveLightLevel(index: number): Promise<void> {
+    if (this.savingImmersiveLight) return;
+    const values = this.immersiveLightLevelValues();
+    const next = index >= 0 && index < values.length ? values[index] : values[0];
+    if (this.immersiveLightLevel === next) return;
+    this.savingImmersiveLight = true;
+    try {
+      await ImmersiveLightSettingsStore.save(getContext(this), next);
+      const revision = AppStorage.get<number>('themeRevision') ?? 0;
+      AppStorage.setOrCreate('themeRevision', revision + 1);
+    } catch (error) {
+      console.warn('保存沉浸光感设置失败:', error);
+      HdsFeedback.showToast('保存失败，请重试');
+    } finally {
+      this.savingImmersiveLight = false;
+    }
+  }
+
+  @Builder
+  cacheClearLabel() {
+    Text('清理')
+      .fontSize(AppFontSize.BODY)
+      .fontColor(this.cacheClearing ? this.subTextColor() : this.accentColor())
+      .margin({ left: AppSpacing.LG })
+  }
+
+  cacheUsageText(bytes: number, limit: number, note: string): string {
+    const usage = bytes === -2 ? '统计失败，重新进入后重试' : bytes < 0 ? '正在统计…' :
+      `${ReaderCacheBudgetPolicy.formatBytes(bytes)} / ${ReaderCacheBudgetPolicy.formatBytes(limit)}`;
+    return `${usage}\n${note}`;
+  }
+
+  async refreshCacheUsage(): Promise<void> {
+    try {
+      this.textCacheBytes = await ReaderCacheBudget.textUsageBytes();
+    } catch (e) {
+      console.warn('统计正文缓存失败:', e);
+      this.textCacheBytes = -2;
+    }
+    try {
+      this.comicCacheBytes = await ReaderCacheBudget.comicUsageBytes();
+      this.offlineBytes = await ReaderCacheBudget.textUsageBytes(true) + await ReaderCacheBudget.comicUsageBytes(true);
+    } catch (e) {
+      console.warn('统计漫画缓存失败:', e);
+      this.comicCacheBytes = -2;
+      this.offlineBytes = -2;
+    }
+    try {
+      const usage = await AudioOfflineStore.usage();
+      this.audioOfflineBooks = usage.books;
+      this.audioOfflineChapters = usage.chapters;
+      this.audioOfflineAutoBytes = usage.autoBytes;
+      this.audioOfflineBytes = usage.bytes;
+    } catch (e) {
+      console.warn('统计离线音频失败:', e);
+      this.audioOfflineBytes = -2;
+    }
+  }
+
+  audioOfflineUsageText(): string {
+    if (this.audioOfflineBytes === -2) return '统计失败，重新进入后重试';
+    if (this.audioOfflineBytes < 0) return '正在统计…';
+    if (this.audioOfflineChapters === 0) return '暂无';
+    const auto = this.audioOfflineAutoBytes > 0 ?
+      `（边听边下 ${ReaderCacheBudgetPolicy.formatBytes(this.audioOfflineAutoBytes)}）` : '';
+    return `${ReaderCacheBudgetPolicy.formatBytes(this.audioOfflineBytes)}${auto} · ${this.audioOfflineBooks} 本书 ${this.audioOfflineChapters} 章`;
+  }
+
+  async confirmClearAudioOffline(): Promise<void> {
+    if (this.cacheClearing) return;
+    try {
+      const answer = await promptAction.showDialog({
+        title: '删除离线音频？',
+        message: '删除所有手动下载的有声书音频，之后收听需要联网。正在播放的章节会继续播完。',
+        buttons: [{ text: '取消', color: ThemeRuntime.subTextColor(this.appDarkMode) },
+          { text: '删除', color: ThemeRuntime.dangerColor(this.appDarkMode) }]
+      });
+      if (answer.index !== 1) return;
+      this.cacheClearing = true;
+      const released = await AudioOfflineStore.clearAll();
+      HdsFeedback.showToast(`已清理 ${ReaderCacheBudgetPolicy.formatBytes(released)} 数据`);
+      AppStorage.setOrCreate('shelfUpdateTime', Date.now());
+    } catch (e) { HdsFeedback.showToast('删除离线音频失败'); }
+    finally { this.cacheClearing = false; }
+    await this.refreshCacheUsage();
+  }
+
+  async confirmClearCache(text: boolean): Promise<void> {
+    if (this.cacheClearing) return;
+    const dark = this.appDarkMode;
+    try {
+      const result = await promptAction.showDialog({
+        title: text ? '清理小说自动缓存？' : '清理漫画自动缓存？',
+        message: text ? '删除阅读时自动缓存的正文。手动离线内容、本地书和正在使用的书会保留。之后阅读可能需要联网。' :
+          '删除自动缓存的图片和可重新生成的处理结果，保留离线原图及正在使用、最近 10 分钟访问的图片。之后阅读可能需要联网补图。',
+        buttons: [{ text: '取消', color: ThemeRuntime.subTextColor(dark) },
+          { text: '清理', color: ThemeRuntime.dangerColor(dark) }]
+      });
+      if (result.index !== 1) return;
+    } catch (e) {
+      console.warn('显示清理缓存确认失败:', e);
+      return;
+    }
+    this.cacheClearing = true;
+    try {
+      const cleanup = text ? await ReaderCacheBudget.clearText() : await ReaderCacheBudget.clearComic();
+      HdsFeedback.showToast(this.cleanupSummary(cleanup));
+    } catch (e) {
+      HdsFeedback.showToast(`清理失败：${(e as Error).message}`);
+    } finally {
+      this.cacheClearing = false;
+    }
+    await this.refreshCacheUsage();
+  }
+
+  async confirmClearOffline(): Promise<void> {
+    if (this.cacheClearing) return;
+    try {
+      const answer = await promptAction.showDialog({
+        title: '删除离线内容？',
+        message: '删除手动缓存的在线小说正文与漫画原图，之后需要联网重新缓存。本地导入书和正在使用的内容会保留。',
+        buttons: [{ text: '取消', color: ThemeRuntime.subTextColor(this.appDarkMode) },
+          { text: '删除', color: ThemeRuntime.dangerColor(this.appDarkMode) }]
+      });
+      if (answer.index !== 1) return;
+      this.cacheClearing = true;
+      HdsFeedback.showToast(this.cleanupSummary(await ReaderCacheBudget.clearOffline()));
+    } catch (e) { HdsFeedback.showToast('删除离线内容失败'); }
+    finally { this.cacheClearing = false; }
+    await this.refreshCacheUsage();
+  }
+
+  cleanupSummary(cleanup: ReaderCacheCleanup): string {
+    const parts: string[] = [`已清理 ${ReaderCacheBudgetPolicy.formatBytes(cleanup.releasedBytes)} 数据`];
+    if (cleanup.protectedCount > 0) parts.push(`使用中保留 ${cleanup.protectedCount} 项`);
+    if (cleanup.failed > 0) parts.push(`${cleanup.failed} 项删除失败`);
+    return parts.join('，');
+  }
+
   lanReaderUrl(): string {
+
     return this.lanReaderAddress;
   }
 
@@ -321,12 +632,101 @@ struct OtherSettingsPage {
       .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXL, bottom: AppSpacing.MD })
   }
 
+  tabBarStyleDescription(): string {
+    return ImmersiveMaterialRuntime.supportsHdsTabs() ? '悬浮底栏浮在页面上，带沉浸材质；平铺底栏贴底铺满' :
+      '本机系统不支持悬浮底栏，使用平铺底栏';
+  }
+
+  tabBarStyleIndex(): number {
+    return ImmersiveMaterialRuntime.supportsHdsTabs() &&
+      HomeTabBarSettingsStore.normalizeStyle(this.homeTabBarStyle) === HomeTabBarSettingsStore.STYLE_FLOATING ? 0 : 1;
+  }
+
+  extraTabValues(): string[] {
+    return [HomeTabBarSettingsStore.EXTRA_NONE, HomeTabBarSettingsStore.EXTRA_LISTEN,
+      HomeTabBarSettingsStore.EXTRA_FOOTPRINT];
+  }
+
+  extraTabIndex(): number {
+    return Math.max(0, this.extraTabValues().indexOf(HomeTabBarSettingsStore.normalizeExtraTab(this.homeExtraTab)));
+  }
+
+  saveTabBarStyle(index: number): void {
+    const style = index === 0 ? HomeTabBarSettingsStore.STYLE_FLOATING : HomeTabBarSettingsStore.STYLE_FLAT;
+    if (style === HomeTabBarSettingsStore.normalizeStyle(this.homeTabBarStyle)) return;
+    HomeTabBarSettingsStore.saveStyle(getContext(this), style).catch((error: Error) => {
+      console.warn('保存底栏样式失败:', error);
+      HdsFeedback.showToast('保存失败，请重试');
+    });
+  }
+
+  saveExtraTab(index: number): void {
+    const extra = this.extraTabValues()[index] || HomeTabBarSettingsStore.EXTRA_NONE;
+    if (extra === HomeTabBarSettingsStore.normalizeExtraTab(this.homeExtraTab)) return;
+    HomeTabBarSettingsStore.saveExtraTab(getContext(this), extra).catch((error: Error) => {
+      console.warn('保存底栏项目失败:', error);
+      HdsFeedback.showToast('保存失败，请重试');
+    });
+  }
+
+  @Builder
+  tabBarStyleSelect() {
+    Select([{ value: '悬浮' }, { value: '平铺' }])
+      .enabled(ImmersiveMaterialRuntime.supportsHdsTabs())
+      .selected(this.tabBarStyleIndex())
+      .value(this.tabBarStyleIndex() === 0 ? '悬浮' : '平铺')
+      .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
+      .optionFont({ family: this.applicationFontFamily })
+      .selectedOptionFont({ family: this.applicationFontFamily })
+      .fontColor(this.subTextColor())
+      .backgroundColor(Color.Transparent)
+      .arrowPosition(ArrowPosition.END)
+      .padding({ left: 0, right: 0 })
+      .borderRadius(16)
+      .border({ width: 0 })
+      .divider(null)
+      .optionBgColor(Color.Transparent)
+      .optionFontColor(this.primaryTextColor())
+      .selectedOptionFontColor(this.accentColor())
+      .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
+      .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
+      .menuBackgroundBlurStyle(BlurStyle.NONE)
+      .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel))
+      .onSelect((index: number) => this.saveTabBarStyle(index))
+  }
+
+  @Builder
+  extraTabSelect() {
+    Select([{ value: '关' }, { value: '听' }, { value: '足迹' }])
+      .selected(this.extraTabIndex())
+      .value(['关', '听', '足迹'][this.extraTabIndex()])
+      .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
+      .optionFont({ family: this.applicationFontFamily })
+      .selectedOptionFont({ family: this.applicationFontFamily })
+      .fontColor(this.subTextColor())
+      .backgroundColor(Color.Transparent)
+      .arrowPosition(ArrowPosition.END)
+      .padding({ left: 0, right: 0 })
+      .borderRadius(16)
+      .border({ width: 0 })
+      .divider(null)
+      .optionBgColor(Color.Transparent)
+      .optionFontColor(this.primaryTextColor())
+      .selectedOptionFontColor(this.accentColor())
+      .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
+      .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
+      .menuBackgroundBlurStyle(BlurStyle.NONE)
+      .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel))
+      .onSelect((index: number) => this.saveExtraTab(index))
+  }
+
   @Builder
   immersiveLightLevelSelect() {
     SettingsSelect({
       options: this.immersiveLightLevelOptions(),
-      selectedIndex: this.immersiveLightLevelSelectedIndex(),
-      selectedLabel: this.immersiveLightLevelOptions()[this.immersiveLightLevelSelectedIndex()].value,
+      selectedIndex: this.savingImmersiveLight ? -1 : this.immersiveLightLevelSelectedIndex(),
+      selectedLabel: this.savingImmersiveLight ? '保存中…' : this.immersiveLightLevelOptions()[this.immersiveLightLevelSelectedIndex()].value,
+      selectEnabled: !this.savingImmersiveLight,
       darkMode: this.appDarkMode,
       textSize: AppFontSize.BODY,
       textColor: this.subTextColor(),

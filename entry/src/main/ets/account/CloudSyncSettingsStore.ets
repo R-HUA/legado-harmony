@@ -6,6 +6,9 @@ export class CloudSyncSettings {
   autoSyncEnabled: boolean = true;
   wifiOnly: boolean = false;
   foregroundSyncEnabled: boolean = false;
+  // 保存用户偏好；实际启用还须通过终身超级会员校验。
+  localBooksEnabled: boolean = true;
+  customFontsEnabled: boolean = true;
   readingDataEnabled: boolean = true;
   bookSourcesEnabled: boolean = true;
   readingPreferencesEnabled: boolean = true;
@@ -21,6 +24,8 @@ export class CloudSyncSettingsStore {
   static readonly STORAGE_AUTO_SYNC_ENABLED: string = 'cloudSyncAutoEnabled';
   static readonly STORAGE_WIFI_ONLY: string = 'cloudSyncWifiOnly';
   static readonly STORAGE_FOREGROUND_SYNC_ENABLED: string = 'cloudSyncForegroundEnabled';
+  static readonly STORAGE_LOCAL_BOOKS_ENABLED: string = 'cloudSyncLocalBooksEnabled';
+  static readonly STORAGE_CUSTOM_FONTS_ENABLED: string = 'cloudSyncCustomFontsEnabled';
   static readonly STORAGE_READING_DATA_ENABLED: string = 'cloudSyncReadingDataEnabled';
   static readonly STORAGE_BOOK_SOURCES_ENABLED: string = 'cloudSyncBookSourcesEnabled';
   static readonly STORAGE_READING_PREFERENCES_ENABLED: string = 'cloudSyncReadingPreferencesEnabled';
@@ -38,6 +43,8 @@ export class CloudSyncSettingsStore {
   static readonly STATUS_SYNCED: string = 'synced';
   static readonly STATUS_OFFLINE: string = 'offline';
   static readonly STATUS_ERROR: string = 'error';
+  /** 同步完成，但有条目（过大或被服务端拒收）被跳过；pendingCount 为跳过的条数。 */
+  static readonly STATUS_PARTIAL: string = 'partial';
 
   private static readonly STORE_NAME: string = 'account_cloud_sync_settings';
   private static readonly KEY_PREFIX: string = 'settings_';
@@ -50,6 +57,8 @@ export class CloudSyncSettingsStore {
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_AUTO_SYNC_ENABLED, true);
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_WIFI_ONLY, false);
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_FOREGROUND_SYNC_ENABLED, false);
+    AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_LOCAL_BOOKS_ENABLED, true);
+    AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_CUSTOM_FONTS_ENABLED, true);
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_READING_DATA_ENABLED, true);
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_BOOK_SOURCES_ENABLED, true);
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_READING_PREFERENCES_ENABLED, true);
@@ -121,6 +130,8 @@ export class CloudSyncSettingsStore {
       current.autoSyncEnabled = requested.autoSyncEnabled;
       current.wifiOnly = requested.wifiOnly;
       current.foregroundSyncEnabled = requested.foregroundSyncEnabled;
+      current.localBooksEnabled = requested.localBooksEnabled;
+      current.customFontsEnabled = requested.customFontsEnabled;
       current.readingDataEnabled = requested.readingDataEnabled;
       current.bookSourcesEnabled = requested.bookSourcesEnabled;
       current.readingPreferencesEnabled = requested.readingPreferencesEnabled;
@@ -184,6 +195,8 @@ export class CloudSyncSettingsStore {
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_WIFI_ONLY, normalized.wifiOnly);
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_FOREGROUND_SYNC_ENABLED,
       normalized.foregroundSyncEnabled);
+    AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_LOCAL_BOOKS_ENABLED, normalized.localBooksEnabled);
+    AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_CUSTOM_FONTS_ENABLED, normalized.customFontsEnabled);
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_READING_DATA_ENABLED,
       normalized.readingDataEnabled);
     AppStorage.setOrCreate(CloudSyncSettingsStore.STORAGE_BOOK_SOURCES_ENABLED,
@@ -216,6 +229,9 @@ export class CloudSyncSettingsStore {
     }
     if (status === CloudSyncSettingsStore.STATUS_ERROR) {
       return '同步失败';
+    }
+    if (status === CloudSyncSettingsStore.STATUS_PARTIAL && pendingCount > 0) {
+      return `已同步 · 跳过 ${pendingCount} 项`;
     }
     if (pendingCount > 0) {
       return `待同步 ${pendingCount} 项`;
@@ -277,6 +293,8 @@ export class CloudSyncSettingsStore {
     // A missing field belongs to an old/newly-created account and must not
     // immediately fire another sync when the login flow returns to foreground.
     result.foregroundSyncEnabled = source.foregroundSyncEnabled === true;
+    result.localBooksEnabled = source.localBooksEnabled !== false;
+    result.customFontsEnabled = source.customFontsEnabled !== false;
     result.readingDataEnabled = source.readingDataEnabled !== false;
     result.bookSourcesEnabled = source.bookSourcesEnabled !== false;
     result.readingPreferencesEnabled = source.readingPreferencesEnabled !== false;
@@ -302,7 +320,8 @@ export class CloudSyncSettingsStore {
       status === CloudSyncSettingsStore.STATUS_SYNCING ||
       status === CloudSyncSettingsStore.STATUS_SYNCED ||
       status === CloudSyncSettingsStore.STATUS_OFFLINE ||
-      status === CloudSyncSettingsStore.STATUS_ERROR) {
+      status === CloudSyncSettingsStore.STATUS_ERROR ||
+      status === CloudSyncSettingsStore.STATUS_PARTIAL) {
       return status;
     }
     return CloudSyncSettingsStore.STATUS_NOT_STARTED;
@@ -314,6 +333,8 @@ export class CloudSyncSettingsStore {
     result.autoSyncEnabled = source.autoSyncEnabled;
     result.wifiOnly = source.wifiOnly;
     result.foregroundSyncEnabled = source.foregroundSyncEnabled;
+    result.localBooksEnabled = source.localBooksEnabled;
+    result.customFontsEnabled = source.customFontsEnabled;
     result.readingDataEnabled = source.readingDataEnabled;
     result.bookSourcesEnabled = source.bookSourcesEnabled;
     result.readingPreferencesEnabled = source.readingPreferencesEnabled;

@@ -4,11 +4,15 @@ import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { Book, BookChapter, Bookmark } from '@legado/sourceengine';
 import { AppDatabase } from '../../model/data/AppDatabase';
 import { HdsFeedback } from '../../utils/HdsFeedback';
+import { ListDissolve, ListDissolveParticles } from '../../utils/ListDissolve';
+import { DeleteParticleBurst, DeleteParticleLayer } from '../common/DeleteParticles';
+import { BookCover } from '../book/BookCover';
 import { VirtualListScrollbar } from '../../utils/VirtualListScrollbar';
 import { ImmersiveBackButton } from '../ImmersiveBackButton';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { AppSpacing } from '../../theme/AppSpacing';
+import { ReaderMaterialPanel } from './ReaderFloatingMaterialBar';
 
 const TOC_WINDOW_PAGE_SIZE = 72;
 const TOC_SCROLLBAR_DRAG_UPDATE_INTERVAL_MS = 90;
@@ -60,9 +64,13 @@ export struct ReaderTocPanel {
 
   book: Book | null = null;
   controller: ReaderTocPanelController | null = null;
+  /** 章节列表不是书里的章节表时关掉（PDF 传的是目录条目，数据库里存的是页），滚动条只按传入的条目算。 */
+  @Prop useDatabaseCount: boolean = true;
   /** 目录里显示的章节标题（页面负责清洗标题）。 */
   chapterTitle: (chapterIndex: number) => string = (_chapterIndex: number): string => '';
   onClose: () => void = (): void => {
+  };
+  onOpenBookDetail: () => void = (): void => {
   };
   onJumpToChapter: (chapterIndex: number) => void = (_chapterIndex: number): void => {
   };
@@ -71,6 +79,14 @@ export struct ReaderTocPanel {
   /** 重新抓取目录；完成后面板自己恢复定位或重做搜索。 */
   onRefreshToc: () => Promise<void> = (): Promise<void> => Promise.resolve();
   onLoadBookmarks: () => void = (): void => {
+  };
+  /** 本地 TXT 显示"目录规则"按钮。 */
+  showTocRuleButton: boolean = false;
+  /** 目录可能切错时的提示，空串不显示。 */
+  @Prop tocRuleHint: string = '';
+  onOpenTocRules: () => void = (): void => {
+  };
+  onDismissTocRuleHint: () => void = (): void => {
   };
   onShowBookmarkActions: (bookmark: Bookmark, globalX: number, globalY: number) => void =
     (_bookmark: Bookmark, _globalX: number, _globalY: number): void => {
@@ -96,6 +112,9 @@ export struct ReaderTocPanel {
   @State private scrollbarDragOffset: number = 0;
   @State private bookmarkMultiSelectMode: boolean = false;
   @State private selectedBookmarkIds: number[] = [];
+  /** 正在消散的书签 id（字符串），见 ListDissolve。 */
+  @State private dissolvingBookmarkKeys: string[] = [];
+  @State private deleteParticleBursts: DeleteParticleBurst[] = [];
   private searchRequestSerial: number = 0;
   private scrollbarPointerAnchor: number = 0;
   private scrollbarPendingIndex: number = -1;
@@ -113,14 +132,16 @@ export struct ReaderTocPanel {
       controller.showTocTab = (): void => this.selectTocTab();
       controller.cancelBookmarkMultiSelect = (): void => this.cancelBookmarkMultiSelect();
       controller.enterBookmarkMultiSelect = (bookmarkId: number): void => this.enterBookmarkMultiSelect(bookmarkId);
-      controller.deleteBookmark = (bookmark: Bookmark): Promise<void> => this.deleteBookmark(bookmark);
+      // 从长按菜单删除时，等菜单收起再开始消散。
+      controller.deleteBookmark = (bookmark: Bookmark): Promise<void> =>
+        this.deleteBookmark(bookmark, ListDissolve.AFTER_DIALOG_MS);
     }
     this.databaseChapterCount = this.chapters.length;
     this.firstVisibleGlobalIndex = this.currentChapterIndex;
     this.setWindowAround(this.currentChapterIndex, ScrollAlign.CENTER);
     this.scrollToCurrentChapter(false);
     this.onLoadBookmarks();
-    this.loadDatabaseChapterCount();
+    if (this.useDatabaseCount) this.loadDatabaseChapterCount();
   }
 
   aboutToDisappear(): void {
@@ -290,7 +311,8 @@ export struct ReaderTocPanel {
   }
 
   private titleColor(chapter: BookChapter, index: number): string {
-    if (index === this.currentChapterIndex) return this.accentColor;
+    // 主题强调色可能是浅金色；选中行靠底色、字重和标记识别，标题仍保持可读。
+    if (index === this.currentChapterIndex) return this.textColor;
     if (chapter.cacheDate > 0) return this.dark ? '#DDEFE5' : '#244B35';
     return this.dark ? '#B8BDC7' : '#333333';
   }
@@ -590,19 +612,29 @@ export struct ReaderTocPanel {
     this.scrollToCurrentChapter(false);
   }
 
-  private async deleteBookmark(bookmark: Bookmark): Promise<void> {
+  private async deleteBookmark(bookmark: Bookmark, delayMs: number = 0): Promise<void> {
+    const keys = [`${bookmark.id}`];
+    const fade = ListDissolve.fadeOut(this.getUIContext(), keys, (key: string) => {
+      this.dissolvingBookmarkKeys = [...this.dissolvingBookmarkKeys, key];
+    }, this.bookmarkDeleteParticles(), delayMs);
     try {
       const db = AppDatabase.getInstance();
       await db.initWithContext(getContext(this));
       await db.deleteBookmark(bookmark.id);
-      this.bookmarks = this.bookmarks.filter((item: Bookmark) => item.id !== bookmark.id);
-      this.selectedBookmarkIds = this.selectedBookmarkIds.filter((id: number) => id !== bookmark.id);
+      await fade;
+      ListDissolve.commit(this.getUIContext(), () => {
+        this.bookmarks = this.bookmarks.filter((item: Bookmark) => item.id !== bookmark.id);
+        this.selectedBookmarkIds = this.selectedBookmarkIds.filter((id: number) => id !== bookmark.id);
+      }, () => {
+        this.dissolvingBookmarkKeys = ListDissolve.without(this.dissolvingBookmarkKeys, keys);
+      });
       if (this.bookmarkMultiSelectMode && this.bookmarks.length === 0) {
         this.cancelBookmarkMultiSelect();
       }
       HdsFeedback.showToast('书签已删除');
     } catch (e) {
       console.error('删除书签失败:', e);
+      this.dissolvingBookmarkKeys = ListDissolve.without(this.dissolvingBookmarkKeys, keys);
       HdsFeedback.showToast('删除书签失败');
     }
   }
@@ -610,17 +642,49 @@ export struct ReaderTocPanel {
   private async deleteSelectedBookmarks(): Promise<void> {
     const ids = [...this.selectedBookmarkIds];
     if (ids.length === 0) return;
+    const keys = ids.map((id: number) => `${id}`);
+    const fade = ListDissolve.fadeOut(this.getUIContext(), keys, (key: string) => {
+      this.dissolvingBookmarkKeys = [...this.dissolvingBookmarkKeys, key];
+    }, this.bookmarkDeleteParticles());
     try {
       const db = AppDatabase.getInstance();
       await db.initWithContext(getContext(this));
       await db.deleteBookmarks(ids);
-      this.bookmarks = this.bookmarks.filter((bookmark: Bookmark) => !ids.includes(bookmark.id));
+      await fade;
+      ListDissolve.commit(this.getUIContext(), () => {
+        this.bookmarks = this.bookmarks.filter((bookmark: Bookmark) => !ids.includes(bookmark.id));
+      }, () => {
+        this.dissolvingBookmarkKeys = ListDissolve.without(this.dissolvingBookmarkKeys, keys);
+      });
       this.cancelBookmarkMultiSelect();
       HdsFeedback.showToast(`已删除 ${ids.length} 条书签`);
     } catch (e) {
       console.error('批量删除书签失败:', e);
+      this.dissolvingBookmarkKeys = ListDissolve.without(this.dissolvingBookmarkKeys, keys);
       HdsFeedback.showToast('批量删除书签失败');
     }
+  }
+
+  private bookmarkCardElementId(key: string): string {
+    return `reader_bookmark_card_${key}`;
+  }
+
+  private bookmarkDeleteParticles(): ListDissolveParticles {
+    const particles = new ListDissolveParticles();
+    particles.rootId = 'reader_bookmark_list_root';
+    particles.colors = [this.accentColor, this.textColor, this.subTextColor];
+    particles.elementIdOf = (key: string): string => this.bookmarkCardElementId(key);
+    particles.show = (bursts: DeleteParticleBurst[]): void => {
+      this.deleteParticleBursts = [...this.deleteParticleBursts, ...bursts];
+    };
+    particles.hide = (ids: number[]): void => {
+      this.deleteParticleBursts = this.deleteParticleBursts.filter((burst: DeleteParticleBurst) => ids.indexOf(burst.id) < 0);
+    };
+    return particles;
+  }
+
+  private isBookmarkDissolving(bookmark: Bookmark): boolean {
+    return this.dissolvingBookmarkKeys.length > 0 && this.dissolvingBookmarkKeys.indexOf(`${bookmark.id}`) >= 0;
   }
 
   private enterBookmarkMultiSelect(bookmarkId: number): void {
@@ -687,37 +751,34 @@ export struct ReaderTocPanel {
     };
   }
 
-  private bookCover(): ResourceStr {
-    return this.cover || (this.book ? this.book.getDisplayCover() : '');
-  }
-
-  private bookInitial(): string {
-    const name = (this.book?.name || '书').trim();
-    return name.length > 0 ? name.substring(0, 1) : '书';
-  }
-
   // ---------------------------------------------------------------- 界面
 
   build() {
+    ReaderMaterialPanel({
+      panelWidth: this.panelWidth,
+      panelHeight: this.panelHeight,
+      cornerRadius: 28,
+      darkMode: this.dark,
+      fallbackColor: this.panelColor
+    }) {
+      this.panelBody()
+    }
+  }
+
+  @Builder
+  panelBody() {
     Column() {
       Row({ space: AppSpacing.LG }) {
-        if (this.bookCover()) {
-          Image(this.bookCover())
-            .width(52)
-            .height(68)
-            .borderRadius(8)
-            .objectFit(ImageFit.Cover)
-        } else {
-          Text(this.bookInitial())
-            .fontSize(AppFontSize.HEADLINE)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(ThemeRuntime.onAccentColor())
-            .textAlign(TextAlign.Center)
-            .width(52)
-            .height(68)
-            .borderRadius(ThemeRuntime.mediumRadius())
-            .backgroundColor(this.accentColor)
-        }
+        BookCover({
+          bookUrl: this.book?.bookUrl || '', origin: this.book?.origin || '',
+          name: this.book?.name || '', author: this.book?.author || '',
+          coverUrl: this.book?.coverUrl || '', customCoverUrl: this.book?.customCoverUrl || '',
+          placeholderColor: this.accentColor, cornerRadius: 8
+        })
+          .width(52)
+          .height(68)
+          .accessibilityText('查看书籍详情')
+          .onClick(() => this.onOpenBookDetail())
 
         Column({ space: AppSpacing.XS }) {
           Text(this.book?.name || '目录')
@@ -726,6 +787,8 @@ export struct ReaderTocPanel {
             .fontColor(this.textColor)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .accessibilityText(`${this.book?.name || '书籍'}，查看详情`)
+            .onClick(() => this.onOpenBookDetail())
           Text(this.book?.author || '未知作者')
             .fontSize(AppFontSize.CAPTION)
             .fontColor(this.subTextColor)
@@ -778,19 +841,9 @@ export struct ReaderTocPanel {
         this.bookmarkList()
       }
     }
-    .width(this.panelWidth)
-    .height(this.panelHeight)
-    .borderRadius(ThemeRuntime.glassCornerRadius(28, 'panel'))
+    .width('100%')
+    .height('100%')
     .clip(true)
-    .backgroundColor(this.panelColor)
-    .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-    .border({ width: ThemeRuntime.glassBorderWidth('panel'), color: this.panelBorderColor })
-    .shadow({
-      radius: ThemeRuntime.glassShadowRadius('panel'),
-      color: this.panelShadowColor,
-      offsetX: ThemeRuntime.glassShadowOffsetX('panel'),
-      offsetY: ThemeRuntime.glassShadowOffsetY('panel')
-    })
   }
 
   @Builder
@@ -852,25 +905,21 @@ export struct ReaderTocPanel {
             .accessibilityText(this.quickJumpArmed ? '再次点击输入目标章节' : '点击回到当前章节')
             .onClick(() => this.handleCurrentPositionClick())
         }
-        Stack({ alignContent: Alignment.Center }) {
-          Column({ space: 0 }) {
-            SymbolGlyph($r('sys.symbol.chevron_up'))
-              .fontSize(11)
-              .fontColor([this.reverseOrder ? this.accentColor : this.textColor])
-            SymbolGlyph($r('sys.symbol.chevron_down'))
-              .fontSize(11)
-              .fontColor([this.reverseOrder ? this.accentColor : this.textColor])
-          }
-          .alignItems(HorizontalAlign.Center)
-        }
-        .width(34)
-        .height(34)
-        .borderRadius(17)
-        .backgroundColor(this.reverseOrder ? (this.dark ? '#24384A' : '#E8F1FF') :
-          (ThemeRuntime.softFillColor(this.dark)))
-        .accessibilityText(this.reverseOrder ? '切换为正序目录' : '切换为倒序目录')
-        .onClick(() => this.toggleOrder())
-        .margin({ left: AppSpacing.XS })
+        ImmersiveBackButton({
+          icon: $r('sys.symbol.text_arrow_up_and_down'),
+          iconOffsetX: 0,
+          iconColor: this.reverseOrder ? this.accentColor : this.textColor,
+          darkMode: this.dark,
+          buttonSize: 34,
+          containerWidth: 34,
+          containerHeight: 34,
+          startInset: 0,
+          materialScale: 0.7,
+          compactLayout: true,
+          accessibilityLabel: this.reverseOrder ? '切换为正序目录' : '切换为倒序目录',
+          onBack: () => this.toggleOrder()
+        })
+          .margin({ left: AppSpacing.XS })
         Blank()
           .layoutWeight(1)
         if (this.isSearchActive()) {
@@ -882,6 +931,23 @@ export struct ReaderTocPanel {
             .textAlign(TextAlign.Center)
             .borderRadius(ThemeRuntime.buttonRadius())
             .backgroundColor(ThemeRuntime.softFillColor(this.dark))
+        }
+        if (this.showTocRuleButton) {
+          ImmersiveBackButton({
+            icon: $r('sys.symbol.ruler'),
+            iconOffsetX: 0,
+            iconColor: this.tocRuleHint ? this.accentColor : this.textColor,
+            darkMode: this.dark,
+            buttonSize: 34,
+            containerWidth: 34,
+            containerHeight: 34,
+            startInset: 0,
+            materialScale: 0.7,
+            compactLayout: true,
+            accessibilityLabel: '目录规则',
+            onBack: () => this.onOpenTocRules()
+          })
+            .margin({ left: AppSpacing.MD })
         }
         ImmersiveBackButton({
           icon: $r('sys.symbol.arrow_clockwise'),
@@ -918,6 +984,31 @@ export struct ReaderTocPanel {
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
+
+      if (this.tocRuleHint && !this.isSearchActive()) {
+        Row({ space: AppSpacing.SM }) {
+          Text(this.tocRuleHint)
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.dark ? '#F2B766' : '#8A4500')
+            .layoutWeight(1)
+          Text('换个规则')
+            .fontSize(AppFontSize.CAPTION)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.accentColor)
+            .padding({ top: AppSpacing.XS, bottom: AppSpacing.XS })
+            .onClick(() => this.onOpenTocRules())
+          SymbolGlyph($r('sys.symbol.xmark'))
+            .fontSize(14)
+            .fontColor([this.dark ? '#F2B766' : '#8A4500'])
+            .padding(AppSpacing.XS)
+            .accessibilityText('不再提示')
+            .onClick(() => this.onDismissTocRuleHint())
+        }
+        .width('100%')
+        .padding({ left: AppSpacing.MD, right: AppSpacing.SM, top: AppSpacing.SM, bottom: AppSpacing.SM })
+        .borderRadius(12)
+        .backgroundColor(this.dark ? '#3A2C1A' : '#FFF3E6')
+      }
 
       if (this.searchVisible) {
         Row({ space: AppSpacing.MD }) {
@@ -987,7 +1078,9 @@ export struct ReaderTocPanel {
             .padding({ top: 44, bottom: 44 })
           }
         }
-        ForEach(this.visibleChapters, (chapter: BookChapter, localIndex: number) => {
+        // ForEach 会复用同一章节的节点；筛选后旧回调里的 localIndex 不再对应新列表。
+        // 行内容、选中态和跳转始终使用章节自身的索引。
+        ForEach(this.visibleChapters, (chapter: BookChapter) => {
           ListItem() {
             Column() {
             if (BookChapter.volumeTitleOf(chapter)) {
@@ -1001,18 +1094,18 @@ export struct ReaderTocPanel {
                 .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.SM })
             }
             Row({ space: AppSpacing.MD }) {
-              Text(this.globalIndex(localIndex) === this.currentChapterIndex ? '•' : '·')
-                .fontSize(this.globalIndex(localIndex) === this.currentChapterIndex ? 22 : 18)
-                .fontColor(this.globalIndex(localIndex) === this.currentChapterIndex ?
+              Text(chapter.index === this.currentChapterIndex ? '•' : '·')
+                .fontSize(chapter.index === this.currentChapterIndex ? 22 : 18)
+                .fontColor(chapter.index === this.currentChapterIndex ?
                   this.accentColor : this.subTextColor)
                 .width(18)
                 .textAlign(TextAlign.Center)
 
-              Text(this.chapterTitle(this.globalIndex(localIndex)))
+              Text(this.chapterTitle(chapter.index))
                 .fontSize(AppFontSize.BODY_LARGE)
-                .fontWeight(this.globalIndex(localIndex) === this.currentChapterIndex ?
+                .fontWeight(chapter.index === this.currentChapterIndex ?
                   FontWeight.Medium : FontWeight.Regular)
-                .fontColor(this.titleColor(chapter, this.globalIndex(localIndex)))
+                .fontColor(this.titleColor(chapter, chapter.index))
                 .maxLines(2)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .layoutWeight(1)
@@ -1028,14 +1121,14 @@ export struct ReaderTocPanel {
             }
             .width('100%')
             .padding({ left: AppSpacing.LG, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
-            .backgroundColor(this.globalIndex(localIndex) === this.currentChapterIndex ?
+            .backgroundColor(chapter.index === this.currentChapterIndex ?
               this.selectedColor : Color.Transparent)
             .border({ width: { bottom: 0.5 }, color: ThemeRuntime.softFillColor(this.dark) })
-            .onClick(() => this.onJumpToChapter(this.globalIndex(localIndex)))
+            .onClick(() => this.onJumpToChapter(chapter.index))
             }
           }
-        }, (chapter: BookChapter, localIndex: number) =>
-          `${this.orderRevision}_${this.globalIndex(localIndex)}_${chapter.url || chapter.title}`)
+        }, (chapter: BookChapter) =>
+          `${this.orderRevision}_${chapter.index}_${chapter.url || chapter.title}`)
       }
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       .width('100%')
@@ -1132,6 +1225,8 @@ export struct ReaderTocPanel {
 
   @Builder
   bookmarkList() {
+    // 粒子层与空状态、列表放在同一层：删掉最后一条书签切到空状态时，颗粒还要飘完。
+    Stack() {
     if (this.bookmarks.length === 0) {
       Column({ space: AppSpacing.LG }) {
         SymbolGlyph($r('sys.symbol.bookmark'))
@@ -1144,8 +1239,8 @@ export struct ReaderTocPanel {
           .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor)
       }
-      .layoutWeight(1)
       .width('100%')
+      .height('100%')
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
     } else {
@@ -1184,12 +1279,20 @@ export struct ReaderTocPanel {
         }, (bookmark: Bookmark) => `${bookmark.id}`)
       }
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .layoutWeight(1)
       .width('100%')
+      .height('100%')
       .clip(true)
       .scrollBar(BarState.Auto)
       .scrollBarColor(this.dark ? '#668A8F98' : '#667A6F63')
     }
+
+    if (this.deleteParticleBursts.length > 0) {
+      DeleteParticleLayer({ bursts: this.deleteParticleBursts })
+    }
+    }
+    .id('reader_bookmark_list_root')
+    .layoutWeight(1)
+    .width('100%')
   }
 
   @Builder
@@ -1226,6 +1329,11 @@ export struct ReaderTocPanel {
     .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
     .backgroundColor(this.selectedBookmarkIds.includes(bookmark.id) ? this.selectedColor : Color.Transparent)
     .border({ width: { bottom: 0.5 }, color: ThemeRuntime.softFillColor(this.dark) })
+    .opacity(ListDissolve.opacity(this.isBookmarkDissolving(bookmark)))
+    .scale(ListDissolve.scale(this.isBookmarkDissolving(bookmark)))
+    .blur(ListDissolve.blur(this.isBookmarkDissolving(bookmark)))
+    .hitTestBehavior(this.isBookmarkDissolving(bookmark) ? HitTestMode.None : HitTestMode.Default)
+    .id(this.bookmarkCardElementId(`${bookmark.id}`))
     .onClick(() => {
       if (this.bookmarkMultiSelectMode) this.toggleBookmarkSelection(bookmark.id)
       else this.onJumpToBookmark(bookmark)

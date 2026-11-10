@@ -103,11 +103,16 @@ assert.equal(bindings.VerificationSupport.pickVerificationUrl(verifySource,
 assert.equal(bindings.VerificationSupport.pickVerificationUrl(verifySource,
   'https://example.test/search', '', '<input type="password">', 200), 'https://example.test/login');
 // Exercise production cookie/header preparation and diagnostics, replacing only transport.
+load('core/http/HttpHeaderValues.ts', ['HttpHeaderValues']);
 load('core/http/HttpClient.ts', ['DiagnosticHttpClient'], { HttpClient: 'DiagnosticHttpClient' });
 const cookieRequests = [];
 const cookieClient = new bindings.DiagnosticHttpClient();
+// The transport (HTTP or WebView) prepares headers; emulate it with the production helpers.
 cookieClient.executeInternal = async request => {
-  cookieRequests.push(request);
+  const headers = cookieClient.requestHeaders(request.headers);
+  cookieClient.applyRequestCookies(request, headers);
+  request.observedRequestHeaders = headers;
+  cookieRequests.push({ ...request, headers });
   return { success: true, statusCode: 200, body: 'ok', headers: {}, url: request.url };
 };
 bindings.CookieStore.getCookie = url => url.startsWith('https://example.test/') ? 'session=private-value' : '';
@@ -184,6 +189,7 @@ load('core/book/ReaderImageMarker.ts', ['ReaderImageMarker']);
 load('core/book/ReaderActionMarker.ts', ['ReaderActionMarker']);
 // 图片物化属于漫画缓存路径，本脚本只验证正文文本：替身保持原地址，且不声明任何请求上下文。
 Object.assign(bindings, {
+  ReaderImageRequest: class { static DEFAULT = new this(); deferred = false; priority = () => 0; hold() {} release() {} },
   ComicImagePipeline: {
     contextFromSource() { return { referer: '', headers: {}, isEmpty: () => true }; },
     async materialize(_http, _source, raw) { return raw; }

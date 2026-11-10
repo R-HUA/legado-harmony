@@ -25,11 +25,17 @@ export class CloudSyncConflict {
 }
 
 export class CloudSyncAcknowledgement {
+  error: CloudSyncOperationError | null = null;
   opId: string = '';
   accepted: boolean = false;
   revision: number = 0;
   sequenceId: number | null = null;
   conflict: CloudSyncConflict | null = null;
+}
+
+export class CloudSyncOperationError {
+  code: string = '';
+  message: string = '';
 }
 
 export class CloudSyncChange {
@@ -69,4 +75,6 @@ export class CloudSyncDeviceListResponse {
 
 export class CloudSyncSummary {
   activeEntityCount: number = 0;
+  sourceCount: number = 0;
+  membershipLimitsEnabled: boolean = false;
 }

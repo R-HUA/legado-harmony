@@ -1,11 +1,8 @@
 {
   "apiType": "stageMode",
   "buildOption": {
-    "arkOptions": {
-      "runtimeOnly": {
-        "sources": [],
-        "packages": []
-      }
+    "sourceOption": {
+      "workers": ["./src/main/ets/workers/ComicColorWorker.ets", "./src/main/ets/workers/LocalTtsWorker.ets"]
     }
   },
   "buildOptionSet": [
@@ -14,9 +11,13 @@
       "arkOptions": {
         "obfuscation": {
           "ruleOptions": {
-            "enable": false,
-            "files": []
+            "enable": false
           }
+        }
+      },
+      "nativeLib": {
+        "filter": {
+          "excludes": ["**/x86_64/*.so"]
         }
       }
     }
@@ -25,6 +26,20 @@
     {
       "name": "default",
       "runtimeOS": "HarmonyOS"
+    },
+    {
+      "name": "ohosTest"
+    }
+  ],
+  "buildModeBinder": [
+    {
+      "buildModeName": "release",
+      "mappings": [
+        {
+          "targetName": "default",
+          "buildOptionName": "release"
+        }
+      ]
     }
   ]
 }

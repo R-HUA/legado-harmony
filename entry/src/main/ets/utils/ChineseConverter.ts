@@ -4,8 +4,10 @@ import { util } from '@kit.ArkTS';
 /**
  * 繁简转换（参考 HapeLee/legado-with-MD3 的 ChineseUtils 设计）：
  * 全局阅读设置 chineseConverterType 驱动（0 不转换 / 1 繁转简 / 2 简转繁），
- * 词典数据来自 OpenCC ver.1.1.9 文本词典（TSCharacters/TSPhrases、STCharacters/STPhrases），
- * 先按词组最长匹配，再按单字映射；规则引擎的 java.t2s / java.s2t 与阅读正文共用本模块。
+ * 词典数据来自 OpenCC ver.1.1.9 文本词典（TSCharacters/TSPhrases、STCharacters/STPhrases、TWVariants），
+ * 先按词组最长匹配，再按单字映射。本模块是应用内唯一的简繁转换实现：阅读正文与章节名、
+ * 规则引擎的 java.t2s / java.s2t、搜索关键词的台湾用字变体，以及 aiengine 的漫画文字层
+ * （经 AiRuntime 注入的宿主接口）都走这里。
  */
 
 export interface ChineseDictionary {
@@ -18,30 +20,20 @@ export interface ChineseDictionary {
 export const CHINESE_CONVERTER_OFF: number = 0;
 export const CHINESE_CONVERTER_T2S: number = 1;
 export const CHINESE_CONVERTER_S2T: number = 2;
+/** 内部方向：简→繁后再换台湾用字（OpenCC s2tw = STPhrases/STCharacters + TWVariants），只给搜索关键词用。 */
+export const CHINESE_CONVERTER_S2TW: number = 3;
 
 const CHARS_PER_PARSE_SLICE: number = 8000;
 
 /**
- * MD3 版 fixT2sDict 的排除词表：这些词的词组级转换（多为地区词映射）在小说阅读
- * 场景下属于过度转换（如「雪梨」「芝士」「明瞭」），命中词组表时跳过、保留单字转换。
+ * t2s 词组排除表（沿用 MD3 版 fixT2sDict 的机制）。
+ *
+ * 2026-11 按 TSPhrases.txt（OpenCC 1.1.9）审计原 MD3 列表：112 项里 109 项根本不在 TSPhrases 中
+ * （MD3 的列表针对港台地区词表，对 t2s 无效），只有「明覆」「明瞭」「沈船」命中，而它们的词组
+ * 结果（明复/明了/沉船）恰是正确转换，排除后反而保留繁体原字。因此清空列表、保留机制；
+ * scripts/chinese-converter-check.mjs 校验此处每一项都真实存在于 t2s 词组表中。
  */
-const T2S_EXCLUDED_PHRASES: string[] = [
-  '槃',
-  '划槳', '列根', '雪梨', '雪糕', '多士', '起司', '芝士', '沙芬', '母音',
-  '华乐', '民乐', '晶元', '晶片', '映像', '明覆', '明瞭', '新力', '新喻',
-  '零錢', '零钱', '離線', '碟片', '模組', '桌球', '案頭', '機車', '電漿',
-  '鳳梨', '魔戒', '載入', '菲林', '整合', '變數', '解碼', '散钱', '插水',
-  '房屋', '房价', '快取', '德士', '建立', '常式', '席丹', '布殊', '布希',
-  '巴哈', '巨集', '夜学', '向量', '半形', '加彭', '列印', '函式', '全形',
-  '光碟', '介面', '乳酪', '沈船', '永珍', '演化', '牛油', '相容', '磁碟',
-  '菲林', '規則', '酵素', '雷根', '饭盒',
-  '路易斯', '非同步', '出租车', '周杰倫', '马铃薯', '馬鈴薯', '機械人', '電單車',
-  '電扶梯', '音效卡', '飆車族', '點陣圖', '個入球', '顆進球', '沃尓沃', '晶片集',
-  '斯瓦巴', '斜角巷', '战列舰', '快速面', '希特拉', '太空梭', '吐瓦魯', '吉布堤',
-  '吉布地', '史太林', '南冰洋', '区域网', '波札那', '解析度', '酷洛米', '金夏沙',
-  '魔獸紀元', '高空彈跳', '铁达尼号', '太空战士', '埃及妖后', '吉里巴斯', '附加元件',
-  '魔鬼終結者', '純文字檔案', '奇幻魔法Melody', '列支敦斯登'
-];
+export const T2S_EXCLUDED_PHRASES: string[] = [];
 
 export function createEmptyChineseDictionary(): ChineseDictionary {
   return {
@@ -123,6 +115,45 @@ export function convertWithChineseDictionary(text: string, dict: ChineseDictiona
   return out.join('');
 }
 
+/**
+ * 等长转换：结果与原文 UTF-16 长度逐位对齐（阅读进度偏移、查找高亮都按原文位置记）。
+ * 会改变长度的词组（如映射到扩展区汉字）跳过并退回单字；会改变长度的单字保留原字。
+ */
+export function convertWithChineseDictionarySameLength(text: string, dict: ChineseDictionary): string {
+  if (!text || (dict.chars.size === 0 && dict.phrases.size === 0)) return text;
+  const units = Array.from(text);
+  const out: string[] = [];
+  const maxLen = dict.maxPhraseLength;
+  const sameChar = (ch: string): string => {
+    const mapped = dict.chars.get(ch);
+    return mapped !== undefined && mapped.length === ch.length ? mapped : ch;
+  };
+  for (let i = 0; i < units.length; i++) {
+    const ch = units[i];
+    if (maxLen < 2 || !dict.phraseStarts.has(ch)) {
+      out.push(sameChar(ch));
+      continue;
+    }
+    const limit = Math.min(maxLen, units.length - i);
+    let consumed = 0;
+    for (let len = limit; len >= 2; len--) {
+      const candidate = units.slice(i, i + len).join('');
+      const target = dict.phrases.get(candidate);
+      if (target !== undefined && target.length === candidate.length) {
+        out.push(target);
+        consumed = len;
+        break;
+      }
+    }
+    if (consumed > 0) {
+      i += consumed - 1;
+      continue;
+    }
+    out.push(sameChar(ch));
+  }
+  return out.join('');
+}
+
 interface DictionarySource {
   charsPath: string;
   phrasesPath: string;
@@ -142,6 +173,9 @@ export class ChineseConverter {
   private static rememberedContext: common.Context | null = null;
   private static readonly dictionaries: Record<number, ChineseDictionary | null> = { 1: null, 2: null };
   private static readonly loadingPromises: Record<number, Promise<void> | null> = { 1: null, 2: null };
+  private static readonly TW_VARIANTS_PATH: string = 'chinese/tw_variants.txt';
+  private static twVariants: ChineseDictionary | null = null;
+  private static twVariantsLoading: Promise<void> | null = null;
 
   static normalizeType(converterType: number): number {
     const value = Math.round(Number(converterType));
@@ -187,6 +221,54 @@ export class ChineseConverter {
       return text;
     }
     return convertWithChineseDictionary(text, dict);
+  }
+
+  /** 等长同步转换（见 convertWithChineseDictionarySameLength）；词典未就绪时原样返回并触发后台加载。 */
+  static convertTextSameLength(text: string, converterType: number): string {
+    const type = ChineseConverter.normalizeType(converterType);
+    if (!text || type === CHINESE_CONVERTER_OFF) return text;
+    const dict = ChineseConverter.dictionaries[type];
+    if (!dict) {
+      ChineseConverter.ensureLoaded(null, type).catch(() => {});
+      return text;
+    }
+    return convertWithChineseDictionarySameLength(text, dict);
+  }
+
+  static isTaiwanLoaded(): boolean {
+    return ChineseConverter.isLoaded(CHINESE_CONVERTER_S2T) && ChineseConverter.twVariants !== null;
+  }
+
+  /** 加载简→繁词典与台湾用字变体表。 */
+  static async ensureTaiwanLoaded(context: common.Context | null): Promise<void> {
+    await ChineseConverter.ensureLoaded(context, CHINESE_CONVERTER_S2T);
+    if (ChineseConverter.twVariants || !ChineseConverter.rememberedContext) return;
+    if (!ChineseConverter.twVariantsLoading) {
+      const ctx = ChineseConverter.rememberedContext;
+      ChineseConverter.twVariantsLoading = ChineseConverter.readRawText(ctx, ChineseConverter.TW_VARIANTS_PATH)
+        .then((text: string): void => {
+          const dict = createEmptyChineseDictionary();
+          applyChineseDictionaryLines(dict, text ? text.split('\n') : [], 0, Number.MAX_SAFE_INTEGER, false, null);
+          ChineseConverter.twVariants = dict;
+        }).catch((error: Error): void => {
+          console.warn('台湾用字变体表加载失败:', error);
+        }).then((): void => {
+          ChineseConverter.twVariantsLoading = null;
+        });
+    }
+    await ChineseConverter.twVariantsLoading;
+  }
+
+  /** 简→繁（台湾用字）：先 s2t 词组/单字，再按 TWVariants 换字。词典未就绪时原样返回并触发后台加载。 */
+  static convertTaiwan(text: string): string {
+    if (!text) return text;
+    const variants = ChineseConverter.twVariants;
+    const s2t = ChineseConverter.dictionaries[CHINESE_CONVERTER_S2T];
+    if (!variants || !s2t) {
+      ChineseConverter.ensureTaiwanLoaded(null).catch(() => {});
+      return text;
+    }
+    return convertWithChineseDictionary(convertWithChineseDictionary(text, s2t), variants);
   }
 
   private static yieldToEventLoop(): Promise<void> {

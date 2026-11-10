@@ -12,6 +12,13 @@ import { ReaderImageMarker } from './ReaderImageMarker';
 import { LocalChapterContentLoader } from './LocalChapterContentLoader';
 import { EpubChapterPlanner, EpubPlannedChapter, EpubTocEntry } from './EpubChapterPlanner';
 import { EpubConvertResult, EpubHtmlConverter } from './EpubHtmlConverter';
+import { EpubTextOffsetMap } from './EpubTextOffsetMap';
+import { MobiImportTask } from '../concurrency/MobiImportTask';
+import { PdfBookService } from './pdf/PdfBookService';
+import { LocalArchiveImport } from './LocalArchiveImport';
+import { TxtChapterMatcher, TxtTocResolvedRule, TxtTocRules } from './TxtTocRules';
+import { TxtTocRuleStore } from '../../utils/TxtTocRuleStore';
+
 
 export class LocalBookExportResult {
   savedCount: number = 0;
@@ -28,6 +35,19 @@ export class LocalBookScanResult {
   discovered: number = 0;
   imported: number = 0;
   failed: number = 0;
+  failures: string[] = [];
+  /** Files whose content is already on the shelf; nothing was imported for them. */
+  duplicates: string[] = [];
+}
+
+class LocalImportOutcome {
+  book: Book;
+  duplicate: boolean;
+
+  constructor(book: Book, duplicate: boolean) {
+    this.book = book;
+    this.duplicate = duplicate;
+  }
 }
 
 class LocalChapterData {
@@ -62,6 +82,13 @@ class EpubPackageData {
   isComic: boolean = false;
 }
 
+class LocalSpineFile {
+  path: string = '';
+  isImage: boolean = false;
+  /** spine 里 linear="no" 的辅助内容。 */
+  nonLinear: boolean = false;
+}
+
 class LocalBookMetadata {
   title: string = '';
   author: string = '';
@@ -76,39 +103,107 @@ class LocalTxtImportResult {
   chapterCount: number = 0;
   latestTitle: string = '';
   intro: string = '';
+  /** 不到 TxtTocRules.SHORT_CHAPTER_CHARS 字的章节数。 */
+  shortCount: number = 0;
+  /** 每章正文在全书里的起始字符位置。 */
+  chapterStarts: number[] = [];
+  chapterTitles: string[] = [];
+}
+
+export class TxtTocPreviewItem {
+  title: string = '';
+  length: number = 0;
+}
+
+/** 用某条规则试分章的结果，不写数据库。 */
+export class TxtTocPreview {
+  chapterCount: number = 0;
+  totalChars: number = 0;
+  shortCount: number = 0;
+  /** 是否一个标题都没认出来（整本书只能按长度自动分段）。 */
+  noTitleMatched: boolean = false;
+  items: TxtTocPreviewItem[] = [];
 }
 
 export class LocalBookService {
   static readonly ORIGIN: string = 'local';
   static readonly TYPE_TXT: number = 1;
   static readonly TYPE_EPUB: number = 2;
+  static readonly TYPE_PDF: number = 4;
   static readonly LOCAL_CONTENT_HASH_KEY: string = 'localContentHash';
   static readonly EPUB_IMAGE_MARKER_PREFIX: string = ReaderImageMarker.PREFIX;
   static readonly EPUB_IMAGE_MARKER_SUFFIX: string = ReaderImageMarker.SUFFIX;
 
   private static readonly TXT_PARSER_VERSION: string = '10';
-  private static readonly EPUB_PARSER_VERSION: string = '9';
+  // 10 / 2：注释编号换成可点的注释标记。
+  private static readonly EPUB_PARSER_VERSION: string = '10';
+  private static readonly MOBI_PARSER_VERSION: string = '2';
+  /** 导入时同时预读的正文文件数。 */
+  private static readonly IMPORT_READ_AHEAD: number = 4;
+  /** 导入转换连续占用主线程的时长上限，超过后让出一次。 */
+  private static readonly IMPORT_SLICE_MS: number = 32;
+
+  /** 可导入的本地书格式。MOBI 解析后与 EPUB 一样按解压目录阅读，书籍类型同为 TYPE_EPUB。 */
+  static readonly SUPPORTED_FORMATS: string[] = ['txt', 'epub', 'mobi', 'pdf'];
+  static readonly UNSUPPORTED_FORMAT_MESSAGE: string = '仅支持 TXT、EPUB、MOBI 和 PDF 文件';
   private static readonly TXT_READ_CHUNK_BYTES: number = 256 * 1024;
   private static readonly TXT_MAX_CHAPTER_CHARS: number = 32 * 1024;
   private static readonly TXT_DB_BATCH_SIZE: number = 16;
   private static readonly TXT_CHARSET_OVERRIDE_KEY: string = 'localCharsetOverride';
   private static readonly LOCAL_INTRO_TARGET_LENGTH: number = 96;
-  private static readonly TXT_RULE_TOP_LEVEL: string =
-    '^(?:扉页|正文|目录|[序引前楔][言子]?|(?:内容|文章|书籍|作品|作者)?简介|作品相关|后记|尾声|' +
-    '卷[首尾末](?:语|总结|感言)|最?[上中下序引终末][章卷篇幕回节册季话集]|' +
-    '第\\s*[\\dO零〇一两二三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟萬]{1,12}\\s*' +
-    '[章卷页季回幕册话段篇节集部](?:\\s+|[：:、._—-]\\s*)?.{0,30}|' +
-    '[\\dO零〇一两二三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟萬]{1,12}\\s*' +
-    '[章卷页季回幕册话段篇节集部](?:(?:\\s+|[：:、._—-]\\s*).{1,30})?|' +
-    '[章卷篇节幕回册话段季集部]\\s*[\\dO零〇一两二三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟萬]{1,12}' +
-    '(?:\\s+|[：:、._—-]\\s*)?.{0,30}|' +
-    '[\\dO零〇一两二三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟萬]{1,12}\\s*[｜、_|：:；;–.·—-]\\s*' +
-    '[^\\s].{0,30}|(?:chapter|part|volume|book)\\s+[0-9ivxlcdm]+(?:\\s+|[：:._—-]\\s*)?.{0,30}|' +
-    '[-·.–—_*＊~～=]{2,}\\s*.{1,35}\\s*[-·.–—_*＊~～=]{2,})$';
-  private static readonly TXT_RULE_PUNCTUATION_ONLY: string =
-    '^[\\s\\u0000-\\u001F\\u007F-\\u009F\\x21-\\x2F\\x3A-\\x40\\x5B-\\x60\\x7B-\\x7E' +
-    '\\u2000-\\u206F\\u2100-\\u2BFF\\u2E00-\\u2E7F\\u3000-\\u303F\\uFE10-\\uFE1F' +
-    '\\uFE30-\\uFE4F\\uFF01-\\uFF0F\\uFF1A-\\uFF20\\uFF3B-\\uFF40\\uFF5B-\\uFF65]+$';
+  /** 本书用的目录规则引用（见 TxtTocRules.ref），空串表示智能识别。 */
+  static readonly TXT_TOC_RULE_KEY: string = 'localTocRule';
+  private static readonly TXT_TOC_SHORT_KEY: string = 'localTocShortChapters';
+  private static readonly TXT_TOC_COUNT_KEY: string = 'localTocChapterCount';
+  private static readonly TXT_TOC_HINT_DISMISSED_KEY: string = 'localTocHintDismissed';
+
+  static isSupportedFormat(format: string): boolean {
+    return LocalBookService.SUPPORTED_FORMATS.includes((format || '').toLowerCase());
+  }
+
+  static bookTypeForFormat(format: string): number {
+    const value = (format || '').toLowerCase();
+    if (value === 'pdf') return LocalBookService.TYPE_PDF;
+    return value === 'epub' || value === 'mobi' ? LocalBookService.TYPE_EPUB : LocalBookService.TYPE_TXT;
+  }
+
+  /** 本地书的格式；早期导入没有记录 localFormat 时按书籍类型推断。 */
+  static formatOf(book: Book): string {
+    return (book.getVariable('localFormat') ||
+      (book.type === LocalBookService.TYPE_PDF ? 'pdf' : book.type === LocalBookService.TYPE_EPUB ? 'epub' : 'txt')).toLowerCase();
+  }
+
+  static isPdfBook(book: Book | null): boolean {
+    return !!book && book.origin === LocalBookService.ORIGIN && LocalBookService.formatOf(book) === 'pdf';
+  }
+
+  /**
+   * 书籍变量：这本 EPUB 用哪种排版打开。'1' 文件排版（原版 CSS，网页组件渲染），'0' 应用排版；
+   * 空表示用户还没选过，按默认用文件排版。用户在阅读页切换后记住选择。
+   */
+  static readonly EPUB_ORIGINAL_LAYOUT_KEY: string = 'epubOriginalLayout';
+  static readonly EPUB_LAYOUT_FILE: string = '1';
+  static readonly EPUB_LAYOUT_APP: string = '0';
+
+  /** 能用文件排版的书：本地 EPUB 的文字书（漫画仍走漫画阅读）。 */
+  static canUseEpubOriginalLayout(book: Book | null): boolean {
+    return !!book && book.origin === LocalBookService.ORIGIN && book.type === LocalBookService.TYPE_EPUB &&
+      LocalBookService.formatOf(book) === 'epub' && book.getVariable('readerComicMode') !== '1' &&
+      book.getVariable('readerComicManualMode') !== 'comic';
+  }
+
+  /** 默认用文件排版；用户选过应用排版的书（'0'）才走普通阅读页。 */
+  static usesEpubOriginalLayout(book: Book | null): boolean {
+    return LocalBookService.canUseEpubOriginalLayout(book) &&
+      book?.getVariable(LocalBookService.EPUB_ORIGINAL_LAYOUT_KEY) !== LocalBookService.EPUB_LAYOUT_APP;
+  }
+
+  private static parserVersionFor(format: string): string {
+    if (format === 'pdf') return PdfBookService.PARSER_VERSION;
+    if (format === 'epub') return LocalBookService.EPUB_PARSER_VERSION;
+    if (format === 'mobi') return LocalBookService.MOBI_PARSER_VERSION;
+    return LocalBookService.TXT_PARSER_VERSION;
+  }
 
   static isLocalBook(book: Book): boolean {
     return book.origin === LocalBookService.ORIGIN;
@@ -164,7 +259,7 @@ export class LocalBookService {
     book.putVariable('localParserVersion', 'importing');
     await appDb.updateBook(book);
     try {
-      await LocalBookService.rebuildTxtBook(book, localPath);
+      await LocalBookService.rebuildTxtBook(context, book, localPath);
     } catch (e) {
       book.putVariable(LocalBookService.TXT_CHARSET_OVERRIDE_KEY, previousOverride);
       book.charset = previousCharset;
@@ -174,6 +269,105 @@ export class LocalBookService {
       console.error('[LocalBookService] Failed to rebuild TXT with selected charset', e);
       throw new Error('TXT 字符编码重新解析失败');
     }
+  }
+
+  static isLocalTxtBook(book: Book | null): boolean {
+    return !!book && LocalBookService.isLocalBook(book) && book.type === LocalBookService.TYPE_TXT;
+  }
+
+  static getTxtTocRuleRef(book: Book | null): string {
+    if (!book || !LocalBookService.isLocalTxtBook(book)) return '';
+    return book.getVariable(LocalBookService.TXT_TOC_RULE_KEY) || '';
+  }
+
+  /**
+   * 目录里短章太多、而用户还没为这本书选过规则时，提示可能把正文认成了标题。
+   * 统计在解析时记下；从没按新版解析过的书不提示。
+   */
+  static shouldHintTxtToc(book: Book | null): boolean {
+    if (!book || !LocalBookService.isLocalTxtBook(book)) return false;
+    if (book.getVariable(LocalBookService.TXT_TOC_RULE_KEY) ||
+      book.getVariable(LocalBookService.TXT_TOC_HINT_DISMISSED_KEY) === '1') return false;
+    const shortCount = Number(book.getVariable(LocalBookService.TXT_TOC_SHORT_KEY));
+    const count = Number(book.getVariable(LocalBookService.TXT_TOC_COUNT_KEY));
+    return LocalBookService.looksOverSplit(shortCount, count);
+  }
+
+  static txtTocShortChapterCount(book: Book | null): number {
+    const value = Number(book?.getVariable(LocalBookService.TXT_TOC_SHORT_KEY));
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  static looksOverSplit(shortCount: number, chapterCount: number): boolean {
+    return Number.isFinite(shortCount) && Number.isFinite(chapterCount) && shortCount >= 10 &&
+      shortCount >= chapterCount * 0.15;
+  }
+
+  static async dismissTxtTocHint(context: Context, book: Book): Promise<void> {
+    await appDb.initWithContext(context);
+    book.putVariable(LocalBookService.TXT_TOC_HINT_DISMISSED_KEY, '1');
+    await appDb.updateBook(book);
+  }
+
+  /** 换用另一条目录规则并重新解析；阅读位置按全书字符位置换算到新章节上。失败时恢复原规则。 */
+  static async setTxtTocRule(context: Context, book: Book, ref: string): Promise<void> {
+    if (!LocalBookService.isLocalTxtBook(book)) throw new Error('仅本地 TXT 书籍支持目录规则');
+    const localPath = book.getVariable('localFilePath');
+    if (!localPath || !LocalBookService.exists(localPath)) {
+      throw new Error('本地 TXT 文件不存在，请重新导入');
+    }
+    await appDb.initWithContext(context);
+    const previousRef = book.getVariable(LocalBookService.TXT_TOC_RULE_KEY);
+    // 明确选过规则（哪怕选回智能识别）就不再提示“可能切错了”。
+    book.putVariable(LocalBookService.TXT_TOC_HINT_DISMISSED_KEY, '1');
+    book.putVariable(LocalBookService.TXT_TOC_RULE_KEY, ref);
+    book.putVariable('localParserVersion', 'importing');
+    await appDb.updateBook(book);
+    try {
+      await LocalBookService.rebuildTxtBook(context, book, localPath, true);
+    } catch (e) {
+      book.putVariable(LocalBookService.TXT_TOC_RULE_KEY, previousRef);
+      book.putVariable('localParserVersion', 'importing');
+      await appDb.updateBook(book);
+      console.error('[LocalBookService] Failed to rebuild TXT with selected toc rule', e);
+      throw new Error('按新目录规则重新解析失败');
+    }
+  }
+
+  /** 用某条规则试着分章，只统计不落库；sampleCount 是返回的开头章节数。 */
+  static async previewTxtToc(context: Context, book: Book, ref: string,
+    sampleCount: number = 5): Promise<TxtTocPreview> {
+    return LocalBookService.previewTxtTocWithRule(book, await TxtTocRuleStore.resolve(context, ref), sampleCount);
+  }
+
+  /** 同 previewTxtToc，但直接给规则（编辑中还没保存的规则）。 */
+  static async previewTxtTocWithRule(book: Book, resolved: TxtTocResolvedRule,
+    sampleCount: number = 5): Promise<TxtTocPreview> {
+    if (!LocalBookService.isLocalTxtBook(book)) throw new Error('仅本地 TXT 书籍支持目录规则');
+    const localPath = book.getVariable('localFilePath');
+    if (!localPath || !LocalBookService.exists(localPath)) {
+      throw new Error('本地 TXT 文件不存在，请重新导入');
+    }
+    const charset = book.charset || LocalBookService.getTxtCharsetOverride(book) ||
+      await LocalBookService.detectTextFileCharset(localPath);
+    const matcher = new TxtChapterMatcher(resolved);
+    const preview = new TxtTocPreview();
+    let matchedTitle = false;
+    await LocalBookService.scanTxtChapters(localPath, charset, matcher,
+      async (title: string, body: string): Promise<void> => {
+        preview.chapterCount++;
+        preview.totalChars += body.length;
+        if (body.length < TxtTocRules.SHORT_CHAPTER_CHARS) preview.shortCount++;
+        if (!matcher.isWordSplit() && title !== '正文' && !title.startsWith('正文（')) matchedTitle = true;
+        if (preview.items.length < sampleCount) {
+          const item = new TxtTocPreviewItem();
+          item.title = title;
+          item.length = body.length;
+          preview.items.push(item);
+        }
+      });
+    preview.noTitleMatched = !matcher.isWordSplit() && !matchedTitle;
+    return preview;
   }
 
   static isEpubImageMarker(value: string): boolean {
@@ -229,7 +423,7 @@ export class LocalBookService {
     const options = new picker.DocumentSelectOptions();
     options.selectMode = picker.DocumentSelectMode.FILE;
     options.maxSelectNumber = 500;
-    options.fileSuffixFilters = ['电子书|.txt,.epub'];
+    options.fileSuffixFilters = ['电子书|.txt,.epub,.mobi,.pdf,.zip'];
     const result = await new picker.DocumentViewPicker(context).select(options);
     const paths: LocalBookFile[] = [];
     for (const uri of result) {
@@ -248,32 +442,137 @@ export class LocalBookService {
     await appDb.initWithContext(context);
     result.discovered = selected.length;
     for (const path of selected) {
+      if (LocalArchiveImport.isArchiveFormat(LocalBookService.extensionOf(path.uri))) {
+        await LocalBookService.importArchive(context, path, result);
+        continue;
+      }
       try {
-        await LocalBookService.importBook(context, path.uri);
-        result.imported++;
+        const outcome = await LocalBookService.importLocalFile(context, path.uri);
+        if (outcome.duplicate) {
+          result.duplicates.push(`${path.name || LocalBookService.displayName(path.uri)}（书架中为《${outcome.book.name}》）`);
+        } else {
+          result.imported++;
+        }
       } catch (e) {
         result.failed++;
+        result.failures.push(`${path.name || LocalBookService.displayName(path.uri)}：${e instanceof Error ? e.message : '文件读取失败'}`);
         console.error('[LocalBook] import failed:', path.uri, e);
       }
     }
     return result;
   }
 
+  /** 压缩包按包里的每本书计数；包本身打不开时算一次失败。 */
+  private static async importArchive(context: Context, archive: LocalBookFile,
+    result: LocalBookScanResult): Promise<void> {
+    const archiveName = archive.name || LocalBookService.displayName(archive.uri);
+    const workDir = `${context.cacheDir}/archive_import/${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+    try {
+      const extracted = await LocalArchiveImport.extractBooks(archive.uri, workDir, LocalBookService.SUPPORTED_FORMATS);
+      result.discovered += extracted.files.length + extracted.failures.length - 1;
+      for (const failure of extracted.failures) {
+        result.failed++;
+        result.failures.push(`${archiveName}/${failure}`);
+      }
+      if (extracted.files.length === 0 && extracted.failures.length === 0) {
+        result.failed++;
+        result.failures.push(`${archiveName}：压缩包内没有可导入的书籍`);
+      }
+      for (const file of extracted.files) {
+        try {
+          const outcome = await LocalBookService.importLocalFile(context, file.path, file.format, file.name,
+            file.identity);
+          if (outcome.duplicate) {
+            result.duplicates.push(`${file.name}（书架中为《${outcome.book.name}》）`);
+          } else {
+            result.imported++;
+          }
+        } catch (e) {
+          result.failed++;
+          result.failures.push(`${archiveName}/${file.name}：${e instanceof Error ? e.message : '文件读取失败'}`);
+          console.error('[LocalBook] archive entry import failed:', file.identity, e);
+        }
+      }
+    } catch (e) {
+      result.failed++;
+      result.failures.push(`${archiveName}：${e instanceof Error ? e.message : '压缩包读取失败'}`);
+      console.error('[LocalBook] archive import failed:', archive.uri, e);
+    } finally {
+      LocalArchiveImport.removeWorkDir(workDir);
+    }
+  }
+
   static async importExternalBook(context: Context, sourceUri: string,
     formatHint: string = '', sourceName: string = ''): Promise<Book> {
     await appDb.initWithContext(context);
-    const format = formatHint === 'txt' || formatHint === 'epub' ? formatHint :
+    const format = LocalBookService.isSupportedFormat(formatHint) ? formatHint.toLowerCase() :
       LocalBookService.extensionOf(sourceUri);
-    if (format !== 'txt' && format !== 'epub') {
-      throw new Error('仅支持 TXT 和 EPUB 文件');
+    if (!LocalBookService.isSupportedFormat(format)) {
+      throw new Error(LocalBookService.UNSUPPORTED_FORMAT_MESSAGE);
     }
-    return await LocalBookService.importBook(context, sourceUri, format, sourceName);
+    return (await LocalBookService.importLocalFile(context, sourceUri, format, sourceName)).book;
+  }
+
+  /**
+   * Importing the same file again through another path or as a copy reuses the shelf book with
+   * identical content instead of adding a second one. Re-importing the same URI still refreshes it.
+   */
+  private static async importLocalFile(context: Context, sourceUri: string,
+    formatHint: string = '', sourceName: string = '', identityUri: string = ''): Promise<LocalImportOutcome> {
+    const extension = (formatHint || LocalBookService.extensionOf(sourceUri)).toLowerCase();
+    if (!LocalBookService.isSupportedFormat(extension)) throw new Error(LocalBookService.UNSUPPORTED_FORMAT_MESSAGE);
+    let contentHash = '';
+    if (!await appDb.getBook(`local://${LocalBookService.hashText(identityUri || sourceUri)}`)) {
+      try {
+        contentHash = await LocalBookService.hashFile(sourceUri);
+      } catch (e) {
+        console.warn('[LocalBookService] Unable to fingerprint import source:', e);
+      }
+      const existing = await LocalBookService.findImportedBookByContentHash(contentHash);
+      if (existing) return new LocalImportOutcome(existing, true);
+    }
+    const book = await LocalBookService.importBook(context, sourceUri, extension, sourceName,
+      '', '', '', '', 0, 0, null, '', contentHash, identityUri);
+    return new LocalImportOutcome(book, false);
+  }
+
+  /** Only device-local imports count; WebDAV/OPDS copies are managed by their own libraries. */
+  private static async findImportedBookByContentHash(contentHash: string): Promise<Book | null> {
+    if (!contentHash) return null;
+    const books = await appDb.getAllBooks();
+    for (const book of books) {
+      if (LocalBookService.isLocalBook(book) && !book.getVariable('storageKind') &&
+        book.getVariable(LocalBookService.LOCAL_CONTENT_HASH_KEY) === contentHash &&
+        LocalBookService.exists(book.getVariable('localFilePath'))) {
+        return book;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 把云端下载的本地书导入到既有书架行（云端占位书）：沿用其书架地址、分组和阅读进度，
+   * 并清掉占位标记。
+   */
+  static async importCloudBook(context: Context, sourcePath: string, format: string, sourceName: string,
+    bookUrl: string, clearVariables: string[] = []): Promise<Book> {
+    if (!LocalBookService.isSupportedFormat(format)) throw new Error(LocalBookService.UNSUPPORTED_FORMAT_MESSAGE);
+    await appDb.initWithContext(context);
+    const previous = await appDb.getBook(bookUrl);
+    const book = await LocalBookService.importBook(context, sourcePath, format, sourceName, bookUrl);
+    if (previous) {
+      book.group = previous.group;
+      if (!book.author && previous.author) book.author = previous.author;
+    }
+    for (const key of clearVariables) book.putVariable(key, '');
+    await appDb.updateBook(book, true, 'cloud_book_downloaded');
+    return book;
   }
 
   static async importWebDavBook(context: Context, sourcePath: string, connectionId: string,
     remotePath: string, remoteName: string, format: string, etag: string,
     lastModified: number, remoteSize: number): Promise<Book> {
-    if (format !== 'txt' && format !== 'epub') throw new Error('仅支持 TXT 和 EPUB 文件');
+    if (!LocalBookService.isSupportedFormat(format)) throw new Error(LocalBookService.UNSUPPORTED_FORMAT_MESSAGE);
     const identity = LocalBookService.webDavBookUrl(connectionId, remotePath);
     return await LocalBookService.importBook(context, sourcePath, format, remoteName, identity,
       connectionId, remotePath, etag, lastModified, remoteSize);
@@ -289,7 +588,7 @@ export class LocalBookService {
 
   static async importOpdsBook(context: Context, sourcePath: string, serverId: string,
     name: string, format: string, acquisitionUrl: string, remoteSize: number): Promise<Book> {
-    if (format !== 'txt' && format !== 'epub') throw new Error('仅支持 TXT 和 EPUB 文件');
+    if (!LocalBookService.isSupportedFormat(format)) throw new Error(LocalBookService.UNSUPPORTED_FORMAT_MESSAGE);
     const identity = LocalBookService.opdsBookUrl(serverId, acquisitionUrl);
     const storageVariables: Record<string, string> = {
       'storageKind': 'opds',
@@ -380,21 +679,49 @@ export class LocalBookService {
     webDavConnectionId: string = '', webDavRemotePath: string = '', webDavETag: string = '',
     webDavLastModified: number = 0, webDavRemoteSize: number = 0,
     storageVariables: Record<string, string> | null = null,
-    storageOriginName: string = ''): Promise<Book> {
-    const extension = formatHint || LocalBookService.extensionOf(sourceUri);
-    const sourceId = LocalBookService.hashText(sourceUri);
+    storageOriginName: string = '', knownContentHash: string = '', identityUri: string = ''): Promise<Book> {
+    const extension = (formatHint || LocalBookService.extensionOf(sourceUri)).toLowerCase();
+    if (!LocalBookService.isSupportedFormat(extension)) throw new Error(LocalBookService.UNSUPPORTED_FORMAT_MESSAGE);
+    // 压缩包里的书 sourceUri 是临时解压文件，身份另用“压缩包 URI#包内路径”。
+    const identity = identityUri || sourceUri;
+    const sourceId = LocalBookService.hashText(identity);
     const bookUrl = bookUrlOverride || `local://${sourceId}`;
     const id = bookUrlOverride ? LocalBookService.hashText(bookUrl) : sourceId;
     const sourceStat = await fs.stat(sourceUri);
     const oldBook = await appDb.getBook(bookUrl);
+    if (extension === 'pdf') {
+      if (oldBook && oldBook.getVariable('localParserVersion') === PdfBookService.PARSER_VERSION &&
+        oldBook.getVariable('localSourceMtime') === `${sourceStat.mtime}` &&
+        oldBook.getVariable('localSourceSize') === `${sourceStat.size}` &&
+        LocalBookService.exists(oldBook.getVariable('localFilePath')) && PdfBookService.hasIndex(oldBook) &&
+        await appDb.getBookChapterCount(bookUrl) === oldBook.totalChapterNum && oldBook.totalChapterNum > 0) return oldBook;
+      const book = oldBook || new Book();
+      book.bookUrl = bookUrl; book.tocUrl = bookUrl; book.origin = LocalBookService.ORIGIN;
+      book.originName = storageOriginName || (webDavConnectionId ? 'WebDAV' : 'PDF');
+      book.type = LocalBookService.TYPE_PDF; book.canUpdate = false;
+      book.putVariable('localFormat', 'pdf'); book.putVariable('localSourceUri', identity);
+      book.putVariable('localSourceMtime', `${sourceStat.mtime}`); book.putVariable('localSourceSize', `${sourceStat.size}`);
+      book.putVariable('bookAddTime', book.getVariable('bookAddTime') || `${Date.now()}`);
+      if (webDavConnectionId) {
+        book.putVariable('storageKind', 'webdav'); book.putVariable('webdavConnectionId', webDavConnectionId);
+        book.putVariable('webdavRemotePath', webDavRemotePath); book.putVariable('webdavETag', webDavETag);
+        book.putVariable('webdavLastModified', `${Math.max(0, webDavLastModified)}`);
+        book.putVariable('webdavRemoteSize', `${Math.max(0, webDavRemoteSize)}`);
+        book.putVariable('webdavCachedAt', `${Date.now()}`);
+      }
+      if (storageVariables) for (const key of Object.keys(storageVariables)) book.putVariable(key, storageVariables[key]);
+      const fallback = LocalBookService.parseFileNameMetadata(sourceName || sourceUri);
+      return await PdfBookService.import(context, book, sourceUri, id,
+        fallback.title || LocalBookService.fileStem(sourceName || sourceUri), fallback.author,
+        (path: string): Promise<string> => knownContentHash ? Promise.resolve(knownContentHash) :
+          LocalBookService.hashFile(path));
+    }
     const oldChapterCount = oldBook ? await appDb.getBookChapterCount(bookUrl) : 0;
     const root = `${context.filesDir}/local_books`;
     LocalBookService.ensureDir(root);
     const localPath = `${root}/${id}.${extension}`;
     const oldParserVersion = oldBook?.getVariable('localParserVersion') || '';
-    const parserIsCurrent = extension === 'epub' ?
-      oldParserVersion === LocalBookService.EPUB_PARSER_VERSION :
-      oldParserVersion === LocalBookService.TXT_PARSER_VERSION;
+    const parserIsCurrent = oldParserVersion === LocalBookService.parserVersionFor(extension);
     if (oldBook && parserIsCurrent &&
       oldBook.getVariable('localSourceMtime') === `${sourceStat.mtime}` &&
       oldBook.getVariable('localSourceSize') === `${sourceStat.size}` &&
@@ -426,16 +753,16 @@ export class LocalBookService {
     book.originName = extension.toUpperCase();
     book.canUpdate = false;
     book.group = 0;
-    book.type = extension === 'epub' ? LocalBookService.TYPE_EPUB : LocalBookService.TYPE_TXT;
-    book.putVariable('localSourceUri', sourceUri);
+    book.type = LocalBookService.bookTypeForFormat(extension);
+    book.putVariable('localSourceUri', identity);
     book.putVariable('localFilePath', localPath);
     book.putVariable('localFormat', extension);
     book.putVariable('localParserVersion', 'importing');
     book.putVariable('localSourceMtime', `${sourceStat.mtime}`);
     book.putVariable('localSourceSize', `${sourceStat.size}`);
-    let contentHash = '';
+    let contentHash = knownContentHash;
     try {
-      contentHash = await LocalBookService.hashFile(localPath);
+      if (!contentHash) contentHash = await LocalBookService.hashFile(localPath);
     } catch (e) {
       // Fingerprinting is an enhancement for cross-device progress sync; a
       // crypto capability issue must not make the local import fail.
@@ -474,18 +801,24 @@ export class LocalBookService {
       book.coverUrl = '';
       book.putVariable('localExtractRoot', '');
       book.putVariable('localParserVersion', 'importing');
+      if (!oldBook && !book.getVariable(LocalBookService.TXT_TOC_RULE_KEY)) {
+        const tocSettings = await TxtTocRuleStore.load(context);
+        if (tocSettings.defaultRuleRef) book.putVariable(LocalBookService.TXT_TOC_RULE_KEY, tocSettings.defaultRuleRef);
+      }
       if (oldBook) {
         await appDb.updateBook(book);
       } else {
         await appDb.insertBook(book);
       }
-      await LocalBookService.rebuildTxtBook(book, localPath);
+      await LocalBookService.rebuildTxtBook(context, book, localPath);
       return book;
     }
 
     let chapters: LocalChapterData[] = [];
-    const epub = await LocalBookService.parseEpub(context, localPath, id);
+    const epub = extension === 'mobi' ? await LocalBookService.parseMobi(context, localPath, id) :
+      await LocalBookService.parseEpub(context, localPath, id);
     const oldChapterPath = oldBook ? await LocalBookService.currentEpubChapterPath(book) : '';
+    const oldChapterContent = oldBook ? await LocalBookService.currentEpubChapterContent(book) : '';
     book.name = hasCustomMetadata ? book.getVariable('localCustomName') :
       (epub.title || fileMetadata.title || LocalBookService.fileStem(metadataSource));
     book.author = hasCustomMetadata ? book.getVariable('localCustomAuthor') : (epub.author || fileMetadata.author);
@@ -495,7 +828,7 @@ export class LocalBookService {
       LocalBookService.deleteLocalPath(context, oldExtractRoot);
     }
     book.putVariable('localExtractRoot', epub.extractRoot);
-    book.putVariable('localParserVersion', LocalBookService.EPUB_PARSER_VERSION);
+    book.putVariable('localParserVersion', LocalBookService.parserVersionFor(extension));
     book.putVariable('readerComicAutoDetected', epub.isComic ? '1' : '0');
     book.putVariable('readerComicMode', epub.isComic ? '1' : '0');
     chapters = epub.chapters;
@@ -511,7 +844,7 @@ export class LocalBookService {
     book.latestChapterTime = Date.now();
     book.intro = '';
     book.putVariable('localContentIntroVersion', '6');
-    LocalBookService.migrateEpubProgress(book, oldChapterPath, epub);
+    LocalBookService.migrateEpubProgress(book, oldChapterPath, oldChapterContent, epub);
 
     if (oldBook) {
       await appDb.updateBook(book);
@@ -534,17 +867,26 @@ export class LocalBookService {
     await appDb.initWithContext(context);
     book.putVariable('localParserVersion', 'importing');
     await appDb.updateBook(book);
-    await LocalBookService.rebuildTxtBook(book, localPath);
+    await LocalBookService.rebuildTxtBook(context, book, localPath);
     return true;
   }
 
   static async ensureLocalParserCurrent(context: Context, book: Book): Promise<boolean> {
     if (!LocalBookService.isLocalBook(book)) return false;
+    if (LocalBookService.isPdfBook(book)) {
+      const path = book.getVariable('localFilePath');
+      if (!path || !LocalBookService.exists(path)) return false;
+      if (book.getVariable('localParserVersion') === PdfBookService.PARSER_VERSION && PdfBookService.hasIndex(book) &&
+        await appDb.getBookChapterCount(book.bookUrl) === book.totalChapterNum) return false;
+      await PdfBookService.import(context, book, path, LocalBookService.hashText(book.bookUrl), book.name, book.author,
+        (filePath: string): Promise<string> => LocalBookService.hashFile(filePath));
+      return true;
+    }
     if (book.type === LocalBookService.TYPE_TXT) {
       return await LocalBookService.ensureTxtParserCurrent(context, book);
     }
     if (book.type !== LocalBookService.TYPE_EPUB ||
-      book.getVariable('localParserVersion') === LocalBookService.EPUB_PARSER_VERSION) {
+      book.getVariable('localParserVersion') === LocalBookService.parserVersionFor(LocalBookService.formatOf(book))) {
       return false;
     }
     const localPath = book.getVariable('localFilePath');
@@ -576,8 +918,11 @@ export class LocalBookService {
   private static async rebuildEpubIndex(context: Context, book: Book, localPath: string): Promise<void> {
     const id = book.bookUrl.startsWith('local://') ? book.bookUrl.substring('local://'.length) :
       LocalBookService.hashText(localPath);
-    const epub = await LocalBookService.parseEpub(context, localPath, id);
+    const format = LocalBookService.formatOf(book);
+    const epub = format === 'mobi' ? await LocalBookService.parseMobi(context, localPath, id) :
+      await LocalBookService.parseEpub(context, localPath, id);
     const oldChapterPath = await LocalBookService.currentEpubChapterPath(book);
+    const oldChapterContent = await LocalBookService.currentEpubChapterContent(book);
     if (book.getVariable('localMetadataCustomized') === '1') {
       book.name = book.getVariable('localCustomName');
       book.author = book.getVariable('localCustomAuthor');
@@ -591,11 +936,12 @@ export class LocalBookService {
       LocalBookService.deleteLocalPath(context, oldExtractRoot);
     }
     book.putVariable('localExtractRoot', epub.extractRoot);
-    book.putVariable('localParserVersion', LocalBookService.EPUB_PARSER_VERSION);
+    book.putVariable('localParserVersion', LocalBookService.parserVersionFor(format));
     book.putVariable('readerComicAutoDetected', epub.isComic ? '1' : '0');
     book.putVariable('readerComicMode', epub.isComic ? '1' : '0');
 
     const chapters = epub.chapters;
+
     if (chapters.length === 0) {
       const emptyChapter = new LocalChapterData();
       emptyChapter.title = book.name || '正文';
@@ -605,7 +951,7 @@ export class LocalBookService {
     book.totalChapterNum = chapters.length;
     book.latestChapterTitle = chapters[chapters.length - 1].title;
     book.latestChapterTime = Date.now();
-    LocalBookService.migrateEpubProgress(book, oldChapterPath, epub);
+    LocalBookService.migrateEpubProgress(book, oldChapterPath, oldChapterContent, epub);
     await appDb.updateBook(book);
     await LocalBookService.persistEpubChapters(book.bookUrl, chapters);
   }
@@ -644,8 +990,20 @@ export class LocalBookService {
     }
   }
 
+  /** 重新解析前，当前阅读章节缓存的旧正文；用来把章内字符偏移换算到新正文上。 */
+  private static async currentEpubChapterContent(book: Book): Promise<string> {
+    if (book.getVariable('readProgressCharOffsetChapterV2') !== `${book.durChapterIndex}`) return '';
+    try {
+      return await appDb.getCachedChapterContent(book.bookUrl, book.durChapterIndex);
+    } catch (e) {
+      console.warn('[LocalBook] 读取旧章节正文失败:', e);
+      return '';
+    }
+  }
+
   // 章节划分方式变化后旧的章节序号不再对应原来的内容，按所在文件重新定位阅读进度。
-  private static migrateEpubProgress(book: Book, oldChapterPath: string, epub: EpubPackageData): void {
+  private static migrateEpubProgress(book: Book, oldChapterPath: string, oldChapterContent: string,
+    epub: EpubPackageData): void {
     const count = epub.chapters.length;
     const index = !epub.isComic && oldChapterPath ?
       EpubChapterPlanner.chapterIndexForPath(epub.planned, oldChapterPath) : -1;
@@ -656,6 +1014,13 @@ export class LocalBookService {
       if (!offsetStillValid) {
         book.durChapterPos = 0;
         book.putVariable('readProgressCharOffsetV2', '');
+      } else if (oldChapterContent) {
+        // 正文里多了注释标记、少了脚注块，同一位置的偏移跟着变。
+        const offset = Number(book.getVariable('readProgressCharOffsetV2'));
+        if (Number.isFinite(offset) && offset > 0) {
+          book.putVariable('readProgressCharOffsetV2',
+            `${EpubTextOffsetMap.map(oldChapterContent, epub.chapters[index].content || '', offset)}`);
+        }
       }
       if (index !== book.durChapterIndex) {
         book.durChapterTitle = epub.chapters[index].title;
@@ -675,6 +1040,7 @@ export class LocalBookService {
   }
 
   static async ensureContentIntro(book: Book): Promise<boolean> {
+    if (LocalBookService.isPdfBook(book)) return false;
     if (!LocalBookService.isLocalBook(book) ||
       (book.getVariable('localContentIntroVersion') === '6' && !!book.intro.trim())) {
       return false;
@@ -702,25 +1068,37 @@ export class LocalBookService {
     return true;
   }
 
-  private static async rebuildTxtBook(book: Book, localPath: string): Promise<void> {
+  /**
+   * 重新解析本地 TXT。remapProgress 为 true 时（换了分章规则），把阅读位置换算成全书字符位置，
+   * 再落到新的章节上；否则沿用原来的章节序号。
+   */
+  private static async rebuildTxtBook(context: Context, book: Book, localPath: string,
+    remapProgress: boolean = false): Promise<void> {
     const charsetOverride = LocalBookService.getTxtCharsetOverride(book);
     book.charset = charsetOverride || await LocalBookService.detectTextFileCharset(localPath);
+    const matcher = new TxtChapterMatcher(
+      await TxtTocRuleStore.resolve(context, LocalBookService.getTxtTocRuleRef(book)));
     const previousChapterCount = Math.max(book.totalChapterNum,
       await appDb.getBookChapterCount(book.bookUrl));
     const previousChapterIndex = Math.max(0, book.durChapterIndex);
+    const targetCharPosition = remapProgress ? await LocalBookService.currentTxtCharPosition(book) : -1;
     await appDb.deleteBookChapters(book.bookUrl);
     await appDb.deleteBookCachedContent(book.bookUrl);
     const imported = await LocalBookService.importTxtChapters(
-      book.bookUrl, localPath, book.charset, book.name, book.author);
+      book.bookUrl, localPath, book.charset, book.name, book.author, matcher);
     book.totalChapterNum = imported.chapterCount;
     book.latestChapterTitle = imported.latestTitle;
     book.latestChapterTime = Date.now();
     book.intro = imported.intro;
     book.putVariable('localContentIntroVersion', '6');
-    // Parser v7 could classify nearly every short body line as a title. When repairing
-    // such an over-split book, retain an approximate whole-book position instead of
-    // dropping the reader at an unrelated chapter or resetting all progress.
-    if (previousChapterCount > imported.chapterCount * 4 && imported.chapterCount > 0) {
+    book.putVariable(LocalBookService.TXT_TOC_SHORT_KEY, `${imported.shortCount}`);
+    book.putVariable(LocalBookService.TXT_TOC_COUNT_KEY, `${imported.chapterCount}`);
+    if (targetCharPosition >= 0 && imported.chapterCount > 0) {
+      LocalBookService.moveTxtProgressTo(book, imported, targetCharPosition);
+    } else if (previousChapterCount > imported.chapterCount * 4 && imported.chapterCount > 0) {
+      // Parser v7 could classify nearly every short body line as a title. When repairing
+      // such an over-split book, retain an approximate whole-book position instead of
+      // dropping the reader at an unrelated chapter or resetting all progress.
       const progress = previousChapterCount > 1 ? previousChapterIndex / (previousChapterCount - 1) : 0;
       book.durChapterIndex = Math.min(imported.chapterCount - 1,
         Math.max(0, Math.round(progress * (imported.chapterCount - 1))));
@@ -735,18 +1113,48 @@ export class LocalBookService {
     await appDb.updateBook(book);
   }
 
-  private static async importTxtChapters(bookUrl: string, path: string,
-    charset: string, bookName: string, bookAuthor: string): Promise<LocalTxtImportResult> {
+  /** 重新解析前的阅读位置在全书正文里的字符位置（按缓存正文的字数累加）；读不到时返回 -1。 */
+  private static async currentTxtCharPosition(book: Book): Promise<number> {
+    try {
+      const lengths = await appDb.getCachedChapterContentLengths(book.bookUrl);
+      const index = Math.max(0, book.durChapterIndex);
+      if (lengths.length === 0 || index >= lengths.length) return -1;
+      let position = 0;
+      for (let i = 0; i < index; i++) position += lengths[i] || 0;
+      const offset = Number(book.getVariable('readProgressCharOffsetV2'));
+      if (book.getVariable('readProgressCharOffsetChapterV2') === `${index}` && Number.isFinite(offset) && offset > 0) {
+        position += Math.min(offset, lengths[index] || 0);
+      }
+      return position;
+    } catch (e) {
+      console.warn('[LocalBookService] 读取 TXT 阅读位置失败:', e);
+      return -1;
+    }
+  }
+
+  private static moveTxtProgressTo(book: Book, imported: LocalTxtImportResult, position: number): void {
+    const starts = imported.chapterStarts;
+    let index = 0;
+    for (let i = 0; i < starts.length; i++) {
+      if (starts[i] <= position) index = i;
+      else break;
+    }
+    index = Math.min(imported.chapterCount - 1, index);
+    const offset = Math.max(0, Math.round(position - (starts[index] || 0)));
+    book.durChapterIndex = index;
+    book.durChapterPos = 0;
+    book.durChapterTitle = imported.chapterTitles[index] || '';
+    book.putVariable('readProgressCharOffsetV2', `${offset}`);
+    book.putVariable('readProgressCharOffsetChapterV2', `${index}`);
+    if (book.getVariable('readProgressChapterIndex')) book.putVariable('readProgressChapterIndex', `${index}`);
+  }
+
+  private static async importTxtChapters(bookUrl: string, path: string, charset: string, bookName: string,
+    bookAuthor: string, matcher: TxtChapterMatcher): Promise<LocalTxtImportResult> {
     const result = new LocalTxtImportResult();
-    const titleRegex = new RegExp(LocalBookService.TXT_RULE_TOP_LEVEL, 'i');
-    const punctuationOnlyRegex = new RegExp(LocalBookService.TXT_RULE_PUNCTUATION_ONLY);
-    let currentTitle = '';
-    let currentPart = 1;
-    let currentHasPersisted = false;
-    let bodyParts: string[] = [];
-    let bodyLength = 0;
     let chapterBatch: BookChapter[] = [];
     let contentBatch: string[] = [];
+    let position = 0;
 
     const flushBatch = async (): Promise<void> => {
       if (chapterBatch.length === 0) return;
@@ -757,35 +1165,70 @@ export class LocalBookService {
       await appDb.insertBookChaptersWithContents(bookUrl, pendingChapters, pendingContents);
     };
 
+    const sink = async (title: string, body: string): Promise<void> => {
+      const content = body || title;
+      const dbChapter = new BookChapter();
+      dbChapter.bookUrl = bookUrl;
+      dbChapter.index = result.chapterCount;
+      dbChapter.title = title;
+      dbChapter.url = `${bookUrl}#chapter=${dbChapter.index}`;
+      dbChapter.resourceUrl = path;
+      chapterBatch.push(dbChapter);
+      contentBatch.push(content);
+      if (result.intro.length < LocalBookService.LOCAL_INTRO_TARGET_LENGTH) {
+        result.intro = LocalBookService.appendContentIntro(result.intro, content, title, bookName, bookAuthor);
+      }
+      result.chapterStarts.push(position);
+      result.chapterTitles.push(title);
+      position += content.length;
+      if (body.length < TxtTocRules.SHORT_CHAPTER_CHARS) result.shortCount++;
+      result.chapterCount++;
+      result.latestTitle = title;
+      if (chapterBatch.length >= LocalBookService.TXT_DB_BATCH_SIZE) {
+        await flushBatch();
+      }
+    };
+
+    await LocalBookService.scanTxtChapters(path, charset, matcher, sink);
+    if (result.chapterCount === 0) {
+      await sink('正文', '暂无可阅读内容');
+      result.shortCount = 0;
+    }
+    await flushBatch();
+    return result;
+  }
+
+  /**
+   * 按规则逐行扫描 TXT，每分出一章调用一次 sink(标题, 正文)。正文已去掉首尾空白，可能为空串
+   * （标题后紧跟下一个标题）。导入和预览共用这一段，保证预览看到的就是应用后的结果。
+   */
+  private static async scanTxtChapters(path: string, charset: string, matcher: TxtChapterMatcher,
+    sink: (title: string, body: string) => Promise<void>): Promise<void> {
+    const wordSplit = matcher.isWordSplit();
+    let currentTitle = '';
+    let currentPart = 1;
+    let currentHasPersisted = false;
+    let emitted = 0;
+    let bodyParts: string[] = [];
+    let bodyLength = 0;
+
     const persistCurrent = async (allowEmptyTitle: boolean): Promise<boolean> => {
       const content = bodyParts.join('').trim();
       bodyParts = [];
       bodyLength = 0;
+      if (wordSplit) {
+        if (!content) return false;
+        emitted++;
+        await sink(`${emitted}. ${LocalBookService.txtLeadSentence(content)}`, content);
+        return true;
+      }
       if (!content && (!allowEmptyTitle || !currentTitle || currentHasPersisted)) {
         return false;
       }
-      const chapter = new LocalChapterData();
       const baseTitle = currentTitle || '正文';
-      chapter.title = currentPart > 1 ? `${baseTitle}（${currentPart}）` : baseTitle;
-      chapter.content = content || chapter.title;
-      const dbChapter = new BookChapter();
-      dbChapter.bookUrl = bookUrl;
-      dbChapter.index = result.chapterCount;
-      dbChapter.title = chapter.title;
-      dbChapter.url = `${bookUrl}#chapter=${dbChapter.index}`;
-      dbChapter.resourceUrl = path;
-      chapterBatch.push(dbChapter);
-      contentBatch.push(chapter.content);
-      if (result.intro.length < LocalBookService.LOCAL_INTRO_TARGET_LENGTH) {
-        result.intro = LocalBookService.appendContentIntro(
-          result.intro, chapter.content, chapter.title, bookName, bookAuthor);
-      }
-      result.chapterCount++;
-      result.latestTitle = chapter.title;
+      emitted++;
+      await sink(currentPart > 1 ? `${baseTitle}（${currentPart}）` : baseTitle, content);
       currentHasPersisted = true;
-      if (chapterBatch.length >= LocalBookService.TXT_DB_BATCH_SIZE) {
-        await flushBatch();
-      }
       return true;
     };
 
@@ -806,9 +1249,14 @@ export class LocalBookService {
 
     const consumeLine = async (rawLine: string, forceBody: boolean = false): Promise<void> => {
       const line = rawLine.endsWith('\r') ? rawLine.substring(0, rawLine.length - 1) : rawLine;
+      if (wordSplit) {
+        await appendBodyText(`${line}\n`);
+        // 只在行尾切，不把一句话拦腰截断。
+        if (bodyLength >= matcher.wordsPerChapter) await persistCurrent(false);
+        return;
+      }
       const candidate = LocalBookService.normalizeTxtChapterCandidate(line);
-      if (!forceBody && LocalBookService.isTxtChapterTitleCandidate(candidate, titleRegex,
-        punctuationOnlyRegex)) {
+      if (!forceBody && matcher.isTitle(line, candidate)) {
         await persistCurrent(true);
         currentTitle = candidate;
         currentPart = 1;
@@ -857,31 +1305,24 @@ export class LocalBookService {
         await consumeLine(carry, carryIsBody);
       }
       await persistCurrent(true);
-      if (result.chapterCount === 0) {
-        currentTitle = '正文';
-        currentPart = 1;
-        currentHasPersisted = false;
-        bodyParts = ['暂无可阅读内容'];
-        bodyLength = bodyParts[0].length;
-        await persistCurrent(true);
-      }
-      await flushBatch();
     } finally {
       await fs.close(file);
     }
-    return result;
+  }
+
+  /** 按字数分章时的章节标题：取章首第一句，过长截断。 */
+  private static txtLeadSentence(content: string): string {
+    const text = content.replace(/^[\s\u3000]+/, '');
+    const end = text.search(/[。！？!?…\n]/);
+    let sentence = (end > 0 ? text.substring(0, end) : text).replace(/\s+/g, ' ').trim();
+    if (sentence.length > 18) sentence = `${sentence.substring(0, 18)}…`;
+    return sentence || '正文';
   }
 
   private static normalizeTxtChapterCandidate(value: string): string {
     // trim() does not remove zero-width characters. Treat formatting-only lines as
     // blank before applying the chapter-title grammar.
     return (value || '').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '').trim();
-  }
-
-  private static isTxtChapterTitleCandidate(candidate: string, titleRegex: RegExp,
-    punctuationOnlyRegex: RegExp): boolean {
-    if (!candidate || candidate.length > 50 || punctuationOnlyRegex.test(candidate)) return false;
-    return titleRegex.test(candidate);
   }
 
   private static appendContentIntro(currentIntro: string, content: string, chapterTitle: string = '',
@@ -1006,42 +1447,117 @@ export class LocalBookService {
       const ncxText = (await LocalBookService.readTextFile(ncxPath, 'utf-8')).text;
       tocEntries = EpubChapterPlanner.parseNcxToc(ncxText, LocalBookService.parentPath(ncxPath), extractRoot);
     }
-    const tocByPath = EpubChapterPlanner.groupTocByPath(tocEntries);
-
     const spineNodes = LocalBookService.findNodes(opf, 'itemref');
-    const planner = new EpubChapterPlanner(tocByPath.size > 0);
+    const files: LocalSpineFile[] = [];
     for (const spine of spineNodes) {
       const idref = spine.attributes['idref'] || '';
       const item = manifest[idref];
       if (!item || !item.href) continue;
       const chapterPath = EpubHtmlConverter.resolvePath(opfDir, item.href, extractRoot);
       if (!chapterPath || !LocalBookService.exists(chapterPath)) continue;
-      const entries = tocByPath.get(chapterPath) || [];
+      const file = new LocalSpineFile();
+      file.path = chapterPath;
+      file.isImage = item.mediaType.toLowerCase().startsWith('image/');
+      file.nonLinear = (spine.attributes['linear'] || '').toLowerCase() === 'no';
+      files.push(file);
+    }
+    await LocalBookService.planSpineChapters(files, tocEntries, extractRoot, result);
+    return result;
+  }
+
+  /**
+   * MOBI 先拆成若干 HTML 文件和图片写进解压目录，之后与 EPUB 走同一套分章、转换和阅读时重建正文的流程。
+   * 目录锚点是 filepos 位置插入的 id="fileposN"。解析和写文件在 TaskPool 里做，主线程只等结果。
+   */
+  private static async parseMobi(context: Context, mobiPath: string, id: string): Promise<EpubPackageData> {
+    const stat = await fs.stat(mobiPath);
+    const extractRoot = `${context.filesDir}/local_books/${id}_${stat.mtime}`;
+    const mobi = await MobiImportTask.extract(mobiPath, extractRoot);
+    const result = new EpubPackageData();
+    result.extractRoot = extractRoot;
+    result.title = mobi.title;
+    result.author = mobi.author;
+    result.coverPath = mobi.coverPath;
+    const files: LocalSpineFile[] = [];
+    for (const path of mobi.partPaths) {
+      const file = new LocalSpineFile();
+      file.path = path;
+      files.push(file);
+    }
+    const tocEntries: EpubTocEntry[] = [];
+    for (const item of mobi.toc) {
+      if (item.part < 0 || item.part >= files.length) continue;
+      const entry = new EpubTocEntry();
+      entry.path = files[item.part].path;
+      entry.fragment = item.fragment;
+      entry.title = item.title;
+      tocEntries.push(entry);
+    }
+    await LocalBookService.planSpineChapters(files, tocEntries, extractRoot, result);
+    return result;
+  }
+
+  /**
+   * 按 spine 顺序转换并分章；EPUB 与 MOBI（拆成多个 HTML 文件后）共用。
+   * 读文件预读后面几个，与当前文件的转换并行；转换连续占用主线程超过一帧左右就让出一次，导入大书时界面不卡死。
+   */
+  private static async planSpineChapters(files: LocalSpineFile[], tocEntries: EpubTocEntry[],
+    extractRoot: string, result: EpubPackageData): Promise<void> {
+    const tocByPath = EpubChapterPlanner.groupTocByPath(tocEntries);
+    const planner = new EpubChapterPlanner(tocByPath.size > 0);
+    const included = (file: LocalSpineFile): boolean =>
       // linear="no" 的辅助内容（弹注、答案页）不在正文阅读顺序里，除非目录明确列出。
-      if ((spine.attributes['linear'] || '').toLowerCase() === 'no' && entries.length === 0) continue;
+      !file.nonLinear || (tocByPath.get(file.path) || []).length > 0;
+    const reads = new Map<number, Promise<string>>();
+    const startRead = (index: number): void => {
+      if (index >= files.length || reads.has(index) || files[index].isImage || !included(files[index])) return;
+      const read = LocalChapterContentLoader.readHtmlFile(files[index].path);
+      // 预读失败在轮到这个文件时处理，这里先标记为已处理，避免未处理的拒绝。
+      read.catch((): void => {});
+      reads.set(index, read);
+    };
+    let sliceStart = Date.now();
+    const yieldIfBusy = async (): Promise<void> => {
+      if (Date.now() - sliceStart < LocalBookService.IMPORT_SLICE_MS) return;
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 0);
+      });
+      sliceStart = Date.now();
+    };
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index];
+      const chapterPath = file.path;
+      const entries = tocByPath.get(chapterPath) || [];
+      if (!included(file)) continue;
       planner.beginFile();
-      if (item.mediaType.toLowerCase().startsWith('image/')) {
+      if (file.isImage) {
         const imagePiece = new EpubConvertResult();
         imagePiece.content = LocalBookService.createReaderImageMarker(chapterPath);
         imagePiece.imagePaths = [chapterPath];
         planner.addPiece(chapterPath, '', '', entries.length > 0 ? entries[0].title : '', imagePiece);
       } else {
+        for (let ahead = index; ahead <= index + LocalBookService.IMPORT_READ_AHEAD; ahead++) startRead(ahead);
         try {
-          const chapterHtml = await LocalChapterContentLoader.readHtmlFile(chapterPath);
+          const chapterHtml = await (reads.get(index) as Promise<string>);
           const body = EpubHtmlConverter.bodyOf(chapterHtml);
           const documentTitle = EpubHtmlConverter.titleOf(chapterHtml);
           const fallbackTitle = documentTitle && documentTitle !== result.title ? documentTitle : '';
           for (const cut of EpubChapterPlanner.planFileCuts(body, entries)) {
-            const converted = await LocalChapterContentLoader.convertBody(body,
-              LocalBookService.parentPath(chapterPath), extractRoot, cut.startId, cut.endId);
+            const converted = await LocalChapterContentLoader.convertBody(body, chapterPath, extractRoot,
+              cut.startId, cut.endId);
             planner.addPiece(chapterPath, cut.startId, cut.endId, cut.title, converted, fallbackTitle);
+            await yieldIfBusy();
           }
         } catch (error) {
           console.warn('预解析 EPUB spine 内容失败:', chapterPath, error);
+        } finally {
+          reads.delete(index);
         }
       }
       planner.endFile();
+      await yieldIfBusy();
     }
+    EpubHtmlConverter.clearAnchorIndex();
 
     if (planner.isComicDominant()) {
       const waterfall = new LocalChapterData();
@@ -1065,7 +1581,6 @@ export class LocalBookService {
         result.chapters.push(chapter);
       }
     }
-    return result;
   }
 
   private static extractEpubMetadata(opf: XmlNodeData): LocalBookMetadata {
@@ -1165,7 +1680,9 @@ export class LocalBookService {
     const root = new XmlNodeData();
     root.name = '#document';
     const stack: XmlNodeData[] = [root];
-    const encoded = new util.TextEncoder().encodeInto(text);
+    // TextDecoder may preserve a UTF-8 BOM as U+FEFF; XmlPullParser then treats
+    // the XML declaration as a processing instruction outside the document start.
+    const encoded = new util.TextEncoder().encodeInto(text.replace(/^\uFEFF/, ''));
     const bytes = new ArrayBuffer(encoded.length);
     new Uint8Array(bytes).set(encoded);
     const parser = new xml.XmlPullParser(bytes, 'utf-8');
@@ -1369,7 +1886,7 @@ export class LocalBookService {
       .trim();
   }
 
-  private static extensionOf(path: string): string {
+  static extensionOf(path: string): string {
     const resourcePath = LocalBookService.withoutFragment(path).split('?')[0];
     let clean = resourcePath.toLowerCase();
     try {
@@ -1380,7 +1897,7 @@ export class LocalBookService {
     return index >= 0 ? clean.substring(index + 1) : '';
   }
 
-  private static fileStem(path: string): string {
+  static fileStem(path: string): string {
     const name = LocalBookService.displayName(path);
     const index = name.lastIndexOf('.');
     return index > 0 ? name.substring(0, index) : name;
@@ -1457,7 +1974,7 @@ export class LocalBookService {
     }
   }
 
-  private static exists(path: string): boolean {
+  static exists(path: string): boolean {
     try {
       return fs.accessSync(path);
     } catch (e) {

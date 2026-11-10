@@ -86,12 +86,12 @@ adaptation, handle safety, bounded execution, and HarmonyOS integration.
 ==========================================================================
 
 Project: https://github.com/BYVoid/OpenCC
-Files:   TSCharacters.txt / TSPhrases.txt / STCharacters.txt / STPhrases.txt
-         (OpenCC ver.1.1.9, bundled under rawfile/chinese/)
+Files:   TSCharacters.txt / TSPhrases.txt / STCharacters.txt / STPhrases.txt / TWVariants.txt
+         (OpenCC ver.1.1.9, bundled under rawfile/chinese/ as t2s_*, s2t_*, tw_variants.txt)
 License: Apache License 2.0
 Copyright BYVoid and OpenCC contributors
 
-The dictionary data files are distributed verbatim without modification.
+The dictionary data files are distributed verbatim without modification (renamed only).
 Apache License 2.0 full text: see section 3 above.
 
                                  Apache License
@@ -295,3 +295,101 @@ Apache License 2.0 full text: see section 3 above.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+==========================================================================
+4. sherpa-onnx (sherpa_onnx HarmonyOS package)
+==========================================================================
+
+Project: https://github.com/k2-fsa/sherpa-onnx
+License: Apache License 2.0 (full text in section 3)
+Copyright (c) 2022-2025 Xiaomi Corporation and the k2-fsa authors
+
+Used for on-device text-to-speech (offline voices). The package bundles its
+own dependencies (for example OpenFst and kaldi-native-fbank), which remain
+under their respective licenses.
+
+==========================================================================
+5. ONNX Runtime
+==========================================================================
+
+Project: https://github.com/microsoft/onnxruntime
+License: MIT
+Copyright (c) Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+==========================================================================
+6. Piper voice "chaowen" (downloaded on demand, not bundled)
+==========================================================================
+
+Voice: rhasspy/piper-voices zh_CN chaowen (medium), sherpa-onnx conversion
+Project: https://github.com/OHF-Voice/piper1-gpl
+Dataset: https://github.com/OHF-Voice/voice-datasets (CC0)
+
+==========================================================================
+7. Piper voice "cn_aishell3" (downloaded on demand, not bundled)
+==========================================================================
+
+Voice: writeAPoemForYou/piper-voices-zh-AISHELL-3 zh_CN cn_aishell3 (medium)
+License: Apache License 2.0 (full text in section 3)
+Dataset: AISHELL-3, https://www.openslr.org/93/ (Apache License 2.0)
+Copyright (c) Beijing Shell Shell Technology Co., Ltd. (AISHELL-3 corpus)
+
+Used for the multi-speaker offline voices. The app appends one metadata entry
+(has_g2pw=1) to the downloaded model so sherpa-onnx picks the pinyin frontend;
+the lexicon and rule files come from the "chaowen" voice above.
+
+The voice was warm-started from the Piper voice en_US libritts_r (medium)
+(https://huggingface.co/rhasspy/piper-voices), which was trained on:
+  LibriTTS-R, https://www.openslr.org/141/ (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/)
+  Copyright (c) Yuma Koizumi, Heiga Zen, Shigeki Karita, Yifan Ding,
+  Kohei Yatabe, Nobuyuki Morioka, Michiel Bacchiani, Yu Zhang, Wei Han,
+  Ankur Bapna (LibriTTS-R corpus)
+That voice was in turn fine-tuned from the Piper voice en_US lessac (medium),
+trained on the Blizzard Challenge 2013 Lessac dataset,
+https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/
+
+==========================================================================
+8. acorn
+==========================================================================
+
+Project: https://github.com/acornjs/acorn
+License: MIT
+Copyright (C) 2012-2022 by various contributors (see AUTHORS)
+
+Used by the book-source engine to parse legacy source scripts once so their
+result follows Android Legado (Rhino) semantics. Bundled in minified form.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

@@ -1,3 +1,9 @@
+import { ReaderNightImage } from '../core/reader/ReaderNightImage';
+import { ReaderQuickJumpModel } from '../core/reader/ReaderQuickJumpModel';
+import { ReaderCommentBubbleSize } from '../core/reader/ReaderCommentBubbleSize';
+import { ReaderFontWeight } from '../core/reader/ReaderFontWeight';
+import { ReaderTitleStyleCodec } from '../model/reader/ReaderTitleStyle';
+import { ReaderParagraphIndent } from '../core/reader/ReaderParagraphIndent';
 import { Context } from '@kit.AbilityKit';
 import preferences from '@ohos.data.preferences';
 import { ReaderThemeHelper } from './ReaderThemeHelper';
@@ -7,18 +13,20 @@ import { ReaderInfoBarConfig } from '../core/reader/ReaderInfoBarModel';
 
 export class ReaderSettings {
   fontSize: number = 20;
+  fontWeight: number = ReaderFontWeight.DEFAULT;
   letterSpacing: number = 0;
   textAlign: string = 'justify';
   lineHeight: number = 12;
   paragraphSpacing: number = 0;
-  // 保留段首缩进：开启后分页/分块边界不再裁掉原文的全角空格缩进（默认关闭，维持裁剪现状）。
-  keepParagraphIndent: boolean = false;
+  paragraphIndent: number = ReaderParagraphIndent.DEFAULT;
   // 简繁转换：0 不转换 / 1 繁体转简体 / 2 简体转繁体（对齐 legado-with-MD3 的 chineseConverterType）。
   chineseConverterType: number = 0;
+
   marginLeft: number = 18;
   marginRight: number = 18;
   marginTop: number = 18;
   marginBottom: number = 18;
+  commentBubbleSize: number = ReaderCommentBubbleSize.DEFAULT;
   themeIndex: number = 0;
   lightThemeIndex: number = 0;
   darkThemeIndex: number = 0;
@@ -32,7 +40,7 @@ export class ReaderSettings {
   landscapeDoublePage: boolean = false;
   screenOrientation: string = 'system';
   tapZoneActions: string = '3,3,3,3,1,2,2,2,2';
-  volumeTurnPage: boolean = false;
+  longPressSelectText: boolean = true;
   eyeTurnEnabled: boolean = false;
   eyeTurnPortraitCalibration: string = '';
   eyeTurnLandscapeCalibration: string = '';
@@ -47,9 +55,15 @@ export class ReaderSettings {
   extendToStatusBar: boolean = false;
   preloadEnabled: boolean = true;
   preloadChapterCount: number = 1;
+  aiProcessingIndicatorEnabled: boolean = true;
   useTtsQuickAction: boolean = true;
+  useAutoScrollQuickAction: boolean = true;
   useChapterQuickJump: boolean = true;
+  useBrightnessQuickAction: boolean = true;
+  quickJumpMode: string = 'chapter';
   quickBookmarkEnabled: boolean = true;
+  /** 夜间模式下插图的处理：保持原色 / 调暗 / 反色 / 自动（见 ReaderNightImage）。 */
+  nightImageMode: string = ReaderNightImage.ORIGINAL;
   // 阅读页眉页脚配置。默认页眉关闭、页脚保持现有章节/页码信息。
   readerHeaderEnabled: boolean = false;
   readerHeaderContentMode: string = 'chapter';
@@ -62,7 +76,7 @@ export class ReaderSettings {
   fontFamily: string = '';
   fontFilePath: string = '';
   fontSourceName: string = '系统默认';
-  fontMode: string = 'system';
+  fontMode: string = 'device';
   systemFontFamily: string = '';
   customFontsRaw: string = '';
   bodyFontMode: string = 'global';
@@ -70,6 +84,8 @@ export class ReaderSettings {
   titleFontMode: string = 'global';
   titleFontFamily: string = '';
   titleFontSize: number = 22;
+  titleFontWeight: number = 600;
+  titleStyleRaw: string = '';
   regexFontEnabled: boolean = false;
   regexFontPattern: string = '';
   regexFontMode: string = 'global';
@@ -87,23 +103,28 @@ export class ReaderSettingsStore {
   static readonly PAGE_TURN_ANIMATION_VERTICAL: number = 5;
   static readonly PAGE_TURN_ANIMATION_SIMULATION: number = 6;
   static readonly PAGE_TURN_ANIMATION_3D: number = 7;
+  static readonly PAGE_TURN_ANIMATION_PUSH: number = 8;
   static readonly SCREEN_TIMEOUT_FOLLOW_SYSTEM: number = 0;
   static readonly SCREEN_TIMEOUT_ALWAYS_ON: number = -1;
+  static readonly SCREEN_TIMEOUT_MAX_MINUTES: number = 60;
   static readonly SCREEN_ORIENTATION_SYSTEM: string = 'system';
   static readonly SCREEN_ORIENTATION_PORTRAIT: string = 'portrait';
   static readonly SCREEN_ORIENTATION_LANDSCAPE: string = 'landscape';
+  static readonly KEY_FONT_WEIGHT: string = 'readerFontWeight';
   static readonly KEY_FONT_SIZE: string = 'readerFontSize';
   static readonly KEY_LETTER_SPACING: string = 'readerLetterSpacing';
   static readonly KEY_TEXT_ALIGN: string = 'readerTextAlign';
   static readonly KEY_LINE_HEIGHT: string = 'readerLineHeight';
   static readonly KEY_LINE_HEIGHT_MODE: string = 'readerLineHeightMode';
   static readonly KEY_PARAGRAPH_SPACING: string = 'readerParagraphSpacing';
-  static readonly KEY_KEEP_PARAGRAPH_INDENT: string = 'readerKeepParagraphIndent';
+  static readonly KEY_PARAGRAPH_INDENT: string = 'readerParagraphIndent';
   static readonly KEY_CHINESE_CONVERTER_TYPE: string = 'readerChineseConverterType';
+
   static readonly KEY_MARGIN_LEFT: string = 'readerMarginLeft';
   static readonly KEY_MARGIN_RIGHT: string = 'readerMarginRight';
   static readonly KEY_MARGIN_TOP: string = 'readerMarginTop';
   static readonly KEY_MARGIN_BOTTOM: string = 'readerMarginBottom';
+  static readonly KEY_COMMENT_BUBBLE_SIZE: string = 'readerCommentBubbleSize';
   static readonly KEY_THEME_INDEX: string = 'readerThemeIndex';
   static readonly KEY_LIGHT_THEME_INDEX: string = 'readerLightThemeIndex';
   static readonly KEY_DARK_THEME_INDEX: string = 'readerDarkThemeIndex';
@@ -118,7 +139,7 @@ export class ReaderSettingsStore {
   static readonly KEY_LANDSCAPE_DOUBLE_PAGE: string = 'readerLandscapeDoublePage';
   static readonly KEY_SCREEN_ORIENTATION: string = 'readerScreenOrientation';
   static readonly KEY_TAP_ZONE_ACTIONS: string = 'readerTapZoneActions';
-  static readonly KEY_VOLUME_TURN_PAGE: string = 'readerVolumeTurnPage';
+  static readonly KEY_LONG_PRESS_SELECT_TEXT: string = 'readerLongPressSelectText';
   static readonly KEY_EYE_TURN_ENABLED: string = 'readerEyeTurnEnabled';
   static readonly KEY_EYE_TURN_PORTRAIT_CALIBRATION: string = 'readerEyeTurnPortraitCalibration';
   static readonly KEY_EYE_TURN_LANDSCAPE_CALIBRATION: string = 'readerEyeTurnLandscapeCalibration';
@@ -130,10 +151,15 @@ export class ReaderSettingsStore {
   static readonly KEY_KEEP_SCREEN_ON: string = 'readerKeepScreenOn';
   static readonly KEY_EXTEND_TO_STATUS_BAR: string = 'readerExtendToStatusBar';
   static readonly KEY_PRELOAD_ENABLED: string = 'readerPreloadEnabled';
+  static readonly KEY_AI_PROCESSING_INDICATOR_ENABLED: string = 'readerAiProcessingIndicatorEnabled';
   static readonly KEY_PRELOAD_CHAPTER_COUNT: string = 'readerPreloadChapterCount';
   static readonly KEY_USE_TTS_QUICK_ACTION: string = 'readerUseTtsQuickAction';
+  static readonly KEY_USE_AUTO_SCROLL_QUICK_ACTION: string = 'readerUseAutoScrollQuickAction';
   static readonly KEY_USE_CHAPTER_QUICK_JUMP: string = 'readerUseChapterQuickJump';
+  static readonly KEY_USE_BRIGHTNESS_QUICK_ACTION: string = 'readerUseBrightnessQuickAction';
+  static readonly KEY_QUICK_JUMP_MODE: string = 'readerQuickJumpMode';
   static readonly KEY_QUICK_BOOKMARK_ENABLED: string = 'readerQuickBookmarkEnabled';
+  static readonly KEY_NIGHT_IMAGE_MODE: string = 'readerNightImageMode';
   static readonly KEY_HEADER_ENABLED: string = 'readerHeaderEnabled';
   static readonly KEY_HEADER_CONTENT_MODE: string = 'readerHeaderContentMode';
   static readonly KEY_FOOTER_ENABLED: string = 'readerFooterEnabled';
@@ -145,6 +171,11 @@ export class ReaderSettingsStore {
   static readonly KEY_FONT_FILE_PATH: string = 'readerFontFilePath';
   static readonly KEY_FONT_SOURCE_NAME: string = 'readerFontSourceName';
   static readonly KEY_FONT_MODE: string = 'readerFontMode';
+  /** 全局字体模式：device 跟随系统（默认），system 是历史名、表示跟随主题，custom 为自定义字体。 */
+  static readonly FONT_MODE_DEVICE: string = 'device';
+  static readonly FONT_MODE_THEME: string = 'system';
+  static readonly FONT_MODE_CUSTOM: string = 'custom';
+  static readonly FONT_SOURCE_NAME_THEME: string = '跟随主题';
   static readonly KEY_SYSTEM_FONT_FAMILY: string = 'readerSystemFontFamily';
   static readonly KEY_CUSTOM_FONTS_RAW: string = 'readerCustomFontsRaw';
   static readonly KEY_BODY_FONT_MODE: string = 'readerBodyFontMode';
@@ -152,6 +183,8 @@ export class ReaderSettingsStore {
   static readonly KEY_TITLE_FONT_MODE: string = 'readerTitleFontMode';
   static readonly KEY_TITLE_FONT_FAMILY: string = 'readerTitleFontFamily';
   static readonly KEY_TITLE_FONT_SIZE: string = 'readerTitleFontSize';
+  static readonly KEY_TITLE_FONT_WEIGHT: string = 'readerTitleFontWeight';
+  static readonly KEY_TITLE_STYLE_RAW: string = 'readerTitleStyleRaw';
   static readonly KEY_REGEX_FONT_ENABLED: string = 'readerRegexFontEnabled';
   static readonly KEY_REGEX_FONT_PATTERN: string = 'readerRegexFontPattern';
   static readonly KEY_REGEX_FONT_MODE: string = 'readerRegexFontMode';
@@ -159,13 +192,19 @@ export class ReaderSettingsStore {
   static readonly KEY_REGEX_FONT_SIZE: string = 'readerRegexFontSize';
   static readonly KEY_REGEX_SHADOW_COLOR: string = 'readerRegexShadowColor';
   static readonly KEY_REGEX_FONT_RULES_RAW: string = 'readerRegexFontRulesRaw';
+  /** 打开时每套主题各记一份排版、换主题即换排版；关闭时所有主题共用当前排版。同时作为 AppStorage 键。 */
+  static readonly KEY_TYPOGRAPHY_FOLLOWS_THEME: string = 'readerTypographyFollowsTheme';
   private static readonly STORE_NAME: string = 'reader_settings';
   private static readonly THEME_PROFILE_PREFIX: string = 'readerThemeProfileV1_';
+  private static readonly LEGACY_CUSTOM_PROFILE_ID: string = 'custom';
+  // 旧版“已绑定排版”标记，现在只在删除档案时顺带清掉。
+  private static readonly TYPOGRAPHY_BOUND_PREFIX: string = 'readerThemeTypographyBoundV1_';
   private static cachedSettings: ReaderSettings | null = null;
   private static cachedThemeId: string = '';
   private static readerFontStyleSaveQueue: Promise<void> = Promise.resolve();
   private static layoutElementSaveQueue: Promise<void> = Promise.resolve();
   private static readerChromeSaveQueue: Promise<void> = Promise.resolve();
+  private static readerLayoutSaveQueue: Promise<void> = Promise.resolve();
 
   static async load(context: Context): Promise<ReaderSettings> {
     const activeThemeId = ReaderSettingsStore.activeThemeId();
@@ -175,6 +214,14 @@ export class ReaderSettingsStore {
     const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
     const profile = await ReaderSettingsStore.loadThemeProfile(store, activeThemeId);
     if (profile) {
+      // AI 处理标识是阅读通用设置，不随主题档案切换。
+      profile.aiProcessingIndicatorEnabled = await ReaderSettingsStore.getBoolean(
+        store, ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED, true);
+      profile.quickJumpMode = ReaderQuickJumpModel.normalizeMode(await ReaderSettingsStore.getString(
+        store, ReaderSettingsStore.KEY_QUICK_JUMP_MODE, 'chapter'));
+      await ReaderSettingsStore.readGlobalFontSettings(store, profile);
+      ReaderSettingsStore.normalizeGlobalFontMode(profile);
+      await ReaderSettingsStore.applyThemePageTurnDefault(store, activeThemeId, profile);
       ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(profile);
       ReaderSettingsStore.cachedThemeId = activeThemeId;
       return ReaderSettingsStore.clone(profile);
@@ -186,6 +233,8 @@ export class ReaderSettingsStore {
       20,
       'fontSize'
     );
+    settings.fontWeight = await ReaderSettingsStore.getNumber(
+      store, ReaderSettingsStore.KEY_FONT_WEIGHT, ReaderFontWeight.DEFAULT, 'fontWeight');
     settings.letterSpacing = await ReaderSettingsStore.getNumber(
       store, ReaderSettingsStore.KEY_LETTER_SPACING, 0, 'letterSpacing');
     settings.textAlign = ReaderSettingsStore.normalizeTextAlign(
@@ -204,17 +253,15 @@ export class ReaderSettingsStore {
       0,
       'paragraphSpacing'
     );
-    settings.keepParagraphIndent = await ReaderSettingsStore.getBoolean(
-      store,
-      ReaderSettingsStore.KEY_KEEP_PARAGRAPH_INDENT,
-      false
-    );
+    settings.paragraphIndent = await ReaderSettingsStore.getNumber(
+      store, ReaderSettingsStore.KEY_PARAGRAPH_INDENT, ReaderParagraphIndent.DEFAULT, 'paragraphIndent');
     const storedConverterType = await store.get(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE, 0);
     settings.chineseConverterType = ReaderSettingsStore.normalizeChineseConverterType(
       typeof storedConverterType === 'number' ? storedConverterType :
         (typeof storedConverterType === 'string' ? Number(storedConverterType) :
           (AppStorage.get<number>(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE) ?? 0))
     );
+
     settings.marginLeft = await ReaderSettingsStore.getNumber(
       store, ReaderSettingsStore.KEY_MARGIN_LEFT, 18, 'horizontalMargin');
     settings.marginRight = await ReaderSettingsStore.getNumber(
@@ -223,6 +270,8 @@ export class ReaderSettingsStore {
       store, ReaderSettingsStore.KEY_MARGIN_TOP, 18, 'verticalMargin');
     settings.marginBottom = await ReaderSettingsStore.getNumber(
       store, ReaderSettingsStore.KEY_MARGIN_BOTTOM, 18, 'verticalMargin');
+    settings.commentBubbleSize = await ReaderSettingsStore.getNumber(
+      store, ReaderSettingsStore.KEY_COMMENT_BUBBLE_SIZE, ReaderCommentBubbleSize.DEFAULT, 'commentBubbleSize');
     const legacyThemeIndex = await ReaderSettingsStore.getNumber(
       store,
       ReaderSettingsStore.KEY_THEME_INDEX,
@@ -323,11 +372,8 @@ export class ReaderSettingsStore {
         AppStorage.get<string>(ReaderSettingsStore.KEY_TAP_ZONE_ACTIONS) || '3,3,3,3,1,2,2,2,2'
       )
     );
-    settings.volumeTurnPage = await ReaderSettingsStore.getBoolean(
-      store,
-      ReaderSettingsStore.KEY_VOLUME_TURN_PAGE,
-      AppStorage.get<boolean>(ReaderSettingsStore.KEY_VOLUME_TURN_PAGE) ?? false
-    );
+    settings.longPressSelectText = await ReaderSettingsStore.getBoolean(
+      store, ReaderSettingsStore.KEY_LONG_PRESS_SELECT_TEXT, true);
     settings.eyeTurnEnabled = await ReaderSettingsStore.getBoolean(
       store,
       ReaderSettingsStore.KEY_EYE_TURN_ENABLED,
@@ -378,6 +424,8 @@ export class ReaderSettingsStore {
       ReaderSettingsStore.KEY_PRELOAD_ENABLED,
       true
     );
+    settings.aiProcessingIndicatorEnabled = await ReaderSettingsStore.getBoolean(
+      store, ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED, true);
     settings.preloadChapterCount = await ReaderSettingsStore.getNumber(
       store,
       ReaderSettingsStore.KEY_PRELOAD_CHAPTER_COUNT,
@@ -389,16 +437,27 @@ export class ReaderSettingsStore {
       ReaderSettingsStore.KEY_USE_TTS_QUICK_ACTION,
       AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_TTS_QUICK_ACTION) ?? true
     );
+    settings.useAutoScrollQuickAction = await ReaderSettingsStore.getBoolean(
+      store,
+      ReaderSettingsStore.KEY_USE_AUTO_SCROLL_QUICK_ACTION,
+      AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_AUTO_SCROLL_QUICK_ACTION) ?? true
+    );
     settings.useChapterQuickJump = await ReaderSettingsStore.getBoolean(
       store,
       ReaderSettingsStore.KEY_USE_CHAPTER_QUICK_JUMP,
       AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_CHAPTER_QUICK_JUMP) ?? true
     );
+    settings.quickJumpMode = ReaderQuickJumpModel.normalizeMode(await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_QUICK_JUMP_MODE, 'chapter'));
+    settings.useBrightnessQuickAction = await ReaderSettingsStore.getBoolean(
+      store, ReaderSettingsStore.KEY_USE_BRIGHTNESS_QUICK_ACTION, true);
     settings.quickBookmarkEnabled = await ReaderSettingsStore.getBoolean(
       store,
       ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED,
       AppStorage.get<boolean>(ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED) ?? true
     );
+    settings.nightImageMode = ReaderNightImage.normalize(await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE, ReaderNightImage.ORIGINAL));
     settings.readerHeaderEnabled = await ReaderSettingsStore.getBoolean(
       store, ReaderSettingsStore.KEY_HEADER_ENABLED, false);
     settings.readerHeaderContentMode = ReaderSettingsStore.normalizeHeaderContentMode(
@@ -416,7 +475,7 @@ export class ReaderSettingsStore {
     settings.fontFamily = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_FONT_FAMILY, '');
     settings.fontFilePath = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_FONT_FILE_PATH, '');
     settings.fontSourceName = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_FONT_SOURCE_NAME, '系统默认');
-    settings.fontMode = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_FONT_MODE, 'system');
+    settings.fontMode = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_FONT_MODE, ReaderSettingsStore.FONT_MODE_DEVICE);
     settings.systemFontFamily = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_SYSTEM_FONT_FAMILY, '');
     settings.customFontsRaw = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_CUSTOM_FONTS_RAW, '');
     settings.bodyFontMode = ReaderSettingsStore.normalizeFontMode(await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_BODY_FONT_MODE, 'global'));
@@ -424,6 +483,9 @@ export class ReaderSettingsStore {
     settings.titleFontMode = ReaderSettingsStore.normalizeFontMode(await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_TITLE_FONT_MODE, 'global'));
     settings.titleFontFamily = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_TITLE_FONT_FAMILY, '');
     settings.titleFontSize = await ReaderSettingsStore.getNumber(store, ReaderSettingsStore.KEY_TITLE_FONT_SIZE, 22, 'fontSize');
+    settings.titleFontWeight = await ReaderSettingsStore.getNumber(store, ReaderSettingsStore.KEY_TITLE_FONT_WEIGHT, 600, 'fontWeight');
+    settings.titleStyleRaw = ReaderTitleStyleCodec.normalize(await ReaderSettingsStore.getString(store,
+      ReaderSettingsStore.KEY_TITLE_STYLE_RAW, ''));
     settings.regexFontEnabled = await ReaderSettingsStore.getBoolean(store, ReaderSettingsStore.KEY_REGEX_FONT_ENABLED, false);
     settings.regexFontPattern = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_REGEX_FONT_PATTERN, '');
     settings.regexFontMode = ReaderSettingsStore.normalizeFontMode(await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_REGEX_FONT_MODE, 'global'));
@@ -432,6 +494,8 @@ export class ReaderSettingsStore {
     settings.regexShadowColor = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_REGEX_SHADOW_COLOR, '');
     settings.regexFontRulesRaw = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_REGEX_FONT_RULES_RAW, '');
     ReaderSettingsStore.mergeStorageFontSettings(settings);
+    ReaderSettingsStore.normalizeGlobalFontMode(settings);
+    await ReaderSettingsStore.applyThemePageTurnDefault(store, activeThemeId, settings);
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
     ReaderSettingsStore.cachedThemeId = activeThemeId;
     await ReaderSettingsStore.persistThemeProfile(store, activeThemeId, settings);
@@ -442,6 +506,8 @@ export class ReaderSettingsStore {
   static async reload(context: Context): Promise<ReaderSettings> {
     await ReaderSettingsStore.waitForReaderFontStyleSaves();
     await ReaderSettingsStore.waitForLayoutElementSaves();
+    await ReaderSettingsStore.waitForReaderLayoutSaves();
+    await ReaderSettingsStore.waitForReaderChromeSaves();
     ReaderSettingsStore.cachedSettings = null;
     ReaderSettingsStore.cachedThemeId = '';
     return await ReaderSettingsStore.load(context);
@@ -449,6 +515,10 @@ export class ReaderSettingsStore {
 
   static async switchThemeProfile(context: Context, previousThemeId: string,
     nextThemeId: string): Promise<ReaderSettings> {
+    await ReaderSettingsStore.waitForReaderFontStyleSaves();
+    await ReaderSettingsStore.waitForLayoutElementSaves();
+    await ReaderSettingsStore.waitForReaderLayoutSaves();
+    await ReaderSettingsStore.waitForReaderChromeSaves();
     const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
     const previousId = ReaderSettingsStore.normalizeThemeProfileId(previousThemeId);
     const nextId = ReaderSettingsStore.normalizeThemeProfileId(nextThemeId);
@@ -458,12 +528,20 @@ export class ReaderSettingsStore {
 
     let next = await ReaderSettingsStore.loadThemeProfile(store, nextId);
     if (!next) {
+      // 第一次使用的主题从当前设置起步；要用主题预设时由调用方随后 restoreThemePreset。
       next = ReaderSettingsStore.clone(current);
       next.lightThemeIndex = ReaderThemeHelper.APP_THEME_INDEX;
       next.darkThemeIndex = ReaderThemeHelper.APP_THEME_INDEX;
       next.themeIndex = ReaderThemeHelper.APP_THEME_INDEX;
-      await ReaderSettingsStore.persistThemeProfile(store, nextId, next);
+    } else if (!await ReaderSettingsStore.readTypographyFollowsTheme(store)) {
+      // 排版不跟随主题：目标主题只换翻页等其余设置，排版沿用当前这套。
+      ReaderSettingsStore.copyTypography(current, next);
     }
+    next.quickJumpMode = current.quickJumpMode;
+    next.aiProcessingIndicatorEnabled = current.aiProcessingIndicatorEnabled;
+    ReaderSettingsStore.copyGlobalFontSettings(current, next);
+    await ReaderSettingsStore.applyThemePageTurnDefault(store, nextId, next);
+    await ReaderSettingsStore.persistThemeProfile(store, nextId, next);
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(next);
     ReaderSettingsStore.cachedThemeId = nextId;
     ReaderSettingsStore.applyToStorage(next);
@@ -471,7 +549,7 @@ export class ReaderSettingsStore {
     return ReaderSettingsStore.clone(next);
   }
 
-  static async saveLayoutSettings(
+  static saveLayoutSettings(
     context: Context,
     fontSize: number,
     lineHeight: number,
@@ -481,32 +559,70 @@ export class ReaderSettingsStore {
     marginTop: number = 18,
     marginBottom: number = 18,
     letterSpacing: number = 0,
-    textAlign: string = 'justify'
+    textAlign: string = 'justify',
+    fontWeight?: number,
+    paragraphIndent?: number,
+    commentBubbleSize?: number
   ): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
     settings.fontSize = ReaderSettingsStore.normalizeFontSize(fontSize);
+    settings.fontWeight = ReaderFontWeight.normalize(fontWeight ?? settings.fontWeight);
     settings.letterSpacing = ReaderSettingsStore.normalizeLetterSpacing(letterSpacing);
     settings.textAlign = ReaderSettingsStore.normalizeTextAlign(textAlign);
     settings.lineHeight = ReaderSettingsStore.normalizeLineHeight(lineHeight);
     settings.paragraphSpacing = ReaderSettingsStore.normalizeParagraphSpacing(paragraphSpacing);
+    settings.paragraphIndent = ReaderParagraphIndent.normalize(paragraphIndent ?? settings.paragraphIndent);
     settings.marginLeft = ReaderSettingsStore.normalizeHorizontalMargin(marginLeft);
     settings.marginRight = ReaderSettingsStore.normalizeHorizontalMargin(marginRight);
     settings.marginTop = ReaderSettingsStore.normalizeVerticalMargin(marginTop);
     settings.marginBottom = ReaderSettingsStore.normalizeVerticalMargin(marginBottom);
+    settings.commentBubbleSize = ReaderCommentBubbleSize.normalize(commentBubbleSize ?? settings.commentBubbleSize);
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
     ReaderSettingsStore.applyLayoutToStorage(settings);
+    const snapshot = ReaderSettingsStore.clone(settings);
+    const themeId = ReaderSettingsStore.activeThemeId();
+    const previous = ReaderSettingsStore.readerLayoutSaveQueue.catch(() => {
+    });
+    const next = previous.then(async () => {
+      await ReaderSettingsStore.persistLayoutSettings(context, snapshot, themeId);
+    });
+    ReaderSettingsStore.readerLayoutSaveQueue = next;
+    return next;
+  }
+
+  /** 只改四侧边距，其余排版参数保持当前值（文件排版页用，与普通阅读页共用同一组边距）。 */
+  static saveMargins(context: Context, left: number, right: number, top: number, bottom: number): Promise<void> {
+    const current = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
+    return ReaderSettingsStore.saveLayoutSettings(context, current.fontSize, current.lineHeight,
+      current.paragraphSpacing, left, right, top, bottom, current.letterSpacing, current.textAlign,
+      current.fontWeight, current.paragraphIndent, current.commentBubbleSize);
+  }
+
+  private static async waitForReaderLayoutSaves(): Promise<void> {
+    try {
+      await ReaderSettingsStore.readerLayoutSaveQueue;
+    } catch (e) {
+      console.warn('等待阅读排版设置保存失败:', e);
+    }
+  }
+
+  private static async persistLayoutSettings(context: Context, settings: ReaderSettings,
+    themeId: string): Promise<void> {
     const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
     await store.put(ReaderSettingsStore.KEY_FONT_SIZE, settings.fontSize);
+    await store.put(ReaderSettingsStore.KEY_FONT_WEIGHT, settings.fontWeight);
     await store.put(ReaderSettingsStore.KEY_LETTER_SPACING, settings.letterSpacing);
     await store.put(ReaderSettingsStore.KEY_TEXT_ALIGN, settings.textAlign);
     await store.put(ReaderSettingsStore.KEY_LINE_HEIGHT, settings.lineHeight);
     await store.put(ReaderSettingsStore.KEY_LINE_HEIGHT_MODE, 'spacing');
     await store.put(ReaderSettingsStore.KEY_PARAGRAPH_SPACING, settings.paragraphSpacing);
+    await store.put(ReaderSettingsStore.KEY_PARAGRAPH_INDENT, settings.paragraphIndent);
     await store.put(ReaderSettingsStore.KEY_MARGIN_LEFT, settings.marginLeft);
     await store.put(ReaderSettingsStore.KEY_MARGIN_RIGHT, settings.marginRight);
     await store.put(ReaderSettingsStore.KEY_MARGIN_TOP, settings.marginTop);
     await store.put(ReaderSettingsStore.KEY_MARGIN_BOTTOM, settings.marginBottom);
-    await ReaderSettingsStore.persistActiveThemeProfile(store, settings);
+    await store.put(ReaderSettingsStore.KEY_COMMENT_BUBBLE_SIZE, settings.commentBubbleSize);
+    await ReaderSettingsStore.persistThemeProfile(store, themeId, settings);
     await store.flush();
   }
 
@@ -560,6 +676,7 @@ export class ReaderSettingsStore {
     await store.put(ReaderSettingsStore.KEY_DARK_CUSTOM_THEME_TEXT_COLOR, settings.darkCustomThemeTextColor);
     await store.put(ReaderSettingsStore.KEY_CUSTOM_THEMES_RAW, settings.customThemesRaw);
     await ReaderSettingsStore.persistActiveThemeProfile(store, settings);
+    CloudSyncChangeTracker.markPreferenceChanged();
     await store.flush();
   }
 
@@ -573,14 +690,15 @@ export class ReaderSettingsStore {
     await store.flush();
   }
 
+  /** 音量键、智控键翻页已改为按阅读类型的全局设置，见 ReaderInputScopes。 */
   static async saveReadingInteractionSettings(
     context: Context,
-    volumeTurnPage: boolean,
     screenTimeoutMinutes: number,
-    extendToStatusBar: boolean
+    extendToStatusBar: boolean,
+    longPressSelectText: boolean = AppStorage.get<boolean>(ReaderSettingsStore.KEY_LONG_PRESS_SELECT_TEXT) ?? true
   ): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
-    settings.volumeTurnPage = volumeTurnPage;
+    settings.longPressSelectText = longPressSelectText;
     settings.screenTimeoutMinutes = ReaderSettingsStore.normalizeScreenTimeoutMinutes(screenTimeoutMinutes);
     settings.keepScreenOn =
       settings.screenTimeoutMinutes !== ReaderSettingsStore.SCREEN_TIMEOUT_FOLLOW_SYSTEM;
@@ -588,7 +706,7 @@ export class ReaderSettingsStore {
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
     ReaderSettingsStore.applyInteractionToStorage(settings);
     const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
-    await store.put(ReaderSettingsStore.KEY_VOLUME_TURN_PAGE, settings.volumeTurnPage);
+    await store.put(ReaderSettingsStore.KEY_LONG_PRESS_SELECT_TEXT, settings.longPressSelectText);
     await store.put(ReaderSettingsStore.KEY_SCREEN_TIMEOUT_MINUTES, settings.screenTimeoutMinutes);
     await store.put(ReaderSettingsStore.KEY_KEEP_SCREEN_ON, settings.keepScreenOn);
     await store.put(ReaderSettingsStore.KEY_EXTEND_TO_STATUS_BAR, settings.extendToStatusBar);
@@ -655,16 +773,6 @@ export class ReaderSettingsStore {
     await store.flush();
   }
 
-  static async saveKeepParagraphIndent(context: Context, enabled: boolean): Promise<void> {
-    const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
-    settings.keepParagraphIndent = enabled;
-    ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
-    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
-    await store.put(ReaderSettingsStore.KEY_KEEP_PARAGRAPH_INDENT, settings.keepParagraphIndent);
-    await ReaderSettingsStore.persistActiveThemeProfile(store, settings);
-    await store.flush();
-  }
-
   static async saveChineseConverterType(context: Context, converterType: number): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
     settings.chineseConverterType = ReaderSettingsStore.normalizeChineseConverterType(converterType);
@@ -675,6 +783,7 @@ export class ReaderSettingsStore {
     await ReaderSettingsStore.persistActiveThemeProfile(store, settings);
     await store.flush();
   }
+
 
   static async savePreloadChapterCount(context: Context, count: number): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
@@ -697,6 +806,28 @@ export class ReaderSettingsStore {
     await store.flush();
   }
 
+  static async saveNightImageMode(context: Context, mode: string): Promise<void> {
+    const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
+    settings.nightImageMode = ReaderNightImage.normalize(mode);
+    ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE, settings.nightImageMode);
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    await store.put(ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE, settings.nightImageMode);
+    await ReaderSettingsStore.persistActiveThemeProfile(store, settings);
+    await store.flush();
+  }
+
+  static async saveAiProcessingIndicatorEnabled(context: Context,
+    enabled: boolean = AppStorage.get<boolean>(ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED) ?? true): Promise<void> {
+    const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
+    settings.aiProcessingIndicatorEnabled = enabled;
+    ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED, enabled);
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    await store.put(ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED, enabled);
+    await store.flush();
+  }
+
   static async saveFontSettings(
     context: Context,
     fontFamily: string,
@@ -710,7 +841,7 @@ export class ReaderSettingsStore {
     settings.fontFamily = fontFamily || '';
     settings.fontFilePath = fontFilePath || '';
     settings.fontSourceName = fontSourceName || '系统默认';
-    settings.fontMode = fontMode || 'system';
+    settings.fontMode = fontMode || ReaderSettingsStore.FONT_MODE_DEVICE;
     settings.systemFontFamily = systemFontFamily || '';
     settings.customFontsRaw = customFontsRaw || '';
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
@@ -730,12 +861,42 @@ export class ReaderSettingsStore {
 
   static async saveReaderFontStyleSettings(context: Context, settings: ReaderSettings): Promise<void> {
     const current = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
+    const previousRules = ReaderSettingsStore.fontRulesKey(current);
     current.fontSize = ReaderSettingsStore.normalizeFontSize(settings.fontSize || current.fontSize);
+    current.fontWeight = ReaderFontWeight.normalize(settings.fontWeight);
     current.bodyFontMode = ReaderSettingsStore.normalizeFontMode(settings.bodyFontMode);
     current.bodyFontFamily = settings.bodyFontFamily || '';
     current.titleFontMode = ReaderSettingsStore.normalizeFontMode(settings.titleFontMode);
     current.titleFontFamily = settings.titleFontFamily || '';
     current.titleFontSize = ReaderSettingsStore.normalizeFontSize(settings.titleFontSize);
+    current.titleFontWeight = ReaderFontWeight.normalize(settings.titleFontWeight ?? 600);
+    current.titleStyleRaw = ReaderTitleStyleCodec.normalize(settings.titleStyleRaw);
+    ReaderSettingsStore.updateFontRules(current, settings);
+    ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(current);
+    ReaderSettingsStore.applyLayoutToStorage(current);
+    ReaderSettingsStore.applyReaderFontStyleToStorage(current);
+    const snapshot = ReaderSettingsStore.clone(current);
+    await ReaderSettingsStore.enqueueReaderFontStyleSave(context, snapshot);
+    if (previousRules !== ReaderSettingsStore.fontRulesKey(snapshot)) {
+      CloudSyncChangeTracker.markPreferenceChanged();
+    }
+  }
+
+  /** 云端只允许更新字体规则，不触碰正文、标题字号或设备字体选择。 */
+  static async saveReaderFontRuleSettings(context: Context, settings: ReaderSettings): Promise<void> {
+    const current = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
+    const previousRules = ReaderSettingsStore.fontRulesKey(current);
+    ReaderSettingsStore.updateFontRules(current, settings);
+    ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(current);
+    ReaderSettingsStore.applyRegexFontToStorage(current);
+    const snapshot = ReaderSettingsStore.clone(current);
+    await ReaderSettingsStore.enqueueReaderFontStyleSave(context, snapshot, true);
+    if (previousRules !== ReaderSettingsStore.fontRulesKey(snapshot)) {
+      CloudSyncChangeTracker.markPreferenceChanged();
+    }
+  }
+
+  private static updateFontRules(current: ReaderSettings, settings: ReaderSettings): void {
     current.regexFontEnabled = settings.regexFontEnabled;
     current.regexFontPattern = settings.regexFontPattern || '';
     current.regexFontMode = ReaderSettingsStore.normalizeFontMode(settings.regexFontMode);
@@ -743,19 +904,20 @@ export class ReaderSettingsStore {
     current.regexFontSize = ReaderSettingsStore.normalizeFontSize(settings.regexFontSize);
     current.regexShadowColor = settings.regexShadowColor || '';
     current.regexFontRulesRaw = settings.regexFontRulesRaw || '';
-    ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(current);
-    ReaderSettingsStore.applyLayoutToStorage(current);
-    ReaderSettingsStore.applyReaderFontStyleToStorage(current);
-    const snapshot = ReaderSettingsStore.clone(current);
-    await ReaderSettingsStore.enqueueReaderFontStyleSave(context, snapshot);
   }
 
-  private static enqueueReaderFontStyleSave(context: Context, settings: ReaderSettings): Promise<void> {
+  private static fontRulesKey(settings: ReaderSettings): string {
+    return JSON.stringify([settings.regexFontEnabled, settings.regexFontPattern, settings.regexFontMode,
+      settings.regexFontFamily, settings.regexFontSize, settings.regexShadowColor, settings.regexFontRulesRaw]);
+  }
+
+  private static enqueueReaderFontStyleSave(context: Context, settings: ReaderSettings,
+    rulesOnly: boolean = false): Promise<void> {
     const themeId = ReaderSettingsStore.activeThemeId();
     const previous = ReaderSettingsStore.readerFontStyleSaveQueue.catch(() => {
     });
     const next = previous.then(async () => {
-      await ReaderSettingsStore.persistReaderFontStyleSettings(context, settings, themeId);
+      await ReaderSettingsStore.persistReaderFontStyleSettings(context, settings, themeId, rulesOnly);
     });
     ReaderSettingsStore.readerFontStyleSaveQueue = next;
     return next;
@@ -770,14 +932,19 @@ export class ReaderSettingsStore {
   }
 
   private static async persistReaderFontStyleSettings(context: Context, current: ReaderSettings,
-    themeId: string): Promise<void> {
+    themeId: string, rulesOnly: boolean): Promise<void> {
     const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
-    await store.put(ReaderSettingsStore.KEY_FONT_SIZE, current.fontSize);
-    await store.put(ReaderSettingsStore.KEY_BODY_FONT_MODE, current.bodyFontMode);
-    await store.put(ReaderSettingsStore.KEY_BODY_FONT_FAMILY, current.bodyFontFamily);
-    await store.put(ReaderSettingsStore.KEY_TITLE_FONT_MODE, current.titleFontMode);
-    await store.put(ReaderSettingsStore.KEY_TITLE_FONT_FAMILY, current.titleFontFamily);
-    await store.put(ReaderSettingsStore.KEY_TITLE_FONT_SIZE, current.titleFontSize);
+    if (!rulesOnly) {
+      await store.put(ReaderSettingsStore.KEY_FONT_SIZE, current.fontSize);
+      await store.put(ReaderSettingsStore.KEY_FONT_WEIGHT, current.fontWeight);
+      await store.put(ReaderSettingsStore.KEY_BODY_FONT_MODE, current.bodyFontMode);
+      await store.put(ReaderSettingsStore.KEY_BODY_FONT_FAMILY, current.bodyFontFamily);
+      await store.put(ReaderSettingsStore.KEY_TITLE_FONT_MODE, current.titleFontMode);
+      await store.put(ReaderSettingsStore.KEY_TITLE_FONT_FAMILY, current.titleFontFamily);
+      await store.put(ReaderSettingsStore.KEY_TITLE_FONT_SIZE, current.titleFontSize);
+      await store.put(ReaderSettingsStore.KEY_TITLE_FONT_WEIGHT, current.titleFontWeight);
+      await store.put(ReaderSettingsStore.KEY_TITLE_STYLE_RAW, current.titleStyleRaw);
+    }
     await store.put(ReaderSettingsStore.KEY_REGEX_FONT_ENABLED, current.regexFontEnabled);
     await store.put(ReaderSettingsStore.KEY_REGEX_FONT_PATTERN, current.regexFontPattern);
     await store.put(ReaderSettingsStore.KEY_REGEX_FONT_MODE, current.regexFontMode);
@@ -790,13 +957,22 @@ export class ReaderSettingsStore {
   }
 
   static saveLayoutElementSettings(context: Context, useTtsQuickAction: boolean,
-    useChapterQuickJump: boolean): Promise<void> {
+    useChapterQuickJump: boolean,
+    useAutoScrollQuickAction: boolean = AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_AUTO_SCROLL_QUICK_ACTION) ?? true,
+    quickJumpMode: string = AppStorage.get<string>(ReaderSettingsStore.KEY_QUICK_JUMP_MODE) || 'chapter',
+    useBrightnessQuickAction: boolean = AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_BRIGHTNESS_QUICK_ACTION) ?? true): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
     settings.useTtsQuickAction = useTtsQuickAction;
+    settings.useAutoScrollQuickAction = useAutoScrollQuickAction;
     settings.useChapterQuickJump = useChapterQuickJump;
+    settings.useBrightnessQuickAction = useBrightnessQuickAction;
+    settings.quickJumpMode = ReaderQuickJumpModel.normalizeMode(quickJumpMode);
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_TTS_QUICK_ACTION, useTtsQuickAction);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_AUTO_SCROLL_QUICK_ACTION, useAutoScrollQuickAction);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_CHAPTER_QUICK_JUMP, useChapterQuickJump);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_BRIGHTNESS_QUICK_ACTION, useBrightnessQuickAction);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_QUICK_JUMP_MODE, settings.quickJumpMode);
     const snapshot = ReaderSettingsStore.clone(settings);
     const themeId = ReaderSettingsStore.activeThemeId();
     const previous = ReaderSettingsStore.layoutElementSaveQueue.catch(() => {
@@ -804,7 +980,10 @@ export class ReaderSettingsStore {
     const next = previous.then(async () => {
       const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
       await store.put(ReaderSettingsStore.KEY_USE_TTS_QUICK_ACTION, snapshot.useTtsQuickAction);
+      await store.put(ReaderSettingsStore.KEY_USE_AUTO_SCROLL_QUICK_ACTION, snapshot.useAutoScrollQuickAction);
       await store.put(ReaderSettingsStore.KEY_USE_CHAPTER_QUICK_JUMP, snapshot.useChapterQuickJump);
+      await store.put(ReaderSettingsStore.KEY_USE_BRIGHTNESS_QUICK_ACTION, snapshot.useBrightnessQuickAction);
+      await store.put(ReaderSettingsStore.KEY_QUICK_JUMP_MODE, snapshot.quickJumpMode);
       await ReaderSettingsStore.persistThemeProfile(store, themeId, snapshot);
       await store.flush();
     });
@@ -846,6 +1025,14 @@ export class ReaderSettingsStore {
     });
     ReaderSettingsStore.readerChromeSaveQueue = next;
     return next;
+  }
+
+  private static async waitForReaderChromeSaves(): Promise<void> {
+    try {
+      await ReaderSettingsStore.readerChromeSaveQueue;
+    } catch (e) {
+      console.warn('等待阅读页眉页脚设置保存失败:', e);
+    }
   }
 
   static async savePageTurnAnimationType(context: Context, type: number): Promise<void> {
@@ -901,7 +1088,10 @@ export class ReaderSettingsStore {
       settings.marginTop,
       settings.marginBottom,
       settings.letterSpacing,
-      settings.textAlign
+      settings.textAlign,
+      settings.fontWeight,
+      settings.paragraphIndent,
+      settings.commentBubbleSize
     );
     await ReaderSettingsStore.saveThemeSettings(
       context,
@@ -920,9 +1110,9 @@ export class ReaderSettingsStore {
     await ReaderSettingsStore.saveScreenOrientation(context, settings.screenOrientation);
     await ReaderSettingsStore.saveReadingInteractionSettings(
       context,
-      settings.volumeTurnPage,
       settings.screenTimeoutMinutes,
-      settings.extendToStatusBar
+      settings.extendToStatusBar,
+      settings.longPressSelectText
     );
     await ReaderSettingsStore.saveEyeTurnSettings(
       context,
@@ -936,10 +1126,12 @@ export class ReaderSettingsStore {
     );
     await ReaderSettingsStore.saveTapZoneActions(context, settings.tapZoneActions);
     await ReaderSettingsStore.savePreloadEnabled(context, settings.preloadEnabled);
-    await ReaderSettingsStore.saveKeepParagraphIndent(context, settings.keepParagraphIndent);
     await ReaderSettingsStore.saveChineseConverterType(context, settings.chineseConverterType);
+
     await ReaderSettingsStore.savePreloadChapterCount(context, settings.preloadChapterCount);
+    await ReaderSettingsStore.saveAiProcessingIndicatorEnabled(context, settings.aiProcessingIndicatorEnabled);
     await ReaderSettingsStore.saveQuickBookmarkEnabled(context, settings.quickBookmarkEnabled);
+    await ReaderSettingsStore.saveNightImageMode(context, settings.nightImageMode);
     await ReaderSettingsStore.saveFontSettings(
       context,
       settings.fontFamily,
@@ -953,7 +1145,10 @@ export class ReaderSettingsStore {
     await ReaderSettingsStore.saveLayoutElementSettings(
       context,
       settings.useTtsQuickAction,
-      settings.useChapterQuickJump
+      settings.useChapterQuickJump,
+      settings.useAutoScrollQuickAction,
+      settings.quickJumpMode,
+      settings.useBrightnessQuickAction
     );
     await ReaderSettingsStore.saveReaderChromeSettings(
       context,
@@ -982,12 +1177,18 @@ export class ReaderSettingsStore {
     ReaderSettingsStore.applyInteractionToStorage(normalized);
     ReaderSettingsStore.applyEyeTurnToStorage(normalized);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_PRELOAD_ENABLED, normalized.preloadEnabled);
-    AppStorage.setOrCreate(ReaderSettingsStore.KEY_KEEP_PARAGRAPH_INDENT, normalized.keepParagraphIndent);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED,
+      normalized.aiProcessingIndicatorEnabled);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE, normalized.chineseConverterType);
+
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_PRELOAD_CHAPTER_COUNT, normalized.preloadChapterCount);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_TTS_QUICK_ACTION, normalized.useTtsQuickAction);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_AUTO_SCROLL_QUICK_ACTION, normalized.useAutoScrollQuickAction);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_CHAPTER_QUICK_JUMP, normalized.useChapterQuickJump);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_BRIGHTNESS_QUICK_ACTION, normalized.useBrightnessQuickAction);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_QUICK_JUMP_MODE, normalized.quickJumpMode);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED, normalized.quickBookmarkEnabled);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE, normalized.nightImageMode);
     ReaderSettingsStore.applyReaderChromeToStorage(normalized);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_FONT_FAMILY, normalized.fontFamily);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_FONT_FILE_PATH, normalized.fontFilePath);
@@ -1004,6 +1205,12 @@ export class ReaderSettingsStore {
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_TITLE_FONT_MODE, settings.titleFontMode);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_TITLE_FONT_FAMILY, settings.titleFontFamily);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_TITLE_FONT_SIZE, settings.titleFontSize);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_TITLE_FONT_WEIGHT, settings.titleFontWeight);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_TITLE_STYLE_RAW, settings.titleStyleRaw);
+    ReaderSettingsStore.applyRegexFontToStorage(settings);
+  }
+
+  private static applyRegexFontToStorage(settings: ReaderSettings): void {
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_REGEX_FONT_ENABLED, settings.regexFontEnabled);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_REGEX_FONT_PATTERN, settings.regexFontPattern);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_REGEX_FONT_MODE, settings.regexFontMode);
@@ -1014,7 +1221,7 @@ export class ReaderSettingsStore {
   }
 
   private static applyInteractionToStorage(settings: ReaderSettings): void {
-    AppStorage.setOrCreate(ReaderSettingsStore.KEY_VOLUME_TURN_PAGE, settings.volumeTurnPage);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_LONG_PRESS_SELECT_TEXT, settings.longPressSelectText);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_SCREEN_TIMEOUT_MINUTES, settings.screenTimeoutMinutes);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_KEEP_SCREEN_ON, settings.keepScreenOn);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_EXTEND_TO_STATUS_BAR, settings.extendToStatusBar);
@@ -1048,15 +1255,18 @@ export class ReaderSettingsStore {
 
   private static applyLayoutToStorage(settings: ReaderSettings): void {
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_FONT_SIZE, settings.fontSize);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_FONT_WEIGHT, settings.fontWeight);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_LETTER_SPACING, settings.letterSpacing);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_TEXT_ALIGN, settings.textAlign);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_LINE_HEIGHT, settings.lineHeight);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_LINE_HEIGHT_MODE, 'spacing');
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_PARAGRAPH_SPACING, settings.paragraphSpacing);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_PARAGRAPH_INDENT, settings.paragraphIndent);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_MARGIN_LEFT, settings.marginLeft);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_MARGIN_RIGHT, settings.marginRight);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_MARGIN_TOP, settings.marginTop);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_MARGIN_BOTTOM, settings.marginBottom);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_COMMENT_BUBBLE_SIZE, settings.commentBubbleSize);
   }
 
   private static applyThemeToStorage(settings: ReaderSettings): void {
@@ -1083,9 +1293,193 @@ export class ReaderSettingsStore {
   }
 
   private static activeThemeId(): string {
+    return ReaderSettingsStore.profileIdFor(AppStorage.get<string>('appThemeId') || 'classic-blue',
+      AppStorage.get<string>('activeCustomThemeSchemeId') || '');
+  }
+
+  /** 当前生效的阅读设置档案 ID：内置主题按主题 ID，自定义主题按方案各一份。 */
+  static activeProfileId(): string {
+    return ReaderSettingsStore.activeThemeId();
+  }
+
+  /** 自定义主题的每套方案各自保存完整排版（含页眉页脚、缩进、强调规则），互不影响。 */
+  static profileIdFor(themeId: string, customSchemeId: string): string {
+    const normalized = ReaderSettingsStore.normalizeThemeProfileId(themeId);
+    const schemeId = (customSchemeId || '').trim();
+    if (normalized !== ReaderSettingsStore.LEGACY_CUSTOM_PROFILE_ID || !schemeId) return normalized;
     return ReaderSettingsStore.normalizeThemeProfileId(
-      AppStorage.get<string>('appThemeId') || 'classic-blue'
-    );
+      `${ReaderSettingsStore.LEGACY_CUSTOM_PROFILE_ID}__${schemeId}`);
+  }
+
+  /** 读取某个档案；不在使用中的档案读存储，都没有时以当前设置为准。用于导出不在使用中的方案。 */
+  static async loadProfile(context: Context, profileId: string): Promise<ReaderSettings> {
+    const id = ReaderSettingsStore.normalizeThemeProfileId(profileId);
+    if (id === ReaderSettingsStore.activeThemeId()) {
+      return await ReaderSettingsStore.load(context);
+    }
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    const profile = await ReaderSettingsStore.loadThemeProfile(store, id);
+    if (profile) {
+      profile.aiProcessingIndicatorEnabled = await ReaderSettingsStore.getBoolean(
+        store, ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED, true);
+      await ReaderSettingsStore.readGlobalFontSettings(store, profile);
+      ReaderSettingsStore.normalizeGlobalFontMode(profile);
+      return profile;
+    }
+    return await ReaderSettingsStore.load(context);
+  }
+
+  /** 为尚未使用过的档案写入完整设置，例如导入的主题方案。 */
+  static async writeProfile(context: Context, profileId: string, settings: ReaderSettings): Promise<void> {
+    const id = ReaderSettingsStore.normalizeThemeProfileId(profileId);
+    if (id === ReaderSettingsStore.activeThemeId()) {
+      throw new Error('不能覆盖正在使用的阅读设置档案');
+    }
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    await store.put(ReaderSettingsStore.themeProfileKey(id), JSON.stringify(ReaderSettingsStore.clone(settings)));
+    await store.flush();
+    CloudSyncChangeTracker.markPreferenceChanged();
+  }
+
+  static async deleteProfile(context: Context, profileId: string): Promise<void> {
+    const id = ReaderSettingsStore.normalizeThemeProfileId(profileId);
+    if (id === ReaderSettingsStore.activeThemeId() || id === ReaderSettingsStore.LEGACY_CUSTOM_PROFILE_ID) return;
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    await store.delete(ReaderSettingsStore.themeProfileKey(id));
+    await store.delete(ReaderSettingsStore.typographyBoundKey(id));
+    await store.flush();
+  }
+
+  /**
+   * 主题排版页能编辑的全部字段：正文排版、段首缩进与对齐、页眉页脚、正文扩展至状态栏，
+   * 以及阅读字体页的正文、标题字体和正则强调规则。全局字体是全应用共用的选择，不在其中。
+   */
+  static copyTypography(source: ReaderSettings, target: ReaderSettings): void {
+    target.fontSize = source.fontSize;
+    target.fontWeight = source.fontWeight;
+    target.letterSpacing = source.letterSpacing;
+    target.textAlign = source.textAlign;
+    target.lineHeight = source.lineHeight;
+    target.paragraphSpacing = source.paragraphSpacing;
+    target.paragraphIndent = source.paragraphIndent;
+    target.marginLeft = source.marginLeft;
+    target.marginRight = source.marginRight;
+    target.marginTop = source.marginTop;
+    target.marginBottom = source.marginBottom;
+    target.commentBubbleSize = source.commentBubbleSize;
+    target.extendToStatusBar = source.extendToStatusBar;
+    target.readerHeaderEnabled = source.readerHeaderEnabled;
+    target.readerFooterEnabled = source.readerFooterEnabled;
+    target.readerInfoBarConfig = ReaderSettingsStore.resolveInfoBarConfig(source.readerInfoBarConfig, source);
+    target.bodyFontMode = source.bodyFontMode;
+    target.bodyFontFamily = source.bodyFontFamily;
+    target.titleFontMode = source.titleFontMode;
+    target.titleFontFamily = source.titleFontFamily;
+    target.titleFontSize = source.titleFontSize;
+    target.titleFontWeight = source.titleFontWeight;
+    target.titleStyleRaw = source.titleStyleRaw || '';
+    ReaderSettingsStore.updateFontRules(target, source);
+  }
+
+  /**
+   * 这套主题是否已经有自己的排版：用过（阅读页会随时保存档案）、在主题排版页保存过或随主题包导入过。
+   * 没有的主题第一次应用时才需要选“主题预设”还是“沿用当前排版”。
+   */
+  static async hasThemeTypography(context: Context, profileId: string): Promise<boolean> {
+    const id = ReaderSettingsStore.normalizeThemeProfileId(profileId);
+    if (id === ReaderSettingsStore.activeThemeId()) return true;
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    return await ReaderSettingsStore.loadThemeProfile(store, id) !== null;
+  }
+
+  static async typographyFollowsTheme(context: Context): Promise<boolean> {
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    const follows = await ReaderSettingsStore.readTypographyFollowsTheme(store);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_TYPOGRAPHY_FOLLOWS_THEME, follows);
+    return follows;
+  }
+
+  /**
+   * 关闭后换主题时不再取用各主题档案里的排版，而是把当前排版带过去（用过的主题档案随之记下共用排版）；
+   * 没用过的主题保留原有排版，重新打开后照常取用。
+   * 与各主题档案一样只存本机。
+   */
+  static async setTypographyFollowsTheme(context: Context, follows: boolean): Promise<void> {
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    await store.put(ReaderSettingsStore.KEY_TYPOGRAPHY_FOLLOWS_THEME, follows);
+    await store.flush();
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_TYPOGRAPHY_FOLLOWS_THEME, follows);
+  }
+
+  private static async readTypographyFollowsTheme(store: preferences.Preferences): Promise<boolean> {
+    return await store.get(ReaderSettingsStore.KEY_TYPOGRAPHY_FOLLOWS_THEME, true) !== false;
+  }
+
+  /**
+   * 把当前主题的排版整套恢复成主题预设：字号、间距、边距取主题给的值，其余排版项（缩进、对齐、字重、
+   * 页眉页脚、正文与标题字体、扩展至状态栏、气泡大小）回到默认。强调规则是用户自己的内容，保留不动。
+   */
+  static async restoreThemePreset(context: Context, fontSize: number, lineHeight: number, paragraphSpacing: number,
+    marginLeft: number, marginRight: number, marginTop: number, marginBottom: number,
+    letterSpacing: number): Promise<void> {
+    const current = await ReaderSettingsStore.load(context);
+    const preset = new ReaderSettings();
+    preset.fontSize = fontSize;
+    preset.lineHeight = lineHeight;
+    preset.paragraphSpacing = paragraphSpacing;
+    preset.marginLeft = marginLeft;
+    preset.marginRight = marginRight;
+    preset.marginTop = marginTop;
+    preset.marginBottom = marginBottom;
+    preset.letterSpacing = letterSpacing;
+    ReaderSettingsStore.updateFontRules(preset, current);
+    await ReaderSettingsStore.saveTypographyToProfile(context, ReaderSettingsStore.activeThemeId(), preset);
+  }
+
+  /** 把另一套主题的排版（含页眉页脚、阅读字体与强调规则）复制给当前主题，立即生效。 */
+  static async copyTypographyFromProfile(context: Context, sourceProfileId: string): Promise<void> {
+    const source = await ReaderSettingsStore.loadProfile(context, sourceProfileId);
+    await ReaderSettingsStore.saveTypographyToProfile(context, ReaderSettingsStore.activeThemeId(), source);
+  }
+
+  /**
+   * 把排版写进对应主题的档案。正在使用的档案走各项原有的保存路径，阅读页与设置页立即同步；
+   * 其他档案直接改存储，切换到这套主题时随档案一起生效。
+   */
+  static async saveTypographyToProfile(context: Context, profileId: string, source: ReaderSettings): Promise<void> {
+    const id = ReaderSettingsStore.normalizeThemeProfileId(profileId);
+    if (id === ReaderSettingsStore.activeThemeId()) {
+      await ReaderSettingsStore.saveLayoutSettings(context, source.fontSize, source.lineHeight, source.paragraphSpacing,
+        source.marginLeft, source.marginRight, source.marginTop, source.marginBottom, source.letterSpacing,
+        source.textAlign, source.fontWeight, source.paragraphIndent, source.commentBubbleSize);
+      await ReaderSettingsStore.saveReaderFontStyleSettings(context, source);
+      await ReaderSettingsStore.saveReaderChromeSettings(context, source.readerHeaderEnabled,
+        source.readerFooterEnabled, source.readerInfoBarConfig);
+      const current = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
+      await ReaderSettingsStore.saveReadingInteractionSettings(context, current.screenTimeoutMinutes,
+        source.extendToStatusBar);
+    } else {
+      await ReaderSettingsStore.waitForReaderFontStyleSaves();
+      await ReaderSettingsStore.waitForReaderLayoutSaves();
+      await ReaderSettingsStore.waitForReaderChromeSaves();
+      const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+      let profile = await ReaderSettingsStore.loadThemeProfile(store, id);
+      if (!profile) {
+        // 与第一次切换到该主题时一样：从当前设置复制一份，阅读背景跟随主题。
+        profile = ReaderSettingsStore.clone(ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage());
+        profile.themeIndex = ReaderThemeHelper.APP_THEME_INDEX;
+        profile.lightThemeIndex = ReaderThemeHelper.APP_THEME_INDEX;
+        profile.darkThemeIndex = ReaderThemeHelper.APP_THEME_INDEX;
+      }
+      ReaderSettingsStore.copyTypography(source, profile);
+      await store.put(ReaderSettingsStore.themeProfileKey(id), JSON.stringify(ReaderSettingsStore.clone(profile)));
+      await store.flush();
+    }
+    // 排版本身只存在本机，与阅读页里调整排版一样不触发云同步；强调规则的变化由各自的保存路径标记。
+  }
+
+  private static typographyBoundKey(profileId: string): string {
+    return `${ReaderSettingsStore.TYPOGRAPHY_BOUND_PREFIX}${ReaderSettingsStore.normalizeThemeProfileId(profileId)}`;
   }
 
   private static normalizeThemeProfileId(themeId: string): string {
@@ -1097,10 +1491,29 @@ export class ReaderSettingsStore {
     return `${ReaderSettingsStore.THEME_PROFILE_PREFIX}${ReaderSettingsStore.normalizeThemeProfileId(themeId)}`;
   }
 
+  // Upgrade this theme once, including existing profiles. Later manual animation choices remain intact.
+  private static async applyThemePageTurnDefault(store: preferences.Preferences, themeId: string,
+    settings: ReaderSettings): Promise<void> {
+    if (ReaderSettingsStore.normalizeThemeProfileId(themeId) !== 'obsidian-archive') return;
+    const key = 'readerObsidian3DDefaultV1';
+    if (await store.get(key, false) === true) return;
+    // Vertical paging cannot render a horizontal page curl; use the normal horizontal mode for this preset.
+    if (settings.pageTurnMode === 0) settings.pageTurnMode = 2;
+    settings.pageTurnAnimationType = ReaderSettingsStore.PAGE_TURN_ANIMATION_3D;
+    await store.put(ReaderSettingsStore.themeProfileKey(themeId), JSON.stringify(ReaderSettingsStore.clone(settings)));
+    await store.put(key, true);
+    await store.flush();
+  }
+
   private static async loadThemeProfile(store: preferences.Preferences,
     themeId: string): Promise<ReaderSettings | null> {
     const raw = await store.get(ReaderSettingsStore.themeProfileKey(themeId), '');
     if (typeof raw !== 'string' || !raw.trim()) {
+      // 方案独立排版之前，所有自定义方案共用 custom 档案；方案第一次使用时从它复制一份。
+      const normalized = ReaderSettingsStore.normalizeThemeProfileId(themeId);
+      if (normalized.startsWith(`${ReaderSettingsStore.LEGACY_CUSTOM_PROFILE_ID}__`)) {
+        return await ReaderSettingsStore.loadThemeProfile(store, ReaderSettingsStore.LEGACY_CUSTOM_PROFILE_ID);
+      }
       return null;
     }
     try {
@@ -1112,16 +1525,62 @@ export class ReaderSettingsStore {
     }
   }
 
+  // The global font is one app-wide choice. Theme profiles still carry a copy because they serialize the whole
+  // ReaderSettings, but the top-level keys written by saveFontSettings are the source of truth.
+  /**
+   * 默认是跟随系统。旧版本把“没选过”和“跟随主题”都存成 system，只有用户在下拉框里点过跟随主题时
+   * 字体名才是“跟随主题”，据此区分；其余没有自定义字体文件的情况一律视为跟随系统。
+   */
+  static normalizeGlobalFontMode(settings: ReaderSettings): void {
+    if (settings.fontFilePath) {
+      settings.fontMode = settings.fontMode || ReaderSettingsStore.FONT_MODE_CUSTOM;
+      return;
+    }
+    if (settings.fontMode === ReaderSettingsStore.FONT_MODE_THEME &&
+      settings.fontSourceName === ReaderSettingsStore.FONT_SOURCE_NAME_THEME) {
+      return;
+    }
+    settings.fontMode = ReaderSettingsStore.FONT_MODE_DEVICE;
+  }
+
+  private static async readGlobalFontSettings(store: preferences.Preferences,
+    settings: ReaderSettings): Promise<void> {
+    settings.fontFamily = await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_FONT_FAMILY, settings.fontFamily);
+    settings.fontFilePath = await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_FONT_FILE_PATH, settings.fontFilePath);
+    settings.fontSourceName = await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_FONT_SOURCE_NAME, settings.fontSourceName);
+    settings.fontMode = await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_FONT_MODE, settings.fontMode);
+    settings.systemFontFamily = await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_SYSTEM_FONT_FAMILY, settings.systemFontFamily);
+    settings.customFontsRaw = await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_CUSTOM_FONTS_RAW, settings.customFontsRaw);
+  }
+
+  private static copyGlobalFontSettings(source: ReaderSettings, target: ReaderSettings): void {
+    target.fontFamily = source.fontFamily;
+    target.fontFilePath = source.fontFilePath;
+    target.fontSourceName = source.fontSourceName;
+    target.fontMode = source.fontMode;
+    target.systemFontFamily = source.systemFontFamily;
+    target.customFontsRaw = source.customFontsRaw;
+  }
+
   private static async persistActiveThemeProfile(store: preferences.Preferences,
     settings: ReaderSettings): Promise<void> {
     await ReaderSettingsStore.persistThemeProfile(store, ReaderSettingsStore.activeThemeId(), settings);
     ReaderSettingsStore.cachedThemeId = ReaderSettingsStore.activeThemeId();
-    CloudSyncChangeTracker.markPreferenceChanged();
   }
 
   private static async persistThemeProfile(store: preferences.Preferences, themeId: string,
     settings: ReaderSettings): Promise<void> {
-    await store.put(ReaderSettingsStore.themeProfileKey(themeId), JSON.stringify(ReaderSettingsStore.clone(settings)));
+    // 各类设置可能异步交错保存；较早的整份快照不能覆盖同主题已经更新的排版和页眉页脚。
+    const latest = ReaderSettingsStore.cachedSettings &&
+      ReaderSettingsStore.cachedThemeId === ReaderSettingsStore.normalizeThemeProfileId(themeId) ?
+      ReaderSettingsStore.cachedSettings : settings;
+    await store.put(ReaderSettingsStore.themeProfileKey(themeId), JSON.stringify(ReaderSettingsStore.clone(latest)));
   }
 
   private static async getNumber(
@@ -1185,6 +1644,9 @@ export class ReaderSettingsStore {
     fontSize: number = 20,
     lineHeightMode: string = ''
   ): number {
+    if (type === 'commentBubbleSize') return ReaderCommentBubbleSize.normalize(value);
+    if (type === 'fontWeight') return ReaderFontWeight.normalize(value);
+    if (type === 'paragraphIndent') return ReaderParagraphIndent.normalize(value);
     if (type === 'fontSize') {
       return ReaderSettingsStore.normalizeFontSize(value);
     }
@@ -1283,6 +1745,7 @@ export class ReaderSettingsStore {
     const value = Math.round(type);
     if (value === ReaderSettingsStore.PAGE_TURN_ANIMATION_NONE ||
       value === ReaderSettingsStore.PAGE_TURN_ANIMATION_SLIDE ||
+      value === ReaderSettingsStore.PAGE_TURN_ANIMATION_PUSH ||
       value === ReaderSettingsStore.PAGE_TURN_ANIMATION_FADE ||
       value === ReaderSettingsStore.PAGE_TURN_ANIMATION_STACK ||
       value === ReaderSettingsStore.PAGE_TURN_ANIMATION_SIMULATION ||
@@ -1314,14 +1777,31 @@ export class ReaderSettingsStore {
     return 0;
   }
 
+  /**
+   * 亮屏时间存储值：-1 常亮，1～60 为无操作后多少分钟恢复系统息屏。
+   * 旧版的“跟随系统”（0）已不再提供，按最短的 1 分钟处理，最接近原来不额外保持亮屏的效果。
+   */
+
   static normalizeScreenTimeoutMinutes(minutes: number): number {
-    const value = Math.round(minutes);
-    if (value === ReaderSettingsStore.SCREEN_TIMEOUT_ALWAYS_ON ||
-      value === ReaderSettingsStore.SCREEN_TIMEOUT_FOLLOW_SYSTEM ||
-      value === 1 || value === 5 || value === 10) {
-      return value;
+    if (typeof minutes !== 'number' || !Number.isFinite(minutes)) {
+      return ReaderSettingsStore.SCREEN_TIMEOUT_ALWAYS_ON;
     }
-    return ReaderSettingsStore.SCREEN_TIMEOUT_FOLLOW_SYSTEM;
+    const value = Math.round(minutes);
+    if (value < 0) return ReaderSettingsStore.SCREEN_TIMEOUT_ALWAYS_ON;
+    return Math.max(1, Math.min(ReaderSettingsStore.SCREEN_TIMEOUT_MAX_MINUTES, value));
+  }
+
+  /** 存储值换成步进器上的数值：常亮显示为 0。 */
+  static screenTimeoutStepperValue(minutes: number): number {
+    const value = ReaderSettingsStore.normalizeScreenTimeoutMinutes(minutes);
+    return value === ReaderSettingsStore.SCREEN_TIMEOUT_ALWAYS_ON ? 0 : value;
+  }
+
+  /** 步进器数值换成存储值：0 为常亮。 */
+  static screenTimeoutFromStepperValue(stepValue: number): number {
+    const value = Math.round(stepValue);
+    if (!Number.isFinite(value) || value <= 0) return ReaderSettingsStore.SCREEN_TIMEOUT_ALWAYS_ON;
+    return Math.min(ReaderSettingsStore.SCREEN_TIMEOUT_MAX_MINUTES, value);
   }
 
   static normalizeScreenOrientation(orientation: string): string {
@@ -1388,14 +1868,17 @@ export class ReaderSettingsStore {
   private static clone(source: ReaderSettings): ReaderSettings {
     const settings = new ReaderSettings();
     settings.fontSize = ReaderSettingsStore.normalizeFontSize(source.fontSize);
+    settings.fontWeight = ReaderFontWeight.normalize(source.fontWeight);
     settings.letterSpacing = ReaderSettingsStore.normalizeLetterSpacing(source.letterSpacing);
     settings.textAlign = ReaderSettingsStore.normalizeTextAlign(source.textAlign);
     settings.lineHeight = ReaderSettingsStore.normalizeLineHeight(source.lineHeight);
     settings.paragraphSpacing = ReaderSettingsStore.normalizeParagraphSpacing(source.paragraphSpacing);
+    settings.paragraphIndent = ReaderParagraphIndent.normalize(source.paragraphIndent);
     settings.marginLeft = ReaderSettingsStore.normalizeHorizontalMargin(source.marginLeft);
     settings.marginRight = ReaderSettingsStore.normalizeHorizontalMargin(source.marginRight);
     settings.marginTop = ReaderSettingsStore.normalizeVerticalMargin(source.marginTop);
     settings.marginBottom = ReaderSettingsStore.normalizeVerticalMargin(source.marginBottom);
+    settings.commentBubbleSize = ReaderCommentBubbleSize.normalize(source.commentBubbleSize);
     settings.themeIndex = ReaderSettingsStore.normalizeThemeIndex(source.themeIndex);
     settings.lightThemeIndex = ReaderSettingsStore.normalizeThemeIndex(source.lightThemeIndex);
     settings.darkThemeIndex = ReaderSettingsStore.normalizeThemeIndex(source.darkThemeIndex);
@@ -1422,7 +1905,7 @@ export class ReaderSettingsStore {
     settings.landscapeDoublePage = source.landscapeDoublePage;
     settings.screenOrientation = ReaderSettingsStore.normalizeScreenOrientation(source.screenOrientation);
     settings.tapZoneActions = ReaderSettingsStore.normalizeTapZoneActions(source.tapZoneActions);
-    settings.volumeTurnPage = source.volumeTurnPage;
+    settings.longPressSelectText = source.longPressSelectText !== false;
     settings.eyeTurnEnabled = source.eyeTurnEnabled === true;
     settings.eyeTurnPortraitCalibration = source.eyeTurnPortraitCalibration || '';
     settings.eyeTurnLandscapeCalibration = source.eyeTurnLandscapeCalibration || '';
@@ -1443,16 +1926,26 @@ export class ReaderSettingsStore {
       settings.screenTimeoutMinutes !== ReaderSettingsStore.SCREEN_TIMEOUT_FOLLOW_SYSTEM;
     settings.extendToStatusBar = source.extendToStatusBar;
     settings.preloadEnabled = source.preloadEnabled;
-    settings.keepParagraphIndent = source.keepParagraphIndent;
+    settings.aiProcessingIndicatorEnabled = typeof source.aiProcessingIndicatorEnabled === 'boolean' ?
+      source.aiProcessingIndicatorEnabled :
+      (AppStorage.get<boolean>(ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED) ?? true);
     settings.chineseConverterType = ReaderSettingsStore.normalizeChineseConverterType(
       typeof source.chineseConverterType === 'number' ? source.chineseConverterType : 0);
+
     settings.preloadChapterCount = ReaderSettingsStore.normalizePreloadChapterCount(source.preloadChapterCount);
     settings.useTtsQuickAction = typeof source.useTtsQuickAction === 'boolean' ? source.useTtsQuickAction :
       (AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_TTS_QUICK_ACTION) ?? true);
+    settings.useAutoScrollQuickAction = typeof source.useAutoScrollQuickAction === 'boolean' ? source.useAutoScrollQuickAction :
+      (AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_AUTO_SCROLL_QUICK_ACTION) ?? true);
     settings.useChapterQuickJump = typeof source.useChapterQuickJump === 'boolean' ? source.useChapterQuickJump :
       (AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_CHAPTER_QUICK_JUMP) ?? true);
+    settings.quickJumpMode = ReaderQuickJumpModel.normalizeMode(source.quickJumpMode);
+    settings.useBrightnessQuickAction = typeof source.useBrightnessQuickAction === 'boolean' ? source.useBrightnessQuickAction :
+      (AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_BRIGHTNESS_QUICK_ACTION) ?? true);
     settings.quickBookmarkEnabled = typeof source.quickBookmarkEnabled === 'boolean' ? source.quickBookmarkEnabled :
       (AppStorage.get<boolean>(ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED) ?? true);
+    settings.nightImageMode = ReaderNightImage.normalize(source.nightImageMode ??
+      (AppStorage.get<string>(ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE) || ReaderNightImage.ORIGINAL));
     settings.readerHeaderEnabled = source.readerHeaderEnabled === true;
     settings.readerHeaderContentMode = ReaderSettingsStore.normalizeHeaderContentMode(source.readerHeaderContentMode);
     settings.readerFooterEnabled = source.readerFooterEnabled !== false;
@@ -1463,7 +1956,7 @@ export class ReaderSettingsStore {
     settings.fontFamily = source.fontFamily || '';
     settings.fontFilePath = source.fontFilePath || '';
     settings.fontSourceName = source.fontSourceName || '系统默认';
-    settings.fontMode = source.fontMode || 'system';
+    settings.fontMode = source.fontMode || ReaderSettingsStore.FONT_MODE_DEVICE;
     settings.systemFontFamily = source.systemFontFamily || '';
     settings.customFontsRaw = source.customFontsRaw || '';
     settings.bodyFontMode = ReaderSettingsStore.normalizeFontMode(source.bodyFontMode);
@@ -1471,6 +1964,8 @@ export class ReaderSettingsStore {
     settings.titleFontMode = ReaderSettingsStore.normalizeFontMode(source.titleFontMode);
     settings.titleFontFamily = source.titleFontFamily || '';
     settings.titleFontSize = ReaderSettingsStore.normalizeFontSize(source.titleFontSize || 22);
+    settings.titleFontWeight = ReaderFontWeight.normalize(source.titleFontWeight ?? 600);
+    settings.titleStyleRaw = ReaderTitleStyleCodec.normalize(source.titleStyleRaw);
     settings.regexFontEnabled = source.regexFontEnabled;
     settings.regexFontPattern = source.regexFontPattern || '';
     settings.regexFontMode = ReaderSettingsStore.normalizeFontMode(source.regexFontMode);
@@ -1486,6 +1981,8 @@ export class ReaderSettingsStore {
     settings.fontSize = ReaderSettingsStore.normalizeFontSize(
       AppStorage.get<number>(ReaderSettingsStore.KEY_FONT_SIZE) ?? 20
     );
+    settings.fontWeight = ReaderFontWeight.normalize(
+      AppStorage.get<number>(ReaderSettingsStore.KEY_FONT_WEIGHT) ?? ReaderFontWeight.DEFAULT);
     settings.letterSpacing = ReaderSettingsStore.normalizeLetterSpacing(
       AppStorage.get<number>(ReaderSettingsStore.KEY_LETTER_SPACING) ?? 0);
     settings.textAlign = ReaderSettingsStore.normalizeTextAlign(
@@ -1505,6 +2002,8 @@ export class ReaderSettingsStore {
       AppStorage.get<number>(ReaderSettingsStore.KEY_MARGIN_TOP) ?? 18);
     settings.marginBottom = ReaderSettingsStore.normalizeVerticalMargin(
       AppStorage.get<number>(ReaderSettingsStore.KEY_MARGIN_BOTTOM) ?? 18);
+    settings.commentBubbleSize = ReaderCommentBubbleSize.normalize(
+      AppStorage.get<number>(ReaderSettingsStore.KEY_COMMENT_BUBBLE_SIZE) ?? ReaderCommentBubbleSize.DEFAULT);
     const legacyThemeIndex = ReaderSettingsStore.normalizeThemeIndex(
       AppStorage.get<number>(ReaderSettingsStore.KEY_THEME_INDEX) ?? 0
     );
@@ -1554,7 +2053,7 @@ export class ReaderSettingsStore {
     settings.tapZoneActions = ReaderSettingsStore.normalizeTapZoneActions(
       AppStorage.get<string>(ReaderSettingsStore.KEY_TAP_ZONE_ACTIONS) || ''
     );
-    settings.volumeTurnPage = AppStorage.get<boolean>(ReaderSettingsStore.KEY_VOLUME_TURN_PAGE) ?? false;
+    settings.longPressSelectText = AppStorage.get<boolean>(ReaderSettingsStore.KEY_LONG_PRESS_SELECT_TEXT) ?? true;
     settings.eyeTurnEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_EYE_TURN_ENABLED) ?? false;
     settings.eyeTurnPortraitCalibration =
       AppStorage.get<string>(ReaderSettingsStore.KEY_EYE_TURN_PORTRAIT_CALIBRATION) || '';
@@ -1579,15 +2078,25 @@ export class ReaderSettingsStore {
       settings.screenTimeoutMinutes !== ReaderSettingsStore.SCREEN_TIMEOUT_FOLLOW_SYSTEM;
     settings.extendToStatusBar = AppStorage.get<boolean>(ReaderSettingsStore.KEY_EXTEND_TO_STATUS_BAR) ?? false;
     settings.preloadEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_PRELOAD_ENABLED) ?? true;
-    settings.keepParagraphIndent = AppStorage.get<boolean>(ReaderSettingsStore.KEY_KEEP_PARAGRAPH_INDENT) ?? false;
+    settings.aiProcessingIndicatorEnabled =
+      AppStorage.get<boolean>(ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED) ?? true;
+    settings.paragraphIndent = ReaderParagraphIndent.normalize(
+      AppStorage.get<number>(ReaderSettingsStore.KEY_PARAGRAPH_INDENT) ?? ReaderParagraphIndent.DEFAULT);
     settings.chineseConverterType = ReaderSettingsStore.normalizeChineseConverterType(
       AppStorage.get<number>(ReaderSettingsStore.KEY_CHINESE_CONVERTER_TYPE) ?? 0);
+
     settings.preloadChapterCount = ReaderSettingsStore.normalizePreloadChapterCount(
       AppStorage.get<number>(ReaderSettingsStore.KEY_PRELOAD_CHAPTER_COUNT) ?? 1
     );
     settings.useTtsQuickAction = AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_TTS_QUICK_ACTION) ?? true;
+    settings.useAutoScrollQuickAction = AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_AUTO_SCROLL_QUICK_ACTION) ?? true;
     settings.useChapterQuickJump = AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_CHAPTER_QUICK_JUMP) ?? true;
+    settings.useBrightnessQuickAction = AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_BRIGHTNESS_QUICK_ACTION) ?? true;
+    settings.quickJumpMode = ReaderQuickJumpModel.normalizeMode(
+      AppStorage.get<string>(ReaderSettingsStore.KEY_QUICK_JUMP_MODE) || 'chapter');
     settings.quickBookmarkEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED) ?? true;
+    settings.nightImageMode = ReaderNightImage.normalize(
+      AppStorage.get<string>(ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE) || ReaderNightImage.ORIGINAL);
     settings.readerHeaderEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_HEADER_ENABLED) ?? false;
     settings.readerHeaderContentMode = ReaderSettingsStore.normalizeHeaderContentMode(
       AppStorage.get<string>(ReaderSettingsStore.KEY_HEADER_CONTENT_MODE) || 'chapter');
@@ -1602,7 +2111,7 @@ export class ReaderSettingsStore {
     settings.fontFamily = AppStorage.get<string>(ReaderSettingsStore.KEY_FONT_FAMILY) || '';
     settings.fontFilePath = AppStorage.get<string>(ReaderSettingsStore.KEY_FONT_FILE_PATH) || '';
     settings.fontSourceName = AppStorage.get<string>(ReaderSettingsStore.KEY_FONT_SOURCE_NAME) || '系统默认';
-    settings.fontMode = AppStorage.get<string>(ReaderSettingsStore.KEY_FONT_MODE) || 'system';
+    settings.fontMode = AppStorage.get<string>(ReaderSettingsStore.KEY_FONT_MODE) || ReaderSettingsStore.FONT_MODE_DEVICE;
     settings.systemFontFamily = AppStorage.get<string>(ReaderSettingsStore.KEY_SYSTEM_FONT_FAMILY) || '';
     settings.customFontsRaw = AppStorage.get<string>(ReaderSettingsStore.KEY_CUSTOM_FONTS_RAW) || '';
     settings.bodyFontMode = ReaderSettingsStore.normalizeFontMode(AppStorage.get<string>(ReaderSettingsStore.KEY_BODY_FONT_MODE) || 'global');
@@ -1610,6 +2119,9 @@ export class ReaderSettingsStore {
     settings.titleFontMode = ReaderSettingsStore.normalizeFontMode(AppStorage.get<string>(ReaderSettingsStore.KEY_TITLE_FONT_MODE) || 'global');
     settings.titleFontFamily = AppStorage.get<string>(ReaderSettingsStore.KEY_TITLE_FONT_FAMILY) || '';
     settings.titleFontSize = ReaderSettingsStore.normalizeFontSize(AppStorage.get<number>(ReaderSettingsStore.KEY_TITLE_FONT_SIZE) ?? 22);
+    settings.titleFontWeight = ReaderFontWeight.normalize(AppStorage.get<number>(ReaderSettingsStore.KEY_TITLE_FONT_WEIGHT) ?? 600);
+    settings.titleStyleRaw = ReaderTitleStyleCodec.normalize(
+      AppStorage.get<string>(ReaderSettingsStore.KEY_TITLE_STYLE_RAW) || '');
     settings.regexFontEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_REGEX_FONT_ENABLED) ?? false;
     settings.regexFontPattern = AppStorage.get<string>(ReaderSettingsStore.KEY_REGEX_FONT_PATTERN) || '';
     settings.regexFontMode = ReaderSettingsStore.normalizeFontMode(AppStorage.get<string>(ReaderSettingsStore.KEY_REGEX_FONT_MODE) || 'global');

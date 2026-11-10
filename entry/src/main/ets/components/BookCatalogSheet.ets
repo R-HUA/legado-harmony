@@ -89,6 +89,12 @@ export struct BookCatalogSheet {
   }
 
   build() {
+    // 材质交给宿主 bindSheet；内容直接随可用空间布局，拖动时不再测量尺寸并回写状态。
+    this.panelBody()
+  }
+
+  @Builder
+  panelBody() {
     Column() {
       Row({ space: AppSpacing.LG }) {
         Column({ space: AppSpacing.XS }) {
@@ -121,7 +127,7 @@ export struct BookCatalogSheet {
         })
       }
       .width('100%')
-      .padding({ left: AppSpacing.XXL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.MD })
+      .padding({ left: AppSpacing.XXL, right: AppSpacing.XL, top: AppSpacing.XL, bottom: AppSpacing.MD })
       .alignItems(VerticalAlign.Center)
 
       this.summaryBar()
@@ -140,8 +146,6 @@ export struct BookCatalogSheet {
     }
     .width('100%')
     .height('100%')
-    // 顶部留给半模态的拖动条。
-    .padding({ top: AppSpacing.XL })
   }
 
   @Builder

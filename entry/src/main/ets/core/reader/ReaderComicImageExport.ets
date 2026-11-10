@@ -1,9 +1,8 @@
+import { ReaderCacheCoordinator } from '../book/ReaderCacheCoordinator';
 import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
 import { http } from '@kit.NetworkKit';
-import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { systemShare } from '@kit.ShareKit';
-import { uniformTypeDescriptor } from '@kit.ArkData';
+import { ImageFileExport } from '../../utils/ImageFileExport';
 import { util } from '@kit.ArkTS';
 import { common } from '@kit.AbilityKit';
 import image from '@ohos.multimedia.image';
@@ -18,36 +17,22 @@ export class ReaderComicImageExport {
   /** 保存到相册；用户在系统弹窗里取消时返回 false。 */
   static async saveToAlbum(context: common.Context, source: string,
     snapshot: ReaderComicSnapshotProvider | null = null): Promise<boolean> {
-    const path = await ReaderComicImageExport.materialize(context, source, snapshot);
-    const extension = ReaderComicImageExport.sniffExtension(path);
-    const helper = photoAccessHelper.getPhotoAccessHelper(context);
-    const targets = await helper.showAssetsCreationDialog([fileUri.getUriFromPath(path)], [{
-      title: `legado_${Date.now()}`,
-      fileNameExtension: extension,
-      photoType: photoAccessHelper.PhotoType.IMAGE
-    }]);
-    if (!targets || targets.length === 0 || !targets[0]) return false;
-    const target = fs.openSync(targets[0], fs.OpenMode.WRITE_ONLY);
+    const release = ReaderCacheCoordinator.retainFile(source);
     try {
-      fs.copyFileSync(path, target.fd);
-    } finally {
-      fs.closeSync(target);
-    }
-    return true;
+      const path = await ReaderComicImageExport.materialize(context, source, snapshot);
+      const extension = ReaderComicImageExport.sniffExtension(path);
+      return await ImageFileExport.save(context, [path], extension);
+    } finally { release(); }
   }
 
   static async share(context: common.UIAbilityContext, source: string,
     snapshot: ReaderComicSnapshotProvider | null = null): Promise<void> {
-    const path = await ReaderComicImageExport.materialize(context, source, snapshot);
-    const extension = ReaderComicImageExport.sniffExtension(path);
-    const type = uniformTypeDescriptor.getUniformDataTypeByFilenameExtension(`.${extension}`,
-      uniformTypeDescriptor.UniformDataType.IMAGE);
-    const data = new systemShare.SharedData({ utd: type, uri: fileUri.getUriFromPath(path) });
-    const controller = new systemShare.ShareController(data);
-    await controller.show(context, {
-      previewMode: systemShare.SharePreviewMode.DETAIL,
-      selectionMode: systemShare.SelectionMode.SINGLE
-    });
+    const release = ReaderCacheCoordinator.retainFile(source);
+    try {
+      const path = await ReaderComicImageExport.materialize(context, source, snapshot);
+      const extension = ReaderComicImageExport.sniffExtension(path);
+      await ImageFileExport.share(context, [path], extension);
+    } finally { release(); }
   }
 
   /**
@@ -63,7 +48,7 @@ export class ReaderComicImageExport {
     let bytes: Uint8Array;
     try {
       bytes = /^data:/i.test(value) ? ReaderComicImageExport.decodeDataUri(value) :
-        await ReaderComicImageExport.download(value);
+        await ReaderComicImageExport.downloadImage(value);
     } catch (error) {
       if (!snapshot) throw error as Error;
       console.warn(`[ReaderComicExport] 下载原图失败，改用屏幕截取: ${(error as Error)?.message || error}`);
@@ -95,7 +80,8 @@ export class ReaderComicImageExport {
     }
   }
 
-  private static async download(url: string): Promise<Uint8Array> {
+  /** 带浏览器标识下载网络图片；超分也用它取原图。 */
+  static async downloadImage(url: string): Promise<Uint8Array> {
     const request = http.createHttp();
     try {
       const response = await request.request(url, {

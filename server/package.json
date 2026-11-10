@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/tts.test.js dist/sync.test.js dist/ttsRuntime.test.js dist/security.test.js dist/themeCatalog.test.js dist/sessionTokens.test.js",
+    "test": "npm run build && node --test dist/tts.test.js dist/sync.test.js dist/readingStats.test.js dist/ttsRuntime.test.js dist/security.test.js dist/profileRoutes.test.js dist/themeCatalog.test.js dist/superThemeService.test.js dist/sessionTokens.test.js dist/membershipPolicy.test.js dist/membershipService.test.js dist/membershipRoutes.test.js dist/lottery.test.js dist/cloudFileService.test.js dist/comicColorModelRoutes.test.js scripts/comic-color-model-publish.test.mjs scripts/source-quota.test.mjs scripts/cloud-quota.test.mjs scripts/maintenance.test.mjs scripts/super-theme-admin-migration.test.mjs",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts"
   },
@@ -13,6 +13,7 @@
     "@fastify/rate-limit": "^11.2.0",
     "@huaweicloud/huaweicloud-sdk-core": "3.1.207",
     "@huaweicloud/huaweicloud-sdk-sis": "3.1.207",
+    "esdk-obs-nodejs": "^3.26.2",
     "fastify": "^5.4.0",
     "jose": "^6.0.12",
     "pg": "^8.16.3",
@@ -21,6 +22,7 @@
     "ws": "^8.21.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
     "@types/node": "^24.0.15",
     "@types/pg": "^8.15.5",
     "@types/ws": "^8.18.1",

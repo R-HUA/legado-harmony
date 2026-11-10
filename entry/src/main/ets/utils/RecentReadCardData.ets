@@ -2,16 +2,21 @@ import { Context } from '@kit.AbilityKit';
 import fs from '@ohos.file.fs';
 import { Book } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
-import { BookDisplayHelper } from './BookDisplayHelper';
 import { BookCoverCache } from './BookCoverCache';
 import { BookshelfSortHelper } from './BookshelfSortHelper';
-import { CoverGallerySettings } from './CoverGallerySettings';
+import { BookCoverResolver } from './BookCoverResolver';
+import { ThemeBookCoverSettings } from './ThemeBookCoverSettings';
+import { BuiltinThemeRegistry } from '../theme/BuiltinThemeRegistry';
+import { ThemeIds } from '../theme/ThemeModels';
 import { CoverGallerySnapshot, CoverGalleryStore } from './CoverGalleryStore';
 import { SearchExplorePendingBook } from './SearchExplorePendingBook';
 import { PrivateShelfStore } from './PrivateShelfStore';
 import { AppThemeSettingsStore } from './AppThemeSettingsStore';
 
 export const RECENT_READ_FORM_NAME = 'RecentReadForm';
+/** 封面卡片与最近阅读卡片共用同一个 FormExtensionAbility 和同一份数据。 */
+export const COVER_READ_FORM_NAME = 'CoverReadForm';
+export const RECENT_READ_FORM_NAMES: string[] = [RECENT_READ_FORM_NAME, COVER_READ_FORM_NAME];
 export const RECENT_READ_FORM_ABILITY = 'RecentReadFormAbility';
 export const RECENT_READ_FORM_MODULE = 'entry';
 export const RECENT_READ_DIMENSION_2_2 = 2;
@@ -252,33 +257,35 @@ export class RecentReadCardDataProvider {
     darkMode: boolean,
     coverSettings: CoverGallerySnapshot
   ): Promise<string> {
-    const covers = CoverGallerySettings.getDisplayCoverList(
-      book,
-      darkMode,
-      coverSettings.albumsRaw,
-      coverSettings.lightAlbumId,
-      coverSettings.darkAlbumId,
-      coverSettings.applyScope,
-      coverSettings.targetBooksRaw,
-      coverSettings.ignoreSourceCover,
-      coverSettings.coverMode
-    );
-    const raw = covers.length > 0 ? BookDisplayHelper.pickCover(covers) : '';
+    const covers = BookCoverResolver.sourceCovers(book, darkMode, coverSettings);
+    let raw: ResourceStr = covers[0] || '';
+    // 卡片扩展可在主页面尚未初始化时运行，主题从持久化设置读取。
+    try {
+      const themeSettings = await AppThemeSettingsStore.load(context);
+      if (themeSettings.themeBookCoverEnabled) {
+        const theme = themeSettings.themeId === ThemeIds.CUSTOM ?
+          AppThemeSettingsStore.customTheme(themeSettings, darkMode) : BuiltinThemeRegistry.findById(themeSettings.themeId);
+        const themeCovers = ThemeBookCoverSettings.coversForAsset(book, theme.book.coverAssetId);
+        if (themeCovers.length > 0) raw = themeCovers[0];
+      }
+    } catch (error) {
+      console.warn('加载卡片主题封面设置失败:', error);
+    }
     if (!raw) {
       return '';
     }
     try {
-      const coverPath = await BookCoverCache.prepareCoverFile(context, raw, book.origin, book.bookUrl);
+      const coverPath = await BookCoverResolver.prepareFile(context, raw, book.origin, book.bookUrl);
       if (coverPath) {
         const imageKey = RecentReadCardDataProvider.coverImageKey(index, data.version);
         const file = fs.openSync(coverPath, fs.OpenMode.READ_ONLY);
         data.formImages[imageKey] = file.fd;
         return `memory://${imageKey}`;
       }
-      return await BookCoverCache.resolveCover(context, raw, book.origin, book.bookUrl);
+      return typeof raw === 'string' ? await BookCoverCache.resolveCover(context, raw, book.origin, book.bookUrl) : '';
     } catch (e) {
       console.warn('解析最近阅读卡片封面失败:', e);
-      return raw;
+      return typeof raw === 'string' ? raw : '';
     }
   }
 

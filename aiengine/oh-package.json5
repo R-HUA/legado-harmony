@@ -1,0 +1,9 @@
+{
+  "name": "@legado/aiengine",
+  "version": "1.0.0",
+  "description": "本地阅读器的端侧 AI 能力：漫画文字识别（OCR）、漫画/PDF 超分与繁简转换接口（转换由宿主提供）。",
+  "main": "Index.ets",
+  "author": "李其健; R-HUA",
+  "license": "GPL-3.0",
+  "dependencies": {}
+}

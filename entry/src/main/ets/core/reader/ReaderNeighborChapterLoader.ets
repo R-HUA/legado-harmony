@@ -13,6 +13,8 @@ export interface ReaderNeighborChapterHost {
   /** 漫画翻页模式（预切相邻章节给翻页视图）。 */
   isPagedComic: () => boolean;
   scrollWindow: () => ReaderContinuousDataSource;
+  /** 读者还没读到附近时，可否提前装入这一章（关闭预加载时只用已缓存的正文）。 */
+  mayPrefetch: (chapterIndex: number) => boolean;
   /** 按正式加载的同一套流程取正文并切块；正文为空或没切出页时返回 null。 */
   prepare: (chapterIndex: number) => Promise<ReaderScrollSegment | null>;
   /** 翻页模式的相邻章节切好了。 */
@@ -46,18 +48,21 @@ export class ReaderNeighborChapterLoader {
 
   /**
    * 滚动模式：当前章末尾进入视口附近时接上下一章，开头附近时接上上一章（列表序号）。
-   * currentLength 为当前章的块数。
+   * currentLength 为当前章的块数。eager：当前章刚就位（打开、跳转、滚动跨章后），不论读到哪里都先把
+   * 前后两章接上——列表停在章首时向上拉只有回弹、不再回报可见区，等不到“开头附近”就会落到下拉切章。
    */
-  ensureScrollNeighbors(listStart: number, listEnd: number, currentLength: number): void {
+  ensureScrollNeighbors(listStart: number, listEnd: number, currentLength: number, eager: boolean = false): void {
     if (!this.host.isScrollList() || this.host.isPagedComic()) return;
     const window = this.host.scrollWindow();
     const current = this.host.currentChapter();
     const offset = window.offsetOf(current);
     if (offset < 0) return;
-    if (window.lastChapter() === current && listEnd >= offset + currentLength - 3) {
+    if (window.lastChapter() === current &&
+      (listEnd >= offset + currentLength - 3 || (eager && this.host.mayPrefetch(current + 1)))) {
       this.loadScrollNeighbor(current + 1);
     }
-    if (window.firstChapter() === current && listStart <= offset + 2) {
+    if (window.firstChapter() === current &&
+      (listStart <= offset + 2 || (eager && this.host.mayPrefetch(current - 1)))) {
       this.loadScrollNeighbor(current - 1);
     }
   }

@@ -1,8 +1,17 @@
-开源轻页 / legado-harmony
+开源轻页 / qingye-reader
 Copyright (c) 2026 李其健
 
-Source code: https://github.com/wip3l/legado-harmony
+Source code: https://github.com/wip3l/qingye-reader
 License: GNU General Public License version 3 (GPL-3.0)
+
+This fork: R-HUA/legado-harmony (https://github.com/R-HUA/legado-harmony),
+based on qingye-reader 4.6.007 with the fork's own changes (book-source
+compatibility, Chinese conversion, TTS and UI changes). The fork does not
+contain or link the proprietary Harmony Book AI Engine; the upstream
+"Harmony Book AI Engine Linking Exception" is therefore not part of this
+distribution. The local aiengine/ module is GPL-3.0 code restored from
+qingye-reader commit 8a783195b0da9191742e41f32086d084017439c3; see
+aiengine/NOTICE.md.
 
 This distribution includes third-party open source components licensed under
 MIT and Apache-2.0. Their copyright notices and complete license texts are

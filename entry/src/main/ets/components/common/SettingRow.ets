@@ -1,3 +1,4 @@
+import { MembershipBadge } from './MembershipBadge';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { AppSpacing } from '../../theme/AppSpacing';
@@ -11,11 +12,14 @@ import { AdaptiveSwitch } from '../AdaptiveSwitch';
 @Component
 export struct SettingRow {
   @Prop title: string = '';
+  @Prop minimumMembership: string = '';
   @Prop description: string = '';
   /** 行底部的细分隔线；卡片最后一行可以关掉。 */
   @Prop showDivider: boolean = true;
   /** 不传时用主题的主文字色；危险操作可以传危险色。 */
   @Prop titleColor?: ResourceColor;
+  /** 行首图标，用在作为入口的行上；普通设置项不传。 */
+  @Prop icon?: Resource;
   @StorageProp('appDarkMode') appDarkMode: boolean = false;
   @StorageProp('themeRevision') themeRevision: number = 0;
   onTap: () => void = () => {
@@ -28,11 +32,29 @@ export struct SettingRow {
 
   build() {
     Row() {
+      if (this.icon !== undefined) {
+        Stack() {
+          SymbolGlyph(this.icon)
+            .fontSize(18)
+            .fontColor([ThemeRuntime.accentColor(this.appDarkMode)])
+        }
+        .width(32)
+        .height(32)
+        .borderRadius(9)
+        .backgroundColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
+        .margin({ right: AppSpacing.LG })
+      }
       Column() {
-        Text(this.title)
-          .fontSize(AppFontSize.BODY_LARGE)
-          .fontColor(this.titleColor !== undefined ? this.titleColor :
-            ThemeRuntime.primaryTextColor(this.appDarkMode))
+        Row({ space: AppSpacing.XS }) {
+          Text(this.title)
+            .fontSize(AppFontSize.BODY_LARGE)
+            .fontColor(this.titleColor !== undefined ? this.titleColor :
+              ThemeRuntime.primaryTextColor(this.appDarkMode))
+            .flexShrink(1)
+          if (this.minimumMembership) {
+            MembershipBadge({ sku: this.minimumMembership })
+          }
+        }
         if (this.description) {
           Text(this.description)
             .fontSize(AppFontSize.CAPTION)
@@ -59,6 +81,7 @@ export struct SettingRow {
 @Component
 export struct SettingSwitchRow {
   @Prop title: string = '';
+  @Prop minimumMembership: string = '';
   @Prop description: string = '';
   @Prop isOn: boolean = false;
   @Prop switchEnabled: boolean = true;
@@ -67,7 +90,7 @@ export struct SettingSwitchRow {
   };
 
   build() {
-    SettingRow({ title: this.title, description: this.description, showDivider: this.showDivider }) {
+    SettingRow({ title: this.title, minimumMembership: this.minimumMembership, description: this.description, showDivider: this.showDivider }) {
       AdaptiveSwitch({
         isOn: this.isOn,
         switchEnabled: this.switchEnabled,
@@ -83,19 +106,21 @@ export struct SettingSwitchRow {
 @Component
 export struct SettingNavRow {
   @Prop title: string = '';
+  @Prop minimumMembership: string = '';
   @Prop description: string = '';
   /** 显示在箭头左侧的当前值，可不传。 */
   @Prop value: string = '';
   @Prop showDivider: boolean = true;
   @Prop titleColor?: ResourceColor;
+  @Prop icon?: Resource;
   @StorageProp('appDarkMode') appDarkMode: boolean = false;
   @StorageProp('themeRevision') themeRevision: number = 0;
   onTap: () => void = () => {
   };
 
   build() {
-    SettingRow({ title: this.title, description: this.description, showDivider: this.showDivider,
-      titleColor: this.titleColor, onTap: () => this.onTap() }) {
+    SettingRow({ title: this.title, minimumMembership: this.minimumMembership, description: this.description, showDivider: this.showDivider,
+      titleColor: this.titleColor, icon: this.icon, onTap: () => this.onTap() }) {
       Row({ space: AppSpacing.XS }) {
         if (this.value) {
           Text(this.value)
@@ -110,5 +135,69 @@ export struct SettingNavRow {
       }
       .margin({ left: AppSpacing.MD })
     }
+  }
+}
+
+/**
+ * 按阅读类型多选的设置行：标题下面一排胶囊，点一下开关一类，全不选即关闭。
+ * scope 是类型位掩码，labels 与 values 一一对应（见 ReaderInputKind）。
+ */
+@Component
+export struct SettingScopeRow {
+  @Prop title: string = '';
+  @Prop description: string = '';
+  @Prop scope: number = 0;
+  @Prop labels: string[] = [];
+  @Prop values: number[] = [];
+  @Prop showDivider: boolean = true;
+  @StorageProp('appDarkMode') appDarkMode: boolean = false;
+  @StorageProp('themeRevision') themeRevision: number = 0;
+  onToggle: (value: number, on: boolean) => void = (_value: number, _on: boolean) => {
+  };
+
+  private isOn(value: number): boolean {
+    return (this.scope & value) !== 0;
+  }
+
+  build() {
+    Column() {
+      Text(this.title)
+        .fontSize(AppFontSize.BODY_LARGE)
+        .fontColor(ThemeRuntime.primaryTextColor(this.appDarkMode))
+      if (this.description) {
+        Text(this.description)
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(ThemeRuntime.subTextColor(this.appDarkMode))
+          .margin({ top: AppSpacing.XS })
+      }
+      Row({ space: AppSpacing.SM }) {
+        ForEach(this.values, (value: number, index: number) => {
+          Row({ space: 4 }) {
+            if (this.isOn(value)) {
+              SymbolGlyph($r('sys.symbol.checkmark'))
+                .fontSize(14)
+                .fontColor([ThemeRuntime.accentColor(this.appDarkMode)])
+            }
+            Text(this.labels[index] ?? '')
+              .fontSize(AppFontSize.BODY)
+              .fontColor(this.isOn(value) ? ThemeRuntime.accentColor(this.appDarkMode) :
+                ThemeRuntime.primaryTextColor(this.appDarkMode))
+          }
+          .height(32)
+          .padding({ left: 14, right: 14 })
+          .borderRadius(16)
+          .backgroundColor(this.isOn(value) ? ThemeRuntime.accentSurfaceColor(this.appDarkMode) : Color.Transparent)
+          .border({ width: this.isOn(value) ? 0 : 1, color: ThemeRuntime.hairlineColor(this.appDarkMode) })
+          .accessibilityText(`${this.title}：${this.labels[index] ?? ''}${this.isOn(value) ? '，已开启' : '，已关闭'}`)
+          .onClick(() => this.onToggle(value, !this.isOn(value)))
+        }, (value: number) => `${value}`)
+      }
+      .margin({ top: AppSpacing.MD })
+    }
+    .width('calc(100% - 32vp)')
+    .alignItems(HorizontalAlign.Start)
+    .padding({ top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
+    .border({ width: { bottom: this.showDivider ? 0.5 : 0 }, color: ThemeRuntime.hairlineColor(this.appDarkMode) })
   }
 }

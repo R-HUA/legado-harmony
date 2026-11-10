@@ -28,8 +28,32 @@ jobs:
           node-version: 22
       - run: node scripts/thread-blocking-check.mjs
       - run: node scripts/theme-framework-check.mjs
+      - run: node --experimental-strip-types scripts/bookshelf-category-transition-check.mjs
+      - run: node --experimental-strip-types scripts/bookshelf-folder-check.mjs
+      - run: node --experimental-strip-types scripts/shared-element-book-check.mjs
+      - run: node --experimental-strip-types scripts/shared-element-motion-check.mjs
+      - run: node --experimental-strip-types scripts/shelf-book-animation-check.mjs
+      - run: node --experimental-strip-types scripts/video-playback-fallback-check.mjs
+      - run: node --experimental-strip-types scripts/reading-stats-check.mjs
+      - run: node --experimental-strip-types scripts/category-swipe-pager-check.mjs
+      - run: node --experimental-strip-types scripts/trial-read-shelf-check.mjs
+      - run: node --experimental-strip-types scripts/reported-regressions-check.mjs
+      - run: node --experimental-strip-types scripts/select-font-check.mjs
+      - run: node scripts/mimo-reading-check.mjs
+      - run: node scripts/mimo-settings-check.mjs
+      - run: node scripts/mimo-voices-check.mjs
+      - run: node scripts/mimo-selector-check.mjs
+      - run: node scripts/app-data-backup-check.mjs
+      - run: node scripts/mimo-preview-check.mjs
       - run: node scripts/neutral-source-engine-check.mjs
       - run: node scripts/log-policy-check.mjs
+      - run: node scripts/build-help-data.mjs --check
+      - run: node --experimental-strip-types scripts/ai-host-runtime-check.mjs
+      - run: node --experimental-strip-types scripts/reader-cache-budget-check.mjs
+      - run: node --experimental-strip-types scripts/comic-colorizer-check.mjs
+      - run: node --experimental-strip-types scripts/comic-text-check.mjs
+      - run: node --experimental-strip-types scripts/member-reader-settings-check.mjs
+      - run: node --experimental-strip-types scripts/ai-trial-check.mjs
       # 这些检查会导入 entry 下的 TypeScript 模块，需要 Node 的类型擦除能力。
       - run: node --experimental-strip-types scripts/java-regex-compat-check.mjs
       - run: node --experimental-strip-types scripts/replace-rule-import-check.mjs
@@ -39,5 +63,32 @@ jobs:
       - run: node --experimental-strip-types scripts/epub-mixed-layout-check.mjs
       - run: node --experimental-strip-types scripts/reader-text-normalizer-check.mjs
       - run: node --experimental-strip-types scripts/reader-chunk-pagination-check.mjs
+      - run: node --experimental-strip-types scripts/reader-content-search-check.mjs
+      - run: node --experimental-strip-types scripts/reader-pagination-index-check.mjs
+      - run: node --experimental-strip-types scripts/reader-page-texture-cache-check.mjs
+      - run: node --experimental-strip-types scripts/reader-page-texture-pair-check.mjs
+      - run: node --experimental-strip-types scripts/reader-page-curl-palette-check.mjs
+      - run: node --experimental-strip-types scripts/reader-theme-render-cache-check.mjs
+      - run: node --experimental-strip-types scripts/reader-page-host-binding-check.mjs
+      - run: node --experimental-strip-types scripts/reader-page-turn-scheduling-check.mjs
+      - run: node --experimental-strip-types scripts/reader-continuous-page-metrics-check.mjs
+      - run: node --experimental-strip-types scripts/reader-progress-sync-check.mjs
+      - run: node --experimental-strip-types scripts/reader-scroll-anchor-check.mjs
+      - run: node --experimental-strip-types scripts/reader-continuous-layout-check.mjs
+      - run: node --experimental-strip-types scripts/reader-screen-scroll-check.mjs
+      - run: node --experimental-strip-types scripts/reader-scroll-gesture-check.mjs
+      - run: node --experimental-strip-types scripts/reader-font-weight-check.mjs
+      - run: node --experimental-strip-types scripts/reader-brightness-check.mjs
+      - run: node --experimental-strip-types scripts/reader-settings-persistence-check.mjs
+      - run: node --experimental-strip-types scripts/reader-style-editor-check.mjs
+      - run: node --experimental-strip-types scripts/comic-image-pipeline-check.mjs
+      - run: node --experimental-strip-types scripts/image-script-check.mjs
+      - run: node --experimental-strip-types scripts/network-compatibility-check.mjs
+      - run: node --experimental-strip-types scripts/smart-grip-check.mjs
+      - run: node --experimental-strip-types scripts/change-source-check.mjs
+      - run: node --experimental-strip-types scripts/search-simp-trad-check.mjs
+      - run: node --experimental-strip-types scripts/chinese-converter-check.mjs
+      - run: node --experimental-strip-types scripts/reader-text-convert-check.mjs
+      - run: node --experimental-strip-types scripts/local-features-check.mjs
       # 书源解析内核（子模块）自己的回归检查。
       - run: for f in harmony-book-source-engine/scripts/*-check.mjs; do node --experimental-strip-types "$f" || exit 1; done

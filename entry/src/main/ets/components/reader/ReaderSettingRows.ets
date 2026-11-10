@@ -1,3 +1,4 @@
+import { MembershipBadge } from '../common/MembershipBadge';
 import { AdaptiveSwitch } from '../AdaptiveSwitch';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
@@ -6,17 +7,24 @@ import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 
 /** 阅读页设置面板里的一行：标题与说明，右侧放控件。配色用阅读主题，由页面传入。 */
 @Component
-struct ReaderSettingLabel {
+export struct ReaderSettingLabel {
   @Prop title: string = '';
+  @Prop minimumMembership: string = '';
   @Prop description: string = '';
   @Prop textColor: string = '#000000';
   @Prop subTextColor: string = '#666666';
 
   build() {
     Column() {
-      Text(this.title)
-        .fontSize(AppFontSize.BODY_LARGE)
-        .fontColor(this.textColor)
+      Row({ space: AppSpacing.XS }) {
+        Text(this.title)
+          .fontSize(AppFontSize.BODY_LARGE)
+          .fontColor(this.textColor)
+          .flexShrink(1)
+        if (this.minimumMembership) {
+          MembershipBadge({ sku: this.minimumMembership })
+        }
+      }
       Text(this.description)
         .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor)
@@ -30,6 +38,7 @@ struct ReaderSettingLabel {
 @Component
 export struct ReaderSettingSwitchRow {
   @Prop title: string = '';
+  @Prop minimumMembership: string = '';
   @Prop description: string = '';
   @Prop checked: boolean = false;
   @Prop textColor: string = '#000000';
@@ -40,6 +49,7 @@ export struct ReaderSettingSwitchRow {
     Row() {
       ReaderSettingLabel({
         title: this.title,
+        minimumMembership: this.minimumMembership,
         description: this.description,
         textColor: this.textColor,
         subTextColor: this.subTextColor
@@ -60,7 +70,10 @@ export struct ReaderSettingSwitchRow {
 
 @Component
 export struct ReaderSettingSelectRow {
+  @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   @Prop title: string = '';
+  @Prop minimumMembership: string = '';
   @Prop description: string = '';
   @Prop options: SelectOption[] = [];
   @Prop selected: number = 0;
@@ -71,6 +84,7 @@ export struct ReaderSettingSelectRow {
   @Prop dark: boolean = false;
   /** 下拉菜单底色（随阅读主题）。 */
   @Prop menuColor: string = '#FFFFFF';
+  menuItemModifier: ContentModifier<MenuItemConfiguration> | undefined = undefined;
   onSelect: (index: number) => void = () => {};
 
   private selectedValue(): ResourceStr {
@@ -82,6 +96,7 @@ export struct ReaderSettingSelectRow {
     Row() {
       ReaderSettingLabel({
         title: this.title,
+        minimumMembership: this.minimumMembership,
         description: this.description,
         textColor: this.textColor,
         subTextColor: this.subTextColor
@@ -92,22 +107,26 @@ export struct ReaderSettingSelectRow {
         .id(this.controlId)
         .selected(this.selected)
         .value(this.selectedValue())
-        .font({ size: AppFontSize.BODY })
-        .fontColor(this.subTextColor)
-        .backgroundColor(Color.Transparent)
+        .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
+        .optionFont({ family: this.applicationFontFamily })
+        .selectedOptionFont({ family: this.applicationFontFamily })
+        .fontColor(this.textColor)
+        .backgroundColor(ImmersiveMaterialRuntime.surfaceColor(this.immersiveLightLevel,
+          this.dark, this.dark ? '#30343B' : '#ECEEF2', true))
         .arrowPosition(ArrowPosition.END)
-        .padding({ left: 0, right: 0 })
+        .padding({ left: 12, right: 12 })
         // Keep the hit area rectangular, but soften its corners to match the rounded settings cards.
         .borderRadius(16)
         .border({ width: 0 })
         .optionBgColor(Color.Transparent)
         .divider(null)
         .optionFontColor(this.textColor)
-        .selectedOptionFontColor(this.accentColor)
+        .selectedOptionFontColor(this.textColor)
         .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.dark))
         .menuBackgroundColor(this.menuColor)
         .menuBackgroundBlurStyle(BlurStyle.NONE)
-        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
+        .menuItemContentModifier(this.menuItemModifier)
+        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel, this.dark, this.menuColor))
         .onSelect((index: number) => {
           this.onSelect(index);
         })
@@ -122,6 +141,7 @@ export struct ReaderSettingSelectRow {
 @Component
 export struct ReaderSettingActionRow {
   @Prop title: string = '';
+  @Prop minimumMembership: string = '';
   @Prop description: string = '';
   @Prop actionText: string = '';
   @Prop textColor: string = '#000000';
@@ -134,19 +154,23 @@ export struct ReaderSettingActionRow {
     Row() {
       ReaderSettingLabel({
         title: this.title,
+        minimumMembership: this.minimumMembership,
         description: this.description,
         textColor: this.textColor,
         subTextColor: this.subTextColor
       })
         .layoutWeight(1)
 
-      Button(this.actionText)
-        .height(34)
-        .fontSize(AppFontSize.BODY)
-        .backgroundColor(this.buttonColor)
-        .fontColor(this.buttonTextColor)
-        .margin({ left: AppSpacing.LG })
-        .onClick(() => this.onAction())
+      // 没有按钮文字时只显示说明（如功能不可用）。
+      if (this.actionText) {
+        Button(this.actionText)
+          .height(34)
+          .fontSize(AppFontSize.BODY)
+          .backgroundColor(this.buttonColor)
+          .fontColor(this.buttonTextColor)
+          .margin({ left: AppSpacing.LG })
+          .onClick(() => this.onAction())
+      }
     }
     .width('100%')
     .constraintSize({ minHeight: 56 })

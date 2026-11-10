@@ -1,0 +1,9 @@
+[
+  { "file": "cloudFileService.js", "before": "'此功能需要有效的永久超级会员'", "after": "'此功能需要有效的终身超级会员'" },
+  { "file": "imageSecurity.js", "before": "'动态头像仅限有效的永久会员和永久超级会员使用'", "after": "'动态头像仅限有效的终身会员和终身超级会员使用'" },
+  { "file": "membershipPolicy.js", "before": "name: '永久会员'", "after": "name: '终身会员'" },
+  { "file": "membershipPolicy.js", "before": "name: '永久超级会员'", "after": "name: '终身超级会员'" },
+  { "file": "membershipPolicy.js", "before": "'已拥有永久权益，无需重复购买或降级'", "after": "'已拥有终身权益，无需重复购买或降级'" },
+  { "file": "membershipService.js", "before": "'月度会员不含每月朗读礼包，年度及永久会员可领取'", "after": "'月度会员不含每月朗读礼包，年度及终身会员可领取'" },
+  { "file": "superThemeService.js", "before": "'仅有效的永久超级会员可领取专属主题'", "after": "'仅有效的终身超级会员可领取专属主题'" }
+]

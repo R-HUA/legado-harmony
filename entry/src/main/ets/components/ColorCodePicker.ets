@@ -1,5 +1,6 @@
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
+import { ImmersiveBackButton } from './ImmersiveBackButton';
 import { HexColor } from '../utils/HexColor';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
@@ -12,11 +13,16 @@ class HsvColor {
 
 @Component
 export struct ColorCodePicker {
+  @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   @Prop value: string = '#007DFF';
   @Prop placeholder: string = '#007DFF';
   @Prop appDarkMode: boolean = false;
   @Prop accentColor: string = '#007DFF';
   @Prop allowEmpty: boolean = false;
+  @Prop allowAlpha: boolean = false;
+  @State colorOpacity: number = 100;
+  @Prop emptyOptionLabel: string = '跟随强调色';
   @Prop optionTitle: string = '';
   @Prop hideOptionTrigger: boolean = false;
   @Prop colorMode: string = '';
@@ -39,7 +45,7 @@ export struct ColorCodePicker {
   ];
 
   private normalizeColor(color: string, fallback: string): string {
-    return HexColor.normalize(color, fallback, '#007DFF');
+    return this.allowAlpha ? HexColor.normalizeAlpha(color, fallback) : HexColor.normalize(color, fallback, '#007DFF');
   }
 
   private clamp(value: number, min: number, max: number): number {
@@ -47,7 +53,7 @@ export struct ColorCodePicker {
   }
 
   private hexToHsv(color: string): HsvColor {
-    const normalized = this.normalizeColor(color, '#007DFF');
+    const normalized = HexColor.rgb(this.normalizeColor(color, '#007DFF'));
     const red = parseInt(normalized.substring(1, 3), 16) / 255;
     const green = parseInt(normalized.substring(3, 5), 16) / 255;
     const blue = parseInt(normalized.substring(5, 7), 16) / 255;
@@ -116,10 +122,12 @@ export struct ColorCodePicker {
   }
 
   private updateDraftFromHsv(): void {
-    this.draftColor = this.hsvToHex(this.hue, this.saturation, this.colorBrightness);
+    const rgb = this.hsvToHex(this.hue, this.saturation, this.colorBrightness);
+    this.draftColor = this.allowAlpha ? HexColor.withOpacity(rgb, this.colorOpacity / 100) : rgb;
   }
 
   private updateHsvFromColor(color: string): void {
+    this.colorOpacity = HexColor.alpha(color) / 255 * 100;
     const hsv = this.hexToHsv(color);
     this.hue = Math.round(hsv.hue);
     this.saturation = Math.round(hsv.saturation * 100);
@@ -282,7 +290,9 @@ export struct ColorCodePicker {
           ])
             .selected(this.colorModeIndex())
             .value(this.colorModeLabel())
-            .font({ size: AppFontSize.BODY })
+            .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
+            .optionFont({ family: this.applicationFontFamily })
+            .selectedOptionFont({ family: this.applicationFontFamily })
             .fontColor(this.subTextColor())
             .backgroundColor(Color.Transparent)
             .arrowPosition(ArrowPosition.END)
@@ -297,7 +307,7 @@ export struct ColorCodePicker {
             .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
             .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
             .menuBackgroundBlurStyle(BlurStyle.NONE)
-            .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier())
+            .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel))
             .onSelect((index: number) => {
               if (index === 2) {
                 this.openPicker();
@@ -369,7 +379,7 @@ export struct ColorCodePicker {
               this.onColorChange('');
               return;
             }
-            if (/^#?[0-9a-fA-F]{6}$/.test(text.trim())) {
+            if (this.allowAlpha ? !!HexColor.parseAlpha(text) : !!HexColor.parse(text)) {
               this.onColorChange(this.normalizeColor(text, this.value));
             }
           })
@@ -377,8 +387,9 @@ export struct ColorCodePicker {
     }
       .width('100%')
       .bindSheet($$this.pickerVisible, this.colorPickerSheet(), {
-        height: 650,
+        height: this.allowAlpha ? 740 : 650,
         dragBar: true,
+        showClose: false,
         backgroundColor: this.pageColor(),
         onDisappear: () => {
           this.pickerVisible = false;
@@ -389,24 +400,46 @@ export struct ColorCodePicker {
   @Builder
   colorPickerSheet() {
     Column({ space: AppSpacing.XL }) {
-      Row() {
+      Row({ space: AppSpacing.LG }) {
         Text('选择颜色')
           .fontSize(AppFontSize.HEADLINE)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.primaryTextColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
         if (this.allowEmpty) {
-          Text('跟随强调色')
+          Button(this.emptyOptionLabel)
+            .height(40)
             .fontSize(AppFontSize.BODY)
             .fontColor(this.accentColor)
-            .margin({ left: AppSpacing.LG })
+            .backgroundColor(Color.Transparent)
+            .padding({ left: AppSpacing.MD, right: AppSpacing.MD })
+            .flexShrink(0)
             .onClick(() => {
               this.onColorChange('');
               this.pickerVisible = false;
             })
         }
+        ImmersiveBackButton({
+          icon: $r('sys.symbol.xmark'),
+          iconOffsetX: 0,
+          iconColor: this.primaryTextColor(),
+          darkMode: this.appDarkMode,
+          buttonSize: 40,
+          containerWidth: 40,
+          containerHeight: 40,
+          startInset: 0,
+          compactLayout: true,
+          accessibilityLabel: '关闭颜色选择',
+          onBack: () => {
+            this.pickerVisible = false;
+          }
+        })
+          .flexShrink(0)
       }
       .width('100%')
+      .alignItems(VerticalAlign.Center)
 
       Row({ space: AppSpacing.LG }) {
         Stack({ alignContent: Alignment.TopStart }) {
@@ -520,7 +553,7 @@ export struct ColorCodePicker {
           .borderRadius(4)
           .backgroundColor(this.draftColor)
           .border({ width: 1, color: this.appDarkMode ? '#44FFFFFF' : '#22000000' })
-        TextInput({ text: this.draftColor, placeholder: '#007DFF' })
+        TextInput({ text: this.draftColor, placeholder: this.allowAlpha ? '#AARRGGBB' : '#RRGGBB' })
           .height(40)
           .fontSize(AppFontSize.SUBTITLE)
           .fontColor(this.primaryTextColor())
@@ -528,13 +561,39 @@ export struct ColorCodePicker {
           .borderRadius(ThemeRuntime.mediumRadius())
           .layoutWeight(1)
           .onChange((text: string) => {
-            if (/^#?[0-9a-fA-F]{6}$/.test(text.trim())) {
+            if (this.allowAlpha ? !!HexColor.parseAlpha(text) : !!HexColor.parse(text)) {
               this.draftColor = this.normalizeColor(text, this.draftColor);
               this.updateHsvFromColor(this.draftColor);
             }
           })
       }
       .width('100%')
+
+      if (this.allowAlpha) {
+        Column({ space: AppSpacing.XS }) {
+          Row() {
+            Text('透明度')
+              .fontSize(AppFontSize.BODY)
+              .fontColor(this.primaryTextColor())
+              .layoutWeight(1)
+            Text(`${Math.round(100 - this.colorOpacity)}%`)
+              .fontSize(AppFontSize.BODY)
+              .fontColor(this.subTextColor())
+          }
+          Slider({ value: 100 - this.colorOpacity, min: 0, max: 100, step: 1 })
+            .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
+            .width('100%')
+            .selectedColor(this.accentColor)
+            .onChange((value: number) => {
+              this.colorOpacity = 100 - value;
+              this.draftColor = HexColor.withOpacity(this.draftColor, this.colorOpacity / 100);
+            })
+          Text('0% 不透明 · 100% 完全透明 · 色值格式 #AARRGGBB')
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.subTextColor())
+        }
+        .width('100%')
+      }
 
       if (this.showPresetColors) {
         Flex({ wrap: FlexWrap.Wrap }) {
@@ -549,8 +608,8 @@ export struct ColorCodePicker {
                 color: this.draftColor === color ? this.primaryTextColor() : '#22000000' })
               .margin({ right: AppSpacing.MD, bottom: AppSpacing.SM })
               .onClick(() => {
-                this.draftColor = color;
-                this.updateHsvFromColor(color);
+                this.draftColor = this.allowAlpha ? HexColor.withOpacity(color, this.colorOpacity / 100) : color;
+                this.updateHsvFromColor(this.draftColor);
               })
           })
         }

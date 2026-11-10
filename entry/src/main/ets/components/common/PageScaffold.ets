@@ -2,8 +2,10 @@ import { LengthMetrics, router } from '@kit.ArkUI';
 import { HdsNavigation, HdsNavigationTitleMode, ScrollEffectType } from '@kit.UIDesignKit';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
-import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 import { ImmersiveBackButton } from '../ImmersiveBackButton';
+import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
+import { CollapsingHeader } from '../../utils/CollapsingHeader';
+import { HeaderBackdrop } from './HeaderBackdrop';
 
 /**
  * 二级页面的统一骨架：页面底色、沉浸式顶栏（返回、标题、右侧操作）和状态栏/导航条的留白。
@@ -13,8 +15,11 @@ import { ImmersiveBackButton } from '../ImmersiveBackButton';
  *
  * scrollable 为 true 时内容放进带回弹的滚动容器；页面自己用 List 等滚动时传 false，
  * 此时骨架只负责顶部留白，底部留白由页面处理。
- * 自行滚动的页面传入 scroller 启用渐变标题栏；未传时沿用普通顶栏。
  * 列表要从顶栏下方滚过去时再加 edgeToEdge: true，内容铺满整页，上下留白都由页面自己放进列表里。
+ * 顶栏默认随内容上滑跟手收起、下滑展开，与首页大标题一致；scrollable 为 false 的页面自己跟踪滚动，
+ * 用 CollapsingHeader 算出收起量传给 externalCollapse。不需要收起的页面传 collapsible: false。
+ * 设备支持 HDS 时，可滚动页面（scrollable 或传入 scroller）改用系统原生标题栏（渐变模糊随滚动联动），
+ * 其余情况沿用可收起的自绘顶栏；externalCollapse 只作用于自绘顶栏。
  */
 @Component
 export struct PageScaffold {
@@ -27,7 +32,10 @@ export struct PageScaffold {
   @Prop edgeToEdge: boolean = false;
   /** 滚动内容底部在导航条之上额外留出的高度。 */
   @Prop bottomInset: number = 32;
-  /** 页面自行滚动时传入实际使用的控制器，标题栏与内容保持联动。 */
+  @Prop collapsible: boolean = true;
+  @Prop externalCollapse: number = 0;
+  @State headerCollapse: number = 0;
+  /** 页面自行滚动时传入实际使用的控制器，原生标题栏与内容保持联动。 */
   scroller: Scroller | undefined = undefined;
   private contentScroller: Scroller = new Scroller();
   @State private actionsWidth: number = 12;
@@ -107,14 +115,75 @@ export struct PageScaffold {
           }
         })
       } else {
-        this.pageBody()
-        this.titleBar()
+        if (this.scrollable) {
+          Scroll(this.contentScroller) {
+            Column() {
+              this.content()
+            }
+            .width('100%')
+            .padding({
+              top: PageScaffold.BAR_HEIGHT + this.statusBarHeight,
+              bottom: this.bottomInset + this.navBarHeight
+            })
+          }
+          .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+          .width('100%')
+          .height('100%')
+          .align(Alignment.TopStart)
+          .onDidScroll((_xOffset: number, yOffset: number) => {
+            if (!this.collapsible) return;
+            this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+              this.contentScroller.currentOffset().yOffset);
+          })
+          .onScrollStop(() => {
+            if (!this.collapsible) return;
+            const target = CollapsingHeader.settle(this.headerCollapse, this.contentScroller.currentOffset().yOffset);
+            if (target !== this.headerCollapse) {
+              animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+                this.headerCollapse = target;
+              });
+            }
+          })
+        } else {
+          Column() {
+            this.content()
+          }
+          .width('100%')
+          .height('100%')
+          .padding({ top: this.edgeToEdge ? 0 : PageScaffold.BAR_HEIGHT + this.statusBarHeight - this.collapseAmount() })
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+        }
+
+        HeaderBackdrop({
+          statusBarHeight: this.statusBarHeight,
+          backdropHeight: PageScaffold.BAR_HEIGHT + this.statusBarHeight - this.collapseAmount(),
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode)
+        })
+          .width('100%')
+
+        if (this.collapsible) {
+          Column() {
+            this.titleBar()
+          }
+          .width('100%')
+          .height(PageScaffold.BAR_HEIGHT + this.statusBarHeight - this.collapseAmount())
+          .clip(true)
+          .opacity(CollapsingHeader.contentOpacity(this.collapseAmount()))
+          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.collapseAmount()) ? HitTestMode.Default : HitTestMode.None)
+        } else {
+          this.titleBar()
+        }
       }
     }
     .width('100%')
     .height('100%')
     .backgroundColor(ThemeRuntime.pageColor(this.appDarkMode))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  collapseAmount(): number {
+    if (!this.collapsible) return 0;
+    return this.scrollable ? this.headerCollapse : Math.max(0, Math.min(CollapsingHeader.DISTANCE, this.externalCollapse));
   }
 
   @Builder
@@ -163,8 +232,6 @@ export struct PageScaffold {
     .width('100%')
     .height(PageScaffold.BAR_HEIGHT + this.statusBarHeight)
     .padding({ top: this.statusBarHeight })
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
     .alignItems(VerticalAlign.Center)
   }
 }

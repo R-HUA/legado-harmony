@@ -13,6 +13,11 @@ import { BookSourceGroupStore } from './BookSourceGroupStore';
 import { ReaderReplaceRule, ReaderReplaceRuleStore } from './ReaderReplaceRuleStore';
 import { TtsSettingsStore } from './TtsSettingsStore';
 import { BookshelfStateStore } from './BookshelfStateStore';
+import { ReaderFontHelper } from './ReaderFontHelper';
+import { AndroidReadRecordImport } from '../core/stats/AndroidReadRecordImport';
+import { AndroidBackupJsonReader } from './AndroidBackupJsonReader';
+import { MimoVoiceLibrary, MimoVoicePolicy } from '../core/mimo/MimoVoicePolicy';
+import { MimoStore } from './mimo/MimoStore';
 
 export class AppDataBackupSelection {
   sources: boolean = true;
@@ -41,12 +46,15 @@ export class AppDataBackupManifest {
   sourceFilesDir: string = '';
   categories: string[] = [];
   sources: BookSource[] = [];
+  /** 书源地址到加入时间；书源对象本身不带这个字段。 */
+  sourceAddedTimes: Record<string, number> = {};
   books: Book[] = [];
   bookGroups: BookGroup[] = [];
   progress: BookProgressBackup[] = [];
   bookmarks: Bookmark[] = [];
   localBooks: Book[] = [];
   localFiles: Record<string, string> = {};
+  skippedLocalBooks: string[] = [];
   preferenceStores: Record<string, string> = {};
   sourceGroupPreferences: string = '';
   searchKeywords: SearchKeyword[] = [];
@@ -56,6 +64,20 @@ export class AppDataBackupManifest {
 export class AppDataBackupExportResult {
   archivePath: string = '';
   manifest: AppDataBackupManifest = new AppDataBackupManifest();
+
+  summary(): string {
+    const manifest = this.manifest;
+    const parts: string[] = [];
+    if (manifest.categories.includes('sources')) parts.push(`书源 ${manifest.sources.length}`);
+    if (manifest.categories.includes('bookshelf')) parts.push(`网络书籍 ${manifest.books.length}`);
+    if (manifest.categories.includes('progress')) parts.push(`进度 ${manifest.progress.length}`);
+    if (manifest.categories.includes('bookmarks')) parts.push(`书签 ${manifest.bookmarks.length}`);
+    if (manifest.categories.includes('localBooks')) parts.push(`本地图书 ${manifest.localBooks.length}`);
+    if (manifest.bookGroups.length > 0) parts.push(`书架分组 ${manifest.bookGroups.length}`);
+    if (manifest.categories.includes('settings')) parts.push('自定义设置与资源');
+    if (manifest.categories.includes('searchHistory')) parts.push(`搜索记录 ${manifest.searchKeywords.length}`);
+    return parts.join('、');
+  }
 }
 
 export class AppDataBackupImportSession {
@@ -72,6 +94,7 @@ export class AppDataBackupImportResult {
   bookGroups: number = 0;
   localBooks: number = 0;
   progress: number = 0;
+  readRecords: number = 0;
   bookmarks: number = 0;
   settings: number = 0;
   httpTts: number = 0;
@@ -86,6 +109,7 @@ export class AppDataBackupImportResult {
     if (this.bookGroups > 0) parts.push(`分组 ${this.bookGroups}`);
     if (this.localBooks > 0) parts.push(`本地图书 ${this.localBooks}`);
     if (this.progress > 0) parts.push(`进度 ${this.progress}`);
+    if (this.readRecords > 0) parts.push(`阅读记录 ${this.readRecords}`);
     if (this.bookmarks > 0) parts.push(`书签 ${this.bookmarks}`);
     if (this.settings > 0) parts.push(`设置 ${this.settings}`);
     if (this.httpTts > 0) parts.push(`HTTP TTS ${this.httpTts}`);
@@ -119,16 +143,17 @@ export class AppDataBackupService {
     'app_theme_settings',
     'bookshelf_display_settings',
     'cover_gallery_settings',
-    'glass_settings',
+    'custom_theme_schemes',
+    'immersive_light_settings',
+    'opds_settings',
     'reader_replace_rules',
     'reader_settings',
     'search_explore_settings',
     'startup_cover_texts',
     'tts_settings',
+    'txt_toc_rules',
     'webdav_settings'
   ];
-  private static readonly READER_SETTINGS_STORE: string = 'reader_settings';
-  private static readonly READER_THEME_PROFILE_PREFIX: string = 'readerThemeProfileV1_';
 
   private static readonly ASSET_DIRS: string[] = [
     'reader_fonts',
@@ -142,7 +167,9 @@ export class AppDataBackupService {
     'readStarted',
     'lastReadTime',
     'readProgressChapterIndex',
-    'readProgressPageCount'
+    'readProgressPageCount',
+    'readProgressCharOffsetV2',
+    'readProgressCharOffsetChapterV2'
   ];
 
   private static readonly ANDROID_SOURCE_FILE: string = 'bookSource.json';
@@ -151,6 +178,9 @@ export class AppDataBackupService {
   private static readonly ANDROID_HTTP_TTS_FILE: string = 'httpTTS.json';
   private static readonly ANDROID_REPLACE_RULE_FILE: string = 'replaceRule.json';
   private static readonly ANDROID_SEARCH_HISTORY_FILE: string = 'searchHistory.json';
+  private static readonly ANDROID_READ_RECORD_FILES: string[] = [
+    'readRecordDetail.json', 'readRecordSession.json', 'readRecord.json'
+  ];
   private static readonly ANDROID_MAX_SOURCE_BYTES: number = 128 * 1024 * 1024;
   private static readonly ANDROID_MAX_DATA_BYTES: number = 32 * 1024 * 1024;
 
@@ -183,6 +213,10 @@ export class AppDataBackupService {
       manifest.categories.push(AppDataBackupService.CATEGORY_SOURCES);
       manifest.sources = (await db.getAllBookSources()).map((source: BookSource): BookSource =>
         AppDataBackupService.sanitizeBookSource(source));
+      const addedTimes = await db.getBookSourceAddedTimes();
+      addedTimes.forEach((time: number, url: string) => {
+        if (time > 0) manifest.sourceAddedTimes[url] = time;
+      });
       manifest.sourceGroupPreferences = await AppDataBackupService.readPreferenceStore(context, 'book_source_groups');
     }
 
@@ -224,20 +258,21 @@ export class AppDataBackupService {
       AppDataBackupService.reportProgress(onProgress, '正在整理本地图书...', 22);
       manifest.categories.push(AppDataBackupService.CATEGORY_LOCAL_BOOKS);
       const localSourceBooks = allBooks.filter((book: Book): boolean => LocalBookService.isPhysicalLocalBook(book));
-      manifest.localBooks = localSourceBooks
-        .map((book: Book): Book => AppDataBackupService.sanitizeBook(book));
       const localRoot = `${payloadRoot}/local_books`;
       await AppDataBackupService.ensureDir(localRoot);
-      for (let index = 0; index < manifest.localBooks.length; index++) {
+      for (let index = 0; index < localSourceBooks.length; index++) {
         const book = localSourceBooks[index];
         const sourcePath = book.getVariable('localFilePath');
-        if (!sourcePath || !AppDataBackupService.exists(sourcePath)) continue;
-        const format = book.getVariable('localFormat') || (book.type === LocalBookService.TYPE_EPUB ? 'epub' : 'txt');
+        if (!sourcePath || !AppDataBackupService.exists(sourcePath)) {
+          manifest.skippedLocalBooks.push(book.name || '未命名本地书');
+          continue;
+        }
+        const format = LocalBookService.formatOf(book);
         const archiveName = `${index}.${format}`;
         await AppDataBackupService.copyFile(sourcePath, `${localRoot}/${archiveName}`);
         manifest.localFiles[book.bookUrl] = archiveName;
-        const progress = manifest.localBooks.length > 0 ?
-          22 + Math.floor((index + 1) * 13 / manifest.localBooks.length) : 35;
+        manifest.localBooks.push(AppDataBackupService.sanitizeBook(book));
+        const progress = 22 + Math.floor((index + 1) * 13 / localSourceBooks.length);
         AppDataBackupService.reportProgress(onProgress, '正在整理本地图书...', progress);
       }
     }
@@ -250,6 +285,14 @@ export class AppDataBackupService {
           await AppDataBackupService.readPreferenceStore(context, storeName));
       }
       const assetsRoot = `${payloadRoot}/assets`;
+      const voicesPath = `${context.filesDir}/mimo_private/voices.json`;
+      if (AppDataBackupService.exists(voicesPath)) {
+        if ((await fs.stat(voicesPath)).size > 2 * 1024 * 1024) throw new Error('MiMo 音色库过大，无法备份');
+        // Export a validated whitelist, never the private directory, credentials, caches or namespaces.
+        const voices = MimoVoicePolicy.normalize(JSON.parse(await AppDataBackupService.readText(voicesPath)) as MimoVoiceLibrary, '白桦');
+        await AppDataBackupService.ensureDir(assetsRoot);
+        await AppDataBackupService.writeText(`${assetsRoot}/mimo_voices.json`, JSON.stringify(voices));
+      }
       for (let index = 0; index < AppDataBackupService.ASSET_DIRS.length; index++) {
         const dirName = AppDataBackupService.ASSET_DIRS[index];
         const source = `${context.filesDir}/${dirName}`;
@@ -453,6 +496,7 @@ export class AppDataBackupService {
         await db.restoreBookSource(raw);
         result.sources++;
       }
+      await db.restoreBookSourceAddedTimes(manifest.sourceAddedTimes || {});
       if (manifest.sourceGroupPreferences) {
         await AppDataBackupService.restorePreferenceStore(context, 'book_source_groups',
           manifest.sourceGroupPreferences, manifest.sourceFilesDir);
@@ -476,11 +520,14 @@ export class AppDataBackupService {
       for (const raw of manifest.localBooks || []) {
         const archiveName = (manifest.localFiles || {})[raw.bookUrl] || '';
         const archivePath = archiveName ? `${session.rootPath}/local_books/${archiveName}` : '';
-        if (!archivePath || !AppDataBackupService.exists(archivePath)) continue;
+        if (!archivePath || !AppDataBackupService.exists(archivePath)) {
+          result.skippedLocalBooks++;
+          continue;
+        }
         const book = AppDataBackupService.hydrateBook(raw, manifest.sourceFilesDir, context.filesDir);
         const id = book.bookUrl.startsWith('local://') ? book.bookUrl.substring('local://'.length) :
           `${Math.abs(AppDataBackupService.hashText(book.bookUrl))}`;
-        const format = book.getVariable('localFormat') || (book.type === LocalBookService.TYPE_EPUB ? 'epub' : 'txt');
+        const format = LocalBookService.formatOf(book);
         const targetPath = `${targetRoot}/${id}.${format}`;
         await AppDataBackupService.copyFile(archivePath, targetPath);
         book.putVariable('localFilePath', targetPath);
@@ -517,16 +564,27 @@ export class AppDataBackupService {
 
     if (selection.settings && AppDataBackupService.hasCategory(manifest, AppDataBackupService.CATEGORY_SETTINGS)) {
       const assetsRoot = `${session.rootPath}/assets`;
+      const voicesPath = `${assetsRoot}/mimo_voices.json`;
+      if (AppDataBackupService.exists(voicesPath)) {
+        if ((await fs.stat(voicesPath)).size > 2 * 1024 * 1024) throw new Error('备份中的 MiMo 音色库过大');
+        const voices = MimoVoicePolicy.normalize(JSON.parse(await AppDataBackupService.readText(voicesPath)) as MimoVoiceLibrary, '白桦');
+        await AppDataBackupService.ensureDir(`${context.filesDir}/mimo_private`);
+        await AppDataBackupService.writeText(`${context.filesDir}/mimo_private/voices.json`, JSON.stringify(voices));
+        MimoStore.reloadVoices();
+        result.settings++;
+      }
       for (const dirName of AppDataBackupService.ASSET_DIRS) {
         const source = `${assetsRoot}/${dirName}`;
         if (AppDataBackupService.exists(source)) {
           await AppDataBackupService.copyDirectory(source, `${context.filesDir}/${dirName}`);
         }
       }
-      const stores = manifest.preferenceStores || {};
+      const stores = AppDataBackupService.restoreFontReferences(manifest.preferenceStores || {},
+        manifest.sourceFilesDir, context.filesDir);
       for (const storeName of Object.keys(stores)) {
-        await AppDataBackupService.restorePreferenceStore(context, storeName, stores[storeName],
-          manifest.sourceFilesDir);
+        if (!AppDataBackupService.SETTINGS_STORES.includes(storeName)) continue;
+        // Paths have already been rebased together with the font IDs above.
+        await AppDataBackupService.restorePreferenceStore(context, storeName, stores[storeName], '');
         result.settings++;
       }
     }
@@ -551,7 +609,12 @@ export class AppDataBackupService {
     const replaceRulePath = await AppDataBackupService.findFile(root, AppDataBackupService.ANDROID_REPLACE_RULE_FILE);
     const searchHistoryPath = await AppDataBackupService.findFile(
       root, AppDataBackupService.ANDROID_SEARCH_HISTORY_FILE);
-    if (!sourcePath && !bookshelfPath && !groupPath && !httpTtsPath && !replaceRulePath && !searchHistoryPath) {
+    let hasReadRecords = false;
+    for (const file of AppDataBackupService.ANDROID_READ_RECORD_FILES) {
+      if (await AppDataBackupService.findFile(root, file)) hasReadRecords = true;
+    }
+    if (!sourcePath && !bookshelfPath && !groupPath && !httpTtsPath && !replaceRulePath && !searchHistoryPath &&
+      !hasReadRecords) {
       return null;
     }
     const manifest = new AppDataBackupManifest();
@@ -561,7 +624,7 @@ export class AppDataBackupService {
     manifest.sensitiveDataExcluded = false;
     if (sourcePath) manifest.categories.push(AppDataBackupService.CATEGORY_SOURCES);
     if (bookshelfPath || groupPath) manifest.categories.push(AppDataBackupService.CATEGORY_BOOKSHELF);
-    if (bookshelfPath) manifest.categories.push(AppDataBackupService.CATEGORY_PROGRESS);
+    if (bookshelfPath || hasReadRecords) manifest.categories.push(AppDataBackupService.CATEGORY_PROGRESS);
     if (httpTtsPath || replaceRulePath) manifest.categories.push(AppDataBackupService.CATEGORY_SETTINGS);
     if (searchHistoryPath) manifest.categories.push(AppDataBackupService.CATEGORY_SEARCH_HISTORY);
     return manifest;
@@ -641,6 +704,11 @@ export class AppDataBackupService {
         });
     }
 
+    if (selection.progress) {
+      AppDataBackupService.reportProgress(onProgress, '正在导入 Android 阅读记录...', 76);
+      result.readRecords = await AppDataBackupService.importAndroidReadRecords(db, session.rootPath);
+    }
+
     if (selection.settings &&
       AppDataBackupService.hasCategory(session.manifest, AppDataBackupService.CATEGORY_SETTINGS)) {
       AppDataBackupService.reportProgress(onProgress, '正在导入 HTTP TTS 和替换规则...', 78);
@@ -665,8 +733,44 @@ export class AppDataBackupService {
     }
 
     AppStorage.setOrCreate('shelfUpdateTime', Date.now());
+    AppStorage.setOrCreate('readingStatsCloudRevision',
+      (AppStorage.get<number>('readingStatsCloudRevision') || 0) + 1);
     AppDataBackupService.reportProgress(onProgress, 'Android 阅读备份导入完成', 100);
     return result;
+  }
+
+  private static async importAndroidReadRecords(db: AppDatabase, root: string): Promise<number> {
+    const importer = new AndroidReadRecordImport();
+    for (const file of AppDataBackupService.ANDROID_READ_RECORD_FILES) {
+      await AppDataBackupService.forEachAndroidJsonArray(root, file, AppDataBackupService.ANDROID_MAX_DATA_BYTES,
+        async (raw: Record<string, Object>): Promise<void> => {
+          if (file === 'readRecordDetail.json') importer.addDetail(raw);
+          else if (file === 'readRecordSession.json') importer.addSession(raw);
+          else importer.addTotal(raw);
+        });
+    }
+    const records = importer.records();
+    if (records.length === 0) return 0;
+    const books = await db.getAllBooks();
+    const byName: Map<string, Book> = new Map<string, Book>();
+    for (const book of books) {
+      const key = JSON.stringify([book.name.trim(), book.author.trim()]);
+      if (!byName.has(key)) byName.set(key, book);
+    }
+    for (const record of records) {
+      const book = byName.get(JSON.stringify([record.name, record.author]));
+      record.bookUrl = book?.bookUrl ||
+        `android-history://${encodeURIComponent(record.name)}/${encodeURIComponent(record.author)}`;
+      await db.restoreAndroidReadStats(record, record.name, record.author);
+      if (book) {
+        const lastRead = Math.max(AppDataBackupService.numberValue(book.getVariable('lastReadTime'), 0),
+          record.lastReadAt);
+        book.putVariable('readStarted', 'true');
+        book.putVariable('lastReadTime', String(lastRead));
+        await db.updateBook(book);
+      }
+    }
+    return records.length;
   }
 
   private static async importAndroidBookGroups(db: AppDatabase, root: string,
@@ -931,7 +1035,8 @@ export class AppDataBackupService {
     book.intro = AppDataBackupService.limitedStringValue(raw['intro'], 65536);
     book.customIntro = AppDataBackupService.limitedStringValue(raw['customIntro'], 65536);
     book.charset = AppDataBackupService.limitedStringValue(raw['charset'], 128);
-    book.type = AppDataBackupService.numberValue(raw['type'], 0);
+    // Remote type bits match Legado; keep them, including TEXT=8 used by this backup.
+    book.type = Math.max(0, AppDataBackupService.numberValue(raw['type'], 0));
     book.group = AppDataBackupService.mapAndroidBookGroup(
       AppDataBackupService.numberValue(raw['group'], 0), mapping);
     book.isPinned = raw['isPinned'] === true;
@@ -940,20 +1045,45 @@ export class AppDataBackupService {
     book.latestChapterTime = AppDataBackupService.numberValue(raw['latestChapterTime'], 0);
     book.lastCheckTime = AppDataBackupService.numberValue(raw['lastCheckTime'], 0);
     book.lastCheckCount = AppDataBackupService.numberValue(raw['lastCheckCount'], 0);
-    book.totalChapterNum = AppDataBackupService.numberValue(raw['totalChapterNum'], 0);
+    book.totalChapterNum = Math.max(0, AppDataBackupService.numberValue(raw['totalChapterNum'], 0));
     book.durChapterTitle = AppDataBackupService.stringValue(raw['durChapterTitle']);
-    book.durChapterIndex = AppDataBackupService.numberValue(raw['durChapterIndex'], 0);
-    book.durChapterPos = AppDataBackupService.numberValue(raw['durChapterPos'], 0);
-    book.durChapterTime = AppDataBackupService.numberValue(raw['durChapterTime'], 0);
+    book.durChapterIndex = Math.max(0, AppDataBackupService.numberValue(raw['durChapterIndex'], 0));
+    book.durChapterPos = Math.max(0, AppDataBackupService.numberValue(raw['durChapterPos'], 0));
+    book.durChapterTime = Math.max(0, AppDataBackupService.numberValue(raw['durChapterTime'], 0));
     book.wordCount = AppDataBackupService.stringValue(raw['wordCount']);
     book.canUpdate = raw['canUpdate'] !== false;
     book.order = AppDataBackupService.numberValue(raw['order'], 0);
     book.originOrder = AppDataBackupService.numberValue(raw['originOrder'], 0);
     const androidVariable = AppDataBackupService.stringValue(raw['variable']);
-    book.replaceVariable(androidVariable.length <= 65536 ? (androidVariable || '{}') : '{}');
+    const variables: Record<string, string> = {};
+    if (androidVariable.length <= 65536) {
+      const rawVariables = AppDataBackupService.parseRecord(androidVariable || '{}');
+      if (rawVariables) {
+        for (const key of AppDataBackupService.PROGRESS_VARIABLE_KEYS) {
+          const value = rawVariables[key];
+          if (key === 'readStarted') {
+            if (value === true || value === 1 || value === 'true' || value === '1') variables[key] = 'true';
+          } else {
+            const numeric = AppDataBackupService.numberValue(value, -1);
+            if (numeric >= 0) variables[key] = String(numeric);
+          }
+        }
+      }
+    }
     // Android 备份中的 variable 是开放式运行时容器，可能夹带目录或正文缓存；Harmony
     // 只需要其中少量跨端阅读状态，避免把不兼容的大块缓存带进启动必读的 books 表。
-    book.replaceVariable(AppDataBackupService.progressVariables(book));
+    book.replaceVariable(JSON.stringify(variables));
+    if (book.durChapterIndex > 0 || book.durChapterPos > 0 || book.durChapterTitle) {
+      book.putVariable('readStarted', 'true');
+      if (book.durChapterTime > 0) book.putVariable('lastReadTime', String(book.durChapterTime));
+      // Android Book.durChapterPos is the first visible character, while Harmony stores a page
+      // index there. Restore text through the reader's character anchor after repagination.
+      if (book.type === 0 || ((book.type & 8) !== 0 && (book.type & (32 | 64)) === 0)) {
+        book.putVariable('readProgressCharOffsetV2', String(book.durChapterPos));
+        book.putVariable('readProgressCharOffsetChapterV2', String(book.durChapterIndex));
+        book.durChapterPos = 0;
+      }
+    }
     const readConfig = raw['readConfig'];
     if (readConfig && typeof readConfig === 'object' && !Array.isArray(readConfig)) {
       book.readConfig = AppDataBackupService.convertAndroidReadConfig(readConfig as Record<string, Object>);
@@ -1053,6 +1183,14 @@ export class AppDataBackupService {
     return rule;
   }
 
+  private static parseRecord(raw: string): Record<string, Object> | null {
+    try {
+      return AppDataBackupService.ruleRecord(JSON.parse(raw) as Object);
+    } catch (_) {
+      return null;
+    }
+  }
+
   private static ruleRecord(value: Object | undefined): Record<string, Object> | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     return value as Record<string, Object>;
@@ -1076,9 +1214,10 @@ export class AppDataBackupService {
   }
 
   private static numberValue(value: Object | undefined, fallback: number): number {
-    if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value) : fallback;
-    const parsed = Number(AppDataBackupService.stringValue(value));
-    return Number.isNaN(parsed) ? fallback : Math.round(parsed);
+    if (typeof value !== 'number' && typeof value !== 'string') return fallback;
+    if (typeof value === 'string' && !value.trim()) return fallback;
+    const parsed = Math.round(Number(value));
+    return Number.isSafeInteger(parsed) ? parsed : fallback;
   }
 
   private static async forEachAndroidJsonArray(root: string, fileName: string, maxBytes: number,
@@ -1089,67 +1228,31 @@ export class AppDataBackupService {
     const stat = await fs.stat(path);
     if (stat.size <= 0) return 0;
     if (stat.size > maxBytes) throw new Error(`${fileName} 过大，无法安全导入`);
-    const raw = await AppDataBackupService.readText(path);
-    let first = 0;
-    while (first < raw.length && (raw[first].trim() === '' || raw.charCodeAt(first) === 0xFEFF)) first++;
-    if (first >= raw.length) return 0;
-    if (raw[first] === '{') {
-      const parsed = JSON.parse(raw.substring(first)) as Object;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        await handler(parsed as Record<string, Object>, 0, raw.length, raw.length);
-        return 1;
-      }
-      return 0;
-    }
-    if (raw[first] !== '[') throw new Error(`${fileName} 不是有效的 JSON 数组`);
-    let itemStart = -1;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
+    const reader = new AndroidBackupJsonReader(fileName);
+    const decoder = util.TextDecoder.create('utf-8');
+    const file = await fs.open(path, fs.OpenMode.READ_ONLY);
+    let offset = 0;
     let count = 0;
-    for (let i = first + 1; i < raw.length; i++) {
-      const ch = raw[i];
-      if (itemStart < 0) {
-        if (ch === ']') return count;
-        if (ch === ',' || ch.trim() === '') continue;
-        itemStart = i;
-      }
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') {
-        inString = true;
-        continue;
-      }
-      if (ch === '{' || ch === '[') {
-        depth++;
-        continue;
-      }
-      if (ch === '}' && depth > 0) {
-        depth--;
-        continue;
-      }
-      if (ch === ']' && depth > 0) {
-        depth--;
-        continue;
-      }
-      if ((ch === ',' || ch === ']') && depth === 0) {
-        const itemRaw = raw.substring(itemStart, i).trim();
-        if (itemRaw) {
-          const parsed = JSON.parse(itemRaw) as Object;
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            await handler(parsed as Record<string, Object>, count, i, raw.length);
-            count++;
-          }
+    try {
+      const buffer = new ArrayBuffer(64 * 1024);
+      while (offset < stat.size) {
+        const length = await fs.read(file.fd, buffer, {
+          offset, length: Math.min(buffer.byteLength, stat.size - offset)
+        });
+        if (length <= 0) throw new Error(`${fileName} 未完整读取`);
+        offset += length;
+        const chunk = decoder.decodeWithStream(new Uint8Array(buffer, 0, length), { stream: offset < stat.size });
+        for (const item of reader.append(chunk)) {
+          await handler(item, count++, offset, stat.size);
         }
-        itemStart = -1;
-        if (ch === ']') return count;
+        // Native async file IO does not guarantee that ArkUI gets a rendering turn.
+        await new Promise<void>((resolve): void => { setTimeout(resolve, 0); });
       }
+      reader.finish();
+      return count;
+    } finally {
+      await fs.close(file);
     }
-    throw new Error(`${fileName} JSON 数组未完整结束`);
   }
 
   private static async restoreBookWithoutUnexpectedProgress(db: AppDatabase, book: Book,
@@ -1196,6 +1299,8 @@ export class AppDataBackupService {
     book.latestChapterTitle = raw.latestChapterTitle || '';
     book.updateTime = raw.updateTime || '';
     book.latestChapterTime = raw.latestChapterTime || 0;
+    book.confirmedChapterUpdateTime = Number.isFinite(raw.confirmedChapterUpdateTime) ?
+      Math.max(0, raw.confirmedChapterUpdateTime) : 0;
     book.lastCheckTime = raw.lastCheckTime || 0;
     book.lastCheckCount = raw.lastCheckCount || 0;
     book.totalChapterNum = raw.totalChapterNum || 0;
@@ -1283,6 +1388,11 @@ export class AppDataBackupService {
       const source = value as Record<string, Object>;
       const result: Record<string, Object> = {};
       for (const key of Object.keys(source)) {
+        // This is a user preference, not a stored credential (OPDS/WebDAV).
+        if (key === 'rememberPassword' && typeof source[key] === 'boolean') {
+          result[key] = source[key];
+          continue;
+        }
         result[key] = AppDataBackupService.isSensitiveKey(key) ? '' :
           AppDataBackupService.sanitizeValue(source[key]);
       }
@@ -1321,15 +1431,8 @@ export class AppDataBackupService {
   private static async restorePreferenceStore(context: Context, storeName: string, raw: string,
     oldRoot: string): Promise<void> {
     const store = await preferences.getPreferences(context, storeName);
-    let localValues: Record<string, preferences.ValueType> = {};
-    if (storeName === AppDataBackupService.READER_SETTINGS_STORE) {
-      localValues = await store.getAll() as Record<string, preferences.ValueType>;
-    }
     const values = JSON.parse(AppDataBackupService.replaceRoot(raw || '{}', oldRoot, context.filesDir)) as
       Record<string, preferences.ValueType>;
-    if (storeName === AppDataBackupService.READER_SETTINGS_STORE) {
-      AppDataBackupService.preserveLocalGlobalFontSettings(values, localValues);
-    }
     await store.clear();
     for (const key of Object.keys(values)) {
       await store.put(key, values[key]);
@@ -1337,51 +1440,79 @@ export class AppDataBackupService {
     await store.flush();
   }
 
-  private static preserveLocalGlobalFontSettings(
-    incoming: Record<string, preferences.ValueType>,
-    local: Record<string, preferences.ValueType>
-  ): void {
-    const fontFamily = AppDataBackupService.preferenceString(local, 'readerFontFamily', '');
-    const fontFilePath = AppDataBackupService.preferenceString(local, 'readerFontFilePath', '');
-    const fontSourceName = AppDataBackupService.preferenceString(local, 'readerFontSourceName', '系统默认');
-    const fontMode = AppDataBackupService.preferenceString(local, 'readerFontMode', 'system');
-    const systemFontFamily = AppDataBackupService.preferenceString(local, 'readerSystemFontFamily', '');
-    const customFontsRaw = AppDataBackupService.preferenceString(local, 'readerCustomFontsRaw', '');
-
-    incoming['readerFontFamily'] = fontFamily;
-    incoming['readerFontFilePath'] = fontFilePath;
-    incoming['readerFontSourceName'] = fontSourceName;
-    incoming['readerFontMode'] = fontMode;
-    incoming['readerSystemFontFamily'] = systemFontFamily;
-    incoming['readerCustomFontsRaw'] = customFontsRaw;
-
-    for (const key of Object.keys(incoming)) {
-      if (!key.startsWith(AppDataBackupService.READER_THEME_PROFILE_PREFIX) ||
-        typeof incoming[key] !== 'string') {
-        continue;
+  // Font family IDs contain a hash of the full path. Rebase both files and all
+  // references (global, theme profiles, title/body and regex rules) together.
+  private static restoreFontReferences(stores: Record<string, string>, oldRoot: string,
+    newRoot: string): Record<string, string> {
+    const restored: Record<string, string> = {};
+    const families = new Map<string, string>();
+    for (const name of Object.keys(stores)) {
+      if (!AppDataBackupService.SETTINGS_STORES.includes(name)) continue;
+      restored[name] = AppDataBackupService.replaceRoot(stores[name], oldRoot, newRoot);
+      if (name === 'reader_settings') {
+        AppDataBackupService.collectFontFamilies(JSON.parse(restored[name]) as Object, families);
       }
+    }
+    for (const name of Object.keys(restored)) {
+      restored[name] = JSON.stringify(AppDataBackupService.remapFontFamilies(
+        JSON.parse(restored[name]) as Object, families));
+    }
+    return restored;
+  }
+
+  private static collectFontFamilies(value: Object, families: Map<string, string>): void {
+    if (typeof value === 'string') {
       try {
-        const profile = JSON.parse(incoming[key] as string) as Record<string, Object>;
-        profile['fontFamily'] = fontFamily;
-        profile['fontFilePath'] = fontFilePath;
-        profile['fontSourceName'] = fontSourceName;
-        profile['fontMode'] = fontMode;
-        profile['systemFontFamily'] = systemFontFamily;
-        profile['customFontsRaw'] = customFontsRaw;
-        incoming[key] = JSON.stringify(profile);
-      } catch (_) {
-        // Invalid profiles are ignored by ReaderSettingsStore as well.
-      }
+        const parsed = JSON.parse(value) as Object;
+        if (parsed !== null && typeof parsed === 'object') {
+          AppDataBackupService.collectFontFamilies(parsed, families);
+        }
+      } catch (_) {}
+    } else if (Array.isArray(value)) {
+      for (const item of value as Object[]) AppDataBackupService.collectFontFamilies(item, families);
+    } else if (value !== null && typeof value === 'object') {
+      const record = value as Record<string, Object>;
+      AppDataBackupService.collectFontFamily(record, 'familyName', 'filePath', families);
+      AppDataBackupService.collectFontFamily(record, 'fontFamily', 'fontFilePath', families);
+      AppDataBackupService.collectFontFamily(record, 'readerFontFamily', 'readerFontFilePath', families);
+      for (const key of Object.keys(record)) AppDataBackupService.collectFontFamilies(record[key], families);
     }
   }
 
-  private static preferenceString(
-    values: Record<string, preferences.ValueType>,
-    key: string,
-    fallback: string
-  ): string {
-    const value = values[key];
-    return typeof value === 'string' ? value : fallback;
+  private static collectFontFamily(record: Record<string, Object>, familyKey: string, pathKey: string,
+    families: Map<string, string>): void {
+    const family = record[familyKey];
+    const path = record[pathKey];
+    if (typeof family === 'string' && family && typeof path === 'string' && path) {
+      families.set(family, ReaderFontHelper.stableFontFamily(path));
+    }
+  }
+
+  private static remapFontFamilies(value: Object, families: Map<string, string>): Object {
+    if (typeof value === 'string') {
+      const family = families.get(value);
+      if (family) return family;
+      try {
+        const parsed = JSON.parse(value) as Object;
+        if (parsed !== null && typeof parsed === 'object') {
+          return JSON.stringify(AppDataBackupService.remapFontFamilies(parsed, families));
+        }
+      } catch (_) {}
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return (value as Object[]).map((item: Object): Object =>
+        AppDataBackupService.remapFontFamilies(item, families));
+    }
+    if (value !== null && typeof value === 'object') {
+      const record = value as Record<string, Object>;
+      const result: Record<string, Object> = {};
+      for (const key of Object.keys(record)) {
+        result[key] = AppDataBackupService.remapFontFamilies(record[key], families);
+      }
+      return result;
+    }
+    return value;
   }
 
   private static replaceRoot(value: string, oldRoot: string, newRoot: string): string {

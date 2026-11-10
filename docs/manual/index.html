@@ -3,32 +3,35 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="开源轻页（legado-harmony）使用说明书：书架、搜索发现、书源管理、阅读、朗读听书、导入、备份同步、主题外观与常见问题的完整说明。">
+<meta name="description" content="开源轻页（qingye-reader）使用说明书：书架、搜索发现、书源管理、阅读、朗读听书、导入、备份同步、主题外观与常见问题的完整说明。">
 <title>开源轻页使用说明书</title>
 <link rel="icon" type="image/png" sizes="48x48" href="favicon.png">
 <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>
-/* 布局：左侧固定目录 + 右侧单栏正文；窄屏时目录变成顶部横向滑动条。配色取自应用内置「梅影茶烟」主题：青瓷绿为主，梅红只用于提醒。 */
+/* 布局：左侧固定目录 + 右侧单栏正文；窄屏时目录变成顶部横向滑动条。配色与新版介绍海报一致：暖米白、深蓝黑、莓红，浅青绿用于辅助点缀。 */
 :root {
   color-scheme: light;
-  --bg: #f2f5f0;
-  --surface: #fbfcfa;
-  --ink: #1e2924;
-  --muted: #5b6962;
-  --line: #d3dbd3;
-  --accent: #3c6b58;
-  --accent-soft: #e0eae3;
-  --plum: #9c3f48;
-  --plum-soft: #f6e6e4;
+  --bg: #fbf6ee;
+  --surface: #fffaf3;
+  --ink: #26283a;
+  --muted: #706b69;
+  --line: #e4d9d0;
+  --accent: #9d405a;
+  --accent-soft: #f3e3e5;
+  --notice: #496f70;
+  --notice-soft: #e6efeb;
+  --ornament: #82b8b2;
+  --page-glow: #f4e3df;
   --display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", serif;
   --body: "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #131916; --surface: #1a221f; --ink: #e3eae5; --muted: #98a79f; --line: #2b3732;
-    --accent: #8dc2a8; --accent-soft: #21322b; --plum: #e18d93; --plum-soft: #382123;
+    --bg: #1c1d29; --surface: #262735; --ink: #f5ede3; --muted: #c0b7b4; --line: #45404b;
+    --accent: #e8a0b0; --accent-soft: #422e3d; --notice: #a6cfca; --notice-soft: #263b3e;
+    --ornament: #82b8b2; --page-glow: #302633;
     color-scheme: dark;
   }
 }
@@ -36,7 +39,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html { scroll-behavior: smooth; scroll-padding-top: 20px; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.8 var(--body); }
+body { margin: 0; background: radial-gradient(ellipse at top right, var(--page-glow), transparent 65%), var(--bg); color: var(--ink); font: 16px/1.8 var(--body); }
 img { max-width: 100%; }
 a { color: var(--accent); text-underline-offset: 3px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
@@ -65,7 +68,7 @@ section { display: flex; flex-direction: column; gap: 18px; }
 section > *, .sub > * { margin: 0; max-width: 46em; }
 section > .sub, section > .tw, section > .shots, section > .tabs, .sub > .tw { max-width: none; }
 h1 { font: 900 clamp(34px, 6vw, 52px)/1.2 var(--display); letter-spacing: .03em; text-wrap: balance; }
-h2 { font: 900 28px/1.35 var(--display); letter-spacing: .03em; padding-bottom: 12px; border-bottom: 1px solid var(--line); text-wrap: balance; }
+h2 { font: 900 28px/1.35 var(--display); letter-spacing: .03em; padding-bottom: 12px; border-bottom: 1px solid var(--line); border-left: 4px solid var(--ornament); padding-left: 14px; text-wrap: balance; }
 h3 { font: 600 19px/1.5 var(--display); padding-top: 14px; }
 h4 { font: 600 15.5px/1.6 var(--body); color: var(--accent); padding-top: 4px; }
 p, li { text-wrap: pretty; }
@@ -79,8 +82,8 @@ li > ul { margin-top: 6px; }
 .p { font: 600 .92em/1.5 var(--body); color: var(--accent); background: var(--accent-soft); padding: 2px 8px; border-radius: 5px; }
 code { font: .88em var(--mono); background: var(--accent-soft); padding: 2px 6px; border-radius: 4px; overflow-wrap: anywhere; }
 
-.note { border-left: 3px solid var(--plum); background: var(--plum-soft); padding: 12px 16px; border-radius: 0 8px 8px 0; font-size: 15px; }
-.note b { color: var(--plum); }
+.note { border-left: 3px solid var(--notice); background: var(--notice-soft); padding: 12px 16px; border-radius: 0 8px 8px 0; font-size: 15px; }
+.note b { color: var(--notice); }
 .tip { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 8px 8px 0; font-size: 15px; }
 
 /* 截图条 */
@@ -102,8 +105,8 @@ th, td { text-align: left; vertical-align: top; padding: 9px 14px 9px 0; border-
 th { font-size: 13px; color: var(--muted); font-weight: 600; letter-spacing: .06em; white-space: nowrap; }
 td:first-child { white-space: nowrap; font-weight: 600; }
 
-/* 四个页签 */
-.tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+/* 首页页签 */
+.tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
 .tabs div { padding: 16px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .tabs div:last-child { border-right: 0; }
 .tabs b { font: 600 17px/1.4 var(--display); color: var(--accent); }
@@ -150,7 +153,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
 
 <div class="shell">
   <aside class="toc">
-    <div class="brand"><img src="apple-touch-icon.png" alt="" width="44" height="44"><div><strong>开源轻页</strong><span>使用说明书 · v4.0.919</span></div></div>
+    <div class="brand"><img src="apple-touch-icon.png" alt="" width="44" height="44"><div><strong>开源轻页</strong><span>使用说明书 · v4.6.007</span></div></div>
     <input id="q" type="search" placeholder="搜索说明，如：换源、备份" aria-label="搜索说明内容">
     <nav id="nav" aria-label="章节目录">
       <a href="#start">快速上手</a>
@@ -183,15 +186,21 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
   <main id="main">
     <section id="top">
       <h1>开源轻页使用说明书</h1>
-      <p class="lead">一款 HarmonyOS 原生阅读应用：自己导入书源或本地文件，在手机、平板和电脑上看小说、看漫画、听书。</p>
-      <p class="meta"><span>当前版本 <b>4.0.919</b></span><span>系统要求 <b>HarmonyOS 6.0.0 及以上</b></span><span>设备 <b>手机 / 平板 / 2in1 电脑</b></span></p>
+      <p class="lead">一款 HarmonyOS 原生阅读应用：自己导入书源或本地文件，在手机、平板和电脑上看小说、看漫画、听书与观看书源提供的视频。</p>
+      <p class="meta"><span>当前版本 <b>4.6.007</b></span><span>文档更新 <b>2026-11-04</b></span><span>系统要求 <b>HarmonyOS 6.0.0 及以上</b></span><span>设备 <b>手机 / 平板 / 2in1 电脑</b></span></p>
       <div class="shots">
-        <img src="shots/01.jpg" alt="书架界面：网络与本地书籍、阅读进度和分组" width="540" height="960">
-        <img src="shots/02.jpg" alt="主题与外观界面：草莓奶霜、赤墨档案、梅影茶烟等内置主题" width="540" height="960">
-        <img src="shots/03.jpg" alt="阅读界面：EPUB 图文混排" width="540" height="960">
-        <img src="shots/04.jpg" alt="磨砂玻璃设置界面：模糊强度、透明度和边框" width="540" height="960">
-        <img src="shots/05.jpg" alt="朗读界面：当前句高亮、定时和倍速控制" width="540" height="960">
+        <img src="shots/01-companion-v6.webp" alt="陪伴书架：立体书本、分组与继续阅读；把每日阅读，变成温柔的陪伴" width="1080" height="1920">
+        <img src="shots/02-discover-v6.webp" alt="搜索与发现：精选榜单与分类，一屏探索；在线搜索，找到下一段好故事" width="1080" height="1920">
+        <img src="shots/03-formats-v6.webp" alt="在线与离线：TXT / EPUB / MOBI / PDF；支持 ZIP 批量导入与远程书库" width="1080" height="1920">
+        <img src="shots/04-statistics-v6.webp" alt="阅读统计：阅读与听书合并计时；阅读趋势、书籍排行，看见时间的积累" width="1080" height="1920">
+        <img src="shots/05-continuity-v6.webp" alt="数据同步：书架、进度、书签与统计随账号同步；本地书籍与自定义字体，也能带着走" width="1080" height="1920">
+        <img src="shots/06-reading-v6.webp" alt="图文阅读：正文与插图相伴，沉浸故事之中；字体、间距与页眉页脚，按习惯调整" width="1080" height="1920">
+        <img src="shots/07-comic-ai-v6.webp" alt="漫画 AI：AI 着色 · AI 超分 · AI 翻译；让画面更鲜活，让对白更好读" width="1080" height="1920">
+        <img src="shots/08-voices-v6.webp" alt="朗读与音色：离线、系统、云端与自定义音色；跟随高亮、倍速与定时，让耳朵接着读" width="1080" height="1920">
+        <img src="shots/09-custom-theme-v6.webp" alt="主题编辑与排版：配色、阅读、首页、封面与排版自由搭配；支持主题包分享与导入，让灵感流转" width="1080" height="1920">
+        <img src="shots/10-theme-library-v6.webp" alt="多变主题：主题库随心挑选，浅色深色分别预览；从首页到阅读，让喜欢的风格贯穿始终" width="1080" height="1920">
       </div>
+      <p class="meta">十张介绍图依次展示陪伴书架、搜索与发现、多格式导入、阅读统计、数据同步、图文阅读、漫画 AI、朗读与音色、主题编辑与排版、多变主题，可横向滑动查看。</p>
       <p class="note"><b>先了解：</b>应用本身不带任何小说、漫画、音频或书源。你能读到什么，取决于你自己导入的书源规则和本地文件。请只使用自有、已获授权或明确允许访问的内容。</p>
     </section>
 
@@ -202,7 +211,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       <ol class="steps">
         <li><div><strong>导入书源</strong><span class="d">打开 <span class="p">我的 › 书源管理</span>，点右下角“+”，选择“从 URL 导入”或“从文件导入”。文件里有多个书源时，可以先勾选再点“导入所选”。</span></div></li>
         <li><div><strong>校验书源</strong><span class="d">在书源管理里点“校验”，先看看哪些书源能用。明确失败的可以一键禁用。</span></div></li>
-        <li><div><strong>找书</strong><span class="d">到“搜索”页输入书名，或到“发现”页按站点和分类逛。</span></div></li>
+        <li><div><strong>找书</strong><span class="d">在“发现”页点右上角的搜索按钮输入书名，或在“发现”页按站点和分类逛。</span></div></li>
         <li><div><strong>加入书架</strong><span class="d">点开结果进入书籍详情，点“加入书架”。也可以直接“开始阅读”试读，返回时再决定要不要留下。</span></div></li>
         <li><div><strong>开始阅读</strong><span class="d">在书架点书籍封面。阅读时点屏幕中央呼出菜单，调字号、翻页方式和背景。</span></div></li>
       </ol>
@@ -212,11 +221,10 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
     <!-- ───────────── 界面总览 ───────────── -->
     <section id="layout">
       <h2>界面总览</h2>
-      <p>底部有四个页签，所有功能都从这里进入。</p>
+      <p>底部有三个页签，所有功能都从这里进入。</p>
       <div class="tabs">
         <div><b>书架</b><span>已收藏的书、漫画和有声书，继续上次的阅读。</span></div>
-        <div><b>发现</b><span>按书源提供的站点、分类和榜单浏览。</span></div>
-        <div><b>搜索</b><span>在已启用的书源里同时搜书。</span></div>
+        <div><b>发现</b><span>按书源提供的站点、分类和榜单浏览；右上角的搜索按钮可以在全部书源、当前书源或自选书源里搜书。</span></div>
         <div><b>我的</b><span>账号、书源管理、书籍导入和全部设置。</span></div>
       </div>
       <div class="sub">
@@ -227,12 +235,11 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><td>阅读统计</td><td>按日、周、月查看阅读时长和书籍排行。</td></tr>
           <tr><td>书源管理</td><td>导入、校验、分组、编辑、调试书源。</td></tr>
           <tr><td>书籍导入</td><td>本地导入、OPDS 书库、WebDAV 服务。</td></tr>
-          <tr><td>阅读设置</td><td>排版、字体、背景、翻页、点击区域、预缓存、替换净化、眼动翻页。</td></tr>
-          <tr><td>朗读设置</td><td>音色、倍速、自定义音色管理、在线朗读字数。</td></tr>
-          <tr><td>书架设置</td><td>书籍信息显示、布局、隐私书架、封面图集。</td></tr>
+          <tr><td>阅读与收听</td><td>小说、漫画、PDF、有声书、朗读各自的设置，以及点击区域、预缓存等阅读通用设置。</td></tr>
+          <tr><td>书架设置</td><td>布局与分类、卡片信息、封面图集、隐私书架。</td></tr>
           <tr><td>搜索/发现配置</td><td>结果展示、精准搜索、聚合、并发数。</td></tr>
           <tr><td>主题</td><td>当前使用的主题、默认与自定义方案、已购主题和更多主题。</td></tr>
-          <tr><td>其他设置</td><td>数据导入导出、浏览器看书、磨砂玻璃、全局字体、图标、沉浸光感、脚本引擎迁移。</td></tr>
+          <tr><td>其他设置</td><td>数据导入导出、浏览器看书、全局字体、图标、沉浸光感、后台脚本线程验证。</td></tr>
           <tr><td>帮助</td><td>应用内的使用说明，也就是本说明书，离线可看。</td></tr>
           <tr><td>关于</td><td>项目说明、问题反馈、开源许可。</td></tr>
         </table></div>
@@ -255,16 +262,29 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
     <!-- ───────────── 书架 ───────────── -->
     <section id="shelf">
       <h2>书架</h2>
-      <p>书架统一管理普通书、漫画和有声书。书架为空时会提示你去搜索或导入。</p>
+      <p>书架统一管理小说、漫画、有声书和视频。书架为空时会提示你去搜索或导入。</p>
       <div class="sub">
         <h3>顶部工具栏</h3>
         <div class="tw"><table>
           <tr><th>位置</th><th>作用</th></tr>
-          <tr><td>布局切换</td><td>最左侧的图标，在紧凑、宽松、平铺三种布局间切换。</td></tr>
-          <tr><td>网络 / 本地</td><td>切换显示书源里的网络书籍，或自己导入的本地书籍。开启隐私书架后还会多一个“隐私”。</td></tr>
+          <tr><td>布局切换</td><td>顶部布局图标，在紧凑、宽松、平铺、陪伴四种布局间切换。默认是陪伴布局，从旧版本升级后也会改为陪伴一次，之后可随时换回。</td></tr>
+          <tr><td>类型分类</td><td>全部、小说、漫画、有声书、视频，只显示当前有书的类型。网络 / 本地改在筛选中选择。</td></tr>
+          <tr><td>筛选</td><td>漏斗按钮，按来源、状态、阅读进度、最近阅读、更新、标签或书源组合筛选，也可打开“搜索书架”。</td></tr>
           <tr><td>排序</td><td>新阅读（最近读的在前）、新加入（最近加入的在前）、名称。</td></tr>
-          <tr><td>数量 / 分组</td><td>显示当前有多少本书，点开可以切换分组（全部、未分组和你建的分组），并在这里新增、重命名、删除分组。</td></tr>
+          <tr><td>标题 / 分组</td><td>点标题下拉切换全部、未分组或自建分组，并管理分组；旁边显示书籍数量。陪伴布局不显示标题，改为点右上角第一个文件夹图标切换分组。</td></tr>
         </table></div>
+      </div>
+      <div class="sub">
+        <h3>筛选与搜索书架</h3>
+        <p>点右上角筛选按钮，各组可多选，再点一次取消。不同组的条件要同时满足，同组只要满足其中一个。例如“网络 + 已完结”只看已完结的网络书；标签同时选两个，则显示包含任意一个标签的书。</p>
+        <div class="tw"><table>
+          <tr><th>筛选组</th><th>可选内容</th></tr>
+          <tr><td>来源 / 状态</td><td>网络、本地；已完结、连载中。</td></tr>
+          <tr><td>进度 / 更新</td><td>未读、在读、已读完；有更新。“已读完”指已读到现有目录末尾，不代表作品已完结。</td></tr>
+          <tr><td>最近阅读</td><td>一周内、一月内、三个月没读。未打开过的书按加入书架的时间判断是否长期没读。</td></tr>
+          <tr><td>标签 / 书源</td><td>点进二级列表选择，选项随当前书架变化并显示本数；标签包含自定义标签，书源只统计网络书。</td></tr>
+        </table></div>
+        <p>菜单里的“搜索书架”会展开输入框，按书名、作者、书源或标签过滤已有书籍，不发起网络搜书。它可与分组、类型和筛选一起使用；点“取消”清空关键词并收起输入框，点“清除筛选”移除筛选条件。没有结果时先检查是否叠加了过多条件。</p>
       </div>
       <div class="sub">
         <h3>书籍卡片上的信息</h3>
@@ -272,14 +292,14 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <li><b>上次阅读</b>：最近读的那本书排在最前，封面右侧有一张“扉页”，可以显示书籍信息或上次读到的正文片段（在书架设置里选）。</li>
           <li><b>阅读进度</b>：显示“已读 27.3%”这样的百分比、未读章数（如“12 章未读”）或“已读完”。</li>
           <li><b>“新”角标</b>：连载有新章节时出现在封面上。</li>
-          <li><b>类型标识</b>：书名前的“书／漫／声”，分别表示普通书、漫画和有声书。</li>
+          <li><b>类型标识</b>：封面上的“书／漫／声／视”，分别表示普通书、漫画、有声书和视频，可在封面标识设置中调整位置或隐藏。</li>
           <li><b>置顶标记</b>：置顶的书固定在最前面。</li>
           <li>平铺布局下，分组会显示成一个文件夹，下面写着“共 N 本”。</li>
         </ul>
       </div>
       <div class="sub">
         <h3>刷新书架</h3>
-        <p>在书架下拉，松手后开始检查连载更新。刷新结束会提示“N 本有更新”，已完结的书会被跳过。在“本地”页下拉则是重新读取本地书籍。应用也会在后台静默检查更新。</p>
+        <p>在书架下拉，松手后开始检查网络连载更新，已完结的书会被跳过。本地文件不会从书源获取新章节；应用也会在后台静默检查更新，封面的“新”角标提示有更新。</p>
       </div>
       <div class="sub">
         <h3>长按书籍能做什么</h3>
@@ -287,11 +307,12 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><th>操作</th><th>说明</th></tr>
           <tr><td>查看书籍详情</td><td>看简介、完整目录，点作者名可搜索同作者的书。</td></tr>
           <tr><td>置顶 / 取消置顶</td><td>把常看的书固定在最前面。</td></tr>
-          <tr><td>换源</td><td>当前书源失效或更新慢时，换成其他书源的同一本书。本地书不支持换源。</td></tr>
+          <tr><td>换源</td><td>当前书源失效或更新慢时，换成其他书源的同一本书。只列出同类型的结果：小说换小说、漫画换漫画、有声书换有声书。本地书不支持换源。</td></tr>
           <tr><td>缓存</td><td>提前下载章节，离线也能读。详见<a href="#clean">缓存与替换净化</a>。</td></tr>
-          <tr><td>获取网络封面</td><td>用书名在启用的书源里找封面，从候选里挑一张。</td></tr>
+          <tr><td>单独设置封面 · 获取网络封面</td><td>用书名在启用的书源里找封面，从候选里挑一张。</td></tr>
           <tr><td>自定义链接</td><td>在获取网络封面的窗口里，填一个 http 或 https 图片地址，点“设为封面”。</td></tr>
-          <tr><td>恢复默认封面</td><td>撤销上面两种自定义封面。</td></tr>
+          <tr><td>单独设置封面 · 上传本地图片</td><td>从手机文件里选一张图片作为这本书的封面，和网络封面一样优先显示。</td></tr>
+          <tr><td>恢复默认封面</td><td>撤销上面几种单独设置的封面。</td></tr>
           <tr><td>编辑书籍信息</td><td>修改书名和作者（作者可留空，书名不能为空）。</td></tr>
           <tr><td>自定义标签</td><td>给书加上自己的标签，可加多个，点“×”删除。</td></tr>
           <tr><td>移动分组</td><td>把书放进某个分组，没有合适的分组时可以当场新增。</td></tr>
@@ -321,8 +342,9 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       <div class="sub">
         <h3>隐私书架</h3>
         <ol>
-          <li>到 <span class="p">我的 › 书架设置 › 隐私书架</span> 打开开关，书架顶部会多出“隐私”入口。</li>
+          <li>到 <span class="p">我的 › 书架设置 › 隐私书架</span> 打开开关，之后双击书架顶部空白处即可进入隐私书架，在隐私书架里再双击回到原来的分类。</li>
           <li>（可选）在“隐私书架密码”里设置密码，之后进入隐私书架要先输入。新密码留空保存即可清除密码。</li>
+          <li>（可选）设了密码后可打开“指纹或人脸解锁”，进入时先用系统指纹或人脸验证（部分机型也可改用锁屏密码）；验证没通过、关掉验证框或点了“使用密码”，再改输隐私书架密码。需要先在系统设置里录入指纹或人脸。</li>
           <li>回到书架，长按想隐藏的书，选“标记为隐私”。</li>
         </ol>
         <ul>
@@ -339,37 +361,50 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       <h2>书架设置与封面</h2>
       <p>入口：<span class="p">我的 › 书架设置</span>。</p>
       <div class="sub">
-        <h3>书籍信息</h3>
+        <h3>布局与分类</h3>
         <div class="tw"><table>
           <tr><th>设置项</th><th>作用</th></tr>
+          <tr><td>书架布局</td><td>紧凑、宽松（列表，信息密度不同）、平铺（封面网格），或陪伴（平铺网格上方加问候语、继续阅读轮播与今日阅读时长、近 7 天柱条和连续阅读天数的阅读小记，点小记进入阅读统计）。</td></tr>
+          <tr><td>上次阅读置顶</td><td>平铺布局下最近读的书排在最前的样式：不置顶、展开书本（跨两列）或继续阅读卡片（占满一行）。</td></tr>
+          <tr><td>置顶数量</td><td>选继续阅读卡片时，按最近阅读最多展示几本。</td></tr>
+          <tr><td>错落摆放</td><td>陪伴布局下网格里的书高矮不一、少数斜靠，分组书扇形张开；关闭后单本书与分组书一样大、全部立正，分组改为三本叠放。默认打开。</td></tr>
+          <tr><td>问候语</td><td>陪伴布局左上角的两行文案：按时段（内置）、自定义或不显示。自定义时可插入问候、昵称、今日阅读、在读、日期，显示时换成实时内容；也可在书架上长按问候语直接修改，“恢复默认”回到按时段。</td></tr>
+          <tr><td>上次阅读扉页设置</td><td>选展开书本时，封面右侧显示什么：书籍信息、内容预览（上次读到的正文），或自适应。</td></tr>
+          <tr><td>书籍分类</td><td>默认开启，书架顶部按全部、小说、漫画、有声书等类型分页。关闭后没有分类栏和右上角的展开/收起按钮，所有书（包括有声书、视频）平铺在一页。</td></tr>
+          <tr><td>显示全部分类</td><td>开启书籍分类后可设置，默认开启。关闭后分类栏不再有“全部”，只列有书的类型。</td></tr>
           <tr><td>书籍打开动画</td><td>点击书籍时显示封面展开动画。</td></tr>
-          <tr><td>类型标识</td><td>在书名前显示“书／漫／声”。</td></tr>
+        </table></div>
+      </div>
+      <div class="sub">
+        <h3>卡片信息</h3>
+        <div class="tw"><table>
+          <tr><th>设置项</th><th>作用</th></tr>
           <tr><td>书籍标签</td><td>书架卡片是否显示标签。</td></tr>
-          <tr><td>书籍来源</td><td>书架卡片是否显示来自哪个书源。</td></tr>
           <tr><td>书籍简介</td><td>显示书源抓取到的简介。</td></tr>
           <tr><td>显示全部简介</td><td>卡片上显示完整简介，不截断。</td></tr>
           <tr><td>使用阅读进度条</td><td>卡片底部显示阅读百分比和阅读信息。</td></tr>
           <tr><td>显示最后阅读时间</td><td>进度条旁显示最近一次阅读的时间（如“今天 21:30”）。</td></tr>
           <tr><td>显示最后阅读章节</td><td>进度条旁显示最近读到的章节。</td></tr>
-          <tr><td>书架布局</td><td>紧凑、宽松（列表，信息密度不同）或平铺（封面网格）。</td></tr>
-          <tr><td>上次阅读扉页设置</td><td>最近阅读那本书封面右侧显示什么：书籍信息、内容预览（上次读到的正文），或自适应。</td></tr>
+          <tr><td>封面标识</td><td>分别配置封面四个角的类型、来源、更新、置顶和未读章节数，每角最多两项；支持预览、跨角移动、清空及恢复默认，点击“完成”保存。更新与未读数在同一角时组合展示，未读为 0 或目录未知时隐藏，超过 99 显示“99+”。</td></tr>
         </table></div>
       </div>
       <div class="sub">
-        <h3>封面设置</h3>
+        <h3>封面</h3>
         <p>封面图集是一组你自己准备的图片，用来给书架上的书统一换封面。</p>
         <div class="tw"><table>
           <tr><th>设置项</th><th>作用</th></tr>
-          <tr><td>忽略原始封面</td><td>打开后书架只用图集里的封面，不再显示书源或文件自带的封面。</td></tr>
-          <tr><td>封面模式</td><td>图集里有多张图时，按顺序分配还是随机分配。</td></tr>
+          <tr><td>图集管理</td><td>新建图集、导入图片、重命名和预览，见下方。</td></tr>
           <tr><td>浅色配色图集</td><td>浅色模式下用哪个图集，也可以选“不使用图集”。</td></tr>
           <tr><td>深色配色图集</td><td>深色模式下用哪个图集。</td></tr>
           <tr><td>图集应用范围</td><td>全部应用，或只对“指定书籍”生效（从列表里勾选）。</td></tr>
+          <tr><td>封面模式</td><td>图集里有多张图时，按顺序分配还是随机分配。</td></tr>
+          <tr><td>忽略原始封面</td><td>打开后书架只用图集里的封面，不再显示书源或文件自带的封面。</td></tr>
+          <tr><td>仅忽略空封面</td><td>打开“忽略原始封面”后出现，默认关闭。打开后书自带封面时照常显示，只有没有封面的书才用图集。</td></tr>
         </table></div>
       </div>
       <div class="sub">
         <h3>图集管理</h3>
-        <p>在“封面图集 › 图集管理”里：</p>
+        <p>在“封面 › 图集管理”里：</p>
         <ul>
           <li><b>新建图集</b>：输入名称创建。页面顶部显示图集数量、图片总数和当前图集。</li>
           <li><b>上传图片</b>：从相册选多张图片加入当前图集。</li>
@@ -388,21 +423,24 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       <div class="sub">
         <h3>搜一本书</h3>
         <ol>
-          <li>在“搜索”页输入关键词，点“搜索”。</li>
-          <li>应用在所有已启用且支持搜索的书源里同时查找，结果边搜边出。</li>
-          <li>不想等了就点“停止搜索”，已出来的结果会保留。</li>
+          <li>在“发现”页点右上角的搜索按钮，打开搜索页。</li>
+          <li>输入关键词，点右上角“搜索”或键盘上的“搜索”。应用在选定范围里所有支持搜索的书源同时查找，结果边搜边出。</li>
+          <li>不想等了就点右上角“停止”，已出来的结果会保留。</li>
+          <li>点左上角返回或按返回键回到发现内容；关键词和结果会保留，下次打开搜索还在。</li>
         </ol>
         <p>每条结果显示书名、作者、封面，以及书源提供的字数、最新章节、更新时间和标签。结果右侧可以直接“加入书架”（已在书架的显示“移出书架”）或点“阅读”试读；点卡片进入书籍详情。</p>
+        <p>结果按小说、漫画、有声书和视频分类查看，同名聚合不会跨类型合并。列表与平铺布局和发现页共用，在发现页右上角“更多 › 结果布局”切换（发现页另有的排行、榜单总览、侧栏对搜索结果按列表显示）；向上滚动时搜索框和进度行收起，保留结果分类栏。</p>
       </div>
       <div class="sub">
         <h3>搜索范围</h3>
-        <p>搜索框下方显示当前范围，例如“全部书源 · 86”。点“选择”打开搜索范围面板：</p>
+        <p>搜索框左侧的“全部 / 当前 / 自选”是当前范围，点开可以在三种范围之间切换，下一次进来时记住上次的选择：</p>
         <ul>
-          <li>可以按分组整组勾选，也可以逐个勾选书源，支持全选和取消全选。</li>
-          <li>面板里的搜索框可以按书源名或分组名查找。</li>
-          <li>一个书源都没选时无法搜索，会提示先选择书源。</li>
+          <li><b>全部书源</b>：所有已启用且支持搜索的书源。</li>
+          <li><b>当前书源</b>：只搜发现页正在看的书源；这个书源不支持搜索时会提示。</li>
+          <li><b>自选</b>：打开搜索范围面板，可以按分组整组勾选，也可以逐个勾选书源，面板里的搜索框可以按书源名或分组名查找。选好后会记住，之后在“全部书源”和“自选”之间切换不用重选；菜单里的“修改自选书源”可以重新勾选。</li>
         </ul>
-        <p>想只用某一个书源搜，也可以到书源管理里点该书源菜单中的“搜索”。</p>
+        <p>菜单里写明当前书源是哪个、全部和自选各有几个书源。已经搜出结果时换范围，会用同一个关键词重新搜。只搜一个书源时，进度旁边有“搜全部书源”，一次点到全部书源里再搜。</p>
+        <p>到书源管理里点某个书源菜单中的“搜索”，会回到发现页并把范围设成这个书源。</p>
       </div>
       <div class="sub">
         <h3>搜索历史</h3>
@@ -410,7 +448,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       </div>
       <div class="sub">
         <h3>搜索设置</h3>
-        <p>搜索页右上角可以打开搜索设置，同样的选项也在 <span class="p">我的 › 搜索/发现配置</span>。</p>
+        <p>在发现页右上角点“更多 › 搜索设置”打开，同样的选项也在 <span class="p">我的 › 搜索/发现配置</span>。</p>
         <div class="tw"><table>
           <tr><th>设置项</th><th>作用</th></tr>
           <tr><td>精准搜索</td><td>只保留书名与关键词完全一致的结果。</td></tr>
@@ -424,6 +462,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><th>设置项</th><th>作用</th></tr>
           <tr><td>显示结果封面</td><td>搜索和发现结果是否显示封面。关掉更省流量、列表更紧凑。</td></tr>
           <tr><td>使用书架图集</td><td>结果列表的封面改用书架封面设置里的浅色/深色图集。</td></tr>
+          <tr><td>封面模糊背景</td><td>默认开启，在搜索和发现的列表结果中显示封面模糊背景；关闭后使用纯色卡片背景。结果封面是否显示由“显示结果封面”单独控制。</td></tr>
           <tr><td>显示结果标签</td><td>结果是否显示书籍标签。</td></tr>
           <tr><td>返回提示加入书架</td><td>从搜索或发现的详情点了阅读、但没加入书架时，返回会问你“是否加入书架”。</td></tr>
         </table></div>
@@ -442,14 +481,24 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <h3>浏览内容</h3>
         <ol>
           <li>在顶部选择书源。书源多的时候可以按分组筛选，或输入书源关键词查找。</li>
-          <li>部分书源下面还分“源站 / 平台”，先选平台，再选站内分类。</li>
+          <li>在频道栏切换模式、站点或站内分类；分类较多时可横向滑动，或点右端“全部分类”打开面板，按分组浏览、搜索和选择最近使用的分类。</li>
           <li>列表下方显示书籍，上滑加载更多，到底会提示“已加载全部”。</li>
         </ol>
-        <p>列表标题会显示当前位置，例如“某站 · 某书源 · 玄幻 · 40 本”；后面带“缓存”表示显示的是上次保存的内容，点“刷新发现内容”获取最新。</p>
+        <p>列表标题会显示当前位置，例如“某站 · 某书源 · 玄幻 · 40 本”；后面带“缓存”表示显示的是上次保存的内容，点右上角“更多 › 刷新发现内容”获取最新。</p>
+        <p>应用会记住每个书源上次停留的分类；切换到其他页签或打开搜索再回来保留浏览内容。</p>
+        <p>右上角“更多 › 结果布局”有五种展示方式：</p>
+        <ul>
+          <li><b>列表</b>：带封面、标签和简介的卡片。</li>
+          <li><b>平铺</b>：封面网格，列数随屏幕宽度变化。</li>
+          <li><b>排行</b>：每个频道都按名次显示，前三名放在领奖台上，其余每本一行带名次。名次就是书源返回的顺序。</li>
+          <li><b>榜单总览</b>：每个榜单一张卡片，只列前五名，左右滑动看不同的榜，下面是其余分类。点卡片或分类进入完整列表，点卡片里的书直接看详情，按返回键或顶部返回栏回到总览。榜单卡片只加载看到的和下一张。</li>
+          <li><b>侧栏</b>：频道竖排在左侧，按书源分组或“榜单 / 分类”分节，右侧是带名次的窄版排行；频道很多时更好找。</li>
+        </ul>
+        <p>搜索结果和发现页共用这个设置，但只分列表和平铺，选了排行、总览或侧栏时搜索结果按列表显示。</p>
       </div>
       <div class="sub">
         <h3>筛选条件</h3>
-        <p>书源提供了额外条件（比如模式、频道、字数、状态、排序）时，分类上方会出现这些条件。条件不多时直接排成几行，点一下就切换并刷新内容；条件较多时收进“筛选”按钮，每个条件显示当前选中的值，选好后点“完成”应用。</p>
+        <p>书源提供了字数、状态、排序等额外条件时，点顶部“筛选”按钮调整，选好后点“完成”应用。模式和频道可直接在频道栏切换；没有这些规则的书源不会显示对应条件。</p>
       </div>
       <div class="sub">
         <h3>对书源的快捷操作</h3>
@@ -457,6 +506,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <ul>
           <li><b>登录</b>：书源需要账号时，在这里打开登录界面。</li>
           <li><b>源变量</b>：编辑这个书源的变量（有些书源用它保存 Token 或个人配置）。</li>
+          <li><b>设置分组</b>：输入新分组名或点选已有分组，留空即移出分组；锁定的书源不能改分组。</li>
           <li><b>编辑</b>：进入书源编辑页。</li>
           <li><b>删除</b>：删除书源，不可恢复；锁定的书源不能删除。</li>
         </ul>
@@ -514,13 +564,15 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <h3>换源</h3>
         <p>换源可以从书架长按菜单、书籍详情页或阅读菜单打开。</p>
         <ol>
-          <li>应用用当前书名做全词匹配，在启用的书源里搜索。</li>
-          <li>如果之前搜过，会先显示历史结果；点刷新重新搜索。</li>
+          <li>首次打开时，应用用当前书名做全词匹配，在启用的书源里搜索。</li>
+          <li>如果之前搜过，会直接显示历史候选和更新时间；切换书源后仍可复用。点刷新才重新搜索，刷新时保留已有候选。</li>
           <li>每个候选显示书源名、作者和最新章节，点“切换”。</li>
           <li>切换成功后提示“已切换至某书源”，阅读进度尽量保留在对应章节。</li>
         </ol>
         <ul>
-          <li>如果新书源的目录是空的，应用会保留原书源，不会切换。</li>
+          <li>搜索尚未结束就切换或关闭，已找到的候选也会保存；原书源会保留为再次换回的候选。</li>
+          <li>加载详情、目录期间，可点关闭按钮、返回或蒙层取消，保留原书源。已经开始保存的切换会在面板关闭后完成保存或回滚。</li>
+          <li>如果新书源目录为空、分页请求失败或加载超时，应用会保留原书源，并提示失败阶段；可以重试或选择其他候选。</li>
           <li>本地书籍不需要换源。</li>
         </ul>
       </div>
@@ -535,8 +587,8 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <div class="tw"><table>
           <tr><th></th><th>原生书源</th><th>兼容书源</th></tr>
           <tr><td>来历</td><td>开源轻页自己定义的格式。</td><td>Android 阅读（Legado）的书源格式。</td></tr>
-          <tr><td>规则</td><td>不执行脚本，全部由应用原生解析。</td><td>规则里可以带 JavaScript，由应用内的脚本环境执行。</td></tr>
-          <tr><td>设置与登录</td><td>集中在“书源设置”里，界面由应用生成。</td><td>由书源自己定义的登录面板提供。</td></tr>
+          <tr><td>规则</td><td>声明式规则与表达式，也支持 JS 函数库和后台脚本；普通用户直接导入使用。</td><td>规则里可以带 JavaScript，由应用内的兼容脚本环境执行。</td></tr>
+          <tr><td>设置与登录</td><td>集中在“书源设置”里，支持动态选项、脚本按钮与多步登录，界面由应用生成。</td><td>由书源自己定义的登录面板提供。</td></tr>
           <tr><td>短剧等视频</td><td>用应用自带的播放页，全屏播放、页内选集。</td><td>只能跳到网页播放。</td></tr>
           <tr><td>听书音色</td><td>书源提供音色列表，直接点选。</td><td>手动填写音色代码。</td></tr>
           <tr><td>目录分卷</td><td>显示卷名。</td><td>不显示。</td></tr>
@@ -663,6 +715,17 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         </ul>
         <p class="note"><b>风险：</b>跳过证书校验后，连接可能被冒充或监听。只有在你确认书源和当前网络都可信时才选择信任。之后可以在书源菜单里“取消证书信任”。</p>
       </div>
+      <div class="sub" id="sourcesettings">
+        <h3>原生书源设置与脚本按钮</h3>
+        <p>在书源管理里打开该源操作菜单，或在发现页长按书源，进入“书源设置”。能看到哪些变量、按钮和登录表单，由书源提供。</p>
+        <ul>
+          <li><b>变量</b>：线路、模式等选项可用下拉或输入框修改，修改后先保存，再执行依赖这些值的操作。</li>
+          <li><b>动态选项</b>：部分下拉列表由脚本联网获取，打开设置页时加载。失败时保留书源预设选项，并在变量下方显示“选项获取失败”及原因；新列表不包含旧选择时会选中第一项，请确认后保存。</li>
+          <li><b>动作按钮</b>：例如签到、检测线路或切换服务。运行中显示执行状态并避免重复点击，结束后显示结果；脚本可以保存变量、更新登录状态或要求发现页重新加载。</li>
+          <li><b>网页操作</b>：脚本需要登录或验证时可打开内置网页，完成操作后点右上角“完成”；直接返回或取消会结束这次等待，并提示“网页操作已取消”。</li>
+        </ul>
+        <p>提示中出现脚本函数名、请求次数超限或超时时，可在“调试”里查看原因，再向书源作者反馈。</p>
+      </div>
       <div class="sub">
         <h3>书源登录</h3>
         <p>原生书源的登录在“书源设置”里，根据书源的配置有两种方式：</p>
@@ -671,6 +734,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <li><b>账号登录</b>：直接在设置页里填账号、密码等，点“登录”；需要验证码的书源会多一个“发送验证码”按钮。应用只保存登录后换来的凭据，不保存你填的密码，凭据失效后要重新登录。</li>
         </ul>
         <p>书源提供了检查方式时，可以点“检查登录”确认是否有效，不用了点“退出登录”。</p>
+        <p>原生书源的账号登录和验证码按钮也可以由脚本执行多步请求；过程中若打开验证网页，完成后按提示继续。搜索和发现不会自行弹出网页，需要点“去验证”，完成后重新搜索或刷新发现。网页停留过久导致脚本超时时，完成验证后重试原操作。</p>
         <p>兼容书源需要账号时会显示“未登录”。点“登录”后，根据书源的配置会出现两种界面之一：</p>
         <ul>
           <li><b>登录面板</b>：书源自己定义的输入框、开关和按钮（比如账号、密码、段评开关、图片开关、同步书架）。填好后点“确认登录”；面板里的按钮点一下就执行对应动作，结果会用提示告诉你。</li>
@@ -687,16 +751,27 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
     <!-- ───────────── 书源编辑与调试 ───────────── -->
     <section id="sourceedit">
       <h2>书源编辑与调试</h2>
-      <p>这部分面向想自己写或修改书源的用户。完整的字段含义和规则语法见项目仓库 <code>docs/book-source-development.md</code>（书源开发文档）：第一部分讲原生书源，第二部分讲兼容书源。新写书源建议用原生格式。</p>
+      <p>这部分面向想自己写或修改书源的用户。项目仓库 <code>docs/book-source-development.md</code> 是轻页接入与开发入口，完整规则在内核子模块 <code>harmony-book-source-engine/docs/book-source-development.md</code>：第一部分讲原生书源，第二部分讲兼容书源。新写书源建议用原生格式。</p>
       <div class="sub">
         <h3>编辑原生书源</h3>
         <p>原生书源的编辑页是一整段规则文本（JSON），右上角有“校验”和“保存”。</p>
         <ul>
           <li>点“校验”检查写法，有问题会在上方显示出错的位置和原因。</li>
           <li>保存前会自动校验，没通过不能保存。</li>
-          <li>规则里不能写 JavaScript；需要计算的地方用原生书源自己的表达式写法，详见书源开发文档。</li>
+          <li>常规字段用表达式或选择器；JavaScript 函数写在顶层 <code>js</code> 字符串里，需要网络请求与状态操作时，通过阶段的 <code>script</code> 指定函数名。</li>
           <li>新建时书源地址不能和已有书源重复；锁定的书源要先解锁才能修改。</li>
         </ul>
+      </div>
+      <div class="sub" id="nativescript">
+        <h3>原生书源的 JS 能力</h3>
+        <div class="tw"><table>
+          <tr><th>写法</th><th>用途与边界</th></tr>
+          <tr><td><code>js</code> 函数库</td><td>在表达式或模板中按名调用，处理签名、解密和数据转换。只做纯计算，单次最多 300 ms，不能发网络请求或保存状态。</td></tr>
+          <tr><td>阶段 <code>script</code></td><td>搜索、发现、详情、目录和正文可在后台执行 JS；支持多步请求、变量、缓存、Cookie 和登录凭据，返回结果再交给字段规则解析。</td></tr>
+          <tr><td>设置页脚本</td><td>登录、验证码、动作按钮、动态选项也能运行后台脚本；可提示消息、刷新发现缓存或打开网页验证。</td></tr>
+        </table></div>
+        <p>JS 代码是 JSON 字符串，换行要转义成 <code>\n</code>。不要把兼容书源的 <code>@js:</code>、<code>&lt;js&gt;</code> 或 <code>java.*</code> 原样放进原生规则。完整接口、可复制示例、返回值和错误说明见公共书源开发文档的“JS 函数库”和“脚本阶段”。</p>
+        <p>后台脚本默认每次最多 30 个请求、2 秒计算时间和 60 秒总运行时间；目录、正文启用脚本后需自行处理分页。校验通过只代表定义可接受，还应分阶段调试并在应用中验收登录、验证与实际阅读。</p>
       </div>
       <div class="sub">
         <h3>编辑兼容书源</h3>
@@ -708,7 +783,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><td>发现</td><td>与搜索规则相同的一组字段，用于发现列表。</td></tr>
           <tr><td>详情</td><td>初始化、书名、作者、封面、简介、分类、字数、状态、更新时间、最新章节、目录地址。</td></tr>
           <tr><td>目录</td><td>章节列表、章节名称、章节地址、目录下一页、VIP标记、付费标记、更新时间。</td></tr>
-          <tr><td>正文</td><td>正文内容、章节标题、图片、正文下一页、替换净化、图片解密、图片样式。</td></tr>
+          <tr><td>正文</td><td>正文内容、章节标题、图片、音频地址、正文下一页、替换净化、图片解密、图片样式。</td></tr>
         </table></div>
         <ul>
           <li>书源名称和书源地址必填；新地址不能和已有书源重复。</li>
@@ -720,6 +795,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       <div class="sub">
         <h3>单书源调试</h3>
         <p>从书源菜单或编辑页点“调试”。原生书源和兼容书源都可以调试；原生书源的规则出错时，执行明细里会标出是哪一条规则、错在哪里。</p>
+        <p>原生后台脚本的请求、<code>log(...)</code> 与返回摘要也会记录在执行明细中，报错带阶段和函数名。导出报告前检查脚本日志，不要分享账号密码、Cookie 或完整令牌。</p>
         <ol>
           <li>选择调试阶段：搜索、发现、详情、目录、正文，或默认的全链路（搜索 → 发现 → 详情 → 目录 → 正文）。</li>
           <li>填入输入：搜索阶段填测试关键词；详情和目录阶段填书籍或目录 URL；正文阶段填章节 URL。发现阶段默认用第一个分类。</li>
@@ -766,6 +842,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><td>重试</td><td>目录或正文加载失败后重新加载。</td></tr>
           <tr><td>阅读设置</td><td>打开排版设置面板。</td></tr>
           <tr><td>朗读设置</td><td>打开朗读倍速、音色和定时。</td></tr>
+          <tr><td>正文查找</td><td>在全书正文里查找文字；网络书只查已缓存的章节，见下方“正文查找”。</td></tr>
           <tr><td>字符编码</td><td>仅 TXT 本地书：重新选择文件编码。</td></tr>
           <tr><td>切换为漫画阅读 / 普通阅读</td><td>手动切换阅读方式。</td></tr>
           <tr><td>布局元素设置</td><td>开关菜单上的快捷组件。</td></tr>
@@ -777,7 +854,18 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <p>控制呼出菜单时一起出现的快捷组件：</p>
         <ul>
           <li><b>使用快速朗读组件</b>：显示朗读快捷按钮和朗读悬浮胶囊。</li>
-          <li><b>使用章节快速跳转组件</b>：显示章节滑杆和上一章、下一章按钮。拖动滑杆到目标章节会先弹出“确认跳转章节”。</li>
+          <li><b>使用快速跳转组件</b>：小说可在“章节 / 百分比”之间切换并记住上次选择，左右按钮始终为上一章、下一章。拖动仅预览，松手后确认跳转，取消则保留原位置。全书百分比按章节等权、章内页进度计算，与阅读信息栏一致；选择 0% 回到书首，实际显示值以落地页为准。漫画可在“话数 / 百分比”之间切换：话数定位到该话开头，百分比按各话等权、话内图片页进度定位，左右按钮始终为上一话、下一话。双页模式定位到包含目标页的一组页面，显示实际落地进度；加载失败保留原位置。</li>
+        </ul>
+      </div>
+      <div class="sub">
+        <h3>正文查找</h3>
+        <p>阅读菜单“更多操作 › 正文查找”可以搜索全书正文，查找时不联网：</p>
+        <ul>
+          <li>输入文字后点“查找”，从第一章起逐章查找，结果边查边列出，每条显示所在章节和前后文；查找中可以点“停止”。不区分大小写，查的是经过替换净化后的正文，与屏幕上看到的一致。</li>
+          <li>结果按章分组。点一条结果跳到原文所在的页，命中的文字以黄色高亮。页底出现查找胶囊：上下箭头切换上一处、下一处（可以跨章），点中间的“第几处”重新打开结果列表，旁边的“×”结束查找。想回到开始查找前读到的地方，点结果列表上方的“回到原位置”。</li>
+          <li>本地书（TXT、EPUB、MOBI）查全书；网络书只查已缓存的章节，没缓存的章节跳过，状态行会写明跳过了多少章，想查全书可先在“更多操作 › 缓存”里缓存全文。</li>
+          <li>结果超过 1000 处时只列出前 1000 处，可以换更精确的关键字。关闭面板后结果仍保留，再次打开可以接着看。</li>
+          <li>漫画不支持正文查找；PDF 在自己的阅读菜单里查找；EPUB 使用文件排版时暂不支持正文查找。</li>
         </ul>
       </div>
       <div class="sub">
@@ -803,7 +891,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       </div>
       <div class="sub">
         <h3>翻页与操作</h3>
-        <p>这些设置在阅读菜单的排版设置里，也在 <span class="p">我的 › 阅读设置</span>。</p>
+        <p>这些设置在阅读菜单的排版设置里，也在 <span class="p">我的 › 阅读与收听 › 小说</span>。</p>
         <div class="tw"><table>
           <tr><th>设置</th><th>说明</th></tr>
           <tr><td>翻页方式</td><td>上下滑动（上下滑一下翻一页）、横向滑动（左右翻页）、滚动阅读（像网页一样连续滚动）。</td></tr>
@@ -813,7 +901,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><td>音量键翻页</td><td>音量上键上一页，音量下键下一页。</td></tr>
           <tr><td>快速添加书签</td><td>正文下拉时添加或删除当前页书签。</td></tr>
           <tr><td>眼动翻页（beta）</td><td>用视线翻页，见下文。</td></tr>
-          <tr><td>亮屏时间设置</td><td>跟随系统、1分钟、5分钟、10分钟、常亮。无操作达到时长后恢复系统息屏。</td></tr>
+          <tr><td>亮屏时间设置</td><td>用加减按钮在 0～60 分钟之间调整，点中间的数值可直接输入；0 为常亮。无操作达到时长后恢复系统息屏。</td></tr>
           <tr><td>点击区域动作</td><td>九宫格点击动作，见上文。</td></tr>
         </table></div>
         <p>滚动阅读时，在章节开头继续下拉会“加载上一章”，在章节结尾继续上滑会“加载下一章”。读到最后一章末尾会提示“本书已阅读完成”。</p>
@@ -827,7 +915,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <p>书源支持评论时：</p>
         <ul>
           <li>段落末尾出现段评气泡，点开查看这一段的评论；章节末尾有“本章说”或章评入口。</li>
-          <li>评论面板可以上滑展开。</li>
+          <li>评论面板以半屏打开，在评论区内继续上滑可展开到全屏；样式与目录弹层一致。</li>
           <li>书源登录面板里通常有“段评开关”“评论开关”“章评开关”，可以关掉。</li>
           <li>“段评样式”里可以调气泡大小、段评字体颜色和填充颜色。</li>
           <li>评论加载失败并提示“本章正文可能是旧版缓存”时，刷新本章后重试。</li>
@@ -835,16 +923,26 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       </div>
       <div class="sub">
         <h3>漫画</h3>
+        <p>漫画设置在阅读菜单的设置入口中，可调整阅读方式和画面。预缓存统一在 <span class="p">我的 › 阅读与收听</span> 中设置。图片逐张加载并显示，优先处理屏幕上的图片；单张失败时可长按重新加载，不必等待整章。</p>
         <ul>
-          <li>漫画以连续的全宽图片显示，打开时会先“正在解析漫画”，解析完成后自动开始阅读。</li>
+          <li><b>AI超分（会员专享）</b>：API 26 起且系统支持时，在设备本地提升漫画显示清晰度，长图分块处理；每块结果都与原图逐块核对，个别对不上的小块改用普通放大，失败时继续显示原图。屏幕附近的相邻页会提前处理，翻到时多半已完成；处理较久时阅读页右下角显示“AI 超分处理中…”，AI 着色和 AI翻译处理时也有同样的提示。</li>
+          <li><b>查看本页文字</b>：长按漫画图片，选择“查看本页文字”，可识别、复制原文、取消或重新识别。识别在本机进行，需要设备支持系统文字识别能力。</li>
+          <li><b>AI翻译（会员专享）</b>：在漫画“画面设置”中下拉选择“关闭”或“繁→简”，按书保存，默认关闭；“日→中”和“韩→中”标记为即将推出，暂不可选。屏幕上的图片识别后，在纯色气泡中按原方向和颜色覆盖简体文字；复杂背景、艺术字和无法可靠识别的区域保留原样。关闭后恢复原图，也可与超分一起使用。</li>
+          <li><b>默认值</b>：AI 着色和 AI翻译都按书保存。在 <span class="p">我的 › 阅读与收听 › 漫画</span> 里可以设置默认值，没单独设置过的书跟随默认值；在阅读页给某本书单独开关过的，以那本书为准。默认着色首次开启时需要下载着色模型。</li>
+          <li>文字页的“繁→简”预览同样需要会员。日文、英文、韩文目前仅支持文字识别，尚不提供中文翻译。识别与转换可能有误，可对照原图阅读。</li>
+        </ul>
+        <ul>
+          <li>漫画使用专用阅读界面，可选条漫或横向翻页（从左往右、从右往左），阅读方式按书保存。在阅读页「阅读方式」或「我的 › 阅读与收听 › 漫画」中开启「使用双翻页」后，阅读区域宽度大于高度时并排显示两页；关闭后每次显示一页。此开关仅影响漫画，条漫模式不生效。</li>
+          <li>条漫可以连续滚过相邻章节。画面设置可调背景、页间距、适应宽度或屏幕、信息条；支持双击和双指缩放。</li>
           <li>应用自动识别漫画；识别不对时在“更多操作”里手动切换漫画阅读或普通阅读。</li>
-          <li>图片显示“图片加载失败”时，刷新本章或换源。</li>
+          <li>长按图片可保存、分享或重新加载；图片地址过期时会尝试重新获取本话。持续失败时刷新本章或换源。</li>
         </ul>
       </div>
       <div class="sub">
-        <h3>本地书：EPUB 与 TXT</h3>
+        <h3>本地书：EPUB、MOBI 与 TXT</h3>
         <ul>
           <li><b>EPUB</b>：图文混排。小图跟随文字显示，大图单独占一页（页码显示为“图片页”）。</li>
+          <li><b>正文插图</b>：加载时在原位置显示动画；网络插图先下载缓存再显示，EPUB 本地插图解码后复用，减少翻页和跨章时的闪白。</li>
           <li><b>TXT 字符编码</b>：打开是乱码时，在“更多操作 › 字符编码”里改。默认“自动识别”，可手动选简体中文、繁体中文、Unicode（含带 BOM、小端序、大端序）、日语、韩语、俄语、西里尔字符、中欧语言等，点“应用”后重新解析。</li>
           <li>提示“文件可能已被移动、删除或尚未重新导入”时，需要重新导入这本书。</li>
         </ul>
@@ -870,12 +968,24 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><td>本章暂无正文内容</td><td>刷新本章或换源。</td></tr>
         </table></div>
       </div>
+          <div class="sub">
+        <h3>PDF 原版式阅读</h3>
+        <p>从书架打开 PDF 后，页面会保留原始版式、图片、表格和页面颜色。扫描件也可以直接阅读。</p>
+        <ul>
+          <li>在“我的 › 阅读与收听 › PDF”中调整连续滚动、宽屏双页、适配整页和 AI 超分的默认值；单本 PDF 在阅读页里单独调整过的选项优先。用双指缩放；关闭适配整页后按宽度显示，窄窗口自动使用单页。</li>
+          <li>阅读时隐藏状态栏，点按正文唤出或收起阅读菜单和状态栏。“目录”显示 PDF 内嵌目录并定位到当前章节；没有目录时按页列出。底部浮层可拖动进度条或点左右箭头翻页；点“跳转页码”图标、顶部书名或进度条上方的小横条，可输入指定页码。</li>
+          <li>点右上角“搜索”查找文档的文字层，可以切换命中结果，搜索时仍可滑动正文查看；扫描件没有文字层时可能没有结果，不会自动做 OCR。</li>
+          <li>“阅读设置 › AI超分”可增强符合条件的低清扫描页，默认关闭并按书保存，沿用漫画超分的设备及会员／试用条件。开启后点按正文唤出菜单，可用“查看原页／查看超分”对比；AI 可能改变细小文字或数字。文字、混合、旋转、复杂裁切和已足够清晰的页面继续原生显示；增强失败时保留原页，搜索及滚动缩放期间也会临时使用原页。</li>
+          <li>阅读进度以 PDF 的物理页保存，重新打开恢复到上次阅读页。同一 PDF 文件可沿用现有进度同步；印刷页码可能与物理页不同。</li>
+          <li>暂不支持需要打开密码的 PDF、文字重排、朗读、全文 AI、编辑批注及自定义 PDF 书签。应用主题只调整工具栏和背景。</li>
+        </ul>
+      </div>
     </section>
 
     <!-- ───────────── 排版、字体与配色 ───────────── -->
     <section id="typo">
       <h2>排版、字体与配色</h2>
-      <p>在阅读菜单点“Aa”，或到 <span class="p">我的 › 阅读设置</span>。阅读设置页顶部有一段预览文字，改动会立刻反映在上面。</p>
+      <p>在阅读菜单点“Aa”，或到 <span class="p">我的 › 阅读与收听 › 小说</span>。阅读设置页顶部有一段预览文字，改动会立刻反映在上面。</p>
       <div class="sub">
         <h3>排版参数</h3>
         <p>选中一项后用“−”“＋”调整：字号、字距、行距、段落间距、左边距、右边距、上边距、下边距。</p>
@@ -883,7 +993,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><th>设置</th><th>说明</th></tr>
           <tr><td>正文对齐方式</td><td>两端对齐、左对齐、右对齐。</td></tr>
           <tr><td>正文扩展至状态栏</td><td>隐藏状态栏，正文延伸到屏幕顶部。</td></tr>
-          <tr><td>保留段首缩进</td><td>章节开头和页首保留原文的全角空格缩进。</td></tr>
+          <tr><td>段首缩进</td><td>可选 0–4 字符，默认 2 字符。章节开头和页首的段落首行使用所选缩进，跨页续行不额外缩进。</td></tr>
           <tr><td>App 配色</td><td>跟随系统、浅色、深色。</td></tr>
         </table></div>
       </div>
@@ -895,15 +1005,17 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <li>书名、作者</li>
           <li>章节标题、章节序号 + 标题、书名 + 章节标题</li>
           <li>当前页 / 总页数、本章剩余页数</li>
-          <li>本章百分比、章节进度、全书百分比</li>
+          <li>本章百分比、章节进度、全书百分比、当前页 / 总页数 + 全书百分比</li>
           <li>时间、电量、时间 + 电量</li>
         </ul>
         <div class="tw"><table>
           <tr><th>设置</th><th>说明</th></tr>
           <tr><td>页眉分隔线 / 页脚分隔线</td><td>在页眉下方或页脚上方画一条细线。</td></tr>
-          <tr><td>页眉下移 / 页脚上移</td><td>把页眉往下挪、页脚往上挪，范围 0 到 40，每次调 2。正文会跟着让出位置。</td></tr>
-          <tr><td>页眉页脚字号</td><td>单独调整这些小字的大小。</td></tr>
-          <tr><td>页眉页脚不透明度</td><td>调淡一些，减少干扰。</td></tr>
+          <tr><td>页眉位置 / 页脚位置</td><td>范围 -350 到 350，每次调 2。正数让页眉向下、页脚向上移动；负数朝屏幕边缘移动，最多紧贴边缘。正文会跟着让出位置。</td></tr>
+          <tr><td>页眉收缩 / 页脚收缩</td><td>分别调整页眉、页脚的左右边距。默认 0，范围 -350 到 350，每次调 1；正数向内收，负数向外扩。叠加在固定边距或跟随正文的边距上，向外最多到屏幕边缘，向内保留文字显示空间。</td></tr>
+          <tr><td>页眉颜色 / 页脚颜色</td><td>点击后分别设置文字颜色，可使用调色盘、预置颜色或输入六位十六进制色值。默认跟随阅读主题，在选色面板点击“跟随主题”可恢复默认。文字仍受各自不透明度设置影响。</td></tr>
+          <tr><td>页眉字号 / 页脚字号</td><td>分别调整页眉和页脚的文字大小，范围 10 到 40，每次调 1。</td></tr>
+          <tr><td>页眉不透明度 / 页脚不透明度</td><td>分别调整页眉和页脚文字的深浅，范围 30% 到 100%，每次调 10 个百分点。</td></tr>
           <tr><td>边距跟随正文</td><td>页眉页脚的左右边距和正文保持一致。</td></tr>
           <tr><td>进度条</td><td>不显示、页眉下方或页脚上方。</td></tr>
           <tr><td>进度条范围</td><td>表示本章进度还是全书进度。</td></tr>
@@ -911,28 +1023,29 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       </div>
       <div class="sub">
         <h3>阅读字体</h3>
-        <p><span class="p">阅读设置 › 阅读字体</span> 分三部分，每部分都有预览：</p>
+        <p><span class="p">阅读设置 › 阅读字体</span> 顶部可以在四个分段之间切换：</p>
         <ul>
+          <li><b>自定义字体</b>：列出已上传的字体（用字体本身显示名字，正文或标题在用的会标出来），点“上传 / 管理”上传或删除，见下。</li>
           <li><b>正文字体设置</b>：字体类型选“跟随全局字体”“系统字体”或某个自定义字体，并调整字体大小。</li>
           <li><b>标题字体设置</b>：章节标题单独设字体和大小。</li>
           <li><b>正则字体设置</b>：让匹配到的文字用不同的样式显示，见下。</li>
         </ul>
         <h4>正则字体（强调样式）</h4>
-        <p>打开“启用正则字体”，点“添加规则”，可以选预设：</p>
+        <p>打开“启用正则字体”，点“添加规则”下的预设会直接进入新建规则页：</p>
         <ul>
           <li><b>对话</b>：自动匹配“ ”、「 」、『 』和英文引号里的内容。</li>
           <li><b>关键字匹配</b>：填一个关键词，凡出现处都强调。</li>
           <li><b>空白规则</b>：自己写正则表达式。</li>
         </ul>
-        <p>每条规则可以设置规则名称、正则表达式、字体和字号，以及：</p>
+        <p>点列表里的规则进入编辑页，可以设置规则名称、正则表达式、字体和字号，以及：</p>
         <ul>
           <li><b>强调效果</b>：跟随主题、无强调、柔和、实色、圆角胶囊、纸笺、霓虹，或自定义。</li>
           <li><b>气泡风格</b>：经典玻璃、暖纸卷轴、林间露珠、水墨笔触、霓虹脉冲、草莓软框、赤墨印章、青瓷纸笺、玫瑰信框、月光描边、剑符、青鸾玉令、皮皮软爪。</li>
           <li><b>颜色</b>：文字颜色、高亮色块颜色、强调气泡颜色。</li>
         </ul>
-        <p>正则表达式写错时会提示“正则表达式无效”，规则下方的预览会显示命中效果。</p>
+        <p>正则表达式写错时会提示“正则表达式无效”，编辑页下方的预览会显示命中效果。改完点右上角“保存”回到列表；不保存直接返回时会问“是否保存？”。编辑页底部可以删除规则。</p>
         <h4>自定义字体</h4>
-        <p><span class="p">阅读设置 › 自定义字体</span> 点“上传字体”，支持 ttf、otf、ttc。上传后会出现在阅读字体和全局字体的选择列表里；不用的可以在这里删除。</p>
+        <p><span class="p">阅读字体 › 自定义字体 › 上传 / 管理</span> 点“上传字体”，支持 ttf、otf、ttc。上传后会出现在阅读字体和全局字体的选择列表里；不用的可以在这里删除。</p>
       </div>
       <div class="sub">
         <h3>阅读背景</h3>
@@ -966,7 +1079,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       </div>
       <div class="sub">
         <h3>预缓存</h3>
-        <p><span class="p">阅读设置 › 预缓存设置</span>：打开后，阅读过程中自动提前缓存后面的章节，翻到下一章时不用等待。“下一章节数”选择提前缓存几章。</p>
+        <p><span class="p">我的 › 阅读与收听 › 预缓存设置</span>：打开后，阅读过程中自动提前缓存后面的章节。“下一章节数”对小说和漫画统一生效：漫画会缓存后续话的章节内容和全部图片，当前阅读图片优先加载。关闭后停止后续章节的预缓存，当前阅读及临近翻页所需内容仍正常加载。</p>
       </div>
       <div class="sub">
         <h3>替换净化是什么</h3>
@@ -1023,18 +1136,29 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><td>上一章 / 下一章</td><td>切换章节朗读。</td></tr>
           <tr><td>定时</td><td>15、30、60、90、120 分钟后自动停止。设好后显示剩余分钟数，再点同一项取消。</td></tr>
           <tr><td>倍速</td><td>加快或放慢语速。</td></tr>
-          <tr><td>选择音色</td><td>在云端音色、自定义音色、系统音色三个分类里选。</td></tr>
+          <tr><td>选择音色</td><td>在离线音色、云端音色、自定义音色、系统音色几个分类里选。</td></tr>
           <tr><td>目录</td><td>跳到其他章节朗读。</td></tr>
           <tr><td>停止朗读</td><td>结束朗读并关闭面板。</td></tr>
         </table></div>
       </div>
       <div class="sub">
         <h3>朗读设置</h3>
-        <p><span class="p">我的 › 朗读设置</span>：选择默认的朗读音色、调整朗读倍速，点“试听”用一段示例文字听效果。</p>
+        <p><span class="p">我的 › 阅读与收听 › 朗读</span>：选择默认的朗读音色、调整朗读倍速，点“试听”用一段示例文字听效果。</p>
       </div>
       <div class="sub">
         <h3>系统音色</h3>
         <p>使用系统自带的朗读引擎，免费、可离线。部分音色需要先点“下载”，下载完成后自动启用。显示“当前不可用”的音色是系统暂不支持的。</p>
+      </div>
+      <div class="sub">
+        <h3>离线音色</h3>
+        <p>会员专享的神经网络音色，在手机上本地合成，不联网、不限字数。入口：<span class="p">朗读设置 › 音色管理 › 离线音色</span>，点“下载”（约 63MB，建议连 Wi-Fi），下载完成后自动启用。</p>
+        <ul>
+          <li>下载可以随时取消；离开音色管理页也会在后台继续。</li>
+          <li>开始朗读时会加载模型，第一句稍慢；停止朗读一会儿后自动释放内存。</li>
+          <li>已下载的音色可以左滑启用、禁用或删除；删除后需要重新下载才能使用。</li>
+          <li><b>导入模型</b>：在离线音色列表底部点“导入模型”，选择 sherpa-onnx 语音合成模型的 zip 压缩包（支持 VITS、Piper、Matcha、Kokoro）。官方提供的 .tar.bz2 需要先在电脑上解压，再把模型文件夹打成 zip。包里要有 .onnx 模型和 tokens.txt，以及 lexicon.txt 或 espeak-ng-data 目录；Matcha 模型要把声码器（如 vocos-22khz-univ.onnx）一起放进去。</li>
+          <li>导入的模型由你自行确认版权与用途。不兼容的模型可能在第一次朗读时让应用退出，重新打开后会自动停用它，可以左滑删除。</li>
+        </ul>
       </div>
       <div class="sub">
         <h3>自定义音色</h3>
@@ -1083,6 +1207,15 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <p>切换后从当前这一章的开头重新播放，选择按书保存。音色通常只对合成朗读的内容有效，真人录制的有声书切换后听不出区别。</p>
       </div>
       <div class="sub">
+        <h3>有声书设置</h3>
+        <p><span class="p">我的 › 阅读与收听 › 有声书</span>：</p>
+        <ul>
+          <li><b>打开时自动播放</b>：默认开启。关闭后打开有声书只停在上次听到的位置，点播放才开始；这本书本来就在播时照常继续。</li>
+          <li><b>边听边下</b>：提前下载正在听的书后面几章，支持移动网络，听完自动删除。播放页的“下载”菜单里也能设置。</li>
+          <li><b>手动下载仅用 Wi-Fi</b>、<b>离线音频上限</b>：控制手动下载用什么网络、离线音频最多占多少空间。占用的空间在 <span class="p">我的 › 其他设置 › 缓存</span> 里查看和清理。</li>
+        </ul>
+      </div>
+      <div class="sub">
         <h3>后台播放</h3>
         <p>返回书架或切到后台后继续播放，可以用播放胶囊、通知栏和锁屏的媒体控制切章和暂停。播放失败时点播放按钮重试；提示“正文规则没有返回有效音频地址”说明书源有问题。</p>
       </div>
@@ -1091,7 +1224,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
     <!-- ───────────── 书籍导入 ───────────── -->
     <section id="import">
       <h2>书籍导入</h2>
-      <p><span class="p">我的 › 书籍导入</span> 里有三个入口，都只支持 TXT 和 EPUB。</p>
+      <p><span class="p">我的 › 书籍导入</span> 支持 TXT、EPUB、未加密的 MOBI6 和 PDF，可从本地文件、OPDS 书库或 WebDAV 导入。</p>
       <div class="sub">
         <h3>本地导入</h3>
         <ol>
@@ -1101,6 +1234,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         </ol>
         <ul>
           <li>文件会复制到应用内部，之后移动或删除原文件都不影响阅读。</li>
+          <li>也可以直接选 ZIP 压缩包，包里的 TXT、EPUB、MOBI、PDF 会逐本导入，其他文件忽略。加密的压缩包和 RAR、7Z 不支持。再导入同一个包会更新已有的书，不会重复添加。</li>
           <li>应用只读取你选中的文件，不会扫描公共目录。</li>
           <li>想把文件拿回来，在书架长按书籍选“保存源文件”。</li>
         </ul>
@@ -1141,7 +1275,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <h4>浏览远端目录</h4>
         <div class="tw"><table>
           <tr><th>操作</th><th>说明</th></tr>
-          <tr><td>上一级 / 进入文件夹</td><td>在目录间移动。列表只显示文件夹和 TXT、EPUB 文件。</td></tr>
+          <tr><td>上一级 / 进入文件夹</td><td>在目录间移动。列表显示文件夹和 TXT、EPUB、MOBI、PDF 文件。</td></tr>
           <tr><td>刷新</td><td>重新读取当前目录。</td></tr>
           <tr><td>新建</td><td>在当前目录创建文件夹。</td></tr>
           <tr><td>上传</td><td>把本机的书上传到当前目录，可多选，显示逐个上传的进度和结果。</td></tr>
@@ -1179,7 +1313,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <h3>限制</h3>
         <ul>
           <li>关闭开关后，原来的访问地址和令牌立即失效。</li>
-          <li>浏览器端暂不支持播放有声书。</li>
+          <li>浏览器端暂不支持播放有声书，也不支持 PDF 阅读；PDF 请在应用中打开。</li>
           <li>隐私书架里的书不会显示。</li>
         </ul>
         <p class="note"><b>安全提示：</b>只在家里、办公室等可信的网络里使用。在公共 Wi-Fi 下请关闭。</p>
@@ -1196,6 +1330,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <li>点“数据导出”，勾选要备份的内容。</li>
           <li>点“选择保存位置并导出”，设置备份密码并再输入一次（至少 8 个字符）。</li>
           <li>选择保存位置，得到一个 <code>.qingyebak</code> 文件。</li>
+          <li>查看“导出结果”中的实际数量；原文件缺失或无法访问的本地书会列出书名，不会计入已备份的本地图书。</li>
         </ol>
         <div class="tw"><table>
           <tr><th>可备份的内容</th><th>包含什么</th></tr>
@@ -1203,8 +1338,8 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><td>书架</td><td>网络书籍、书架分组、标签和单书配置。</td></tr>
           <tr><td>阅读进度</td><td>当前章节、页码、阅读时间及单书状态。</td></tr>
           <tr><td>书签</td><td>章节位置和书签正文。</td></tr>
-          <tr><td>本地图书</td><td>TXT/EPUB 原文件及本地书籍信息。书多时备份文件会比较大。</td></tr>
-          <tr><td>自定义设置与资源</td><td>阅读、主题、字体、封面、朗读音色、替换规则等，敏感字段会清除。</td></tr>
+          <tr><td>本地图书</td><td>TXT/EPUB/MOBI/PDF 原文件及本地书籍信息。书多时备份文件会比较大。</td></tr>
+          <tr><td>自定义设置与资源</td><td>阅读、多个自定义主题方案及当前方案、字体、封面、朗读音色、替换规则、OPDS 和 WebDAV 配置；不含登录凭据。</td></tr>
           <tr><td>搜索历史</td><td>搜索关键词和使用次数。</td></tr>
         </table></div>
         <ul>
@@ -1221,6 +1356,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         </ol>
         <ul>
           <li>导入是合并，不会先清空现有数据。相同的书籍、书源和设置以备份里的内容更新。</li>
+          <li>勾选“自定义设置与资源”会恢复备份中的字体库、字体选择和主题方案。换机时会同时迁移正文、标题及正则样式的字体引用；OPDS/WebDAV 的密码需要重新输入。旧备份未包含的配置保持现状。</li>
           <li>导入设置和自定义资源后，建议重启应用让设置完全生效。</li>
           <li>书源的登录状态不在备份里，恢复后需要重新登录。</li>
         </ul>
@@ -1261,8 +1397,8 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
           <tr><th>类别</th><th>包含什么</th></tr>
           <tr><td>阅读数据</td><td>在线书架、分组、排序、阅读进度、书签。本地书只同步阅读进度。</td></tr>
           <tr><td>书源</td><td>书源配置、分组、排序、启用和锁定状态。不同步登录凭证。</td></tr>
-          <tr><td>阅读偏好</td><td>字体大小、边距、字体规则、替换规则、主题设置。</td></tr>
-          <tr><td>应用偏好</td><td>显示模式、书架布局、搜索显示、自定义主题方案。</td></tr>
+          <tr><td>阅读偏好</td><td>字体规则、替换规则、主题设置。字号、间距、边距、页眉页脚及其他阅读排版参数仅保存在本机。</td></tr>
+          <tr><td>应用偏好</td><td>显示模式、书架布局、搜索显示方案。</td></tr>
         </table></div>
         <p>本地书的文件不会上传。应用通过内容指纹识别同一本书：在另一台设备导入同一个文件后，阅读进度会自动对上。</p>
       </div>
@@ -1271,7 +1407,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <ul>
           <li><b>立即同步</b>：手动同步一次，完成后提示上传、下载和处理冲突的数量。</li>
           <li><b>同步设备</b>：列出当前账号下的设备和最近同步时间。在设备上左滑，可以“改名”，或“移除”不再使用的其他设备；移除后该设备停止同步，并从列表里消失。本机不能在这里移除，要通过关闭云同步或退出账号来管理。</li>
-          <li><b>同步问题</b>：有需要处理的问题时会显示在这里。</li>
+          <li><b>同步问题</b>：记录同步失败的原因、云端拒收的数据（例如超出限额的书源，会显示书源名称、地址和大小），以及本地书籍、字体上传失败。每条都带最近出现时间和次数。书源问题可以直接打开或删除该书源。记录不会自动消失，可以逐条“移除记录”，或点右上角按钮全部清除。</li>
           <li><b>重新从云端同步</b>：重新获取云端数据；本机还没上传的修改会保留。数据看起来不一致时使用。</li>
         </ul>
         <p class="tip">云同步和本地备份互不替代。换机或重装前，建议仍然导出一份本地备份。</p>
@@ -1321,9 +1457,17 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <h3>应用主题</h3>
         <p>在主题详情里点“应用主题”，会让你选择哪些内容跟着变，关掉的保留当前设置：</p>
         <ul>
-          <li><b>应用主题排版</b>：使用主题推荐的字号、行距、段距和边距。不想改变现在的排版就关掉。</li>
+          <li><b>使用主题预设排版</b>：只在第一次使用这套主题时出现。打开则用主题推荐的字号、行距、段距和边距，页眉页脚、阅读字体、缩进与对齐回到默认；默认关闭，沿用当前排版。以后再切换到这套主题，直接用它记下的排版，不再询问。</li>
           <li><b>应用主题封面</b>：书架使用主题封面和配套的书籍边框。关掉则保留每本书原有封面。之后也可以用“主题书籍封面”开关单独切换。</li>
         </ul>
+        <h3>排版与主题</h3>
+        <p>在 <span class="p">我的 › 阅读与收听 › 小说</span> 的“排版与主题”里设置排版和主题的关系：</p>
+        <ul>
+          <li><b>排版跟随主题</b>（默认打开）：内置主题和自定义方案都各记一套排版，包括字号、间距、边距、缩进、对齐、页眉页脚、正文与标题字体和正则强调规则。在阅读页调整的排版记在当前主题上，换主题就换成那套主题的排版，换回来还是原来的样子。关闭后所有主题共用当前这一套排版，换主题时排版不变；关闭期间没用过的主题仍保留原来记下的排版，重新打开后照常取用；用过的主题会记下当时共用的排版。阅读页排版面板底部会说明当前排版记在哪套主题。</li>
+          <li><b>恢复主题预设</b>：把当前主题的排版整套恢复成主题预设，页眉页脚、阅读字体、缩进与对齐回到默认，正则强调规则保留。</li>
+          <li><b>从其他主题复制排版</b>：选一套已经有排版的主题，把它的排版（含页眉页脚、阅读字体和强调规则）用到当前主题。</li>
+        </ul>
+        <p>全局字体和内容替换规则始终是全应用共用的设置，不随主题变化。各主题的排版只保存在本机。</p>
       </div>
       <div class="sub">
         <h3>获取与试用</h3>
@@ -1337,40 +1481,39 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       </div>
       <div class="sub">
         <h3>自定义主题</h3>
-        <p>在“默认与自定义”一排的末尾点“新建方案”。最多创建 5 套，至少保留一套，标题旁显示“方案 N/5”。长按某个方案的缩略图可以编辑、重命名或删除；点进详情页也能“编辑主题”。自定义主题不是从零画，而是从免费或已获取的主题里各取一部分组合，浅色和深色模式分别设置。</p>
+        <p>在“默认与自定义”一排的末尾点“新建方案”。普通用户最多 5 套、月度会员 10 套、年度会员 20 套、终身会员 50 套、终身超级会员 100 套，至少保留一套；标题旁显示方案数量和当前上限。会员到期、退出登录或权益降级后，已有方案保留并可继续编辑使用，达到当前上限时不能新增。在“我的”页左滑主题或方案可以直接应用，方案还能左滑删除（需再次确认）；长按弹出快捷菜单，可以应用、查看详情，方案还能编辑、复制、设置排版、重命名、分享或删除；“复制方案”连同上传的素材、启动封面、预览图和这套方案的阅读排版一起复制，之后两套各改各的。点进免费或已获取的内置主题的详情页，底部“以此新建方案”会新建一套各部件都取自这个主题的方案并直接打开编辑器。自定义主题不是从零画，而是从免费或已获取的主题里各取一部分组合，浅色和深色模式分别设置。</p>
         <div class="tw"><table>
           <tr><th>可组合的部件</th><th>内容</th></tr>
-          <tr><td>启动封面</td><td>App 冷启动时的主题插画与标识。也可以上传自己的图片。主标题和副标题在主题预览的启动封面上点“编辑启动文案”修改，可以留空，也可以“恢复默认文案”。</td></tr>
+          <tr><td>启动封面</td><td>App 冷启动时的主题插画与标识。也可以上传自己的图片。主标题和副标题在主题预览的启动封面上点“编辑启动文案”修改，可以留空，也可以“恢复默认文案”；编辑器的“封面”页还能改标题与副标题的颜色和字号（浅色、深色分别设置），上传主题标识（主题卡片右上角和详情页名字旁的小图）和“方案预览图”（显示在主题页的方案卡片上，不传时卡片显示启动封面），并填写方案的名称、作者和说明，分享导出时作者和说明会一起带上。</td></tr>
           <tr><td>完整配色</td><td>页面、卡片、文字、状态栏图标及基础颜色。</td></tr>
-          <tr><td>阅读背景</td><td>阅读背景、正文颜色和背景素材。</td></tr>
-          <tr><td>朗读/有声书面板</td><td>朗读面板和有声书面板的背景插画与底色。</td></tr>
+          <tr><td>阅读背景</td><td>阅读背景、正文颜色和背景素材。选好来源后还能单独改阅读底色、正文颜色、页眉页脚颜色和内容明暗（浅色、深色分别设置）；重新选来源时这几项一起换成新来源的。</td></tr>
+          <tr><td>朗读/有声书面板</td><td>朗读面板和有声书面板的背景插画与底色。上传了这个模式的面板插画后，可以再调天空色、面板底色和柔光。</td></tr>
           <tr><td>强调气泡</td><td>正文强调方式、气泡样式和配色。</td></tr>
-          <tr><td>导航图标</td><td>书架、发现、搜索和我的底部图标。</td></tr>
+          <tr><td>导航图标</td><td>书架、发现和我的底部图标，以及在“其他设置 › 底栏”里打开的第四个页签“听”或“足迹”的图标（这两个可以不传，不传就用原来主题的）。可以逐个上传，也可以给每个页签配一张选中态图标，并设置底栏只显示图标；SVG 跟随主题色着色，PNG、WebP 保持原色。三个没传齐时，缺的页签先用原来的图标，传齐之前分享导出时不带导航图标。</td></tr>
           <tr><td>书籍素材</td><td>主题封面、书架边框和文件夹图案。</td></tr>
-          <tr><td>字体</td><td>主题配套的字体。</td></tr>
+          <tr><td>字体</td><td>主题配套的字体。也可以在“界面字体文件”里绑定字体库（阅读设置里添加的字体）中的一款作为这套方案的界面字体，阅读字体选“跟随主题”时正文也用它；导出时随包打出去。</td></tr>
           <tr><td>阅读排版</td><td>字号、行距、段距和页面边距（浅色深色共用）。</td></tr>
-          <tr><td>圆角形状</td><td>卡片、按钮、气泡等的圆角尺寸。</td></tr>
-          <tr><td>磨砂效果</td><td>模糊、透明度、边框和阴影参数。</td></tr>
+          <tr><td>圆角形状</td><td>卡片、按钮、气泡等的圆角尺寸，六档都可以用滑杆单独调（0 到 48），没调过的跟随所选主题，可“恢复为所选主题的圆角”。</td></tr>
         </table></div>
-        <p>还可以单独指定“按钮色”和“强调色”。修改只更新方案预览，缩略图上会标“有改动 · 待应用”，要回到主题页点“应用主题”才生效。</p>
+        <p>还可以单独指定“按钮色”和“强调色”。“配色”页下方能逐项覆盖页面底色、卡片色、输入框色、正文与辅助文字色、分割线和危险色，没改过的项继续跟随所选的“完整配色”主题，随时可“恢复为所选主题的配色”。编辑器分“配色、阅读、首页、封面、排版”五页：“阅读”页是阅读背景、强调气泡和朗读面板，“强调气泡”下面同样可以单独指定强调方式、气泡样式（含已安装主题包的气泡）、强调底色和文字色；“首页”页是导航图标、书籍素材、首页背景和圆角。每个部件顶上的“来源”选它取自哪个主题，下面的素材格子显示当前实际用的图：标“自传”的是自己上传的，标“跟随”的来自所选主题，虚线格子还空着。点空格子或“跟随”的格子上传；点“自传”的格子可以替换、移除，浅深色分开的素材还能让另一种模式也用同一张。能上传的素材有：书籍封面（最多 8 张，书架按书轮播，长按拖动调整顺序，点开可单独替换或删除）、书架边框、文件夹插画、导航图标、首页背景、浅色与深色的朗读面板插画、气泡端饰与边框、阅读页的左上、右下角饰或整图背景（浅色、深色分别上传；只传左上角那张时右下角用它旋转 180°；整图可选铺满裁切、完整显示或拉伸）、启动封面、主题标识和方案预览图。上传封面、文件夹插画、首页背景、面板插画、启动封面和预览图这类位图时会先进入取景，双指缩放、拖动后按素材需要的比例裁好，也可以选“不取景，用原图”。上传后对应部件自动指向这些素材，没上传的部分沿用上传前所选的主题。编辑器顶部的建议条会提醒文字与底色对比偏低、位图尺寸太小、导航图标没传齐等问题，点开可以跳到对应位置，只做提醒、不影响保存。预览可以切换书架、发现、我的、阅读、朗读、启动和主题卡片七个画面，书架画面还能切换陪伴、平铺、宽松、紧凑四种布局。上传的素材随方案一起导出，删除方案时一起清理，不会同步到其他设备。修改只更新方案预览，缩略图上会标“有改动 · 待应用”，要回到主题页点“应用主题”才生效。</p>
+        <p>上面这些高级自定义——逐项覆盖配色、阅读颜色、强调方式与气泡配色、上传素材与面板颜色、底栏只显示图标、界面字体文件、圆角滑杆、启动封面文案样式和方案预览图——为会员专享。非会员在编辑器里看到这些选项显示为浅色，点开可了解会员；选部件来源、按钮色与强调色、启动封面图片和文案、阅读排版不受限制。会员到期后，已保存的高级改动继续生效，也可以随时恢复或移除，但不能再修改。</p>
+        <p>长按方案选“设置排版”，可以不切换主题就给它单独排版：页面上方用这套主题的阅读背景、配色和强调样式模拟一页正文（可切换浅色、深色，点“全屏预览”看整页效果），下方是正文排版的全部选项——字号、字体粗细、字距、行距、段距、四边边距、段首缩进、对齐、正文扩展至状态栏、页眉页脚，以及“阅读字体”里的正文与标题字体和正则强调规则。点右上角“保存”后排版记在这套主题上，之后切换到它时一起生效；“排版跟随主题”关闭时，要重新打开后这里的排版才会生效。</p>
+      </div>
+      <div class="sub">
+        <h3>分享主题（Beta，会员专享）</h3>
+        <p>长按某套自定义方案，点“分享主题包”，可以把它导出为 <code>.qytheme</code> 文件，保存到文件或直接发给好友。包里有这套方案的配色和各部件选择、阅读排版（“设置排版”页里的全部选项：字号、粗细、间距、边距、缩进、对齐、段评气泡大小、正文扩展至状态栏、页眉页脚、正文与标题字体）以及你上传的启动封面和阅读背景图片；内置主题的素材不会打进包里，导入方按自己已获得的主题显示。</p>
+        <ul>
+          <li><b>附带强调规则</b>：把这套方案的正文强调规则一起带上。</li>
+          <li><b>附带字体文件</b>：排版或规则用到的自定义字体会一起打包，请确认字体允许分享。</li>
+          <li><b>包含作者信息</b>：填写名称后，对方导入的方案在主题详情右下角显示“author by 名称”。署名只是展示，不代表认证身份。</li>
+        </ul>
+        <p>导入：点“默认与自定义”标题旁的“导入”，选择 <code>.qytheme</code> 文件；在文件管理或聊天软件里直接用本应用打开主题包也可以。导入前会列出包里的内容，以及因尚未获得对应主题而换成默认样式的部件。导入后成为一套新方案，占用方案额度；额度已满时可以选一套替换（正在使用的方案不能替换）。包内强调规则追加在你原有规则之后，表达式相同的跳过；包内字体加入你的字体库。导入完成后会打开这套方案的详情，点“应用主题”即可使用。</p>
+        <p>带素材的主题包：作者可以按仓库里的主题包开发指南手写一个 <code>.qytheme</code>，自带配色、导航图标、书籍封面、阅读角饰或整图背景、朗读面板插画、启动封面、气泡端饰和界面字体。导入后它是一套自定义方案（占用方案额度），包里的部件会出现在编辑主题的部件选择里，可以和内置主题混搭；同一个主题包再次导入时会更新原来那套方案，排版与强调规则保留。方案设置会同步到你的其他设备，素材不会，在那台设备上重新导入同一个包即可恢复。再导出用到了别人主题包素材的方案时，素材会一起打包并保留原作者信息。</p>
+        <p>主题分享目前是 Beta：导出和导入都需要有效会员；基底或任一部件用了终身超级会员专属主题的方案不能导出分享；不同屏幕尺寸和系统字体下，分页和排版可能与作者看到的略有差异。</p>
       </div>
       <div class="sub">
         <h3>浅色与深色</h3>
         <p>“App 配色”可选跟随系统、浅色、深色。阅读页另有自己的日夜切换。</p>
-      </div>
-      <div class="sub">
-        <h3>磨砂玻璃</h3>
-        <p><span class="p">我的 › 其他设置 › 磨砂玻璃</span>。页面顶部有面板、弹出层、按钮、遮罩层、菜单的实时预览。</p>
-        <div class="tw"><table>
-          <tr><th>设置</th><th>说明</th></tr>
-          <tr><td>启用磨砂玻璃</td><td>总开关。关闭后下面的参数不可调。</td></tr>
-          <tr><td>效果预设</td><td>轻盈、标准、强烈；手动改任何参数后变为“自定义”。</td></tr>
-          <tr><td>全局模糊强度</td><td>背景模糊的程度。</td></tr>
-          <tr><td>透明度 / 边框透明度 / 边框宽度</td><td>面板的通透感和描边。</td></tr>
-          <tr><td>组件圆角</td><td>面板和按钮的圆角大小。</td></tr>
-          <tr><td>显示悬浮阴影</td><td>是否显示阴影；可调阴影模糊、深色阴影、浅色阴影、水平偏移、垂直偏移。</td></tr>
-          <tr><td>低性能模式</td><td>禁用实时模糊和阴影。列表很长或设备较旧、感觉卡顿时打开。</td></tr>
-        </table></div>
       </div>
       <div class="sub">
         <h3>全局字体</h3>
@@ -1382,7 +1525,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       </div>
       <div class="sub">
         <h3>沉浸光感</h3>
-        <p><span class="p">其他设置 › 沉浸光感</span> 调整系统沉浸材质的光感强度：跟随系统、高、均衡、弱。</p>
+        <p><span class="p">其他设置 › 沉浸光感</span> 调整系统沉浸材质的光感强度：跟随系统、高、均衡、弱。长按菜单、下拉菜单、半模态面板、对话框和阅读页的浮层面板都使用系统沉浸光感材质（系统支持沉浸光感时生效，较旧的系统显示为实色面板）。</p>
       </div>
     </section>
 
@@ -1441,16 +1584,8 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         </ul>
       </div>
       <div class="sub">
-        <h3>脚本引擎迁移（高级）</h3>
-        <p><span class="p">其他设置 › 兼容与诊断 › 脚本引擎迁移</span>。书源里的 JavaScript 由脚本引擎执行，应用正在逐步引入新的 QuickJS 引擎。普通用户保持默认即可。</p>
-        <div class="tw"><table>
-          <tr><th>执行模式</th><th>含义</th></tr>
-          <tr><td>关闭</td><td>全部使用原有引擎。</td></tr>
-          <tr><td>影子校验（推荐）</td><td>原有引擎的结果生效，后台用 QuickJS 再算一遍做对比。</td></tr>
-          <tr><td>灰度接管</td><td>只让已连续验证合格的简单表达式改用 QuickJS。</td></tr>
-          <tr><td>优先 QuickJS</td><td>简单表达式优先用新引擎，失败自动回退到原引擎。</td></tr>
-        </table></div>
-        <p>页面还显示自检是否通过、累计统计（一致、差异、接管成功、自动回退等），可以“清除迁移统计”。书源脚本表现异常时，可以把模式改回“关闭”排查。</p>
+        <h3>后台脚本线程验证（高级）</h3>
+        <p><span class="p">其他设置 › 兼容与诊断 › 后台脚本线程验证</span>。检查原生书源脚本运行时的主线程响应、往返耗时、超时取消、内存、并发及 JS 函数库用例，主要供开发者使用；通过这些检查不代表任意书源网站都能正常登录或读取。原生脚本出错时应查看书源调试记录。</p>
       </div>
     </section>
 
@@ -1474,7 +1609,7 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
       <details><summary>书源提示证书错误</summary><p>说明网站的安全证书有问题。校验时可以选择“信任并重试”，但只应在确认书源和网络都可信时这样做，之后可以在书源菜单里取消信任。</p></details>
       <details><summary>自定义朗读音色没声音</summary><p>自定义音色依赖第三方服务，对方的授权方式或返回格式变化都会导致失败。先在朗读设置里点“试听”，不行就换一个音色或改用系统音色。</p></details>
       <details><summary>赠送的 300 点为什么不能兑换朗读字数</summary><p>赠送点只能用来兑换主题。在线朗读字数包只支持充值点。</p></details>
-      <details><summary>界面滑动卡顿</summary><p>到“其他设置 › 磨砂玻璃”打开“低性能模式”，或直接关闭磨砂玻璃。书架上关掉“书籍打开动画”也有帮助。</p></details>
+      <details><summary>界面滑动卡顿</summary><p>到“其他设置 › 沉浸光感”把光感强度调到“弱”；书架上关掉“书籍打开动画”也有帮助。</p></details>
       <details><summary>浏览器打不开看书地址</summary><p>确认两台设备连的是同一个 Wi-Fi，应用里的浏览器看书状态是“运行中”，并且地址复制完整。部分公共或访客 Wi-Fi 会隔离设备，互相无法访问。</p></details>
       <p id="empty" hidden>没有找到相关内容，换个关键词试试。</p>
     </section>
@@ -1487,9 +1622,9 @@ footer { font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--lin
         <li>应用只按你配置的规则发起访问和解析，不以破解付费内容、绕过访问控制或批量抓取受保护内容为目标。</li>
         <li>你需要对自己导入的规则、访问行为和内容使用负责，请确认内容授权、目标站点协议和所在地法律法规。</li>
         <li>应用使用的权限：联网、读取网络状态、后台运行（用于朗读、听书和缓存），以及相机（仅在你开启眼动翻页时才会请求）。</li>
-        <li>开源轻页以 GPL-3.0 许可证开源，源码在 <a href="https://github.com/wip3l/legado-harmony">github.com/wip3l/legado-harmony</a>。</li>
+        <li>开源轻页以 GPL-3.0 许可证开源，源码在 <a href="https://github.com/wip3l/qingye-reader">github.com/wip3l/qingye-reader</a>。</li>
       </ul>
-      <footer>本说明书对应开源轻页 4.0.919。界面和设置项仍在迭代，个别名称或位置可能与你手上的版本略有出入。</footer>
+      <footer>本说明书对应开源轻页 4.6.007。界面和设置项仍在迭代，个别名称或位置可能与你手上的版本略有出入。</footer>
     </section>
   </main>
 </div>

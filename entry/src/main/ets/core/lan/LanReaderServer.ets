@@ -1,3 +1,5 @@
+import fs from '@ohos.file.fs';
+import { BookCoverResolver } from '../../utils/BookCoverResolver';
 import socket from '@ohos.net.socket';
 import connection from '@ohos.net.connection';
 import { common, wantAgent } from '@kit.AbilityKit';
@@ -6,7 +8,9 @@ import { Context } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { appDb } from '../../model/data/AppDatabase';
-import { Book, BookChapter, BookSource, SearchBook, HttpClient, BookTypeSupport } from '@legado/sourceengine';
+import { Book, BookChapter, BookSource, SearchBook, HttpClient, BookTypeSupport, SourceCoverUrl } from '@legado/sourceengine';
+import { LocalBookService } from '../book/LocalBookService';
+import { BookCoverCache } from '../../utils/BookCoverCache';
 import { ReadBookEngine } from '../book/ReadBookEngine';
 import { PrivateShelfStore } from '../../utils/PrivateShelfStore';
 import { SearchCoordinator } from '../book/SearchCoordinator';
@@ -576,7 +580,7 @@ export class LanReaderServer {
       dto.name = book.name;
       dto.author = book.author;
       dto.intro = book.getDisplayIntro();
-      dto.cover = book.getDisplayCover() ? `/api/covers/${id}?token=${encodeURIComponent(this.token)}` : '';
+      dto.cover = BookCoverResolver.first(book) ? `/api/covers/${id}?token=${encodeURIComponent(this.token)}` : '';
       dto.chapterIndex = book.durChapterIndex;
       dto.chapterPos = book.durChapterPos;
       dto.chapterTime = book.durChapterTime;
@@ -663,7 +667,9 @@ export class LanReaderServer {
       if (!book.bookUrl || !this.context) return { status: 400, contentType: 'text/plain; charset=utf-8', body: 'Invalid book' };
       const change = await SearchBookShelfHelper.addToShelf(this.context, book);
       const result = new LanAddResultDto(); result.ok = !!change.shelfKey; result.id = this.bookId(book.bookUrl);
-      result.message = result.ok ? 'added' : 'unable to add';
+      result.message = result.ok ? 'added' : (change.sameWorkBook ?
+        `书架已有《${change.sameWorkBook.name}》（来源：${change.sameWorkBook.originName || '其他书源'}），如需更换请在 App 内换源` :
+        'unable to add');
       return this.jsonResponse(result);
     } catch (_) {
       return { status: 400, contentType: 'text/plain; charset=utf-8', body: 'Invalid book' };
@@ -792,6 +798,7 @@ export class LanReaderServer {
   }
 
   private mediaInfo(book: Book): LanMediaInfo {
+    if (LocalBookService.isPdfBook(book)) return { type: 'pdf', label: 'PDF', supported: false };
     if (BookTypeSupport.isAudio(book)) return { type: 'audio', label: '\u6709\u58f0\u4e66', supported: false };
     if (BookTypeSupport.isImage(book)) return { type: 'comic', label: '\u6f2b\u753b', supported: false };
     return { type: 'novel', label: '\u5c0f\u8bf4', supported: true };
@@ -807,6 +814,7 @@ export class LanReaderServer {
       const chapterPos = Number(value['chapterPos'] || 0);
       const current = await appDb.getBook(bookUrl);
       if (!current) return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Book Not Found' };
+      if (LocalBookService.isPdfBook(current)) return { status: 415, contentType: 'text/plain; charset=utf-8', body: 'PDF browser progress is not supported' };
       if (!Number.isFinite(updatedAt) || updatedAt <= current.durChapterTime) {
         const stale = new LanProgressResult();
         stale.accepted = false;
@@ -829,23 +837,27 @@ export class LanReaderServer {
     const bookUrl = this.idBooks.get(id);
     if (!bookUrl) return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Book Not Found' };
     const book = await appDb.getBook(bookUrl);
-    const url = book?.getDisplayCover() || '';
-    if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
-      return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Cover Not Found' };
+    const cover = BookCoverResolver.first(book);
+    if (!cover || !this.context) return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Cover Not Found' };
+    const path = await BookCoverResolver.prepareFile(this.context, cover);
+    if (!path) return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Cover Not Found' };
+    const file = await fs.open(path, fs.OpenMode.READ_ONLY);
+    try {
+      const size = (await fs.stat(file.fd)).size;
+      if (size <= 0 || size > 8 * 1024 * 1024) return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Cover Not Found' };
+      const body = new ArrayBuffer(size);
+      await fs.read(file.fd, body);
+      return { status: 200, contentType: this.sniffImageType(new Uint8Array(body)), body };
+    } finally {
+      await fs.close(file);
     }
-    const response = await this.httpClient.executeBinary({ url, method: 'GET', headers: {}, maxResponseBytes: 8 * 1024 * 1024 });
-    if (!response.success || response.data.byteLength === 0) {
-      return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Cover Not Found' };
-    }
-    const contentType = this.imageContentType(this.header(response.headers, 'content-type'));
-    if (!contentType) return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Cover Not Found' };
-    return { status: 200, contentType, body: response.data.buffer as ArrayBuffer };
   }
 
   private async imageProxyResponse(url: string): Promise<LanHttpResponse> {
     if (!/^https?:\/\//i.test(url) || await this.isPrivateProxyTarget(url)) {
       return { status: 400, contentType: 'text/plain; charset=utf-8', body: 'Invalid image URL' };
     }
+    if (SourceCoverUrl.isEncoded(url)) return await this.sourceCoverResponse(url);
     const response = await this.httpClient.executeBinary({ url, method: 'GET', headers: {}, maxResponseBytes: 12 * 1024 * 1024 });
     if (!response.success || response.data.byteLength === 0) {
       return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Image Not Found' };
@@ -853,6 +865,21 @@ export class LanReaderServer {
     const contentType = this.imageContentType(this.header(response.headers, 'content-type'));
     if (!contentType) return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Image Not Found' };
     return { status: 200, contentType, body: response.data.buffer as ArrayBuffer };
+  }
+
+  /** 书源声明了 coverDecode 的封面：按该书源的参数解密后再转发，浏览器拿到的是明文图片。 */
+  private async sourceCoverResponse(url: string): Promise<LanHttpResponse> {
+    const data = await BookCoverCache.loadSourceCoverBytes(url);
+    if (!data) return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'Cover Not Found' };
+    const body = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+    return { status: 200, contentType: this.sniffImageType(data), body };
+  }
+
+  private sniffImageType(data: Uint8Array): string {
+    if (data.length >= 4 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E && data[3] === 0x47) return 'image/png';
+    if (data.length >= 3 && data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) return 'image/gif';
+    if (data.length >= 12 && data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50) return 'image/webp';
+    return 'image/jpeg';
   }
 
   /**

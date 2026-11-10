@@ -1,0 +1,357 @@
+[
+  {
+    "themeId": "starwish_magic",
+    "themeName": "星愿魔法",
+    "tool": "dreamina CLI 1.4.21",
+    "model": "5.0 (CLI default)",
+    "submitId": "3448ce05-14e8-41cd-957b-a7ede1cdf847",
+    "status": "success",
+    "creditCount": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。薰衣草紫与柔和星金。一弯精致的香槟金月亮轻抱一本打开的紫色魔法书，奶白纸页上升起一颗四角星，细腻丝带垂落。背景是很浅的紫色柔光，星光只有两三点。梦幻、通透、浪漫，珠光珐琅材质。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "crop": {
+      "left": 64,
+      "top": 64,
+      "width": 1920,
+      "height": 1920
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "output": "AppScope/resources/base/media/ic_app_theme_starwish_magic.png"
+  },
+  {
+    "themeId": "cat_pipi",
+    "themeName": "小猫皮皮",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_hhv1zfszbg",
+    "submitId": "a3ccd1b1-def5-4f9e-b145-9886d6892687",
+    "resourceId": "28d5f432-3eba-4b61-869a-5c049f0179e8",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。奶油杏色与焦糖棕。一只圆脸的可爱塞尔凯克卷毛小猫，短而卷曲的毛茸茸质感，琥珀色眼睛，脸颊圆润，两个小爪子搭在一本打开的奶白小书上，近景半身。暖奶油色干净背景。亲切俏皮、柔软高级的立体插画。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "40f15ef186d0363cb7e8871297b9727f40c07ad5c8d289dacb550e0ea8b98090",
+    "crop": {
+      "left": 64,
+      "top": 64,
+      "width": 1920,
+      "height": 1920
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "9aa6427b59db38b9fb6c8986ca7f692a37442db4604b1b726a4e10a4563177b8",
+    "output": "AppScope/resources/base/media/ic_app_theme_cat_pipi.png"
+  },
+  {
+    "themeId": "strawberry_cream",
+    "themeName": "草莓奶霜",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_gekx38n8en",
+    "submitId": "8555bbe0-bdb5-4fd5-9d4a-3f659d712e64",
+    "resourceId": "72a0735f-37ef-4cca-aded-1f68b1f6e4ac",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。草莓粉、奶白与一点雾蓝。一本奶白色小手帐，封面上镶嵌一颗饱满的粉红草莓，三片嫩绿叶子，细雾蓝书签，奶霜般微哑光陶瓷质感。柔粉色背景。清新轻甜而不廉价。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "a9e15e6af0a32aa979f76ebd7a336d82ff483f7f9a55f08fdcaf5f2e7805b48e",
+    "crop": {
+      "left": 384,
+      "top": 384,
+      "width": 1280,
+      "height": 1280
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "f796b2e97bc4b44f37aa424d2ea46cd0d7a09d826575c29ef61575a25436cae8",
+    "output": "AppScope/resources/base/media/ic_app_theme_strawberry_cream.png"
+  },
+  {
+    "themeId": "crimson_archive",
+    "themeName": "赤墨档案",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_gxpwr7nfzy",
+    "submitId": "f8a28ae6-7fb4-45af-a57c-ecc1305ed985",
+    "resourceId": "a3068e71-402f-412d-9ea0-98f6c897d89f",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。暖灰白、炭黑与深朱红。一册厚实的炭黑档案书，奶白纸页，鲜明的朱红布带以简洁几何方式环绕书封，搭配一枚小圆形红色印章作为视觉重心。书封无文字。微颗粒纸张与压纹布面的高级编辑设计，浅灰白背景。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "5d12c6ab7f0674900bf700b48079badee5f16741d1c018b3fc7dd5021885c3c8",
+    "crop": {
+      "left": 176,
+      "top": 176,
+      "width": 1696,
+      "height": 1696
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "a562389a0889a65964fae128ac02dbe891c89a089ce3831b69be48f518368bbd",
+    "output": "AppScope/resources/base/media/ic_app_theme_crimson_archive.png"
+  },
+  {
+    "themeId": "plum_tea",
+    "themeName": "梅影茶烟",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_trtjx44e3a",
+    "submitId": "29239b9a-d16e-4708-a6dd-a86e0ba4651a",
+    "resourceId": "02ef6f68-7b81-4c11-9f35-f8ffce736cf8",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。青瓷绿、米白与暗红。一只温润青瓷茶盏放在一本合上的象牙色小书旁，一枝简洁而优美的红梅斜过书封，三朵梅花，一缕极淡茶烟。宋韵雅致，微哑光瓷器和纸页质感。干净淡米绿背景。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "2b5e95fbf3bf8f1d71cc890b38d5a651b0edb13a47a29184ac929042afcc234a",
+    "crop": {
+      "left": 384,
+      "top": 384,
+      "width": 1280,
+      "height": 1280
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "cfe4d0ee09f6659be6fe7c561effd7ebfa6b0720f3382fe4cb2524953fb34e56",
+    "output": "AppScope/resources/base/media/ic_app_theme_plum_tea.png"
+  },
+  {
+    "themeId": "rose_letter",
+    "themeName": "玫瑰来信",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_83838ndxh7",
+    "submitId": "7509167c-69f9-4e7d-b7ff-1e06bfb0036f",
+    "resourceId": "6167e5d0-8d34-459a-aa7d-5126fa306011",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。复古奶油粉、酒红与香槟金。一个精致象牙色信封，里面露出卷起的纸页与一朵盛开的酒红玫瑰，封口是一枚小香槟金蜡封。低饱和浪漫，细腻纸张与丝绒花瓣，浅藕粉背景。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "c61f60c727f5d03cf854e40f0a137da74944d2ccc94bcaff5546c6a66d78249a",
+    "crop": {
+      "left": 384,
+      "top": 384,
+      "width": 1280,
+      "height": 1280
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "277cc79ae0e18a40a13298896c0c5615be614dd0c0062c5c6adfebb8492772a1",
+    "output": "AppScope/resources/base/media/ic_app_theme_rose_letter.png"
+  },
+  {
+    "themeId": "moon_crane",
+    "themeName": "月鹤星河",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_7j1tx6nkyt",
+    "submitId": "d00325e2-11ba-4c62-b098-0f3952193669",
+    "resourceId": "020ae2d0-e6bb-4f43-b6f8-7bb8daa3109f",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。深海蓝黑、月银与冰蓝。一只极优雅的银白仙鹤在圆月前舒展翅膀，翅膀曲线像翻开的两页书，下方仅两条淡蓝水波。极简构图但精致细腻的金属珐琅工艺，深海蓝背景，安静夜读氛围。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "b515361c97d2258cbd413fc4070a0cdcc26814b2e00d980c0b075d7f8378d4e7",
+    "crop": {
+      "left": 64,
+      "top": 64,
+      "width": 1920,
+      "height": 1920
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "23bbff43712c5ac11ce833c0b93c09af6c58d4294f9cafac627140bd622ecfa3",
+    "output": "AppScope/resources/base/media/ic_app_theme_moon_crane.png"
+  },
+  {
+    "themeId": "sword_frost",
+    "themeName": "剑影青霜",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_9xdr4vh8qc",
+    "submitId": "239a8aef-00d6-4d22-993a-eee5884c4b1e",
+    "resourceId": "2f8595b0-22f0-479d-b539-ae5a3be6d053",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。墨松绿、冷银与一点朱砂。一柄简练的银色古剑斜靠一本深墨绿线装书，剑穗是一小段朱砂红流苏，书页边缘象牙白，少许冰霜光泽。东方武侠气质，克制高级、形体清楚，深松绿背景。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "911b0ab9acca8b4464ef9f12989b96fb0962bde1f26625c618fac2ff5b4e9740",
+    "crop": {
+      "left": 320,
+      "top": 320,
+      "width": 1408,
+      "height": 1408
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "7bd1f9b5ffdd281790075d8615d7bb88b3732bdea0c5a4dc3fcca1bedbc36a50",
+    "output": "AppScope/resources/base/media/ic_app_theme_sword_frost.png"
+  },
+  {
+    "themeId": "qingluan_water",
+    "themeName": "青鸾照水",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_3vfhx1nsab",
+    "submitId": "1656b4cd-9cff-46a7-ad0c-be9b0fd7032b",
+    "resourceId": "f421d463-856c-4cf6-9812-1ae8084133f3",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。淡青玉、孔雀青与柔金。一只修长优美的青鸾灵鸟盘旋形成不完全的圆，长尾自然化为两片翻开的书页，中央一轮小小玉白月亮，极少量金色描边。温润玉石与细腻羽毛，干净淡青灰背景，清雅灵动东方仙侠。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "f23c7c35d1be0f4bb4428b7ab5c2c9acda12edc6aaf3c307ec94f4004eeada38",
+    "crop": {
+      "left": 128,
+      "top": 128,
+      "width": 1792,
+      "height": 1792
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "d729a8c3074a976c0245efbb3d80c433b9867e61f1f41993b021fba707755a61",
+    "output": "AppScope/resources/base/media/ic_app_theme_qingluan_water.png"
+  },
+  {
+    "themeId": "azure_mecha",
+    "themeName": "苍穹机动",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_8s7rkc0w4h",
+    "submitId": "163e7ad5-838f-4bd6-9361-2e1a85b830aa",
+    "resourceId": "2f15345f-0e28-4464-979e-638fcd92daf8",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。机体白、钢蓝、深海军蓝与信号橙。一个原创精致未来机甲头部正面近景，简洁的装甲分块、蓝色单条发光眼罩、白色面甲和少量橙色通风部件，下颌设计隐约像书页折角。无角无天线，无任何现有IP特征。高级工业产品渲染，浅钢蓝背景。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "6e3490c19144909ba52d58da10fc8130d31459023a970ef21d19d3fa543273c0",
+    "crop": {
+      "left": 0,
+      "top": 0,
+      "width": 2048,
+      "height": 2048
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "e042db571acaabe18d169f64efc7d251e79939a92b6be02f211956a114ae0a81",
+    "output": "AppScope/resources/base/media/ic_app_theme_azure_mecha.png"
+  },
+  {
+    "themeId": "letterpress_page",
+    "themeName": "铅字书页",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_6j6hvparhd",
+    "submitId": "4e6227dc-ba76-47b6-a913-b21d8b682050",
+    "resourceId": "b1b3393f-bd84-4e92-84e0-954ded99f1f8",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。象牙纸、森林绿与古金。一本略微打开的森林绿布面精装小书，厚厚的象牙色纸页微微扇开，封面精细的烫金单线边框，一条古金丝绒书签。经典书店气质，细腻布纹与纸张层次，暖米白背景。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "b07e1c40be027b175952c2567393648f78baf56964cad2e2e5be0240dc37558d",
+    "crop": {
+      "left": 384,
+      "top": 384,
+      "width": 1280,
+      "height": 1280
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "9c08ecb01a85ef0446cf31382dab58cbe68a57f4c17e02aa3c9a12704e88ef5f",
+    "output": "AppScope/resources/base/media/ic_app_theme_letterpress_page.png"
+  },
+  {
+    "themeId": "custom",
+    "themeName": "自定义主题",
+    "tool": "dreamina-canvas CLI 1.0.3",
+    "model": "seedream_5.0_lite",
+    "canvasId": "c52694a7-96a2-461f-91e2-631a24509738",
+    "nodeId": "node_rckenxr9vp",
+    "submitId": "b49b292b-5e11-41ae-9194-c4cd60d89232",
+    "resourceId": "6c9a900a-782a-428d-af5b-08a267f18154",
+    "status": "succeeded",
+    "quotedCredits": 3,
+    "prompt": "为阅读应用设计一个可以直接用作桌面图标的正方形插画素材。只画一个图标主体，主体整体位于中央，宽高占画布约65%，四周保留约17%安全区，所有关键元素都在安全区内。画布背景颜色铺满四个边角，不画外框、不画圆角方块底座、不画图标样机、不画手机、不做多图拼贴。不出现文字、字母、数字、标识或水印。专业品牌级应用图标，优美轮廓，柔和但明确的体积光影，极少的装饰细节，64像素缩小后也清晰，正面略微俯视的统一视角。柔紫、奶白、粉蓝、薄荷绿与柔金。一本打开的象牙白小书，左页化为三个层叠的柔和粉彩色纸页，右页有一颗小小的金色四角星，表现自由搭配的创作感。温润的立体纸雕与哑光陶瓷质感，浅薰衣草背景，轻盈克制。背景必须铺满整个画面四边，不要白边。",
+    "sourceSize": [
+      2048,
+      2048
+    ],
+    "sourceSha256": "e1fefca801bbfb069e45d1457d563eedfc6e0ca7212100115db655610ecad239",
+    "crop": {
+      "left": 256,
+      "top": 256,
+      "width": 1536,
+      "height": 1536
+    },
+    "outputSize": [
+      1024,
+      1024
+    ],
+    "outputSha256": "d5309e66472c81a61f60f2dddb2e4b293e3acac766b3c42ea4612dff4235fc72",
+    "output": "AppScope/resources/base/media/ic_app_theme_custom.png"
+  }
+]

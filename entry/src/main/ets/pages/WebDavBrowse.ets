@@ -12,14 +12,19 @@ import { WebDavConnection, WebDavEntry } from '../webdav/WebDavModels';
 import { WebDavSecretStore } from '../webdav/WebDavSecretStore';
 import { WebDavSettingsStore } from '../webdav/WebDavSettingsStore';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { ListDissolve } from '../utils/ListDissolve';
+import { DeleteParticleBurst, DeleteParticleLayer } from '../components/common/DeleteParticles';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
+import { PopupMenuAction } from '../components/common/PopupMenuAction';
 
 @Entry
 @Component
 struct WebDavBrowsePage {
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
@@ -32,6 +37,9 @@ struct WebDavBrowsePage {
   @State connectionMissing: boolean = false;
   @State currentPath: string = '';
   @State entries: WebDavEntry[] = [];
+  /** 正在消散的条目路径，见 ListDissolve。 */
+  @State dissolvingPaths: string[] = [];
+  @State deleteParticleBursts: DeleteParticleBurst[] = [];
   @State busy: boolean = false;
   @State busyText: string = '';
   @State busyProgress: number = 0;
@@ -89,9 +97,16 @@ struct WebDavBrowsePage {
         this.pageContent()
       } })
 
-      if (this.showEntryActionMenu) {
-        this.entryActionMenu()
-      }
+      Column()
+        .width(1)
+        .height(1)
+        .position({ x: this.contextMenuX, y: this.contextMenuY })
+        .hitTestBehavior(HitTestMode.None)
+        .bindPopup(this.showEntryActionMenu, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
+          this.entryActionMenu()
+        }, Placement.BottomLeft, this.appDarkMode, this.accentColor(), () => {
+          this.showEntryActionMenu = false;
+        }))
 
       if (this.busy) {
         Column({ space: AppSpacing.LG }) {
@@ -109,7 +124,12 @@ struct WebDavBrowsePage {
         .shadow({ radius: 18, color: this.appDarkMode ? '#66000000' : '#28000000' })
         .position({ x: '11%', y: '42%' })
       }
+
+      if (this.deleteParticleBursts.length > 0) {
+        DeleteParticleLayer({ bursts: this.deleteParticleBursts })
+      }
     }
+    .id('webdav_browse_root')
     .width('100%')
     .height('100%')
     .backgroundColor(this.pageColor())
@@ -186,7 +206,6 @@ struct WebDavBrowsePage {
       .width('100%')
       .padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.LG, bottom: AppSpacing.MD })
       .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-      .backdropBlur(ThemeRuntime.topBarBlur())
       .zIndex(2)
 
       if (this.entries.length === 0) {
@@ -238,6 +257,11 @@ struct WebDavBrowsePage {
               .height(64)
               .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.MD, bottom: AppSpacing.MD })
               .backgroundColor(this.cardColor())
+              .opacity(ListDissolve.opacity(this.isEntryDissolving(entry)))
+              .scale(ListDissolve.scale(this.isEntryDissolving(entry)))
+              .blur(ListDissolve.blur(this.isEntryDissolving(entry)))
+              .hitTestBehavior(this.isEntryDissolving(entry) ? HitTestMode.None : HitTestMode.Default)
+              .id(this.entryCardElementId(entry.relativePath))
               .gesture(
                 LongPressGesture({ repeat: false })
                   .onAction((event: GestureEvent) => {
@@ -275,52 +299,25 @@ struct WebDavBrowsePage {
 
   @Builder
   entryActionMenu() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor(this.appDarkMode ? '#38000000' : '#18FFFFFF')
-        .backdropBlur(ThemeRuntime.glassBlur('button', 12))
-        .onClick(() => this.closeEntryActions())
+    Scroll() {
       Column() {
         this.entryContextActionItem($r('sys.symbol.square_and_pencil'), '重命名', this.primaryTextColor(),
           () => this.openRenameEntryDialog())
         this.entryContextActionItem($r('sys.symbol.trash'), '删除', ThemeRuntime.dangerColor(this.appDarkMode),
           () => this.confirmDeleteEntry())
+
       }
-      .width(148)
-      .padding({ top: AppSpacing.SM, bottom: AppSpacing.SM })
-      .backgroundColor(ThemeRuntime.glassPanelColor(this.appDarkMode, '', 'panel'))
-      .borderRadius(ThemeRuntime.glassCornerRadius(14, 'panel'))
-      .backdropBlur(ThemeRuntime.glassBlur('panel', 22))
-      .border({ width: ThemeRuntime.glassBorderWidth('panel'),
-        color: ThemeRuntime.glassBorderColor(this.appDarkMode, 'panel') })
-      .shadow({ radius: ThemeRuntime.glassShadowRadius('panel'),
-        color: ThemeRuntime.glassShadowColor(this.appDarkMode, 'panel'),
-        offsetX: ThemeRuntime.glassShadowOffsetX('panel'), offsetY: ThemeRuntime.glassShadowOffsetY('panel') })
-      .position({ x: this.contextMenuLeft(148), y: this.contextMenuTop(100) })
+      .width('100%')
     }
-    .width('100%')
-    .height('100%')
+    .width(176)
+    .constraintSize({ maxHeight: ImmersiveMaterialRuntime.popupMenuMaxHeight() })
+    .scrollBar(BarState.Off)
+    .padding(ImmersiveMaterialRuntime.POPUP_MENU_PADDING)
   }
 
   @Builder
   entryContextActionItem(icon: Resource, label: string, color: string, action: () => void) {
-    Row({ space: AppSpacing.MD }) {
-      SymbolGlyph(icon)
-        .fontSize(18)
-        .fontColor([color])
-        .width(24)
-      Text(label)
-        .fontSize(AppFontSize.BODY_LARGE)
-        .fontColor(color)
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(44)
-    .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
-    .alignItems(VerticalAlign.Center)
-    .onClick(action)
+    PopupMenuAction(icon, label, color, action)
   }
 
   onSystemDialogFlagChanged(): void {
@@ -446,7 +443,7 @@ struct WebDavBrowsePage {
       return;
     }
     if (!entry.readableBook()) {
-      HdsFeedback.showToast('当前仅支持 TXT 和 EPUB');
+      HdsFeedback.showToast('当前仅支持 TXT、EPUB、MOBI 和 PDF');
       return;
     }
     this.openFileDetail(entry);
@@ -786,8 +783,21 @@ struct WebDavBrowsePage {
     try {
       await client.deleteLibraryEntry(entry.relativePath, entry.directory);
       this.busyProgress = 80;
-      this.entries = await client.list(this.currentPath);
+      const next = await client.list(this.currentPath);
       this.busyProgress = 100;
+      // 先收起进度提示露出列表，被删的条目消散后再换成新列表。
+      this.busy = false;
+      const keys = [entry.relativePath];
+      await ListDissolve.fadeOut(this.getUIContext(), keys, (key: string) => {
+        this.dissolvingPaths = [...this.dissolvingPaths, key];
+      }, ListDissolve.particles('webdav_browse_root', [this.accentColor(), this.primaryTextColor(), this.subTextColor()],
+        (key: string): string => this.entryCardElementId(key), (): DeleteParticleBurst[] => this.deleteParticleBursts,
+        (bursts: DeleteParticleBurst[]): void => { this.deleteParticleBursts = bursts; }), ListDissolve.AFTER_DIALOG_MS);
+      ListDissolve.commit(this.getUIContext(), () => {
+        this.entries = next;
+      }, () => {
+        this.dissolvingPaths = ListDissolve.without(this.dissolvingPaths, keys);
+      });
       HdsFeedback.showToast('删除完成');
     } catch (error) {
       HdsFeedback.showToast(`删除失败：${this.message(error)}`);
@@ -905,16 +915,6 @@ struct WebDavBrowsePage {
     if (Number.isFinite(height) && height > 0) this.contextViewportHeight = height;
   }
 
-  contextMenuLeft(menuWidth: number): number {
-    return Math.max(12, Math.min(this.contextMenuX - 18, this.contextViewportWidth - menuWidth - 12));
-  }
-
-  contextMenuTop(menuHeight: number): number {
-    const below = this.contextMenuY + 12;
-    if (below + menuHeight <= this.contextViewportHeight - this.navBarHeight - 12) return below;
-    return Math.max(this.statusBarHeight + 8, this.contextMenuY - menuHeight - 12);
-  }
-
   fileListTopInset(): number {
     return 56 + this.statusBarHeight + 54;
   }
@@ -925,5 +925,13 @@ struct WebDavBrowsePage {
   primaryTextColor(): string { return ThemeRuntime.primaryTextColor(this.appDarkMode); }
   subTextColor(): string { return ThemeRuntime.subTextColor(this.appDarkMode); }
   accentColor(): string { return ThemeRuntime.accentColor(this.appDarkMode); }
+
+  entryCardElementId(path: string): string {
+    return `webdav_entry_card_${encodeURIComponent(path)}`;
+  }
+
+  isEntryDissolving(entry: WebDavEntry): boolean {
+    return this.dissolvingPaths.length > 0 && this.dissolvingPaths.indexOf(entry.relativePath) >= 0;
+  }
   softColor(): string { return ThemeRuntime.inputColor(this.appDarkMode); }
 }

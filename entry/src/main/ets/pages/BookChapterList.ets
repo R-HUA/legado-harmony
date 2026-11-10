@@ -15,6 +15,7 @@ import { HdsFeedback } from '../utils/HdsFeedback';
 import { VideoBookPlayer } from '../utils/VideoBookPlayer';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
+import { LocalBookService } from '../core/book/LocalBookService';
 
 /** 未分组书架条目的分组 ID，必须与 SearchBookShelfHelper 里临时阅读书的写入值一致。 */
 const TEMP_SHELF_GROUP: number = -2147483645;
@@ -158,6 +159,7 @@ struct BookChapterListPage {
   titleBar() {
     Row() {
       ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
+        buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
         onBack: () => this.handleBack() })
 
       Column() {
@@ -184,15 +186,13 @@ struct BookChapterListPage {
     .height(56 + this.statusBarHeight)
     .padding({ right: AppSpacing.XL, top: this.statusBarHeight })
     .alignItems(VerticalAlign.Center)
-    .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-    .backdropBlur(ThemeRuntime.topBarBlur())
     .position({ x: 0, y: 0 })
   }
 
   @Builder
   catalogToolbar() {
     Row({ space: AppSpacing.MD }) {
-      TextInput({ placeholder: '搜索章节名', text: this.keyword })
+      TextInput({ placeholder: this.bookType === LocalBookService.TYPE_PDF ? '搜索页码' : '搜索章节名', text: this.keyword })
         .layoutWeight(1)
         .height(38)
         .borderRadius(ThemeRuntime.mediumRadius())
@@ -342,6 +342,12 @@ struct BookChapterListPage {
       await db.initWithContext(getContext(this));
       if (!this.pageAlive) return;
 
+      const local = await db.getBook(this.bookUrl);
+      if (LocalBookService.isPdfBook(local)) {
+        this.bookType = LocalBookService.TYPE_PDF;
+        await LocalBookService.ensureLocalParserCurrent(getContext(this), local!);
+      }
+
       const cached = await db.getBookChapters(this.bookUrl);
       if (!this.pageAlive) return;
       if (cached.length > 0) {
@@ -460,7 +466,7 @@ struct BookChapterListPage {
         await db.insertBook(book, 'chapter_list_insert');
       }
       // The reader derives its opening chapter from durChapterIndex alone (see
-      // ReadBookEngine.openBookFresh / applyLatestReadingProgress). durChapterPos must be reset
+      // ReadBookEngine.openBookFresh / applyLatestBookState). durChapterPos must be reset
       // too: savedReaderProgressOffset only matches on chapter, so a stale page would land
       // somewhere inside the target chapter.
       book.durChapterIndex = chapter.index;
@@ -512,12 +518,13 @@ struct BookChapterListPage {
 
   private subtitleText(): string {
     const source = this.originName || this.origin;
+    const unit = this.bookType === LocalBookService.TYPE_PDF ? '页' : '章';
     if (this.loadState !== LOAD_READY) return source;
     const keyword = this.keyword.trim();
     if (keyword.length > 0) {
-      return `${source} · 匹配 ${this.displayedCount} / ${this.chapters.length} 章`;
+      return `${source} · 匹配 ${this.displayedCount} / ${this.chapters.length} ${unit}`;
     }
-    return `${source} · 共 ${this.chapters.length} 章${this.fromCache ? ' · 本地缓存' : ''}`;
+    return `${source} · 共 ${this.chapters.length} ${unit}${this.fromCache ? ' · 本地缓存' : ''}`;
   }
 
   private handleBack(): void {

@@ -8,7 +8,10 @@ const raw = fs.readFileSync(new URL('../entry/src/main/ets/utils/SystemTtsReader
 const source = raw.replace(/^import\s[\s\S]*?;\s*$/gm, '').replace(/^export /gm, '');
 const context = vm.createContext({
   console: { info() {}, warn() {}, error() {} },
-  TtsPcmAudioPlayer: class {}, HttpTtsReader: class {}, CloudTtsClient: class {}
+  TtsPcmAudioPlayer: class {}, HttpTtsReader: class {}, CloudTtsClient: class {},
+  // Upstream TTS collaborators that the splitter never calls.
+  MimoReadingSession: class {}, LocalTtsSelection: { current() { return null; } }, LocalTtsEngine: {},
+  PlaybackLoudnessGain: {}, TtsCustomVoices: {}, TtsVoiceOption: class {}
 });
 vm.runInContext(stripTypeScriptTypes(source, { mode: 'transform' }) +
   '\nglobalThis.reader = new SystemTtsReader();', context);
@@ -46,7 +49,10 @@ function assertChunks(chunks, text, maximum) {
       `不前进或偏移越界: ${JSON.stringify(chunk)}`);
     assert.match(text.slice(previousEnd, chunk.start), /^[ \t\n\r\u3000]*$/, '块间丢失正文');
     assert.equal(chunk.text, text.slice(chunk.start, chunk.end));
-    assert.ok(chunk.text.length <= maximum(index), `块长度 ${chunk.text.length} 超过上限 ${maximum(index)}`);
+    // A sentence tail of at most 8 closing/ending punctuation marks may follow its sentence.
+    const over = chunk.text.length - maximum(index);
+    assert.ok(over <= 0 || (over <= 8 && /^[”’"'）)】\]》〉」』。！？!?.…；;]+$/.test(chunk.text.slice(-over))),
+      `块长度 ${chunk.text.length} 超过上限 ${maximum(index)}`);
     assert.ok(!/[\uD800-\uDBFF]$/.test(chunk.text), '块尾拆开代理对');
     assert.ok(!/^[\uDC00-\uDFFF]/.test(chunk.text), '块头拆开代理对');
     previousEnd = chunk.end;
@@ -97,11 +103,11 @@ check('短词、小数单位和引号保留既有回退位置', () => {
   }
 });
 
-check('句末闭引号只能延长至实际块上限', () => {
+check('句末闭引号只能有限延长（最多 8 个标点）', () => {
   const text = '中'.repeat(54) + '。' + '”）'.repeat(10) + '尾声';
   const chunks = run('reader.splitSystemText(text, [])', text);
   assertChunks(chunks, text, () => 60);
-  assert.equal(chunks[0].end, 60);
+  assert.equal(chunks[0].end, 68);
 });
 
 check('分页切点位于表情中间时保留完整代理对与正文', () => {

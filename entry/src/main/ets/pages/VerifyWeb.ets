@@ -6,6 +6,7 @@ import { ReadBookEngine } from '../core/book/ReadBookEngine';
 import { BookSourceRuntimeSnapshotStore } from '../core/book/BookSourceRuntimeSnapshot';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { AppFontSize } from '../theme/AppFontSize';
@@ -168,22 +169,20 @@ struct VerifyWebPage {
     (): boolean => this.canAccessBrowserSourceVariable(),
     (): string => this.browserSourceVariable,
     (value: string): void => this.storeBrowserSourceVariable(value));
+  private verificationContextToken: string = '';
+  private verificationUserAgent: string = '';
+  private verificationSourceUrl: string = '';
   private readonly mobileUserAgent: string =
     'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  /**
-   * User-Agent the pending verification request was made with, when the source declares a static
-   * one. Only adopted while the page being opened is that same pending verification URL, so an
-   * unrelated verification/comment page can never inherit a stale source UA.
-   */
-  private sourceUserAgent: string = '';
   aboutToAppear(): void {
     this.syncBars();
     const params = router.getParams() as Record<string, string>;
     const initialUrl = params?.['url'] || AppStorage.get<string>('pendingVerificationUrl') || 'about:blank';
-    const pendingUrl = AppStorage.get<string>('pendingVerificationUrl') || '';
-    if (initialUrl && initialUrl === pendingUrl) {
-      this.sourceUserAgent = AppStorage.get<string>('pendingVerificationUserAgent') || '';
-    }
+    const contextToken = params?.['verificationContextToken'] ||
+      ((AppStorage.get<string>('pendingVerificationUrl') || '') === initialUrl ? AppStorage.get<string>('pendingVerificationContextToken') || '' : '');
+    this.verificationContextToken = contextToken;
+    this.verificationUserAgent = VerificationSupport.contextUserAgent(contextToken, initialUrl);
+    this.verificationSourceUrl = VerificationSupport.contextSource(contextToken, initialUrl);
     this.title = params?.['title'] || AppStorage.get<string>('pendingVerificationTitle') || '网页验证';
     this.requireLoginCookie = params?.['requireLoginCookie'] === 'true';
     this.readerCommentMode = params?.['readerCommentMode'] === 'true';
@@ -243,6 +242,7 @@ struct VerifyWebPage {
     Column() {
       Row() {
         ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
+          buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
           onBack: () => this.finishVerify() })
 
         Column() {
@@ -261,20 +261,19 @@ struct VerifyWebPage {
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
 
-        Text('完成')
-          .fontSize(AppFontSize.BODY_LARGE)
-          .fontColor(this.accentColor())
-          .width(56)
-          .height(56)
-          .textAlign(TextAlign.Center)
-          .onClick(() => {
+        ImmersiveHeaderAction({
+          label: '完成',
+          tint: this.accentColor(),
+          onTap: () => {
             this.finishVerify();
-          })
+          }
+        })
+          .margin({ left: AppSpacing.SM, right: AppSpacing.XL - AppSpacing.MD })
       }
       .width('100%')
       .height(56)
       .padding({ right: AppSpacing.MD })
-      .backgroundColor(this.cardColor())
+      .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
       .alignItems(VerticalAlign.Center)
 
       if (this.progress > 0 && this.progress < 100) {
@@ -366,12 +365,15 @@ struct VerifyWebPage {
     const verified = this.requireLoginCookie ? this.hasEffectiveBookSourceLoginCookie() :
       true;
     if (verified) {
-      AppStorage.setOrCreate('pendingVerificationUrl', '');
+      if (!this.verificationContextToken || this.verificationContextToken === (AppStorage.get<string>('pendingVerificationContextToken') || '')) {
+        AppStorage.setOrCreate('pendingVerificationUrl', '');
       AppStorage.setOrCreate('pendingVerificationTitle', '');
-      AppStorage.setOrCreate('pendingVerificationSourceUrl', '');
+        AppStorage.setOrCreate('pendingVerificationSourceUrl', '');
       AppStorage.setOrCreate('pendingVerificationLoginUrl', '');
+        AppStorage.setOrCreate('pendingVerificationContextToken', '');
+      }
       AppStorage.setOrCreate('verificationCompletedAt', Date.now());
-      this.showToastSafely('验证信息已保存，请重试搜索或刷新目录');
+      this.showToastSafely('网页会话已保存，请重试搜索或刷新目录');
       this.backSafely();
     } else {
       this.showToastSafely('未检测到有效登录 Cookie，请正常登录后再点完成');
@@ -382,10 +384,7 @@ struct VerifyWebPage {
     // Keep verification pages consistent with the device form factor. Native-app launch links
     // exposed by Fanqie's mobile page are filtered in handleBrowserLoadIntercept(), while its
     // normal HTTPS page, passport requests and session cookies remain inside ArkWeb.
-    // A source that declares its own static UA gets that UA here instead: several sites serve a
-    // different theme (and a different cookie scope) per UA, so verifying with the app's mobile UA
-    // would leave the source's own desktop requests still unverified.
-    return this.sourceUserAgent || this.mobileUserAgent;
+    return this.verificationUserAgent || this.mobileUserAgent;
   }
 
   loadBrowserPayload(): void {
@@ -631,8 +630,8 @@ struct VerifyWebPage {
   }
 
   hasEffectiveBookSourceLoginCookie(): boolean {
-    const sourceUrl = AppStorage.get<string>('pendingVerificationSourceUrl') || '';
-    const loginUrl = AppStorage.get<string>('pendingVerificationLoginUrl') || this.url;
+    const sourceUrl = this.verificationSourceUrl || AppStorage.get<string>('pendingVerificationSourceUrl') || '';
+    const loginUrl = this.verificationContextToken ? this.url : AppStorage.get<string>('pendingVerificationLoginUrl') || this.url;
     const urls = [
       this.currentUrl,
       this.url,

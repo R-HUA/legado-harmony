@@ -1,5 +1,7 @@
 import { audio } from '@kit.AudioKit';
 import { media } from '@kit.MediaKit';
+import fs from '@ohos.file.fs';
+import { PlaybackLoudnessGain } from './PlaybackLoudnessGain';
 
 export interface RemoteAudioPlaybackListener {
   onStateChanged(state: string): void;
@@ -8,7 +10,10 @@ export interface RemoteAudioPlaybackListener {
   onPlaybackError(message: string): void;
 }
 
-/** Process-local remote audiobook player. It keeps playing when the page is temporarily hidden. */
+/**
+ * Process-local audiobook player. It keeps playing when the page is temporarily hidden.
+ * `url` is either an http(s) stream or the absolute path of a downloaded chapter.
+ */
 export class RemoteAudioPlayback {
   private static instance: RemoteAudioPlayback | null = null;
   private player: media.AVPlayer | null = null;
@@ -17,8 +22,22 @@ export class RemoteAudioPlayback {
   /** play() 已开始但还没出声的代次；切章时据此丢弃半途的播放器，避免旧章节随后响起。 */
   private loadingGeneration: number = -1;
   private interruptPaused: boolean = false;
+  private userPaused: boolean = false;
+  private interruptRevision: number = 0;
+  private interruptPausePromise: Promise<void> = Promise.resolve();
   private sleepTimerId: number = -1;
   private sleepEndAt: number = 0;
+  /**
+   * 续播或拖动定位还没完成时的目标位置。期间 timeUpdate 报的仍是旧位置（常常是 0），不能外传，
+   * 否则页面会把它当成进度存下，下次打开就从章节开头播。
+   */
+  private pendingSeekMs: number = -1;
+  /** 定位完成后，用下一次 timeUpdate 核对是否真的跳过去了；有些网络流起播前的 seek 会被忽略。 */
+  private verifySeekMs: number = -1;
+  private seekRetried: boolean = false;
+  private seekTimeoutId: number = -1;
+  /** 正在播放的离线音频文件；播放器释放后才关闭。 */
+  private localFile: fs.File | null = null;
 
   bookUrl: string = '';
   chapterIndex: number = -1;
@@ -54,12 +73,19 @@ export class RemoteAudioPlayback {
     this.loadingGeneration = generation;
     const timing = startTiming || new AudioStartTiming(chapterIndex);
     this.interruptPaused = false;
+    this.userPaused = false;
+    this.interruptRevision++;
+    this.resetSeek();
     await this.releasePlayer();
     this.bookUrl = bookUrl;
     this.chapterIndex = chapterIndex;
     this.mediaUrl = url;
     this.mediaHeaders = headers;
     this.positionMs = Math.max(0, startPositionMs || 0);
+    // 加载期间播放器会先报 0 秒（本地文件在 prepared 时就报）。续播目标在定位完成前一直挡住这些旧位置，
+    // 否则既会跳过定位，又会被页面当成进度存下。
+    const resumeMs = this.positionMs;
+    if (resumeMs > 0) this.pendingSeekMs = resumeMs;
     this.durationMs = 0;
     this.speed = this.normalizeSpeed(speed);
     this.setState('loading');
@@ -83,6 +109,16 @@ export class RemoteAudioPlayback {
       // Some AVPlayer implementations do not fan out multiple stateChange callbacks reliably.
       // Keep the public state in sync from the player's authoritative state as a fallback.
       this.syncPlayerState(player, generation);
+      if (this.pendingSeekMs >= 0) return;
+      if (this.verifySeekMs >= 0) {
+        const target = this.verifySeekMs;
+        this.verifySeekMs = -1;
+        if ((position || 0) < target - 5000 && !this.seekRetried) {
+          this.seekRetried = true;
+          this.beginSeek(player, generation, target);
+          return;
+        }
+      }
       this.positionMs = Math.max(0, position || 0);
       this.listener?.onPositionChanged(this.positionMs, this.durationMs);
     });
@@ -99,10 +135,21 @@ export class RemoteAudioPlayback {
     player.on('audioInterrupt', (event: audio.InterruptEvent): void => {
       this.handleAudioInterrupt(player, generation, event);
     });
+    player.on('seekDone', (): void => {
+      if (generation !== this.generation || player !== this.player) return;
+      this.finishSeek();
+    });
 
     try {
-      const mediaSource = media.createMediaSourceWithUrl(url, headers);
-      await player.setMediaSource(mediaSource);
+      if (url.startsWith('/')) {
+        // 离线下载的音频。要给出完整长度，只给 fd 会被当成直播流，倍速和拖动都会失效。
+        const file = fs.openSync(url, fs.OpenMode.READ_ONLY);
+        this.localFile = file;
+        player.fdSrc = { fd: file.fd, offset: 0, length: fs.statSync(url).size };
+      } else {
+        const mediaSource = media.createMediaSourceWithUrl(url, headers);
+        await player.setMediaSource(mediaSource);
+      }
       timing.mark('set-media-source');
       if (generation !== this.generation) return;
       // setMediaSource() completing does not guarantee that AVPlayer has emitted initialized yet.
@@ -125,12 +172,21 @@ export class RemoteAudioPlayback {
       if (generation !== this.generation) return;
       this.durationMs = Math.max(0, player.duration || this.durationMs);
       this.applySpeed(player, this.speed);
-      if (this.positionMs > 0 && (this.durationMs <= 0 || this.positionMs < this.durationMs - 1000)) {
-        player.seek(this.positionMs, media.SeekMode.SEEK_CLOSEST);
+      PlaybackLoudnessGain.trackAvPlayer(PlaybackLoudnessGain.AUDIO, player);
+      if (resumeMs > 0 && (this.durationMs <= 0 || resumeMs < this.durationMs - 1000)) {
+        this.beginSeek(player, generation, resumeMs);
+      } else {
+        this.resetSeek();
+        this.positionMs = 0;
       }
       await player.play();
       timing.mark('play');
       if (generation === this.generation && player === this.player) {
+        if (this.userPaused || this.interruptPaused) {
+          if (player.state === 'playing') await player.pause();
+          this.syncPlayerState(player, generation);
+          return;
+        }
         this.setState('playing');
         timing.finish('playing');
       }
@@ -157,6 +213,10 @@ export class RemoteAudioPlayback {
   }
 
   async pause(): Promise<void> {
+    // Also cancel automatic resume when the system has already paused the player.
+    this.userPaused = true;
+    this.interruptPaused = false;
+    this.interruptRevision++;
     const player = this.player;
     if (!player || player.state !== 'playing') return;
     await player.pause();
@@ -164,6 +224,11 @@ export class RemoteAudioPlayback {
   }
 
   async resume(): Promise<void> {
+    this.userPaused = false;
+    this.interruptPaused = false;
+    const revision = ++this.interruptRevision;
+    await this.interruptPausePromise;
+    if (revision !== this.interruptRevision || this.userPaused) return;
     if (this.state === 'loading') return;
     const player = this.player;
     const playerState = player?.state || '';
@@ -175,17 +240,23 @@ export class RemoteAudioPlayback {
       try {
         if (playerState === 'completed') player.seek(0, media.SeekMode.SEEK_CLOSEST);
         await player.play();
+        if (player !== this.player) return;
+        if (this.userPaused || this.interruptPaused) {
+          if (player.state === 'playing') await player.pause();
+          return;
+        }
         if (player === this.player) this.setState('playing');
         return;
       } catch (error) {
-        if (player !== this.player) return;
+        if (player !== this.player || revision !== this.interruptRevision || this.userPaused ||
+          this.interruptPaused) return;
         console.warn('[AudioBook] resume failed, rebuilding player:', error);
       }
     }
     // Another app taking audio focus permanently (forced STOP interrupt) leaves AVPlayer in
     // stopped/error, where play() is illegal. Without a rebuild every play button, including
     // the system media capsule, stays dead until the process restarts.
-    if (!this.mediaUrl) return;
+    if (!this.mediaUrl || revision !== this.interruptRevision || this.userPaused || this.interruptPaused) return;
     await this.play(this.bookUrl, this.chapterIndex, this.mediaUrl, this.mediaHeaders, this.positionMs,
       this.speed);
   }
@@ -194,11 +265,45 @@ export class RemoteAudioPlayback {
     const player = this.player;
     if (!player) return;
     const target = Math.max(0, this.durationMs > 0 ? Math.min(positionMs, this.durationMs) : positionMs);
+    this.seekRetried = false;
+    this.beginSeek(player, this.generation, target);
+  }
+
+  private beginSeek(player: media.AVPlayer, generation: number, target: number): void {
+    this.clearSeekTimeout();
+    this.pendingSeekMs = target;
+    this.verifySeekMs = -1;
     this.positionMs = target;
+    this.listener?.onPositionChanged(this.positionMs, this.durationMs);
+    // seekDone 偶尔不回调（网络流缓冲失败等），超时后照常收 timeUpdate，并按定位完成核对一次。
+    this.seekTimeoutId = setTimeout((): void => {
+      this.seekTimeoutId = -1;
+      if (generation === this.generation && player === this.player) this.finishSeek();
+    }, 4000);
     try {
       player.seek(target, media.SeekMode.SEEK_CLOSEST);
-    } catch (_) {}
-    this.listener?.onPositionChanged(this.positionMs, this.durationMs);
+    } catch (_) {
+      this.resetSeek();
+    }
+  }
+
+  private finishSeek(): void {
+    if (this.pendingSeekMs < 0) return;
+    this.clearSeekTimeout();
+    this.verifySeekMs = this.pendingSeekMs;
+    this.pendingSeekMs = -1;
+  }
+
+  private resetSeek(): void {
+    this.clearSeekTimeout();
+    this.pendingSeekMs = -1;
+    this.verifySeekMs = -1;
+    this.seekRetried = false;
+  }
+
+  private clearSeekTimeout(): void {
+    if (this.seekTimeoutId >= 0) clearTimeout(this.seekTimeoutId);
+    this.seekTimeoutId = -1;
   }
 
   setSpeed(speed: number): void {
@@ -224,7 +329,10 @@ export class RemoteAudioPlayback {
 
   async stop(): Promise<void> {
     this.generation++;
+    this.interruptRevision++;
+    this.userPaused = false;
     this.interruptPaused = false;
+    this.resetSeek();
     this.clearSleepTimer();
     await this.releasePlayer();
     this.bookUrl = '';
@@ -283,29 +391,44 @@ export class RemoteAudioPlayback {
       return;
     }
     if (hint === audio.InterruptHint.INTERRUPT_HINT_PAUSE) {
-      this.interruptPaused = true;
+      this.interruptRevision++;
+      this.interruptPaused = !this.userPaused;
       if (event.forceType === audio.InterruptForceType.INTERRUPT_SHARE && player.state === 'playing') {
-        player.pause().catch(() => {});
+        this.interruptPausePromise = player.pause().catch((error: Error) => {
+          console.warn('[AudioBook] interrupt pause failed:', error);
+        });
       }
       this.syncStateAfterInterrupt(player, generation);
       return;
     }
     if (hint === audio.InterruptHint.INTERRUPT_HINT_STOP) {
+      this.interruptRevision++;
       this.interruptPaused = false;
+      this.userPaused = true;
+      if (event.forceType === audio.InterruptForceType.INTERRUPT_SHARE && player.state === 'playing') {
+        this.interruptPausePromise = player.pause().catch(() => {});
+      }
       this.syncStateAfterInterrupt(player, generation);
       return;
     }
     if (hint === audio.InterruptHint.INTERRUPT_HINT_RESUME) {
       try { player.setVolume(1); } catch (_) {}
-      if (this.interruptPaused && player.state !== 'playing') {
-        this.interruptPaused = false;
-        this.resume().catch((error: Error) => {
+      if (!this.interruptPaused || this.userPaused) return;
+      const revision = ++this.interruptRevision;
+      this.resumeAfterInterrupt(player, generation, revision).catch((error: Error) => {
+        if (generation === this.generation && player === this.player) {
           this.listener?.onPlaybackError(error.message || String(error));
-        });
-      } else {
-        this.interruptPaused = false;
-      }
+        }
+      });
     }
+  }
+
+  private async resumeAfterInterrupt(player: media.AVPlayer, generation: number,
+    revision: number): Promise<void> {
+    await this.interruptPausePromise;
+    if (generation !== this.generation || player !== this.player || revision !== this.interruptRevision ||
+      this.userPaused || !this.interruptPaused) return;
+    await this.resume();
   }
 
   /** A forced interrupt stops timeUpdate, so the stateChange fallback there never runs. */
@@ -319,6 +442,7 @@ export class RemoteAudioPlayback {
     const player = this.player;
     this.player = null;
     if (!player) return;
+    PlaybackLoudnessGain.untrackAvPlayer(player);
     try {
       if (player.state === 'playing' || player.state === 'paused' || player.state === 'prepared' ||
         player.state === 'completed') await player.stop();
@@ -326,6 +450,14 @@ export class RemoteAudioPlayback {
     try {
       await player.release();
     } catch (_) {}
+    this.closeLocalFile();
+  }
+
+  private closeLocalFile(): void {
+    const file = this.localFile;
+    this.localFile = null;
+    if (!file) return;
+    try { fs.closeSync(file); } catch (_) {}
   }
 
   private waitForPrepared(player: media.AVPlayer, generation: number): Promise<void> {

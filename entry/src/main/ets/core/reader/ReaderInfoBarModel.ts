@@ -1,3 +1,5 @@
+import { HexColor } from '../../utils/HexColor';
+
 /** 页眉页脚槽位可选的信息项。值会写入设置并参与云同步，不能改名。 */
 export class ReaderInfoItem {
   static readonly NONE: string = 'none';
@@ -11,6 +13,7 @@ export class ReaderInfoItem {
   static readonly CHAPTER_PERCENT: string = 'chapter_percent';
   static readonly CHAPTER_PROGRESS: string = 'chapter_progress';
   static readonly BOOK_PERCENT: string = 'book_percent';
+  static readonly PAGE_BOOK_PERCENT: string = 'page_book_percent';
   static readonly TIME: string = 'time';
   static readonly BATTERY: string = 'battery';
   static readonly TIME_BATTERY: string = 'time_battery';
@@ -27,6 +30,7 @@ export class ReaderInfoItem {
     ReaderInfoItem.CHAPTER_PERCENT,
     ReaderInfoItem.CHAPTER_PROGRESS,
     ReaderInfoItem.BOOK_PERCENT,
+    ReaderInfoItem.PAGE_BOOK_PERCENT,
     ReaderInfoItem.TIME,
     ReaderInfoItem.BATTERY,
     ReaderInfoItem.TIME_BATTERY
@@ -44,6 +48,7 @@ export class ReaderInfoItem {
     '本章百分比',
     '章节进度',
     '全书百分比',
+    '当前页 / 总页数 + 全书百分比',
     '时间',
     '电量',
     '时间 + 电量'
@@ -85,14 +90,18 @@ export class ReaderInfoProgressBar {
  */
 export class ReaderInfoBarConfig {
   static readonly FONT_SIZE_MIN: number = 10;
-  static readonly FONT_SIZE_MAX: number = 16;
+  static readonly FONT_SIZE_MAX: number = 40;
   static readonly FONT_SIZE_DEFAULT: number = 12;
   static readonly OPACITY_MIN: number = 30;
   static readonly OPACITY_MAX: number = 100;
   static readonly OPACITY_STEP: number = 10;
   static readonly FIXED_SIDE_PADDING: number = 28;
-  static readonly OFFSET_MAX: number = 40;
+  static readonly OFFSET_MIN: number = -350;
+  static readonly OFFSET_MAX: number = 350;
   static readonly OFFSET_STEP: number = 2;
+  static readonly SHRINK_MIN: number = -350;
+  static readonly SHRINK_MAX: number = 350;
+  static readonly SHRINK_STEP: number = 1;
 
   headerLeft: string = ReaderInfoItem.CHAPTER_TITLE;
   headerCenter: string = ReaderInfoItem.NONE;
@@ -100,15 +109,27 @@ export class ReaderInfoBarConfig {
   footerLeft: string = ReaderInfoItem.CHAPTER_INDEX_TITLE;
   footerCenter: string = ReaderInfoItem.NONE;
   footerRight: string = ReaderInfoItem.PAGE;
-  fontSize: number = ReaderInfoBarConfig.FONT_SIZE_DEFAULT;
-  /** 文字不透明度，百分比。 */
-  opacity: number = ReaderInfoBarConfig.OPACITY_MAX;
+  /** 仅用于读取旧版共用字号；新配置使用下面的独立字号。 */
+  fontSize?: number;
+  headerFontSize: number = ReaderInfoBarConfig.FONT_SIZE_DEFAULT;
+  footerFontSize: number = ReaderInfoBarConfig.FONT_SIZE_DEFAULT;
+  /** 文字颜色；空字符串表示沿用当前阅读主题。 */
+  headerColor: string = '';
+  footerColor: string = '';
+  /** 仅用于读取旧版共用不透明度。 */
+  opacity?: number;
+  /** 页眉、页脚文字不透明度，百分比。 */
+  headerOpacity: number = ReaderInfoBarConfig.OPACITY_MAX;
+  footerOpacity: number = ReaderInfoBarConfig.OPACITY_MAX;
   /** 左右边距跟随正文边距；关闭时使用固定边距。 */
   followMargin: boolean = false;
-  /** 页眉在默认位置基础上再下移的距离（vp）。 */
+  /** 页眉相对默认位置的偏移（vp），正数向下，负数向屏幕顶端。 */
   headerOffset: number = 0;
-  /** 页脚在默认位置基础上再上移的距离（vp），用来让开手势指示条。 */
+  /** 页脚相对默认位置的偏移（vp），正数向上，负数向屏幕底端。 */
   footerOffset: number = 0;
+  /** 左右两侧在原有边距基础上的收缩距离（vp），负数向外扩展。 */
+  headerShrink: number = 0;
+  footerShrink: number = 0;
   headerDivider: boolean = false;
   footerDivider: boolean = false;
   progressBar: string = ReaderInfoProgressBar.NONE;
@@ -158,11 +179,17 @@ export class ReaderInfoBarConfig {
       config.footerLeft = ReaderInfoItem.normalize(source.footerLeft, defaults.footerLeft);
       config.footerCenter = ReaderInfoItem.normalize(source.footerCenter, defaults.footerCenter);
       config.footerRight = ReaderInfoItem.normalize(source.footerRight, defaults.footerRight);
-      config.fontSize = ReaderInfoBarConfig.clampFontSize(source.fontSize);
-      config.opacity = ReaderInfoBarConfig.clampOpacity(source.opacity);
+      config.headerFontSize = ReaderInfoBarConfig.clampFontSize(source.headerFontSize ?? source.fontSize);
+      config.footerFontSize = ReaderInfoBarConfig.clampFontSize(source.footerFontSize ?? source.fontSize);
+      config.headerColor = ReaderInfoBarConfig.normalizeColor(source.headerColor);
+      config.footerColor = ReaderInfoBarConfig.normalizeColor(source.footerColor);
+      config.headerOpacity = ReaderInfoBarConfig.clampOpacity(source.headerOpacity ?? source.opacity);
+      config.footerOpacity = ReaderInfoBarConfig.clampOpacity(source.footerOpacity ?? source.opacity);
       config.followMargin = source.followMargin === true;
       config.headerOffset = ReaderInfoBarConfig.clampOffset(source.headerOffset);
       config.footerOffset = ReaderInfoBarConfig.clampOffset(source.footerOffset);
+      config.headerShrink = ReaderInfoBarConfig.clampShrink(source.headerShrink);
+      config.footerShrink = ReaderInfoBarConfig.clampShrink(source.footerShrink);
       config.headerDivider = source.headerDivider === true;
       config.footerDivider = source.footerDivider === true;
       config.progressBar = ReaderInfoProgressBar.VALUES.indexOf(source.progressBar) >= 0 ?
@@ -180,14 +207,63 @@ export class ReaderInfoBarConfig {
     return Math.max(ReaderInfoBarConfig.FONT_SIZE_MIN, Math.min(Math.round(value), ReaderInfoBarConfig.FONT_SIZE_MAX));
   }
 
+  static normalizeColor(value: string): string {
+    return typeof value === 'string' ? HexColor.parse(value) : '';
+  }
+
+  textColor(header: boolean, fallback: string): string {
+    return (header ? this.headerColor : this.footerColor) || fallback;
+  }
+
   static clampOffset(value: number): number {
     if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
-    return Math.max(0, Math.min(Math.round(value), ReaderInfoBarConfig.OFFSET_MAX));
+    return Math.max(ReaderInfoBarConfig.OFFSET_MIN, Math.min(Math.round(value), ReaderInfoBarConfig.OFFSET_MAX));
+  }
+
+  static headerBaseInset(extendToStatusBar: boolean, statusBarHeight: number): number {
+    return extendToStatusBar ? 8 : Math.max(0, statusBarHeight);
+  }
+
+  static footerBaseInset(navBarHeight: number): number {
+    return Math.max(6, Math.min(8, Math.max(0, navBarHeight) * 0.5));
+  }
+
+  /** 设置使用整数 vp，最后一步允许不足 2vp，确保小数安全区也能抵达边缘。 */
+  static offsetMinForInset(baseInset: number): number {
+    return Math.max(ReaderInfoBarConfig.OFFSET_MIN, -Math.ceil(Math.max(0, baseInset)));
+  }
+
+  static clampOffsetToInset(value: number, baseInset: number): number {
+    return Math.max(ReaderInfoBarConfig.offsetMinForInset(baseInset), ReaderInfoBarConfig.clampOffset(value));
+  }
+
+  /** 相对默认位置移动，向外最多到屏幕边缘；正文占位与显示共用此结果。 */
+  edgeInset(header: boolean, baseInset: number): number {
+    return Math.max(0, baseInset + (header ? this.headerOffset : this.footerOffset));
   }
 
   static clampOpacity(value: number): number {
     if (typeof value !== 'number' || !Number.isFinite(value)) return ReaderInfoBarConfig.OPACITY_MAX;
     return Math.max(ReaderInfoBarConfig.OPACITY_MIN, Math.min(Math.round(value), ReaderInfoBarConfig.OPACITY_MAX));
+  }
+
+  static clampShrink(value: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+    return Math.max(ReaderInfoBarConfig.SHRINK_MIN, Math.min(Math.round(value), ReaderInfoBarConfig.SHRINK_MAX));
+  }
+
+  /** 左右对称收缩；向外最多到屏幕边缘，向内仍保留可显示文字的宽度。 */
+  sidePadding(header: boolean, left: boolean, marginLeft: number, marginRight: number, width: number): number {
+    const shrink = header ? this.headerShrink : this.footerShrink;
+    const baseLeft = this.followMargin ? marginLeft : ReaderInfoBarConfig.FIXED_SIDE_PADDING;
+    const baseRight = this.followMargin ? marginRight : ReaderInfoBarConfig.FIXED_SIDE_PADDING;
+    const insetLeft = Math.max(0, baseLeft + shrink);
+    const insetRight = Math.max(0, baseRight + shrink);
+    const total = insetLeft + insetRight;
+    // 视口尚未测量时先使用设置值；测量后限制极端收缩，兼容分屏和横屏。
+    const allowedTotal = width > 0 ? Math.max(0, width - Math.min(width, 96)) : total;
+    const scale = total > allowedTotal ? allowedTotal / total : 1;
+    return (left ? insetLeft : insetRight) * scale;
   }
 
   serialize(): string {
@@ -228,7 +304,7 @@ export class ReaderInfoBarConfig {
 
   /** 页眉文字行高度（vp）。由字号直接推算，不依赖异步测量，避免打开书时二次分页。 */
   headerLineHeight(): number {
-    return Math.round(this.fontSize * 1.5);
+    return Math.round(this.headerFontSize * 1.5);
   }
 
   /** 页眉文字行以外的附加高度：进度条或分隔线。 */
@@ -245,7 +321,8 @@ export class ReaderInfoBarConfig {
 
   /** 只包含会改变正文可用高度的项；内容槽位变化不需要重新分页。 */
   layoutIdentity(): string {
-    return `${this.fontSize}_${this.headerVisible()}_${this.headerExtraHeight()}_${this.footerExtraHeight()}_` +
+    return `${this.headerFontSize}_${this.footerFontSize}_${this.headerVisible()}_` +
+      `${this.headerExtraHeight()}_${this.footerExtraHeight()}_` +
       `${this.headerOffset}_${this.footerOffset}`;
   }
 }
@@ -259,6 +336,10 @@ export class ReaderInfoBarContext {
   chapterCount: number = 0;
   pageIndex: number = 0;
   pageCount: number = 0;
+  /** The chapter page total is still being measured; partial pages/chunks are not a final total. */
+  pageCountPending: boolean = false;
+  /** Continuous reading progress from the visible source offset; -1 uses paged progress. */
+  chapterProgressRatio: number = -1;
   /** 横屏双页时一次显示两页。 */
   doublePage: boolean = false;
   timeText: string = '';
@@ -283,21 +364,29 @@ export class ReaderInfoBarText {
       return context.chapterTitle ? `${bookName} · ${context.chapterTitle}` : bookName;
     }
     if (item === ReaderInfoItem.PAGE) {
+      if (context.pageCountPending) return '…';
       if (context.doublePage) {
         return `${pageIndex + 1}-${Math.min(pageIndex + 2, pageCount)}/${pageCount}`;
       }
       return `${pageIndex + 1}/${pageCount}`;
     }
     if (item === ReaderInfoItem.PAGES_LEFT) {
+      if (context.pageCountPending) return '…';
       const shown = context.doublePage ? Math.min(pageIndex + 2, pageCount) : pageIndex + 1;
       return `剩余 ${Math.max(0, pageCount - shown)} 页`;
     }
     if (item === ReaderInfoItem.CHAPTER_PERCENT) {
+      if (context.pageCountPending && context.chapterProgressRatio < 0) return '…';
       return `${Math.round(ReaderInfoBarText.chapterPercent(context))}%`;
     }
     if (item === ReaderInfoItem.CHAPTER_PROGRESS) return `${chapterIndex + 1}/${chapterCount} 章`;
     if (item === ReaderInfoItem.BOOK_PERCENT) {
+      if (context.pageCountPending && context.chapterProgressRatio < 0) return '…';
       return `${ReaderInfoBarText.bookPercent(context).toFixed(1)}%`;
+    }
+    if (item === ReaderInfoItem.PAGE_BOOK_PERCENT) {
+      return `${ReaderInfoBarText.of(ReaderInfoItem.PAGE, context)}  ` +
+        ReaderInfoBarText.of(ReaderInfoItem.BOOK_PERCENT, context);
     }
     if (item === ReaderInfoItem.TIME) return context.timeText;
     if (item === ReaderInfoItem.BATTERY) return ReaderInfoBarText.batteryText(context);
@@ -326,6 +415,11 @@ export class ReaderInfoBarText {
   }
 
   static chapterPercent(context: ReaderInfoBarContext): number {
+    if (context.chapterProgressRatio >= 0) {
+      return Math.max(0, Math.min(100, context.chapterProgressRatio * 100));
+    }
+    // Until the denominator is final, only completed chapters contribute to numeric progress bars.
+    if (context.pageCountPending) return 0;
     const pageCount = Math.max(1, context.pageCount);
     const pageIndex = Math.max(0, Math.min(context.pageIndex, pageCount - 1));
     return Math.max(0, Math.min(100, ((pageIndex + 1) / pageCount) * 100));
