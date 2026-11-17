@@ -1,7 +1,7 @@
 import { BookSourceGroupStore } from '../../utils/BookSourceGroupStore';
 import { SharedElementMotion } from '../../utils/SharedElementMotion';
 import { LengthMetrics, router } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationAttribute, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import deviceInfo from '@ohos.deviceInfo';
 import { Book, BookSource, SearchBook, BookFieldSanitizer } from '@legado/sourceengine';
 import { AppDatabase } from '../../model/data/AppDatabase';
@@ -65,41 +65,6 @@ class ExploreSidebarSection {
   key: string = '';
   title: string = '';
   indices: number[] = [];
-}
-
-class ExploreNavModifier implements AttributeModifier<HdsNavigationAttribute> {
-  private scrollers: Array<Scroller>;
-  private collapsible: boolean;
-
-  constructor(scrollers: Array<Scroller>, collapsible: boolean) {
-    this.scrollers = scrollers;
-    this.collapsible = collapsible;
-  }
-
-  applyNormalAttribute(instance: HdsNavigationAttribute): void {
-    if (this.scrollers.length > 0) {
-      instance.bindToScrollable(this.scrollers);
-      instance.dynamicHideTitleBar({
-        hideTitleArea: this.collapsible,
-        hideBottomBuilder: false,
-        hideStatusBar: false,
-        mode: HideMode.SCROLL_UP_TO,
-        hideRatio: 1.0
-      });
-      if (!this.collapsible) {
-        instance.hideTitleBar(false);
-      }
-      return;
-    }
-    instance.dynamicHideTitleBar({
-      hideTitleArea: false,
-      hideBottomBuilder: false,
-      hideStatusBar: false,
-      mode: HideMode.SCROLL_UP_TO,
-      hideRatio: 1.0
-    });
-    instance.hideTitleBar(false);
-  }
 }
 
 /** 首页"发现"页签：发现源、筛选条件与结果列表；标题行的搜索按钮打开整页的搜索层（SearchPage）。 */
@@ -657,7 +622,14 @@ export struct ExplorePage {
             blurEndOffsetVp: CollapsingHeader.BACKDROP_REVEAL_DISTANCE
           })
         })
-        .attributeModifier(new ExploreNavModifier(this.activeExploreScrollers(), this.exploreCanCollapseHeader()))
+        .bindToScrollable(this.activeExploreScrollers())
+        .dynamicHideTitleBar({
+          hideTitleArea: this.activeExploreScrollers().length > 0 && this.exploreCanCollapseHeader(),
+          hideBottomBuilder: false,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO,
+          hideRatio: 1.0
+        })
         .width('100%')
         .height('100%')
 

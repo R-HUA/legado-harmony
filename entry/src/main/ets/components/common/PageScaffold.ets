@@ -1,42 +1,11 @@
 import { LengthMetrics, router } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationAttribute, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { ImmersiveBackButton } from '../ImmersiveBackButton';
 import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 import { CollapsingHeader } from '../../utils/CollapsingHeader';
 import { HeaderBackdrop } from './HeaderBackdrop';
-
-class PageScaffoldNavModifier implements AttributeModifier<HdsNavigationAttribute> {
-  private scrollers: Array<Scroller>;
-  private collapsible: boolean;
-
-  constructor(scrollers: Array<Scroller>, collapsible: boolean) {
-    this.scrollers = scrollers;
-    this.collapsible = collapsible;
-  }
-
-  applyNormalAttribute(instance: HdsNavigationAttribute): void {
-    if (this.scrollers.length > 0) {
-      instance.bindToScrollable(this.scrollers);
-      instance.dynamicHideTitleBar({
-        hideTitleArea: this.collapsible,
-        hideStatusBar: false,
-        mode: HideMode.SCROLL_UP_TO
-      });
-      if (!this.collapsible) {
-        instance.hideTitleBar(false);
-      }
-      return;
-    }
-    instance.dynamicHideTitleBar({
-      hideTitleArea: false,
-      hideStatusBar: false,
-      mode: HideMode.SCROLL_UP_TO
-    });
-    instance.hideTitleBar(false);
-  }
-}
 
 /**
  * 二级页面的统一骨架：页面底色、沉浸式顶栏（返回、标题、右侧操作）和状态栏/导航条的留白。
@@ -136,7 +105,12 @@ export struct PageScaffold {
             darkMode: this.appDarkMode
           })
         })
-        .attributeModifier(new PageScaffoldNavModifier(this.allScrollers(), this.collapsible))
+        .bindToScrollable(this.allScrollers())
+        .dynamicHideTitleBar({
+          hideTitleArea: this.collapsible && this.allScrollers().length > 0,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO
+        })
         .width('100%')
         .height('100%')
 

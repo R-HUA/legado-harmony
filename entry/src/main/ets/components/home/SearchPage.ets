@@ -1,7 +1,7 @@
 import { BookSourceGroupStore } from '../../utils/BookSourceGroupStore';
 import { SharedElementMotion } from '../../utils/SharedElementMotion';
 import { router } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationAttribute, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import { BookSource, SearchBook, SearchKeyword, BookTypeSupport } from '@legado/sourceengine';
 import { AppDatabase } from '../../model/data/AppDatabase';
 import { SearchCoordinator, SearchCallback, SearchProgress } from '../../core/book/SearchCoordinator';
@@ -45,41 +45,6 @@ class SearchCategoryChip {
 const SEARCH_SCOPE_ALL = 0;
 const SEARCH_SCOPE_SINGLE = 1;
 const SEARCH_SCOPE_CUSTOM = 2;
-
-class SearchNavModifier implements AttributeModifier<HdsNavigationAttribute> {
-  private scrollers: Array<Scroller>;
-  private collapsible: boolean;
-
-  constructor(scrollers: Array<Scroller>, collapsible: boolean) {
-    this.scrollers = scrollers;
-    this.collapsible = collapsible;
-  }
-
-  applyNormalAttribute(instance: HdsNavigationAttribute): void {
-    if (this.scrollers.length > 0) {
-      instance.bindToScrollable(this.scrollers);
-      instance.dynamicHideTitleBar({
-        hideTitleArea: this.collapsible,
-        hideBottomBuilder: false,
-        hideStatusBar: false,
-        mode: HideMode.SCROLL_UP_TO,
-        hideRatio: 1.0
-      });
-      if (!this.collapsible) {
-        instance.hideTitleBar(false);
-      }
-      return;
-    }
-    instance.dynamicHideTitleBar({
-      hideTitleArea: false,
-      hideBottomBuilder: false,
-      hideStatusBar: false,
-      mode: HideMode.SCROLL_UP_TO,
-      hideRatio: 1.0
-    });
-    instance.hideTitleBar(false);
-  }
-}
 
 /**
  * 发现页里的搜索层：点发现页搜索框后盖在发现内容上，取消或返回时收起，结果与关键词保留到下次打开。
@@ -678,7 +643,14 @@ export struct SearchPage {
             blurEndOffsetVp: CollapsingHeader.BACKDROP_REVEAL_DISTANCE
           })
         })
-        .attributeModifier(new SearchNavModifier(this.activeSearchScrollers(), this.searchCanCollapseHeader()))
+        .bindToScrollable(this.activeSearchScrollers())
+        .dynamicHideTitleBar({
+          hideTitleArea: this.activeSearchScrollers().length > 0 && this.searchCanCollapseHeader(),
+          hideBottomBuilder: false,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO,
+          hideRatio: 1.0
+        })
         .width('100%')
         .height('100%')
 

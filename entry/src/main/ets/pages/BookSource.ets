@@ -19,7 +19,7 @@ import { BookSourceGroupStore } from '../utils/BookSourceGroupStore';
 import { ResponsiveManagerListLayout } from '../utils/ResponsiveManagerListLayout';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 import deviceInfo from '@ohos.deviceInfo';
-import { BottomBuilderParams, BottomBuilderShowType, HdsListItem, HdsNavigation, HdsNavigationAttribute, HdsNavigationMenuItemOptions, HdsNavigationTitleMode, HdsSwipeActionOptions, HideMode, TextStyleMode } from '@kit.UIDesignKit';
+import { BottomBuilderParams, BottomBuilderShowType, HdsListItem, HdsNavigation, HdsNavigationMenuItemOptions, HdsNavigationTitleMode, HdsSwipeActionOptions, HideMode, TextStyleMode } from '@kit.UIDesignKit';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { VirtualListScrollbar } from '../utils/VirtualListScrollbar';
@@ -135,40 +135,6 @@ const SOURCE_SELECTION_ROW_HEIGHT: number = 42;
 const BOOK_SOURCE_FILTER_BUTTON_ID: string = 'book_source_filter_btn';
 const BOOK_SOURCE_MORE_BUTTON_ID: string = 'book_source_more_btn';
 
-class BookSourceNavModifier implements AttributeModifier<HdsNavigationAttribute> {
-  private scrollers: Array<Scroller>;
-  private collapsible: boolean;
-
-  constructor(scrollers: Array<Scroller>, collapsible: boolean) {
-    this.scrollers = scrollers;
-    this.collapsible = collapsible;
-  }
-
-  applyNormalAttribute(instance: HdsNavigationAttribute): void {
-    if (this.scrollers.length > 0) {
-      instance.bindToScrollable(this.scrollers);
-      instance.dynamicHideTitleBar({
-        hideTitleArea: this.collapsible,
-        hideBottomBuilder: this.collapsible,
-        hideStatusBar: false,
-        mode: HideMode.SCROLL_UP_TO
-      });
-      if (!this.collapsible) {
-        instance.hideTitleBar(false);
-      }
-      return;
-    }
-    instance.bindToScrollable([]);
-    instance.dynamicHideTitleBar({
-      hideTitleArea: false,
-      hideBottomBuilder: false,
-      hideStatusBar: false,
-      mode: HideMode.SCROLL_UP_TO
-    });
-    instance.hideTitleBar(false);
-  }
-}
-
 interface BookSourceHeaderButtonOptions {
   icon: Resource;
   active: boolean;
@@ -216,9 +182,6 @@ struct BookSourcePage {
   @State private filterMenuPopupY: number = 96;
   @State private moreMenuPopupX: number = 344;
   @State private moreMenuPopupY: number = 96;
-  private navModifier: BookSourceNavModifier | null = null;
-  private navModifierHasScroller: boolean = false;
-  private navModifierCollapsible: boolean = true;
   @State sourceGroups: string[] = [];
   @State isLoading: boolean = false;
   @State searchText: string = '';
@@ -509,16 +472,6 @@ struct BookSourcePage {
     this.actionSourceUrl = source.bookSourceUrl;
     this.actionSourceDetail = source;
     await this.openActionSourceLogin();
-  }
-
-  private getNavModifier(hasScroller: boolean, collapsible: boolean): BookSourceNavModifier {
-    if (this.navModifier === null || this.navModifierHasScroller !== hasScroller ||
-      this.navModifierCollapsible !== collapsible) {
-      this.navModifierHasScroller = hasScroller;
-      this.navModifierCollapsible = collapsible;
-      this.navModifier = new BookSourceNavModifier(hasScroller ? [this.sourceListScroller] : [], collapsible);
-    }
-    return this.navModifier;
   }
 
   private sourceTitleText(): string {
@@ -1054,7 +1007,13 @@ struct BookSourcePage {
             blurEndOffsetVp: 24
           })
         })
-        .attributeModifier(this.getNavModifier(!this.isLoading && this.sources.length > 0, !this.selectionMode))
+        .bindToScrollable(!this.isLoading && this.sources.length > 0 ? [this.sourceListScroller] : [])
+        .dynamicHideTitleBar({
+          hideTitleArea: !this.isLoading && this.sources.length > 0 && !this.selectionMode,
+          hideBottomBuilder: !this.isLoading && this.sources.length > 0 && !this.selectionMode,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO
+        })
         .width('100%')
         .height('100%')
       } else {

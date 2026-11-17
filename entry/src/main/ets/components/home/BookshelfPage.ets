@@ -13,7 +13,7 @@ import { DeleteParticles, DeleteParticleLayer, DeleteParticleBurst } from '../co
 import { BookshelfCoverBadges } from '../BookshelfCoverBadges';
 import { BookshelfCoverBadgeSettings } from '../../utils/BookshelfCoverBadgeSettings';
 import { componentUtils, curves, FrameCallback, LengthMetrics, router, window } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationAttribute, HdsNavigationTitleMode, HideMode, TitleBarStyleOptions } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode, TitleBarStyleOptions } from '@kit.UIDesignKit';
 import { common, WantAgent, wantAgent } from '@kit.AbilityKit';
 import { BackgroundPermit } from '../../utils/BackgroundPermit';
 import { notificationManager } from '@kit.NotificationKit';
@@ -81,41 +81,6 @@ import { CloudDownloadQueue } from '../../account/CloudDownloadQueue';
 import { PopupMenuAction } from '../common/PopupMenuAction';
 import { ReaderHaptics } from '../../utils/ReaderHaptics';
 import { BookMarkService } from '../../core/mark/BookMarkService';
-
-/**
- * 动态绑定当前激活分类页与布局对应的 Scroller 到原生 HdsNavigation，
- * 并按可收起状态同步标题栏滚动显隐策略。
- */
-class BookshelfNavModifier implements AttributeModifier<HdsNavigationAttribute> {
-  private scrollers: Array<Scroller>;
-  private collapsible: boolean;
-
-  constructor(scrollers: Array<Scroller>, collapsible: boolean) {
-    this.scrollers = scrollers;
-    this.collapsible = collapsible;
-  }
-
-  applyNormalAttribute(instance: HdsNavigationAttribute): void {
-    if (this.scrollers.length > 0) {
-      instance.bindToScrollable(this.scrollers);
-      instance.dynamicHideTitleBar({
-        hideTitleArea: this.collapsible,
-        hideStatusBar: false,
-        mode: HideMode.SCROLL_UP_TO
-      });
-      if (!this.collapsible) {
-        instance.hideTitleBar(false);
-      }
-      return;
-    }
-    instance.dynamicHideTitleBar({
-      hideTitleArea: false,
-      hideStatusBar: false,
-      mode: HideMode.SCROLL_UP_TO
-    });
-    instance.hideTitleBar(false);
-  }
-}
 
 const SHELF_FULL_TEXT_CACHE_NOTIFICATION_INTERVAL_MS: number = 5000;
 /** 有声书同时下载的章数。 */
@@ -2125,8 +2090,13 @@ export struct BookshelfPage {
           style: this.shelfNavigationTitleBarStyle(
             (this.shelfSearchActive ? BookshelfPage.SEARCH_BAR_HEIGHT : 0) + (this.isBookMultiSelect ? 42 : 0))
         })
-        .attributeModifier(new BookshelfNavModifier(this.activeShelfNavScrollers(),
-          !this.isBookMultiSelect && !this.shelfSearchActive && !this.shelfSoloMenuMode()))
+        .bindToScrollable(this.activeShelfNavScrollers())
+        .dynamicHideTitleBar({
+          hideTitleArea: this.activeShelfNavScrollers().length > 0 &&
+            !this.isBookMultiSelect && !this.shelfSearchActive && !this.shelfSoloMenuMode(),
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO
+        })
         .width('100%')
         .height('100%')
 
@@ -2250,7 +2220,12 @@ export struct BookshelfPage {
           },
           style: this.shelfNavigationTitleBarStyle(this.isBookMultiSelect ? 42 : 0)
         })
-        .attributeModifier(new BookshelfNavModifier(this.activeTileGroupNavScrollers(), false))
+        .bindToScrollable(this.activeTileGroupNavScrollers())
+        .dynamicHideTitleBar({
+          hideTitleArea: false,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO
+        })
         .width('100%')
         .height('100%')
 
