@@ -316,7 +316,7 @@ struct ReaderReplaceRulesPage {
         PageScaffold({
           title: this.previewMode ? '替换净化配置' : '替换净化',
           scrollable: false,
-          collapsible: true,
+          collapsible: !ImmersiveMaterialRuntime.supportsHdsTabs(),
           scroller: this.ruleListScroller,
           externalCollapse: this.headerCollapse,
           onBack: () => {

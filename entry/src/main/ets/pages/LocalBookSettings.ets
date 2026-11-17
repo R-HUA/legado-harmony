@@ -17,6 +17,7 @@ import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
 import { CollapsingHeader } from '../utils/CollapsingHeader';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { CloudAutoSync } from '../account/CloudAutoSync';
 
 @Entry
@@ -61,8 +62,10 @@ struct LocalBookSettingsPage {
   build() {
     Stack() {
       WebBookFetchRuntimeHost()
-      PageScaffold({ title: '添加书籍', scrollable: false, scroller: this.linkScroller,
-        extraScrollers: [this.localScroller], externalCollapse: this.headerCollapse, content: () => {
+      PageScaffold({ title: '添加书籍', scrollable: false,
+        collapsible: !ImmersiveMaterialRuntime.supportsHdsTabs(),
+        scroller: this.importTabs[0] === 0 ? this.linkScroller : this.localScroller,
+        externalCollapse: this.headerCollapse, content: () => {
         this.pageContent()
       } })
       BookSourceStageRuntimeHost()

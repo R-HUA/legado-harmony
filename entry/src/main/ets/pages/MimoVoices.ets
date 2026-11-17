@@ -350,7 +350,9 @@ struct MimoVoicesPage {
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
       PageScaffold({ title: this.title(), scrollable: !['library', 'default', 'schemeEdit', 'schemes'].includes(this.screen),
-        extraScrollers: [this.presetScroller, this.schemeScroller],
+        collapsible: !['library', 'default', 'schemeEdit', 'schemes'].includes(this.screen),
+        extraScrollers: this.screen === 'schemes' ? [this.schemeScroller] :
+          (['library', 'default', 'schemeEdit'].includes(this.screen) ? [this.presetScroller] : []),
         onBack: () => { this.back(); }, actions: () => { this.actions(); }, content: () => { this.content(); } })
       if (this.screen === 'library') { this.addButton('新增提示词', () => this.editPreset()) }
       else if (this.screen === 'schemes') { this.addButton('新建音色方案', () => this.editScheme()) }
