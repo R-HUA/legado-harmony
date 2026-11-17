@@ -4,7 +4,7 @@ import { BookSource, HttpClient, VerificationSupport, NativeSourceService, Nativ
 import { AppDatabase } from '../model/data/AppDatabase';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { PageScaffold } from '../components/common/PageScaffold';
 import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
@@ -25,8 +25,6 @@ struct NativeSourceSettingsPage {
   @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State sourceName: string = '';
   @State items: NativeVarItem[] = [];
   @State hasLogin: boolean = false;
@@ -363,37 +361,39 @@ struct NativeSourceSettingsPage {
 
   build() {
     Stack() {
-    Column() {
-      Row() {
-        ImmersiveBackButton({ iconColor: ThemeRuntime.primaryTextColor(this.appDarkMode), darkMode: this.appDarkMode,
-          buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-          onBack: () => router.back() })
-
-        Text('书源设置')
-          .fontSize(AppFontSize.TITLE)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(ThemeRuntime.primaryTextColor(this.appDarkMode))
-          .layoutWeight(1)
-
-        if (this.items.length > 0) {
-          ImmersiveHeaderAction({
-            label: '保存',
-            tint: this.dirty ? ThemeRuntime.accentColor(this.appDarkMode) : ThemeRuntime.subTextColor(this.appDarkMode),
-            onTap: () => {
-              this.save();
-            }
-          })
-            .margin({ right: AppSpacing.XL })
+      PageScaffold({
+        title: '书源设置',
+        actions: () => {
+          this.titleActions();
+        },
+        content: () => {
+          this.pageContent();
         }
-      }
-      .width('100%')
-      .height(56 + this.statusBarHeight)
-      .padding({ top: this.statusBarHeight })
-      .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-      .alignItems(VerticalAlign.Center)
+      })
+      WebBookFetchRuntimeHost()
+    }
+    .width('100%')
+    .height('100%')
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
 
-      Scroll() {
-        Column() {
+  @Builder
+  titleActions() {
+    if (this.items.length > 0) {
+      ImmersiveHeaderAction({
+        label: '保存',
+        tint: this.dirty ? ThemeRuntime.accentColor(this.appDarkMode) : ThemeRuntime.subTextColor(this.appDarkMode),
+        onTap: () => {
+          this.save();
+        }
+      })
+        .margin({ right: AppSpacing.XL })
+    }
+  }
+
+  @Builder
+  pageContent() {
+    Column() {
           Text(this.sourceName)
             .fontSize(AppFontSize.BODY_LARGE)
             .fontWeight(FontWeight.Medium)
@@ -556,18 +556,5 @@ struct NativeSourceSettingsPage {
           }
         }
         .width('100%')
-        .padding({ bottom: this.navBarHeight + AppSpacing.XL })
       }
-      .layoutWeight(1)
-      .align(Alignment.Top)
-      .scrollBar(BarState.Off)
     }
-    .width('100%')
-    .height('100%')
-    WebBookFetchRuntimeHost()
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(ThemeRuntime.pageColor(this.appDarkMode))
-  }
-}

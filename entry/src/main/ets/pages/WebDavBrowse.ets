@@ -30,7 +30,6 @@ struct WebDavBrowsePage {
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
-  @StorageProp('navBarHeight') navBarHeight: number = 0;
 
   @State connection: WebDavConnection = new WebDavConnection();
   @State pageTitle: string = '';
@@ -62,6 +61,7 @@ struct WebDavBrowsePage {
   private password: string = '';
   private client: WebDavClient | null = null;
   private initialized: boolean = false;
+  private listScroller: Scroller = new Scroller();
 
   aboutToAppear(): void {
     this.syncBars();
@@ -93,7 +93,8 @@ struct WebDavBrowsePage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      PageScaffold({ title: this.currentTitle(), scrollable: false, content: () => {
+      PageScaffold({ title: this.currentTitle(), scrollable: false, collapsible: false, scroller: this.listScroller,
+        content: () => {
         this.pageContent()
       } })
 
@@ -222,7 +223,7 @@ struct WebDavBrowsePage {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
       } else {
-        List({ space: 1 }) {
+        List({ space: 1, scroller: this.listScroller }) {
           ListItem() {
             Row()
               .height(this.fileListTopInset())

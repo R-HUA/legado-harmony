@@ -148,6 +148,7 @@ struct ThemeTypographySettingsPage {
   private fontDraftRevision: number = -1;
   private leaving: boolean = false;
   private fullPreviewHintShown: boolean = false;
+  private settingsScroller: Scroller = new Scroller();
   private timeText: string = ReaderInfoBarClock.timeText();
   private batteryPercent: number = ReaderInfoBarClock.batteryPercent();
 
@@ -173,7 +174,8 @@ struct ThemeTypographySettingsPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      PageScaffold({ title: '主题排版', scrollable: false, collapsible: false, onBack: () => this.requestClose(),
+      PageScaffold({ title: '主题排版', scrollable: false, collapsible: false, scroller: this.settingsScroller,
+        onBack: () => this.requestClose(),
         content: () => {
           this.pageContent()
         }, actions: () => {
@@ -219,7 +221,7 @@ struct ThemeTypographySettingsPage {
     Column() {
       this.previewWindow()
       this.previewToolbar()
-      Scroll() {
+      Scroll(this.settingsScroller) {
         Column() {
           this.settingsContent()
         }

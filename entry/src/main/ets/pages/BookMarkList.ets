@@ -42,6 +42,7 @@ struct BookMarkListPage {
   @State renameInput: string = '';
   private visible: boolean = false;
   private loadGeneration: number = 0;
+  private listScroller: Scroller = new Scroller();
 
   onPageShow(): void {
     this.visible = true;
@@ -110,6 +111,7 @@ struct BookMarkListPage {
         title: '我的标记',
         scrollable: false,
         collapsible: false,
+        scroller: this.listScroller,
         content: () => {
           this.pageContent()
         }
@@ -136,7 +138,7 @@ struct BookMarkListPage {
         if (this.visibleItems().length === 0) {
           this.emptyState('没有符合条件的书', '换个筛选条件或关键词试试。')
         } else {
-          List({ space: AppSpacing.MD }) {
+          List({ space: AppSpacing.MD, scroller: this.listScroller }) {
             ForEach(this.visibleItems(), (item: BookMark) => {
               ListItem() {
                 this.markCard(item)

@@ -118,8 +118,8 @@ struct HelpTopicPage {
 
   build() {
     Stack() {
-      PageScaffold({ title: this.title, scrollable: false, edgeToEdge: true, externalCollapse: this.headerCollapse,
-        content: () => {
+      PageScaffold({ title: this.title, scrollable: false, edgeToEdge: true, scroller: this.scroller,
+        externalCollapse: this.headerCollapse, content: () => {
           this.pageContent()
         } })
     }

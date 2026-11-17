@@ -31,7 +31,7 @@ struct LocalBookSettingsPage {
   @State isScanning: boolean = false;
   @State statusText: string = '';
   @State books: Book[] = [];
-  @State importTabs: number[] = [0];
+  @State @Watch('onImportTabChanged') importTabs: number[] = [0];
   @State importTabOptions: SegmentButtonOptions = SegmentButtonOptions.tab({
     buttons: [{ text: '书籍链接' }, { text: '本地文件' }]
   });
@@ -41,7 +41,8 @@ struct LocalBookSettingsPage {
   @State linkStatus: string = '';
   @State parsedBook: Book | null = null;
   @State addedToShelf: boolean = false;
-  private pageScroller: Scroller = new Scroller();
+  private linkScroller: Scroller = new Scroller();
+  private localScroller: Scroller = new Scroller();
   private linkService: BookUrlImportService | null = null;
   private linkRequest: number = 0;
 
@@ -60,8 +61,8 @@ struct LocalBookSettingsPage {
   build() {
     Stack() {
       WebBookFetchRuntimeHost()
-      PageScaffold({ title: '添加书籍', scrollable: false, scroller: this.pageScroller,
-        externalCollapse: this.headerCollapse, content: () => {
+      PageScaffold({ title: '添加书籍', scrollable: false, scroller: this.linkScroller,
+        extraScrollers: [this.localScroller], externalCollapse: this.headerCollapse, content: () => {
         this.pageContent()
       } })
       BookSourceStageRuntimeHost()
@@ -83,7 +84,7 @@ struct LocalBookSettingsPage {
       .enabled(!this.isResolving && !this.isSaving && !this.isScanning)
 
       if (this.importTabs[0] === 0) {
-        Scroll(this.pageScroller) {
+        Scroll(this.linkScroller) {
           Column() {
             this.linkImportPanel()
           }
@@ -95,8 +96,18 @@ struct LocalBookSettingsPage {
         .width('100%')
         .layoutWeight(1)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        .onDidScroll((_x: number, yOffset: number) => this.trackHeaderCollapse(yOffset))
-        .onScrollStop(() => this.settleHeaderCollapse())
+        .onDidScroll((_x: number, yOffset: number) => {
+          this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+            this.linkScroller.currentOffset().yOffset);
+        })
+        .onScrollStop(() => {
+          const target = CollapsingHeader.settle(this.headerCollapse, this.linkScroller.currentOffset().yOffset);
+          if (target !== this.headerCollapse) {
+            animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+              this.headerCollapse = target;
+            });
+          }
+        })
       } else {
         this.localImportPanel()
       }
@@ -200,6 +211,10 @@ struct LocalBookSettingsPage {
 
   aboutToDisappear(): void {
     this.cancelLinkImport();
+  }
+
+  onImportTabChanged(): void {
+    this.headerCollapse = 0;
   }
 
   refreshTabStyle(): void {
@@ -384,7 +399,7 @@ struct LocalBookSettingsPage {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
       } else {
-        List({ space: AppSpacing.MD, scroller: this.pageScroller }) {
+        List({ space: AppSpacing.MD, scroller: this.localScroller }) {
           ForEach(this.books, (book: Book) => {
             ListItem() {
               this.bookItem(book)
@@ -396,8 +411,18 @@ struct LocalBookSettingsPage {
         .width('100%')
         .layoutWeight(1)
         .clip(true)
-        .onDidScroll((yOffset: number) => this.trackHeaderCollapse(yOffset))
-        .onScrollStop(() => this.settleHeaderCollapse())
+        .onDidScroll((yOffset: number) => {
+          this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+            this.localScroller.currentOffset().yOffset);
+        })
+        .onScrollStop(() => {
+          const target = CollapsingHeader.settle(this.headerCollapse, this.localScroller.currentOffset().yOffset);
+          if (target !== this.headerCollapse) {
+            animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+              this.headerCollapse = target;
+            });
+          }
+        })
       }
 
       Text('选择 TXT / EPUB / MOBI / PDF 文件或 ZIP 压缩包导入书架')
@@ -426,20 +451,5 @@ struct LocalBookSettingsPage {
     .width('100%')
     .layoutWeight(1)
     .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXXL, bottom: 32 + this.navBarHeight })
-  }
-
-  /** 非 HDS 设备上自绘顶栏随列表/滚动跟手收起（HDS 原生标题栏自行联动）。 */
-  trackHeaderCollapse(yOffset: number): void {
-    this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
-      this.pageScroller.currentOffset().yOffset);
-  }
-
-  settleHeaderCollapse(): void {
-    const target = CollapsingHeader.settle(this.headerCollapse, this.pageScroller.currentOffset().yOffset);
-    if (target !== this.headerCollapse) {
-      animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-        this.headerCollapse = target;
-      });
-    }
   }
 }

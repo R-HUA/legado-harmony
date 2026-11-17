@@ -1,12 +1,15 @@
-import { router, promptAction } from '@kit.ArkUI';
+import { LengthMetrics, router, promptAction } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationTitleMode } from '@kit.UIDesignKit';
 import { webview } from '@kit.ArkWeb';
-import { CookieStore, VerificationSupport, BookSource } from '@legado/sourceengine';
+import { CookieStore, VerificationSupport } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { ReadBookEngine } from '../core/book/ReadBookEngine';
 import { BookSourceRuntimeSnapshotStore } from '../core/book/BookSourceRuntimeSnapshot';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
+import { PageScaffold } from '../components/common/PageScaffold';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { AppFontSize } from '../theme/AppFontSize';
@@ -143,6 +146,9 @@ struct VerifyWebPage {
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
+  @State private actionsWidth: number = 64;
   @State url: string = '';
   @State title: string = '网页验证';
   @State currentUrl: string = '';
@@ -239,96 +245,165 @@ struct VerifyWebPage {
   }
 
   build() {
-    Column() {
-      Row() {
-        ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-          buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-          onBack: () => this.finishVerify() })
-
-        Column() {
-          Text(this.title)
-            .fontSize(AppFontSize.SUBTITLE)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.primaryTextColor())
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(this.currentUrl)
-            .fontSize(AppFontSize.CAPTION)
-            .fontColor(this.subTextColor())
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
-
-        ImmersiveHeaderAction({
-          label: '完成',
-          tint: this.accentColor(),
-          onTap: () => {
-            this.finishVerify();
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        HdsNavigation() {
+          Column() {
+            this.webContent()
           }
+          .width('100%')
+          .height('100%')
+          .padding({ top: PageScaffold.BAR_HEIGHT + this.statusBarHeight, bottom: this.navBarHeight })
+        }
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(false)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          padding: { end: LengthMetrics.vp(Math.max(16, this.actionsWidth)) },
+          content: {
+            title: { mainTitle: this.title, subTitle: this.currentUrl },
+            backIcon: { label: '返回', action: () => this.finishVerify() }
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor(),
+            subTitleColor: this.subTextColor()
+          })
         })
-          .margin({ left: AppSpacing.SM, right: AppSpacing.XL - AppSpacing.MD })
+        .width('100%')
+        .height('100%')
+
+        Row() {
+          Row() {
+            ImmersiveHeaderAction({
+              label: '完成',
+              tint: this.accentColor(),
+              onTap: () => {
+                this.finishVerify();
+              }
+            })
+          }
+          .height(PageScaffold.BAR_HEIGHT)
+          .padding({ right: AppSpacing.XL })
+          .alignItems(VerticalAlign.Center)
+          .onAreaChange((_oldValue: Area, newValue: Area) => {
+            const width = parseFloat(String(newValue.width));
+            if (Number.isFinite(width) && Math.abs(width - this.actionsWidth) >= 1) {
+              this.actionsWidth = width;
+            }
+          })
+        }
+        .width('100%')
+        .height(PageScaffold.BAR_HEIGHT)
+        .margin({ top: this.statusBarHeight })
+        .justifyContent(FlexAlign.End)
+        .hitTestBehavior(HitTestMode.Transparent)
       }
       .width('100%')
-      .height(56)
-      .padding({ right: AppSpacing.MD })
-      .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-      .alignItems(VerticalAlign.Center)
+      .height('100%')
+      .backgroundColor(this.pageColor())
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    } else {
+      Column() {
+        Row() {
+          ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
+            buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
+            onBack: () => this.finishVerify() })
 
-      if (this.progress > 0 && this.progress < 100) {
-        Progress({ value: this.progress, total: 100, type: ProgressType.Linear })
-          .width('100%')
-          .height(2)
-          .color(this.accentColor())
-      }
-
-      Web({ src: this.url, controller: this.controller })
-        .width('100%')
-        .layoutWeight(1)
-        .javaScriptAccess(true)
-        .domStorageAccess(true)
-        .onlineImageAccess(true)
-        .imageAccess(true)
-        .mixedMode(MixedMode.All)
-        .userAgent(this.browserUserAgent())
-        .javaScriptProxy({
-          object: this.browserJavaBridge,
-          name: 'java',
-          methodList: [
-            'toast', 'longToast', 'startBrowser', 'startBrowserDp', 'open', 'openUrl',
-            'getCookie', 'setCookie', 'removeCookie', 'getVariable', 'putVariable', 'reLoginView'
-          ],
-          controller: this.controller
-        })
-        .onControllerAttached(() => {
-          this.loadBrowserPayload();
-        })
-        .onLoadIntercept((event?: OnLoadInterceptEvent): boolean => {
-          return this.handleBrowserLoadIntercept(event);
-        })
-        .onPageBegin((event?: OnPageBeginEvent) => {
-          if (event?.url) this.currentUrl = event.url;
-        })
-        .onPageEnd((event?: OnPageEndEvent) => {
-          if (event?.url) {
-            this.currentUrl = event.url;
-            if (!this.readerCommentMode) {
-              this.saveCookies(event.url);
-              this.syncDocumentCookies(event.url);
-            }
+          Column() {
+            Text(this.title)
+              .fontSize(AppFontSize.SUBTITLE)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.primaryTextColor())
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.currentUrl)
+              .fontSize(AppFontSize.CAPTION)
+              .fontColor(this.subTextColor())
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
           }
-          if (!this.readerCommentMode) this.injectBrowserPayloadScript();
-        })
-        .onProgressChange((event?: OnProgressChangeEvent) => {
-          this.progress = event?.newProgress || 0;
-        })
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+
+          ImmersiveHeaderAction({
+            label: '完成',
+            tint: this.accentColor(),
+            onTap: () => {
+              this.finishVerify();
+            }
+          })
+            .margin({ left: AppSpacing.SM, right: AppSpacing.XL - AppSpacing.MD })
+        }
+        .width('100%')
+        .height(56)
+        .padding({ right: AppSpacing.MD })
+        .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
+        .alignItems(VerticalAlign.Center)
+
+        this.webContent()
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ top: this.statusBarHeight, bottom: this.navBarHeight })
+      .backgroundColor(this.pageColor())
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     }
-    .width('100%')
-    .height('100%')
-    .padding({ top: this.statusBarHeight, bottom: this.navBarHeight })
-    .backgroundColor(this.pageColor())
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  webContent() {
+    if (this.progress > 0 && this.progress < 100) {
+      Progress({ value: this.progress, total: 100, type: ProgressType.Linear })
+        .width('100%')
+        .height(2)
+        .color(this.accentColor())
+    }
+
+    Web({ src: this.url, controller: this.controller })
+      .width('100%')
+      .layoutWeight(1)
+      .javaScriptAccess(true)
+      .domStorageAccess(true)
+      .onlineImageAccess(true)
+      .imageAccess(true)
+      .mixedMode(MixedMode.All)
+      .userAgent(this.browserUserAgent())
+      .javaScriptProxy({
+        object: this.browserJavaBridge,
+        name: 'java',
+        methodList: [
+          'toast', 'longToast', 'startBrowser', 'startBrowserDp', 'open', 'openUrl',
+          'getCookie', 'setCookie', 'removeCookie', 'getVariable', 'putVariable', 'reLoginView'
+        ],
+        controller: this.controller
+      })
+      .onControllerAttached(() => {
+        this.loadBrowserPayload();
+      })
+      .onLoadIntercept((event?: OnLoadInterceptEvent): boolean => {
+        return this.handleBrowserLoadIntercept(event);
+      })
+      .onPageBegin((event?: OnPageBeginEvent) => {
+        if (event?.url) this.currentUrl = event.url;
+      })
+      .onPageEnd((event?: OnPageEndEvent) => {
+        if (event?.url) {
+          this.currentUrl = event.url;
+          if (!this.readerCommentMode) {
+            this.saveCookies(event.url);
+            this.syncDocumentCookies(event.url);
+          }
+        }
+        if (!this.readerCommentMode) this.injectBrowserPayloadScript();
+      })
+      .onProgressChange((event?: OnProgressChangeEvent) => {
+        this.progress = event?.newProgress || 0;
+      })
   }
 
   async finishVerify(): Promise<void> {

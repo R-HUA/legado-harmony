@@ -1,5 +1,6 @@
 import { BookCover } from '../components/book/BookCover';
-import { router, promptAction } from '@kit.ArkUI';
+import { LengthMetrics, router, promptAction } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationTitleMode } from '@kit.UIDesignKit';
 import { Book } from '@legado/sourceengine';
 import { appDb } from '../model/data/AppDatabase';
 import { LocalBookService } from '../core/book/LocalBookService';
@@ -21,6 +22,9 @@ import { BookCoverCache } from '../utils/BookCoverCache';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
 import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
+import { HeaderBackdrop } from '../components/common/HeaderBackdrop';
+import { PageScaffold } from '../components/common/PageScaffold';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { syncSystemBars } from '../utils/SystemBars';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
@@ -86,6 +90,8 @@ struct OpdsBrowsePage {
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
 
   @StorageProp('searchExploreUseBookshelfCoverGallery') useBookshelfCover: boolean = false;
   @State server: OpdsServerConfig = new OpdsServerConfig();
@@ -133,6 +139,7 @@ struct OpdsBrowsePage {
   private initialized: boolean = false;
   private readonly detailDialogSession: SystemDialogSession = new SystemDialogSession();
   private readonly searchController: TextInputController = new TextInputController();
+  private readonly feedScroller: Scroller = new Scroller();
 
   aboutToAppear(): void {
     this.syncBars();
@@ -165,20 +172,100 @@ struct OpdsBrowsePage {
     return false;
   }
 
+  private hasFeedEntries(): boolean {
+    return !this.serverMissing && !this.errorMessage && !(this.loading && this.entries.length === 0) &&
+      this.entries.length > 0;
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Column() {
-        if (this.serverMissing || this.errorMessage) {
-          this.errorView();
-        } else {
-          this.browseBody();
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        HdsNavigation() {
+          Column() {
+            if (this.serverMissing || this.errorMessage) {
+              this.errorView();
+            } else {
+              this.browseBody();
+            }
+          }
+          .width('100%')
+          .height('100%')
+          .padding({
+            top: !this.hasFeedEntries() || this.facets.length > 0 ?
+              PageScaffold.BAR_HEIGHT + this.statusBarHeight : 0
+          })
         }
-      }
-      .width('100%')
-      .height('100%')
-      .padding({ top: 56 + this.statusBarHeight })
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(false)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          padding: { end: LengthMetrics.vp(this.searchMode ? 16 : 56) },
+          content: {
+            title: { mainTitle: this.searchMode ? '' : this.currentTitle() },
+            backIcon: { label: '返回', action: () => this.goBack() }
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor()
+          })
+        })
+        .bindToScrollable([this.feedScroller])
+        .width('100%')
+        .height('100%')
 
-      this.titleBar()
+        if (this.searchMode) {
+          Row() {
+            this.searchBar()
+          }
+          .width('100%')
+          .height(PageScaffold.BAR_HEIGHT)
+          .padding({ left: 56, right: AppSpacing.SM })
+          .margin({ top: this.statusBarHeight })
+          .alignItems(VerticalAlign.Center)
+          .hitTestBehavior(HitTestMode.Transparent)
+        } else {
+          Row() {
+            ImmersiveHeaderAction({
+              icon: $r('sys.symbol.magnifyingglass'),
+              tint: this.searchAvailable ? this.accentColor() : this.subTextColor(),
+              accessibilityLabel: '搜索书库',
+              onTap: () => this.toggleSearch()
+            })
+              .margin({ right: AppSpacing.XL - AppSpacing.SM })
+          }
+          .width('100%')
+          .height(PageScaffold.BAR_HEIGHT)
+          .padding({ right: AppSpacing.SM })
+          .margin({ top: this.statusBarHeight })
+          .justifyContent(FlexAlign.End)
+          .alignItems(VerticalAlign.Center)
+          .hitTestBehavior(HitTestMode.Transparent)
+        }
+      } else {
+        Column() {
+          if (this.serverMissing || this.errorMessage) {
+            this.errorView();
+          } else {
+            this.browseBody();
+          }
+        }
+        .width('100%')
+        .height('100%')
+        .padding({ top: PageScaffold.BAR_HEIGHT + this.statusBarHeight })
+
+        HeaderBackdrop({
+          statusBarHeight: this.statusBarHeight,
+          backdropHeight: PageScaffold.BAR_HEIGHT + this.statusBarHeight,
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode)
+        })
+          .width('100%')
+
+        this.titleBar()
+      }
 
       if (this.downloadBusy) {
         Column({ space: AppSpacing.LG }) {
@@ -369,7 +456,7 @@ struct OpdsBrowsePage {
 
   @Builder
   feedList() {
-    List({ space: AppSpacing.MD }) {
+    List({ space: AppSpacing.MD, scroller: this.feedScroller }) {
       LazyForEach(this.entrySource, (entry: OpdsEntry) => {
         ListItem() {
           this.feedItem(entry)
@@ -409,6 +496,8 @@ struct OpdsBrowsePage {
     }
     .scrollBar(BarState.Off)
     .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+    .contentStartOffset(ImmersiveMaterialRuntime.supportsHdsTabs() && this.facets.length === 0 ?
+      PageScaffold.BAR_HEIGHT + this.statusBarHeight : 0)
     .width('100%')
     .layoutWeight(1)
     .padding({ left: AppSpacing.LG, right: AppSpacing.LG })

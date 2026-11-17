@@ -10,12 +10,23 @@ const compile = source => stripTypeScriptTypes(source.replace(/^import .*;\r?\n/
   .replace(/^export /gm, ''), { mode: 'strip' });
 
 function harness(api = 26, supported = true, missingHds = false) {
-  const state = { level: 'adaptive', dark: false, opened: [], closed: [], nativeMaterials: 0 };
+  const state = { level: 'adaptive', dark: false, themeTint: false, opened: [], closed: [], nativeMaterials: 0 };
   const empty = Object.freeze({ empty: true });
   const sandbox = vm.createContext({
     console,
     deviceInfo: { sdkApiVersion: api },
-    AppStorage: { get: key => key === 'immersiveLightLevel' ? state.level : state.dark },
+    AppStorage: {
+      get: key => key === 'immersiveLightLevel' ? state.level :
+        key === 'immersiveThemeTint' ? state.themeTint : state.dark
+    },
+    LengthMetrics: missingHds ? undefined : { vp: value => ({ value, unit: 1 }) },
+    ScrollEffectType: missingHds ? undefined : {
+      COMMON_BLUR: 0,
+      GRADUAL_BLUR: 1,
+      GRADIENT_BLUR: 2,
+      IMMERSIVE_GRADIENT_BLUR: 3
+    },
+    BlurStrategy: missingHds ? undefined : { ENABLE: 0, DISABLE: 1, ADAPTIVE: 2 },
     uiMaterial: {
       Material: { empty },
       isImmersiveMaterialSupported: () => supported,
@@ -27,7 +38,13 @@ function harness(api = 26, supported = true, missingHds = false) {
       MaterialType: { IMMERSIVE: 'immersive', NONE: 'none', ADAPTIVE: 'adaptive' },
       MaterialLevel: { EXQUISITE: 'high', GENTLE: 'balanced', SMOOTH: 'weak', ADAPTIVE: 'adaptive' }
     },
-    ThemeRuntime: { glassPanelColor: () => '#40FFFFFF', cardColor: dark => dark ? '#222222' : '#FFFFFF' },
+    ThemeRuntime: {
+      glassPanelColor: () => '#40FFFFFF',
+      cardColor: dark => dark ? '#222222' : '#FFFFFF',
+      primaryTextColor: dark => dark ? '#FFFFFF' : '#191B1F',
+      subTextColor: dark => dark ? '#999999' : '#666666',
+      accentColor: () => '#0A59F7'
+    },
     Color: { Transparent: 'transparent' },
     BlurStyle: { COMPONENT_THICK: 'blur', NONE: 'none' },
     DialogAlignment: { Center: 'center' }
@@ -177,10 +194,10 @@ test('each UI material consumer subscribes directly and passes the reactive ligh
       const text = fs.readFileSync(url, 'utf8');
       const structs = text.split(/(?:export )?struct \w+ \{/).slice(1);
       for (const body of structs) {
-        if (!/ImmersiveMaterialRuntime\.(materialStyle|materialLevel|selectMenuModifier|popupMenuOptions|contextMenuOptions|applySheetMaterial)\(/.test(body)) continue;
+        if (!/ImmersiveMaterialRuntime\.(materialStyle|materialLevel|selectMenuModifier|popupMenuOptions|contextMenuOptions|applySheetMaterial|navigationTitleBarStyle)\(/.test(body)) continue;
         consumers++;
         assert.match(body, /@Storage(?:Prop|Link)\('immersiveLightLevel'\)/, url.pathname);
-        const calls = [...body.matchAll(/ImmersiveMaterialRuntime\.(?:materialStyle|materialLevel|selectMenuModifier|popupMenuOptions|contextMenuOptions|applySheetMaterial)\(([^\n]*)/g)];
+        const calls = [...body.matchAll(/ImmersiveMaterialRuntime\.(?:materialStyle|materialLevel|selectMenuModifier|popupMenuOptions|contextMenuOptions|applySheetMaterial|navigationTitleBarStyle)\(([^\n]*)/g)];
         for (const call of calls) assert.match(call[1], /^this\.immersiveLightLevel/, url.pathname);
       }
     }
@@ -266,4 +283,40 @@ test('API 20 can load material runtime without HDS namespace', () => {
   assert.equal(runtime.supportsHdsTabs(), false);
   assert.equal(runtime.supportsHdsMaterial(), false);
   assert.equal(runtime.supportsHds(), false);
+  assert.equal(Object.keys(runtime.navigationTitleBarStyle('adaptive', { headerFrosted: true, darkMode: false })).length, 0);
+});
+
+test('navigationTitleBarStyle configures frosted blur, immersive hero, disabled blur and levels cleanly', () => {
+  const { ImmersiveMaterialRuntime: runtime } = harness(23, true, false);
+  const frosted = runtime.navigationTitleBarStyle('high', { headerFrosted: true, darkMode: false });
+  assert.equal(frosted.blurStrategy, 0);
+  assert.equal(frosted.scrollEffectOpts.enableScrollEffect, true);
+  assert.equal(frosted.scrollEffectOpts.scrollEffectType, 2);
+  assert.equal(frosted.originalStyle.backgroundStyle.backgroundColor, 'transparent');
+  assert.equal(frosted.scrollEffectStyle.backgroundStyle.backgroundColor, undefined);
+  assert.equal(frosted.scrollEffectStyle.backgroundStyle.maskExtraHeight, 32);
+  assert.equal(frosted.systemMaterialEffect.materialType, 'immersive');
+  assert.equal(frosted.systemMaterialEffect.materialLevel, 'high');
+
+  const hero = runtime.navigationTitleBarStyle('adaptive', {
+    headerFrosted: true,
+    darkMode: true,
+    immersiveHero: true,
+    blurEndOffsetVp: 120
+  });
+  assert.equal(hero.blurStrategy, 2);
+  assert.equal(hero.scrollEffectOpts.scrollEffectType, 3);
+  assert.equal(hero.scrollEffectOpts.blurEffectiveEndOffset.value, 120);
+  assert.equal(hero.scrollEffectStyle.backgroundStyle.backgroundColor, undefined);
+
+  const plain = runtime.navigationTitleBarStyle('high', { headerFrosted: false, darkMode: false });
+  assert.equal(plain.blurStrategy, 1);
+  assert.equal(plain.scrollEffectOpts.enableScrollEffect, false);
+  assert.equal(plain.originalStyle.backgroundStyle.backgroundColor, 'transparent');
+  assert.equal(plain.originalStyle.backgroundStyle.blurRadius, 0);
+  assert.equal(plain.originalStyle.backgroundStyle.maskExtraHeight, 0);
+  assert.equal(plain.scrollEffectStyle.backgroundStyle.backgroundColor, 'transparent');
+  assert.equal(plain.scrollEffectStyle.backgroundStyle.blurRadius, 0);
+  assert.equal(plain.scrollEffectStyle.backgroundStyle.maskExtraHeight, 0);
+  assert.equal(plain.systemMaterialEffect.materialType, 'none');
 });

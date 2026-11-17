@@ -93,7 +93,8 @@ struct SyncIssuesPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      PageScaffold({ title: '同步问题', scrollable: false, externalCollapse: this.headerCollapse, edgeToEdge: true, content: () => {
+      PageScaffold({ title: '同步问题', scrollable: false, scroller: this.headerScroller,
+        externalCollapse: this.headerCollapse, edgeToEdge: true, content: () => {
         this.pageContent()
       }, actions: () => {
         this.titleActions()

@@ -195,7 +195,7 @@ struct CustomTtsVoiceManagerPage {
 
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
-      PageScaffold({ title: '音色管理', scrollable: false, edgeToEdge: true,
+      PageScaffold({ title: '音色管理', scrollable: false, edgeToEdge: true, scroller: this.voiceListScroller,
         externalCollapse: this.headerCollapse, content: (): void => { this.managerContent(); },
         actions: (): void => { this.managerActions(); } })
 

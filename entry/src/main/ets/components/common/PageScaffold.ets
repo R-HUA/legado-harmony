@@ -1,11 +1,42 @@
 import { LengthMetrics, router } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationTitleMode, ScrollEffectType } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationAttribute, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { ImmersiveBackButton } from '../ImmersiveBackButton';
 import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 import { CollapsingHeader } from '../../utils/CollapsingHeader';
 import { HeaderBackdrop } from './HeaderBackdrop';
+
+class PageScaffoldNavModifier implements AttributeModifier<HdsNavigationAttribute> {
+  private scrollers: Array<Scroller>;
+  private collapsible: boolean;
+
+  constructor(scrollers: Array<Scroller>, collapsible: boolean) {
+    this.scrollers = scrollers;
+    this.collapsible = collapsible;
+  }
+
+  applyNormalAttribute(instance: HdsNavigationAttribute): void {
+    if (this.scrollers.length > 0) {
+      instance.bindToScrollable(this.scrollers);
+      instance.dynamicHideTitleBar({
+        hideTitleArea: this.collapsible,
+        hideStatusBar: false,
+        mode: HideMode.SCROLL_UP_TO
+      });
+      if (!this.collapsible) {
+        instance.hideTitleBar(false);
+      }
+      return;
+    }
+    instance.dynamicHideTitleBar({
+      hideTitleArea: false,
+      hideStatusBar: false,
+      mode: HideMode.SCROLL_UP_TO
+    });
+    instance.hideTitleBar(false);
+  }
+}
 
 /**
  * 二级页面的统一骨架：页面底色、沉浸式顶栏（返回、标题、右侧操作）和状态栏/导航条的留白。
@@ -18,8 +49,8 @@ import { HeaderBackdrop } from './HeaderBackdrop';
  * 列表要从顶栏下方滚过去时再加 edgeToEdge: true，内容铺满整页，上下留白都由页面自己放进列表里。
  * 顶栏默认随内容上滑跟手收起、下滑展开，与首页大标题一致；scrollable 为 false 的页面自己跟踪滚动，
  * 用 CollapsingHeader 算出收起量传给 externalCollapse。不需要收起的页面传 collapsible: false。
- * 设备支持 HDS 时，可滚动页面（scrollable 或传入 scroller）改用系统原生标题栏（渐变模糊随滚动联动），
- * 其余情况沿用可收起的自绘顶栏；externalCollapse 只作用于自绘顶栏。
+ * 设备支持 HDS 时统一改用系统原生 HdsNavigation 标题栏（可滚动页面绑定 Scroller 联动渐变模糊与显隐），
+ * API < 23 沿用可收起的自绘顶栏；externalCollapse 用于自绘顶栏及原生模式下右侧操作栏的同步显隐。
  */
 @Component
 export struct PageScaffold {
@@ -35,14 +66,19 @@ export struct PageScaffold {
   @Prop collapsible: boolean = true;
   @Prop externalCollapse: number = 0;
   @State headerCollapse: number = 0;
+  @State private nativeScrollY: number = 0;
   /** 页面自行滚动或需要调整滚动位置时传入自己的 Scroller，未传入时使用内置控制器。 */
   scroller: Scroller | undefined = undefined;
+  /** 多滚动容器页面（如宽窄屏或双页签）额外绑定的 Scroller 列表。 */
+  extraScrollers: Array<Scroller> = [];
   private contentScroller: Scroller = new Scroller();
   @State private actionsWidth: number = 12;
   @StorageProp('appDarkMode') appDarkMode: boolean = false;
   @StorageProp('themeRevision') themeRevision: number = 0;
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
   onBack: () => void = () => {
     router.back();
   };
@@ -53,9 +89,33 @@ export struct PageScaffold {
   emptySlot() {
   }
 
+  private allScrollers(): Array<Scroller> {
+    const result: Array<Scroller> = [];
+    if (this.scroller !== undefined) {
+      result.push(this.scroller);
+    } else if (this.scrollable) {
+      result.push(this.contentScroller);
+    }
+    for (let i = 0; i < this.extraScrollers.length; i++) {
+      const extra = this.extraScrollers[i];
+      if (extra !== undefined && !result.includes(extra)) {
+        result.push(extra);
+      }
+    }
+    return result;
+  }
+
+  private nativeActionsCollapse(): number {
+    if (!this.collapsible || this.allScrollers().length === 0) return 0;
+    if (this.scrollable) {
+      return Math.max(0, Math.min(CollapsingHeader.DISTANCE, this.nativeScrollY / 2));
+    }
+    return this.collapseAmount();
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      if (ImmersiveMaterialRuntime.supportsHdsTabs() && (this.scrollable || this.scroller !== undefined)) {
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
         HdsNavigation() {
           this.pageBody()
         }
@@ -63,89 +123,50 @@ export struct PageScaffold {
         .titleMode(HdsNavigationTitleMode.MINI)
         .hideBackButton(false)
         .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
         .titleBar({
           avoidLayoutSafeArea: true,
-          padding: { end: LengthMetrics.vp(this.actionsWidth) },
+          padding: { end: LengthMetrics.vp(Math.max(16, this.actionsWidth)) },
           content: {
             title: { mainTitle: this.title },
             backIcon: { label: '返回', action: () => this.onBack() }
           },
-          style: {
-            scrollEffectOpts: {
-              enableScrollEffect: true,
-              scrollEffectType: ScrollEffectType.GRADIENT_BLUR,
-              blurEffectiveStartOffset: LengthMetrics.vp(0),
-              blurEffectiveEndOffset: LengthMetrics.vp(8)
-            },
-            originalStyle: {
-              contentStyle: {
-                titleStyle: { mainTitleColor: ThemeRuntime.primaryTextColor(this.appDarkMode) },
-                backIconStyle: { iconColor: ThemeRuntime.primaryTextColor(this.appDarkMode) }
-              }
-            },
-            scrollEffectStyle: {
-              backgroundStyle: { backgroundColor: ThemeRuntime.pageColor(this.appDarkMode), maskExtraHeight: 32 },
-              contentStyle: {
-                titleStyle: { mainTitleColor: ThemeRuntime.primaryTextColor(this.appDarkMode) },
-                backIconStyle: { iconColor: ThemeRuntime.primaryTextColor(this.appDarkMode) }
-              }
-            },
-            systemMaterialEffect: {
-              materialType: ImmersiveMaterialRuntime.materialType(),
-              materialLevel: ImmersiveMaterialRuntime.materialLevel()
-            }
-          }
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode
+          })
         })
-        .bindToScrollable([this.scroller || this.contentScroller])
+        .attributeModifier(new PageScaffoldNavModifier(this.allScrollers(), this.collapsible))
         .width('100%')
         .height('100%')
 
-        // 保留调用方的操作构建器，并为原生标题预留其实际宽度。
+        // 保留调用方的操作构建器，对齐右上角并为原生标题预留其实际宽度，上滑隐藏时同步淡出收起。
         Row() {
-          this.actions()
-        }
-        .height(PageScaffold.BAR_HEIGHT)
-        .padding({ right: 12 })
-        .margin({ top: this.statusBarHeight })
-        .align(Alignment.TopEnd)
-        .onAreaChange((_oldValue: Area, newValue: Area) => {
-          const width = parseFloat(String(newValue.width));
-          if (Number.isFinite(width) && Math.abs(width - this.actionsWidth) >= 1) {
-            this.actionsWidth = width;
+          Row() {
+            this.actions()
           }
-        })
+          .height(PageScaffold.BAR_HEIGHT)
+          .padding({ right: 12 })
+          .alignItems(VerticalAlign.Center)
+          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse()) ? HitTestMode.Default : HitTestMode.None)
+          .onAreaChange((_oldValue: Area, newValue: Area) => {
+            const width = parseFloat(String(newValue.width));
+            if (Number.isFinite(width) && Math.abs(width - this.actionsWidth) >= 1) {
+              this.actionsWidth = width;
+            }
+          })
+        }
+        .width('100%')
+        .height(PageScaffold.BAR_HEIGHT)
+        .margin({ top: this.statusBarHeight })
+        .justifyContent(FlexAlign.End)
+        .hitTestBehavior(HitTestMode.Transparent)
+        .opacity(CollapsingHeader.contentOpacity(this.nativeActionsCollapse()))
+        .translate({ y: -this.nativeActionsCollapse() * 0.5 })
+        .accessibilityLevel(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse()) ? 'auto' : 'no-hide-descendants')
       } else {
         if (this.scrollable) {
-          Scroll(this.scroller || this.contentScroller) {
-            Column() {
-              this.content()
-            }
-            .width('100%')
-            .padding({
-              top: PageScaffold.BAR_HEIGHT + this.statusBarHeight,
-              bottom: this.bottomInset + this.navBarHeight
-            })
-          }
-          .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-          .scrollBar(BarState.Off)
-          .width('100%')
-          .height('100%')
-          .align(Alignment.TopStart)
-          .onDidScroll((_xOffset: number, yOffset: number) => {
-            if (!this.collapsible) return;
-            this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
-              (this.scroller || this.contentScroller).currentOffset().yOffset);
-          })
-          .onScrollStop(() => {
-            if (!this.collapsible) return;
-            const target = CollapsingHeader.settle(this.headerCollapse,
-              (this.scroller || this.contentScroller).currentOffset().yOffset);
-            if (target !== this.headerCollapse) {
-              animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-                this.headerCollapse = target;
-              });
-            }
-          })
+          this.scrollableBody()
         } else {
           Column() {
             this.content()
@@ -189,30 +210,51 @@ export struct PageScaffold {
   }
 
   @Builder
+  scrollableBody() {
+    Scroll(this.scroller || this.contentScroller) {
+      Column() {
+        this.content()
+      }
+      .width('100%')
+      .padding({
+        top: PageScaffold.BAR_HEIGHT + this.statusBarHeight,
+        bottom: this.bottomInset + this.navBarHeight
+      })
+    }
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+    .scrollBar(BarState.Off)
+    .width('100%')
+    .height('100%')
+    .align(Alignment.TopStart)
+    .onDidScroll((_xOffset: number, yOffset: number) => {
+      const offset = (this.scroller || this.contentScroller).currentOffset().yOffset;
+      this.nativeScrollY = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+      if (!this.collapsible) return;
+      this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset, offset);
+    })
+    .onScrollStop(() => {
+      if (!this.collapsible) return;
+      const target = CollapsingHeader.settle(this.headerCollapse,
+        (this.scroller || this.contentScroller).currentOffset().yOffset);
+      if (target !== this.headerCollapse) {
+        animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+          this.headerCollapse = target;
+        });
+      }
+    })
+  }
+
+  @Builder
   pageBody() {
     if (this.scrollable) {
-      Scroll(this.scroller || this.contentScroller) {
-        Column() {
-          this.content()
-        }
-        .width('100%')
-        .padding({
-          top: PageScaffold.BAR_HEIGHT + this.statusBarHeight,
-          bottom: this.bottomInset + this.navBarHeight
-        })
-      }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .scrollBar(BarState.Off)
-      .width('100%')
-      .height('100%')
-      .align(Alignment.TopStart)
+      this.scrollableBody()
     } else {
       Column() {
         this.content()
       }
       .width('100%')
       .height('100%')
-      .padding({ top: this.edgeToEdge ? 0 : PageScaffold.BAR_HEIGHT + this.statusBarHeight })
+      .padding({ top: this.edgeToEdge ? 0 : PageScaffold.BAR_HEIGHT + this.statusBarHeight - this.collapseAmount() })
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     }
   }

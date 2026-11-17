@@ -403,7 +403,8 @@ struct ThemeColorSettingsPage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       PageScaffold({ title: this.fullPreview ? '主题预览' : (this.schemeName || '编辑主题'),
-        scrollable: false, collapsible: false, onBack: () => this.handleBack(), content: () => {
+        scrollable: false, collapsible: false, scroller: this.editorScroller,
+        onBack: () => this.handleBack(), content: () => {
         this.pageContent()
       }, actions: () => {
         this.titleActions()

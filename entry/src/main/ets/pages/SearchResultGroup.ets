@@ -1,7 +1,11 @@
 import { router } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import { SearchBook } from '@legado/sourceengine';
 import { SearchBookResultList } from '../components/book/SearchBookResultList';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { HeaderBackdrop } from '../components/common/HeaderBackdrop';
+import { PageScaffold } from '../components/common/PageScaffold';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { SearchResultAggregationStore, SearchResultGroupSnapshot } from '../utils/SearchResultAggregationStore';
 import { SearchBookShelfChange, SearchBookShelfHelper } from '../utils/SearchBookShelfHelper';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
@@ -22,6 +26,8 @@ struct SearchResultGroupPage {
   @StorageLink('searchExplorePromptAddToShelfOnBack') promptAddToShelfOnBack: boolean = true;
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
   @State books: SearchBook[] = [];
   @State groupTitle: string = '同名书籍';
   @State shelfBookKeys: string[] = [];
@@ -46,81 +52,125 @@ struct SearchResultGroupPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      if (this.books.length > 0) {
-        SearchBookResultList({
-          books: this.books,
-          markTraditional: true,
-          scroller: this.scroller,
-          shelfBookKeys: this.shelfBookKeys,
-          busyBookKeys: this.busyBookKeys,
-          showResultCover: this.showResultCover,
-          showResultCoverBackground: this.showResultCoverBackground,
-          useBookshelfCoverGallery: this.useBookshelfCoverGallery,
-          showResultTags: this.showResultTags,
-          pageColor: this.pageColor(),
-          cardColor: this.cardColor(),
-          itemBorderColor: this.groupBorderColor(),
-          itemBorderWidth: 1,
-          shadowColor: '#00000000',
-          primaryTextColor: this.primaryTextColor(),
-          secondaryTextColor: this.subTextColor(),
-          subTextColor: this.subTextColor(),
-          topPadding: 56 + this.statusBarHeight,
-          bottomPadding: 20 + this.navBarHeight,
-          onOpenBook: (book: SearchBook) => this.openBook(book),
-          onReadBook: (book: SearchBook) => this.readBook(book),
-          onToggleShelf: (book: SearchBook) => this.toggleShelf(book)
-        })
-      } else {
-        Column({ space: AppSpacing.MD }) {
-          Text('聚合结果已失效，请返回重新搜索')
-            .fontSize(AppFontSize.BODY_LARGE)
-            .fontColor(this.subTextColor())
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        HdsNavigation() {
+          this.resultBody()
         }
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(false)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          content: {
+            title: { mainTitle: this.groupTitle, subTitle: `${this.books.length} 个同名结果` },
+            backIcon: { label: '返回', action: () => router.back() }
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor(),
+            subTitleColor: this.subTextColor()
+          })
+        })
+        .bindToScrollable([this.scroller])
+        .dynamicHideTitleBar({
+          hideTitleArea: true,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO
+        })
         .width('100%')
         .height('100%')
-        .justifyContent(FlexAlign.Center)
-      }
+      } else {
+        this.resultBody()
 
-      Row() {
-        ImmersiveBackButton({
-          icon: $r('sys.symbol.chevron_left'),
-          iconOffsetX: 0,
-          iconColor: this.primaryTextColor(),
-          darkMode: this.appDarkMode,
-          buttonSize: 40,
-          containerWidth: 48,
-          containerHeight: 48,
-          startInset: 0,
-          materialScale: 0.83,
-          accessibilityLabel: '返回',
-          onBack: () => router.back()
+        HeaderBackdrop({
+          statusBarHeight: this.statusBarHeight,
+          backdropHeight: PageScaffold.BAR_HEIGHT + this.statusBarHeight,
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode)
         })
+          .width('100%')
 
-        Column({ space: AppSpacing.XXS }) {
-          Text(this.groupTitle)
-            .fontSize(AppFontSize.SUBTITLE)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.primaryTextColor())
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(`${this.books.length} 个同名结果`)
-            .fontSize(AppFontSize.CAPTION)
-            .fontColor(this.subTextColor())
+        Row() {
+          ImmersiveBackButton({
+            icon: $r('sys.symbol.chevron_left'),
+            iconOffsetX: 0,
+            iconColor: this.primaryTextColor(),
+            darkMode: this.appDarkMode,
+            buttonSize: 40,
+            containerWidth: 48,
+            containerHeight: 48,
+            startInset: 0,
+            materialScale: 0.83,
+            accessibilityLabel: '返回',
+            onBack: () => router.back()
+          })
+
+          Column({ space: AppSpacing.XXS }) {
+            Text(this.groupTitle)
+              .fontSize(AppFontSize.SUBTITLE)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.primaryTextColor())
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(`${this.books.length} 个同名结果`)
+              .fontSize(AppFontSize.CAPTION)
+              .fontColor(this.subTextColor())
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
         }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
+        .width('100%')
+        .height(PageScaffold.BAR_HEIGHT + this.statusBarHeight)
+        .padding({ left: AppSpacing.XS, right: AppSpacing.XL, top: this.statusBarHeight })
+        .alignItems(VerticalAlign.Center)
+        .zIndex(2)
       }
-      .width('100%')
-      .height(56 + this.statusBarHeight)
-      .padding({ left: AppSpacing.XS, right: AppSpacing.XL, top: this.statusBarHeight })
-      .alignItems(VerticalAlign.Center)
-      .zIndex(2)
     }
     .width('100%')
     .height('100%')
     .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  resultBody() {
+    if (this.books.length > 0) {
+      SearchBookResultList({
+        books: this.books,
+        markTraditional: true,
+        scroller: this.scroller,
+        shelfBookKeys: this.shelfBookKeys,
+        busyBookKeys: this.busyBookKeys,
+        showResultCover: this.showResultCover,
+        showResultCoverBackground: this.showResultCoverBackground,
+        useBookshelfCoverGallery: this.useBookshelfCoverGallery,
+        showResultTags: this.showResultTags,
+        pageColor: this.pageColor(),
+        cardColor: this.cardColor(),
+        itemBorderColor: this.groupBorderColor(),
+        itemBorderWidth: 1,
+        shadowColor: '#00000000',
+        primaryTextColor: this.primaryTextColor(),
+        secondaryTextColor: this.subTextColor(),
+        subTextColor: this.subTextColor(),
+        topPadding: PageScaffold.BAR_HEIGHT + this.statusBarHeight,
+        bottomPadding: 20 + this.navBarHeight,
+        onOpenBook: (book: SearchBook) => this.openBook(book),
+        onReadBook: (book: SearchBook) => this.readBook(book),
+        onToggleShelf: (book: SearchBook) => this.toggleShelf(book)
+      })
+    } else {
+      Column({ space: AppSpacing.MD }) {
+        Text('聚合结果已失效，请返回重新搜索')
+          .fontSize(AppFontSize.BODY_LARGE)
+          .fontColor(this.subTextColor())
+      }
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+    }
   }
 
   applySnapshot(snapshot: SearchResultGroupSnapshot): void {

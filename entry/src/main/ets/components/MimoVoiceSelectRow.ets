@@ -12,7 +12,7 @@ export struct MimoVoiceSelectRow {
   @Prop selection: string = '';
   @StorageProp('appDarkMode') dark: boolean = false;
   @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
-  @StorageProp('immersiveLightLevel') light: string = 'adaptive';
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   onSelect: (index: number) => void = (_index: number): void => {};
   build() {
     SettingRow({ title: this.title, description: this.description, showDivider: false }) {
@@ -26,7 +26,7 @@ export struct MimoVoiceSelectRow {
         .selectedOptionFontColor(ThemeRuntime.accentColor(this.dark))
         .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.dark))
         .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.dark)).menuBackgroundBlurStyle(BlurStyle.NONE)
-        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.light))
+        .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel))
         .accessibilityText(this.title + '，' + this.selection).onSelect((index: number) => this.onSelect(index))
     }
   }

@@ -4,7 +4,7 @@ import { BookSource } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { PageScaffold } from '../components/common/PageScaffold';
 import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
 import { FormDraftStore } from '../utils/FormDraftStore';
 import { HdsFeedback } from '../utils/HdsFeedback';
@@ -29,7 +29,6 @@ struct BookSourceEditPage {
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
   @StorageLink('appLightButtonColor') appLightButtonColor: string = '#007DFF';
   @StorageLink('appDarkButtonColor') appDarkButtonColor: string = '#3F8CFF';
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State bookSourceUrl: string = '';
   @State source: BookSource = new BookSource();
@@ -48,6 +47,7 @@ struct BookSourceEditPage {
   private draftSaveTimerId: number = -1;
   private conflictingDraftRaw: string = '';
   private keyboardWindow: window.Window | null = null;
+  private formScroller: Scroller = new Scroller();
   private keyboardAvoidAreaCallback: (data: window.AvoidAreaOptions) => void =
     (data: window.AvoidAreaOptions): void => {
       if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
@@ -188,173 +188,176 @@ struct BookSourceEditPage {
 
   build() {
     Stack() {
-      Column() {
-        Row() {
-          ImmersiveBackButton({ iconColor: this.primaryTextColor(), darkMode: this.appDarkMode,
-            buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-            onBack: () => this.requestBack() })
-
-          Text(this.bookSourceUrl ? '编辑书源' : '新建书源')
-            .fontSize(AppFontSize.TITLE)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.primaryTextColor())
-            .layoutWeight(1)
-
-          ImmersiveHeaderAction({
-            label: '保存',
-            tint: this.accentColor(),
-            onTap: () => {
-              this.saveSource();
-            }
-          })
-
-          ImmersiveHeaderAction({
-            label: '调试',
-            tint: this.accentColor(),
-            onTap: () => {
-              this.openDebugDraft();
-            }
-          })
-            .margin({ left: AppSpacing.SM, right: AppSpacing.XL })
+      PageScaffold({
+        title: this.bookSourceUrl ? '编辑书源' : '新建书源',
+        scrollable: false,
+        collapsible: false,
+        scroller: this.formScroller,
+        onBack: () => {
+          this.requestBack();
+        },
+        actions: () => {
+          this.titleActions();
+        },
+        content: () => {
+          this.editorBody();
         }
-        .width('100%')
-        .height(56 + this.statusBarHeight)
-        .padding({ top: this.statusBarHeight })
-        .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-        .alignItems(VerticalAlign.Center)
-
-        // Tab栏
-        Row() {
-          Text('基本')
-            .fontSize(AppFontSize.BODY)
-            .fontColor(this.currentTab === 0 ? this.accentColor() : this.secondaryTextColor())
-            .layoutWeight(1)
-            .textAlign(TextAlign.Center)
-            .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
-            .borderWidth({ bottom: this.currentTab === 0 ? 2 : 0 })
-            .borderColor(this.accentColor())
-            .onClick(() => {
-              this.currentTab = 0;
-            })
-
-          Text('搜索')
-            .fontSize(AppFontSize.BODY)
-            .fontColor(this.currentTab === 1 ? this.accentColor() : this.secondaryTextColor())
-            .layoutWeight(1)
-            .textAlign(TextAlign.Center)
-            .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
-            .borderWidth({ bottom: this.currentTab === 1 ? 2 : 0 })
-            .borderColor(this.accentColor())
-            .onClick(() => {
-              this.currentTab = 1;
-            })
-
-          Text('发现')
-            .fontSize(AppFontSize.BODY)
-            .fontColor(this.currentTab === 2 ? this.accentColor() : this.secondaryTextColor())
-            .layoutWeight(1)
-            .textAlign(TextAlign.Center)
-            .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
-            .borderWidth({ bottom: this.currentTab === 2 ? 2 : 0 })
-            .borderColor(this.accentColor())
-            .onClick(() => {
-              this.currentTab = 2;
-            })
-
-          Text('详情')
-            .fontSize(AppFontSize.BODY)
-            .fontColor(this.currentTab === 3 ? this.accentColor() : this.secondaryTextColor())
-            .layoutWeight(1)
-            .textAlign(TextAlign.Center)
-            .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
-            .borderWidth({ bottom: this.currentTab === 3 ? 2 : 0 })
-            .borderColor(this.accentColor())
-            .onClick(() => {
-              this.currentTab = 3;
-            })
-
-          Text('目录')
-            .fontSize(AppFontSize.BODY)
-            .fontColor(this.currentTab === 4 ? this.accentColor() : this.secondaryTextColor())
-            .layoutWeight(1)
-            .textAlign(TextAlign.Center)
-            .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
-            .borderWidth({ bottom: this.currentTab === 4 ? 2 : 0 })
-            .borderColor(this.accentColor())
-            .onClick(() => {
-              this.currentTab = 4;
-            })
-
-          Text('正文')
-            .fontSize(AppFontSize.BODY)
-            .fontColor(this.currentTab === 5 ? this.accentColor() : this.secondaryTextColor())
-            .layoutWeight(1)
-            .textAlign(TextAlign.Center)
-            .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
-            .borderWidth({ bottom: this.currentTab === 5 ? 2 : 0 })
-            .borderColor(this.accentColor())
-            .onClick(() => {
-              this.currentTab = 5;
-            })
-        }
-        .width('100%')
-        .backgroundColor(this.cardColor())
-        .borderWidth({ bottom: 1 })
-        .borderColor(this.dividerColor())
-
-        if (this.isLoading) {
-          Column() {
-            LoadingProgress()
-              .width(40)
-              .height(40)
-            Text('加载书源中...')
-              .fontSize(AppFontSize.BODY)
-              .fontColor(this.secondaryTextColor())
-              .margin({ top: AppSpacing.MD })
-          }
-          .layoutWeight(1)
-          .width('100%')
-          .justifyContent(FlexAlign.Center)
-        } else {
-          // 内容区域
-          Scroll() {
-            Column() {
-              if (this.currentTab === 0) {
-                this.basicTabBuilder()
-              } else if (this.currentTab === 1) {
-                this.searchTabBuilder()
-              } else if (this.currentTab === 2) {
-                this.exploreTabBuilder()
-              } else if (this.currentTab === 3) {
-                this.infoTabBuilder()
-              } else if (this.currentTab === 4) {
-                this.tocTabBuilder()
-              } else if (this.currentTab === 5) {
-                this.contentTabBuilder()
-              }
-            }
-            .id(`book_source_form_${this.currentTab}_${this.sourceLoadedVersion}`)
-            .width('100%')
-            // RESIZE mode already reduces this Scroll viewport above the keyboard.
-            // Do not add the full keyboard avoid height again, otherwise the form
-            // gets a large blank tail and the last editor can be pushed out of view.
-            .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XL, bottom: 16 + this.navBarHeight })
-          }
-          .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-          .layoutWeight(1)
-          .scrollBar(BarState.Off)
-        }
-      }
-      .width('100%')
-      .height('100%')
-      .backgroundColor(this.pageColor())
-      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-
-
+      })
     }
     .width('100%')
     .height('100%')
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  titleActions() {
+    Row({ space: AppSpacing.SM }) {
+      ImmersiveHeaderAction({
+        label: '保存',
+        tint: this.accentColor(),
+        onTap: () => {
+          this.saveSource();
+        }
+      })
+
+      ImmersiveHeaderAction({
+        label: '调试',
+        tint: this.accentColor(),
+        onTap: () => {
+          this.openDebugDraft();
+        }
+      })
+    }
+    .margin({ right: AppSpacing.XL })
+  }
+
+  @Builder
+  editorBody() {
+    Column() {
+      // Tab栏
+      Row() {
+        Text('基本')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.currentTab === 0 ? this.accentColor() : this.secondaryTextColor())
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+          .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
+          .borderWidth({ bottom: this.currentTab === 0 ? 2 : 0 })
+          .borderColor(this.accentColor())
+          .onClick(() => {
+            this.currentTab = 0;
+          })
+
+        Text('搜索')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.currentTab === 1 ? this.accentColor() : this.secondaryTextColor())
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+          .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
+          .borderWidth({ bottom: this.currentTab === 1 ? 2 : 0 })
+          .borderColor(this.accentColor())
+          .onClick(() => {
+            this.currentTab = 1;
+          })
+
+        Text('发现')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.currentTab === 2 ? this.accentColor() : this.secondaryTextColor())
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+          .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
+          .borderWidth({ bottom: this.currentTab === 2 ? 2 : 0 })
+          .borderColor(this.accentColor())
+          .onClick(() => {
+            this.currentTab = 2;
+          })
+
+        Text('详情')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.currentTab === 3 ? this.accentColor() : this.secondaryTextColor())
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+          .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
+          .borderWidth({ bottom: this.currentTab === 3 ? 2 : 0 })
+          .borderColor(this.accentColor())
+          .onClick(() => {
+            this.currentTab = 3;
+          })
+
+        Text('目录')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.currentTab === 4 ? this.accentColor() : this.secondaryTextColor())
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+          .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
+          .borderWidth({ bottom: this.currentTab === 4 ? 2 : 0 })
+          .borderColor(this.accentColor())
+          .onClick(() => {
+            this.currentTab = 4;
+          })
+
+        Text('正文')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.currentTab === 5 ? this.accentColor() : this.secondaryTextColor())
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+          .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
+          .borderWidth({ bottom: this.currentTab === 5 ? 2 : 0 })
+          .borderColor(this.accentColor())
+          .onClick(() => {
+            this.currentTab = 5;
+          })
+      }
+      .width('100%')
+      .backgroundColor(this.cardColor())
+      .borderWidth({ bottom: 1 })
+      .borderColor(this.dividerColor())
+
+      if (this.isLoading) {
+        Column() {
+          LoadingProgress()
+            .width(40)
+            .height(40)
+          Text('加载书源中...')
+            .fontSize(AppFontSize.BODY)
+            .fontColor(this.secondaryTextColor())
+            .margin({ top: AppSpacing.MD })
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
+      } else {
+        // 内容区域
+        Scroll(this.formScroller) {
+          Column() {
+            if (this.currentTab === 0) {
+              this.basicTabBuilder()
+            } else if (this.currentTab === 1) {
+              this.searchTabBuilder()
+            } else if (this.currentTab === 2) {
+              this.exploreTabBuilder()
+            } else if (this.currentTab === 3) {
+              this.infoTabBuilder()
+            } else if (this.currentTab === 4) {
+              this.tocTabBuilder()
+            } else if (this.currentTab === 5) {
+              this.contentTabBuilder()
+            }
+          }
+          .id(`book_source_form_${this.currentTab}_${this.sourceLoadedVersion}`)
+          .width('100%')
+          // RESIZE mode already reduces this Scroll viewport above the keyboard.
+          // Do not add the full keyboard avoid height again, otherwise the form
+          // gets a large blank tail and the last editor can be pushed out of view.
+          .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XL, bottom: 16 + this.navBarHeight })
+        }
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+      }
+    }
+    .width('100%')
+    .layoutWeight(1)
   }
 
   openDebugDraft(): void {

@@ -104,6 +104,8 @@ struct MimoVoicesPage {
   private selectedRolePreset: MimoVoicePreset = new MimoVoicePreset();
   private preview: MimoPreviewSession = new MimoPreviewSession();
   private serial: number = 0;
+  private presetScroller: Scroller = new Scroller();
+  private schemeScroller: Scroller = new Scroller();
 
   aboutToAppear(): void {
     const params = router.getParams() as MimoVoicePageParams;
@@ -348,6 +350,7 @@ struct MimoVoicesPage {
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
       PageScaffold({ title: this.title(), scrollable: !['library', 'default', 'schemeEdit', 'schemes'].includes(this.screen),
+        extraScrollers: [this.presetScroller, this.schemeScroller],
         onBack: () => { this.back(); }, actions: () => { this.actions(); }, content: () => { this.content(); } })
       if (this.screen === 'library') { this.addButton('新增提示词', () => this.editPreset()) }
       else if (this.screen === 'schemes') { this.addButton('新建音色方案', () => this.editScheme()) }
@@ -421,7 +424,7 @@ struct MimoVoicesPage {
       }
       this.hint(this.screen === 'library' ? '加入方案后才参与自动分配。左滑可禁用或删除，长按查看全部操作。' :
         this.screen === 'default' ? '单音色朗读和未匹配人物使用，已有角色绑定保留。' : '只勾选少量候选，多个人物可以共享同一声音。')
-      List({ space: AppSpacing.MD }) {
+      List({ space: AppSpacing.MD, scroller: this.presetScroller }) {
         LazyForEach(this.source, (preset: MimoVoicePreset) => {
           // HdsListItem 必须直接挂在 List 下，侧滑才不被包装节点阻断。
           if (this.screen === 'library' && deviceInfo.sdkApiVersion >= 26) {
@@ -568,7 +571,7 @@ struct MimoVoicesPage {
   }
   @Builder
   schemeList() {
-    List({ space: AppSpacing.MD }) {
+    List({ space: AppSpacing.MD, scroller: this.schemeScroller }) {
       ListItem() {
         Column({ space: AppSpacing.MD }) {
           if (this.error) { this.hint(this.error) }

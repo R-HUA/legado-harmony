@@ -1,11 +1,26 @@
 import deviceInfo from '@ohos.deviceInfo';
-import { display, uiMaterial } from '@kit.ArkUI';
-import { hdsMaterial } from '@kit.UIDesignKit';
+import { display, LengthMetrics, uiMaterial } from '@kit.ArkUI';
+import { BlurStrategy, HdsNavigationBackgroundStyle, HdsTitleBarContentStyle, hdsMaterial, ScrollEffectType, TitleBarStyleOptions } from '@kit.UIDesignKit';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 
 export interface ImmersiveSurfaceBorder {
   width: number;
   color: ResourceColor;
+}
+
+export interface NavigationTitleBarStyleConfig {
+  headerFrosted: boolean;
+  darkMode: boolean;
+  contentColor?: ResourceColor;
+  subTitleColor?: ResourceColor;
+  scrollEffectContentColor?: ResourceColor;
+  scrollEffectSubTitleColor?: ResourceColor;
+  blurStartOffsetVp?: number;
+  blurEndOffsetVp?: number;
+  immersiveHero?: boolean;
+  maskExtraHeight?: number;
+  scrollEffectDisabled?: boolean;
+  dividerColor?: ResourceColor;
 }
 
 /**
@@ -542,5 +557,103 @@ export class ImmersiveMaterialRuntime {
       interactive: lightLevel !== 'weak',
       lightEffect: ImmersiveMaterialRuntime.lightEffect(false, lightLevel, '#FFFFFF', darkMode)
     }, lightLevel);
+  }
+
+  /**
+   * 统一的原生 HdsNavigation 标题栏渐变模糊与沉浸光感样式。
+   * headerFrosted 为 false 时关闭渐变模糊与光感材质并清空背景遮罩；开启时使用 GRADIENT_BLUR / IMMERSIVE_GRADIENT_BLUR，
+   * 不设置不透明页面底色以保持原生实时模糊透出。
+   */
+  static navigationTitleBarStyle(lightLevel: string, config: NavigationTitleBarStyleConfig): TitleBarStyleOptions {
+    if (!ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      return {};
+    }
+    const contentColor: ResourceColor = config.contentColor ?? ThemeRuntime.primaryTextColor(config.darkMode);
+    const subTitleColor: ResourceColor = config.subTitleColor ?? ThemeRuntime.subTextColor(config.darkMode);
+    const scrolledContentColor: ResourceColor = config.scrollEffectContentColor ?? contentColor;
+    const scrolledSubTitleColor: ResourceColor = config.scrollEffectSubTitleColor ?? subTitleColor;
+    const startOffsetVp: number = Math.max(0, config.blurStartOffsetVp ?? 0);
+    const defaultEndOffsetVp: number = config.immersiveHero ? 56 : 8;
+    const endOffsetVp: number = Math.max(startOffsetVp, config.blurEndOffsetVp ?? defaultEndOffsetVp);
+    const originalContentStyle: HdsTitleBarContentStyle = {
+      titleStyle: { mainTitleColor: contentColor, subTitleColor: subTitleColor },
+      backIconStyle: { iconColor: contentColor, textColor: contentColor },
+      menuStyle: { iconColor: contentColor, textColor: contentColor },
+      subIconStyle: { iconColor: contentColor, textColor: contentColor }
+    };
+    const scrollEffectContentStyle: HdsTitleBarContentStyle = {
+      titleStyle: { mainTitleColor: scrolledContentColor, subTitleColor: scrolledSubTitleColor },
+      backIconStyle: { iconColor: scrolledContentColor, textColor: scrolledContentColor },
+      menuStyle: { iconColor: scrolledContentColor, textColor: scrolledContentColor },
+      subIconStyle: { iconColor: scrolledContentColor, textColor: scrolledContentColor }
+    };
+    if (config.dividerColor !== undefined) {
+      originalContentStyle.dividerStyle = { dividerColor: config.dividerColor };
+      scrollEffectContentStyle.dividerStyle = { dividerColor: config.dividerColor };
+    }
+    if (!config.headerFrosted) {
+      const clearBackgroundStyle: HdsNavigationBackgroundStyle = {
+        backgroundColor: Color.Transparent,
+        maskExtraHeight: 0,
+        blurRadius: 0
+      };
+      return {
+        blurStrategy: BlurStrategy.DISABLE,
+        scrollEffectOpts: {
+          enableScrollEffect: false,
+          scrollEffectType: ScrollEffectType.COMMON_BLUR,
+          blurEffectiveStartOffset: LengthMetrics.vp(startOffsetVp),
+          blurEffectiveEndOffset: LengthMetrics.vp(endOffsetVp)
+        },
+        originalStyle: {
+          backgroundStyle: clearBackgroundStyle,
+          contentStyle: originalContentStyle
+        },
+        scrollEffectStyle: {
+          backgroundStyle: clearBackgroundStyle,
+          contentStyle: scrollEffectContentStyle
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.NONE,
+          materialLevel: ImmersiveMaterialRuntime.materialLevel(lightLevel)
+        }
+      };
+    }
+    const originalBackgroundStyle: HdsNavigationBackgroundStyle = {
+      backgroundColor: Color.Transparent
+    };
+    const scrolledBackgroundStyle: HdsNavigationBackgroundStyle = {};
+    if (config.maskExtraHeight !== undefined) {
+      scrolledBackgroundStyle.maskExtraHeight = config.maskExtraHeight;
+      if (config.scrollEffectDisabled) {
+        originalBackgroundStyle.maskExtraHeight = config.maskExtraHeight;
+      }
+    } else if (!config.immersiveHero) {
+      scrolledBackgroundStyle.maskExtraHeight = 32;
+    }
+    return {
+      blurStrategy: ImmersiveMaterialRuntime.effectiveLevel(lightLevel) === 'adaptive' ?
+        BlurStrategy.ADAPTIVE : BlurStrategy.ENABLE,
+      thermoCtrl: true,
+      scrollEffectOpts: {
+        enableScrollEffect: !config.scrollEffectDisabled,
+        scrollEffectType: config.immersiveHero ?
+          ScrollEffectType.IMMERSIVE_GRADIENT_BLUR : ScrollEffectType.GRADIENT_BLUR,
+        blurEffectiveStartOffset: LengthMetrics.vp(startOffsetVp),
+        blurEffectiveEndOffset: LengthMetrics.vp(endOffsetVp)
+      },
+      originalStyle: {
+        backgroundStyle: originalBackgroundStyle,
+        contentStyle: originalContentStyle
+      },
+      scrollEffectStyle: {
+        backgroundStyle: scrolledBackgroundStyle,
+        contentStyle: scrollEffectContentStyle
+      },
+      systemMaterialEffect: {
+        materialType: ImmersiveMaterialRuntime.materialType(),
+        materialLevel: ImmersiveMaterialRuntime.materialLevel(lightLevel)
+      }
+    };
   }
 }

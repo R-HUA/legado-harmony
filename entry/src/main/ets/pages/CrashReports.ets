@@ -38,7 +38,8 @@ struct CrashReportsPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      PageScaffold({ title: '崩溃记录', scrollable: false, externalCollapse: this.headerCollapse, edgeToEdge: true,
+      PageScaffold({ title: '崩溃记录', scrollable: false, scroller: this.headerScroller,
+        externalCollapse: this.headerCollapse, edgeToEdge: true,
         content: () => {
           this.pageContent()
         }, actions: () => {

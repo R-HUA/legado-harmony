@@ -3,7 +3,7 @@ import { BookSource, NativeSourceService } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { PageScaffold } from '../components/common/PageScaffold';
 import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { BookSourceExport } from '../utils/BookSourceExport';
@@ -58,7 +58,6 @@ interface NativeSourceEditParams {
 struct NativeSourceEditPage {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State bookSourceUrl: string = '';
   @State definitionText: string = '';
@@ -152,41 +151,49 @@ struct NativeSourceEditPage {
   }
 
   build() {
+    Stack() {
+      PageScaffold({
+        title: this.bookSourceUrl ? '编辑原生书源' : '新建原生书源',
+        scrollable: false,
+        collapsible: false,
+        actions: () => {
+          this.titleActions();
+        },
+        content: () => {
+          this.pageContent();
+        }
+      })
+    }
+    .width('100%')
+    .height('100%')
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  titleActions() {
+    Row({ space: AppSpacing.SM }) {
+      ImmersiveHeaderAction({
+        label: '校验',
+        tint: ThemeRuntime.accentColor(this.appDarkMode),
+        onTap: () => {
+          this.checkDefinition();
+        }
+      })
+
+      ImmersiveHeaderAction({
+        label: '保存',
+        tint: ThemeRuntime.accentColor(this.appDarkMode),
+        onTap: () => {
+          this.saveSource();
+        }
+      })
+    }
+    .margin({ right: AppSpacing.XL })
+  }
+
+  @Builder
+  pageContent() {
     Column() {
-      Row() {
-        ImmersiveBackButton({ iconColor: ThemeRuntime.primaryTextColor(this.appDarkMode), darkMode: this.appDarkMode,
-          buttonSize: 40, containerWidth: 56, materialScale: 0.83, compactLayout: true,
-          onBack: () => router.back() })
-
-        Text(this.bookSourceUrl ? '编辑原生书源' : '新建原生书源')
-          .fontSize(AppFontSize.TITLE)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(ThemeRuntime.primaryTextColor(this.appDarkMode))
-          .layoutWeight(1)
-
-        ImmersiveHeaderAction({
-          label: '校验',
-          tint: ThemeRuntime.accentColor(this.appDarkMode),
-          onTap: () => {
-            this.checkDefinition();
-          }
-        })
-
-        ImmersiveHeaderAction({
-          label: '保存',
-          tint: ThemeRuntime.accentColor(this.appDarkMode),
-          onTap: () => {
-            this.saveSource();
-          }
-        })
-          .margin({ left: AppSpacing.SM, right: AppSpacing.XL })
-      }
-      .width('100%')
-      .height(56 + this.statusBarHeight)
-      .padding({ top: this.statusBarHeight })
-      .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-      .alignItems(VerticalAlign.Center)
-
       if (this.problem) {
         Text(this.problem)
           .fontSize(AppFontSize.BODY)
@@ -215,7 +222,6 @@ struct NativeSourceEditPage {
         })
     }
     .width('100%')
-    .height('100%')
-    .backgroundColor(ThemeRuntime.pageColor(this.appDarkMode))
+    .layoutWeight(1)
   }
 }

@@ -1,4 +1,5 @@
 import { router } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationTitleMode } from '@kit.UIDesignKit';
 import { Book, BookChapter, BookUrlResolver, BookTypeSupport, BookFieldSanitizer } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { WebBookService } from '../core/book/WebBookService';
@@ -9,6 +10,8 @@ import { BookIdentity } from '../utils/BookIdentity';
 import { SearchBookShelfHelper } from '../utils/SearchBookShelfHelper';
 import { SearchExplorePendingBook } from '../utils/SearchExplorePendingBook';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { HeaderBackdrop } from '../components/common/HeaderBackdrop';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { BookSourceStageRuntimeHost } from '../components/BookSourceStageRuntimeHost';
 import { WebBookFetchRuntimeHost } from '../components/WebBookFetchRuntimeHost';
 import { HdsFeedback } from '../utils/HdsFeedback';
@@ -63,6 +66,8 @@ struct BookChapterListPage {
   @StorageLink('appDarkButtonColor') appDarkButtonColor: string = '#3F8CFF';
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
   @State bookUrl: string = '';
   @State tocUrl: string = '';
   @State origin: string = '';
@@ -129,29 +134,79 @@ struct BookChapterListPage {
     Stack() {
       WebBookFetchRuntimeHost()
 
-      Column() {
-        this.catalogToolbar()
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        HdsNavigation() {
+          Column() {
+            this.catalogToolbar()
 
-        if (this.loadState === LOAD_LOADING) {
-          this.statusView('正在获取该书源的目录…', '')
-        } else if (this.loadState === LOAD_ERROR) {
-          this.statusView(this.errorMessage || '目录加载失败', '重试')
-        } else if (this.loadState === LOAD_EMPTY) {
-          this.statusView(this.errorMessage || '该书源未解析出章节', '重试')
-        } else {
-          this.chapterList()
+            if (this.loadState === LOAD_LOADING) {
+              this.statusView('正在获取该书源的目录…', '')
+            } else if (this.loadState === LOAD_ERROR) {
+              this.statusView(this.errorMessage || '目录加载失败', '重试')
+            } else if (this.loadState === LOAD_EMPTY) {
+              this.statusView(this.errorMessage || '该书源未解析出章节', '重试')
+            } else {
+              this.chapterList()
+            }
+          }
+          .width('100%')
+          .height('100%')
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
         }
-      }
-      .width('100%')
-      .height('100%')
-      .backgroundColor(this.pageColor())
-      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(false)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          content: {
+            title: { mainTitle: this.name || '目录', subTitle: this.subtitleText() },
+            backIcon: { label: '返回', action: () => this.handleBack() }
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor(),
+            subTitleColor: this.subTextColor()
+          })
+        })
+        .bindToScrollable([this.scroller])
+        .width('100%')
+        .height('100%')
+      } else {
+        Column() {
+          this.catalogToolbar()
 
-      this.titleBar()
+          if (this.loadState === LOAD_LOADING) {
+            this.statusView('正在获取该书源的目录…', '')
+          } else if (this.loadState === LOAD_ERROR) {
+            this.statusView(this.errorMessage || '目录加载失败', '重试')
+          } else if (this.loadState === LOAD_EMPTY) {
+            this.statusView(this.errorMessage || '该书源未解析出章节', '重试')
+          } else {
+            this.chapterList()
+          }
+        }
+        .width('100%')
+        .height('100%')
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+
+        HeaderBackdrop({
+          statusBarHeight: this.statusBarHeight,
+          backdropHeight: 56 + this.statusBarHeight,
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode)
+        })
+          .width('100%')
+          .position({ x: 0, y: 0 })
+
+        this.titleBar()
+      }
       BookSourceStageRuntimeHost()
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 

@@ -77,7 +77,8 @@ struct WebDavPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      PageScaffold({ title: 'WebDAV', scrollable: false, externalCollapse: this.headerCollapse, content: () => {
+      PageScaffold({ title: 'WebDAV', scrollable: false, edgeToEdge: true, scroller: this.headerScroller,
+        externalCollapse: this.headerCollapse, content: () => {
         this.pageContent()
       } })
 
@@ -192,8 +193,6 @@ struct WebDavPage {
         .width('100%')
         .layoutWeight(1)
         .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
-        // 顶栏收起时外层留白同步减少，列表顶边保持贴住页面顶部。
-        .margin({ top: -(this.listTopInset() - this.headerCollapse) })
         .zIndex(0)
         .onDidScroll((yOffset: number) => {
           this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
@@ -344,7 +343,7 @@ struct WebDavPage {
         .textAlign(TextAlign.Center)
     }
     .width('100%')
-    .padding({ top: 90, left: 36, right: 36 })
+    .padding({ top: this.listTopInset() + 90, left: 36, right: 36 })
   }
 
   @Builder

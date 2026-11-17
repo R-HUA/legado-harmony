@@ -389,7 +389,8 @@ struct ReadingStatsSharePage {
 
   build() {
     Column() {
-      PageScaffold({ title: '分享阅读统计', scrollable: false, edgeToEdge: true, externalCollapse: this.headerCollapse,
+      PageScaffold({ title: '分享阅读统计', scrollable: false, edgeToEdge: true, scroller: this.headerScroller,
+        extraScrollers: [this.previewScroller, this.settingsScroller], externalCollapse: this.headerCollapse,
         content: (): void => { this.content(); } })
     }.width('100%').height('100%')
       .backgroundColor(ThemeRuntime.pageColor(this.appDarkMode))

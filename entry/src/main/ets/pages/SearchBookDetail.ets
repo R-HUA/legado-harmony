@@ -1,4 +1,5 @@
 import { router } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import { motion } from '@kit.MultimodalAwarenessKit';
 import deviceInfo from '@ohos.deviceInfo';
 import { Book, SearchBook, BookChapter, BookFieldSanitizer, BookTypeSupport, BookUrlResolver } from '@legado/sourceengine';
@@ -42,6 +43,7 @@ import { BookMarkSheet } from '../components/book/BookMarkSheet';
 @Component
 struct SearchBookDetailPage {
   @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
   @StorageProp('smartGripEnabled') @Watch('onSmartGripEnabledChanged') smartGripEnabled: boolean = true;
   /** 顶栏底色与书名渐显所需的滚动距离。 */
   static readonly TITLE_FADE_DISTANCE: number = 120;
@@ -270,113 +272,58 @@ struct SearchBookDetailPage {
   build() {
     Stack() {
       WebBookFetchRuntimeHost()
-      this.ambientBackdrop()
-
-      Column() {
-        Scroll(this.detailScroller) {
-          Column() {
-            this.detailHero()
-
-            Flex({ wrap: FlexWrap.Wrap }) {
-              ForEach(this.getTags(), (tag: string, index: number) => {
-                this.tagChip(tag, index)
-              })
-
-              if (this.wordCount) {
-                Text(this.wordCount)
-                  .fontSize(AppFontSize.BODY)
-                  .fontColor(this.secondaryTextColor())
-                  .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XS, bottom: AppSpacing.XS })
-                  .attributeModifier(this.neutralTagModifier())
-                  .margin({ right: AppSpacing.MD, bottom: AppSpacing.MD })
-              }
-
-              if (this.updateTime) {
-                Text(`更新：${this.updateTime}`)
-                  .fontSize(AppFontSize.BODY)
-                  .fontColor(this.secondaryTextColor())
-                  .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XS, bottom: AppSpacing.XS })
-                  .attributeModifier(this.neutralTagModifier())
-                  .margin({ right: AppSpacing.MD, bottom: AppSpacing.MD })
-              }
-            }
-            .width('100%')
-            .margin({ top: AppSpacing.XL })
-
-            Divider()
-              .strokeWidth(0.5)
-              .color(ThemeRuntime.hairlineColor(this.appDarkMode))
-              .margin({ top: AppSpacing.XS })
-
-            Row() {
-              this.detailShelfAction()
-              this.detailActionItem($r('sys.symbol.list_bullet'),
-                BookTypeSupport.isVideo(this.detailTypeProbe()) ? '选集' : '目录', () => {
-                  this.openChapterList();
-                })
-              this.detailActionItem($r('sys.symbol.arrow_left_arrow_right'), '换源', () => {
-                this.showChangeSourcePrompt();
-              })
-              this.detailActionItem($r('sys.symbol.person'), '同作者', () => {
-                this.showAuthorSearchPrompt();
-              })
-            }
-            .width('100%')
-            .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
-
-            Divider()
-              .strokeWidth(0.5)
-              .color(ThemeRuntime.hairlineColor(this.appDarkMode))
-
-            if (this.name) {
-              this.detailMarkBlock()
-            }
-
-            this.detailChapterRow()
-            this.detailIntro()
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        HdsNavigation() {
+          Stack() {
+            this.ambientBackdrop()
+            this.detailScrollBody()
           }
           .width('100%')
-          .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: 64 + this.statusBarHeight,
-            bottom: 96 + this.navBarHeight })
+          .height('100%')
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
         }
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        // 内容不足一屏时贴顶，Scroll 默认会把它竖直居中。
-        .align(Alignment.Top)
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(false)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          content: {
+            title: {
+              mainTitle: this.titleBarProgress() > 0.6 ? (this.name || this.detailPageTitle()) : this.detailPageTitle()
+            },
+            backIcon: { label: '返回', action: () => this.handleBack() }
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor(),
+            immersiveHero: true,
+            blurEndOffsetVp: SearchBookDetailPage.TITLE_FADE_DISTANCE
+          })
+        })
+        .bindToScrollable([this.detailScroller])
+        .dynamicHideTitleBar({
+          hideTitleArea: true,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO
+        })
         .width('100%')
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
-        .onDidScroll((_xOffset: number, yOffset: number) => {
-          this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
-            this.detailScroller.currentOffset().yOffset);
-          // 只在跨过渐显区间时更新，滚动中不逐帧刷新整页。
-          const offset = Math.max(0, Math.min(SearchBookDetailPage.TITLE_FADE_DISTANCE, this.detailScroller.currentOffset().yOffset));
-          if (Math.abs(offset - this.detailScrollY) >= 4 || offset === 0 || offset === SearchBookDetailPage.TITLE_FADE_DISTANCE) {
-            this.detailScrollY = offset;
-          }
-        })
-        .onScrollStop(() => {
-          const target = CollapsingHeader.settle(this.headerCollapse, this.detailScroller.currentOffset().yOffset);
-          if (target !== this.headerCollapse) {
-            animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-              this.headerCollapse = target;
-            });
-          }
-        })
+        .height('100%')
+      } else {
+        this.ambientBackdrop()
+        this.detailScrollBody()
+
+        HeaderBackdrop({ statusBarHeight: this.statusBarHeight, backdropHeight: this.statusBarHeight,
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode) })
+          .width('100%')
+          .position({ x: 0, y: 0 })
+          .opacity(CollapsingHeader.scrimOpacity(this.headerCollapse))
+          .hitTestBehavior(HitTestMode.None)
+
+        this.titleBar()
       }
-      .width('100%')
-      .height('100%')
-      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-      // 目录面板已绑在外层 Stack 上，一个组件只能绑一个半模态，标记面板挂在这一层。
-      .bindSheet($$this.showMarkSheet, this.markSheet(), this.markSheetOptions())
-
-      HeaderBackdrop({ statusBarHeight: this.statusBarHeight, backdropHeight: this.statusBarHeight,
-        backdropColor: ThemeRuntime.topBarColor(this.appDarkMode) })
-        .width('100%')
-        .position({ x: 0, y: 0 })
-        .opacity(CollapsingHeader.scrimOpacity(this.headerCollapse))
-        .hitTestBehavior(HitTestMode.None)
-
-      this.titleBar()
 
       Row() {
         ImmersiveReadButton({
@@ -407,8 +354,109 @@ struct SearchBookDetailPage {
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .bindSheet($$this.showCatalogSheet, this.catalogSheet(), this.catalogSheetOptions())
+  }
+
+  @Builder
+  detailScrollBody() {
+    Column() {
+      Scroll(this.detailScroller) {
+        Column() {
+          this.detailHero()
+
+          Flex({ wrap: FlexWrap.Wrap }) {
+            ForEach(this.getTags(), (tag: string, index: number) => {
+              this.tagChip(tag, index)
+            })
+
+            if (this.wordCount) {
+              Text(this.wordCount)
+                .fontSize(AppFontSize.BODY)
+                .fontColor(this.secondaryTextColor())
+                .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XS, bottom: AppSpacing.XS })
+                .attributeModifier(this.neutralTagModifier())
+                .margin({ right: AppSpacing.MD, bottom: AppSpacing.MD })
+            }
+
+            if (this.updateTime) {
+              Text(`更新：${this.updateTime}`)
+                .fontSize(AppFontSize.BODY)
+                .fontColor(this.secondaryTextColor())
+                .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XS, bottom: AppSpacing.XS })
+                .attributeModifier(this.neutralTagModifier())
+                .margin({ right: AppSpacing.MD, bottom: AppSpacing.MD })
+            }
+          }
+          .width('100%')
+          .margin({ top: AppSpacing.XL })
+
+          Divider()
+            .strokeWidth(0.5)
+            .color(ThemeRuntime.hairlineColor(this.appDarkMode))
+            .margin({ top: AppSpacing.XS })
+
+          Row() {
+            this.detailShelfAction()
+            this.detailActionItem($r('sys.symbol.list_bullet'),
+              BookTypeSupport.isVideo(this.detailTypeProbe()) ? '选集' : '目录', () => {
+                this.openChapterList();
+              })
+            this.detailActionItem($r('sys.symbol.arrow_left_arrow_right'), '换源', () => {
+              this.showChangeSourcePrompt();
+            })
+            this.detailActionItem($r('sys.symbol.person'), '同作者', () => {
+              this.showAuthorSearchPrompt();
+            })
+          }
+          .width('100%')
+          .padding({ top: AppSpacing.LG, bottom: AppSpacing.LG })
+
+          Divider()
+            .strokeWidth(0.5)
+            .color(ThemeRuntime.hairlineColor(this.appDarkMode))
+
+          if (this.name) {
+            this.detailMarkBlock()
+          }
+
+          this.detailChapterRow()
+          this.detailIntro()
+        }
+        .width('100%')
+        .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: 64 + this.statusBarHeight,
+          bottom: 96 + this.navBarHeight })
+      }
+      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+      // 内容不足一屏时贴顶，Scroll 默认会把它竖直居中。
+      .align(Alignment.Top)
+      .width('100%')
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .onDidScroll((_xOffset: number, yOffset: number) => {
+        this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+          this.detailScroller.currentOffset().yOffset);
+        // 只在跨过渐显区间时更新，滚动中不逐帧刷新整页。
+        const offset = Math.max(0, Math.min(SearchBookDetailPage.TITLE_FADE_DISTANCE, this.detailScroller.currentOffset().yOffset));
+        if (Math.abs(offset - this.detailScrollY) >= 4 || offset === 0 || offset === SearchBookDetailPage.TITLE_FADE_DISTANCE) {
+          this.detailScrollY = offset;
+        }
+      })
+      .onScrollStop(() => {
+        const target = CollapsingHeader.settle(this.headerCollapse, this.detailScroller.currentOffset().yOffset);
+        if (target !== this.headerCollapse) {
+          animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+            this.headerCollapse = target;
+          });
+        }
+      })
+    }
+    .width('100%')
+    .height('100%')
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    // 目录面板已绑在外层 Stack 上，一个组件只能绑一个半模态，标记面板挂在这一层。
+    .bindSheet($$this.showMarkSheet, this.markSheet(), this.markSheetOptions())
   }
 
   /** 换源：系统对话框，API 26+ 是沉浸光感表面。 */

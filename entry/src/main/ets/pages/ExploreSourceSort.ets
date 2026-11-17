@@ -77,9 +77,12 @@ struct ExploreSourceSortPage {
       .filter((url: string) => !!url);
   }
 
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
+
   build() {
     Stack() {
-      PageScaffold({ title: '书源排序', scrollable: false, externalCollapse: this.headerCollapse, content: () => {
+      PageScaffold({ title: '书源排序', scrollable: false, edgeToEdge: true, scroller: this.headerScroller,
+        externalCollapse: this.headerCollapse, content: () => {
         this.pageContent()
       } })
     }
@@ -103,6 +106,7 @@ struct ExploreSourceSortPage {
       }
       .width('100%')
       .layoutWeight(1)
+      .padding({ top: PageScaffold.BAR_HEIGHT + this.statusBarHeight })
       .justifyContent(FlexAlign.Center)
     } else if (this.sources.length === 0) {
       Column() {
@@ -116,6 +120,7 @@ struct ExploreSourceSortPage {
       }
       .width('100%')
       .layoutWeight(1)
+      .padding({ top: PageScaffold.BAR_HEIGHT + this.statusBarHeight })
       .justifyContent(FlexAlign.Center)
     } else {
       List({ scroller: this.headerScroller, space: AppSpacing.MD }) {
@@ -201,6 +206,7 @@ struct ExploreSourceSortPage {
       }
       .scrollBar(BarState.Off)
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+      .contentStartOffset(PageScaffold.BAR_HEIGHT + this.statusBarHeight)
       .width('100%')
       .layoutWeight(1)
       .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.XL })

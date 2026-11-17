@@ -362,8 +362,8 @@ struct ExcerptSharePage {
 
   build() {
     Column() {
-      PageScaffold({ title: '分享摘录', scrollable: false, edgeToEdge: true, externalCollapse: this.headerCollapse,
-        content: (): void => { this.content(); } })
+      PageScaffold({ title: '分享摘录', scrollable: false, edgeToEdge: true, scroller: this.scroller,
+        externalCollapse: this.headerCollapse, content: (): void => { this.content(); } })
     }
     .width('100%')
     .height('100%')

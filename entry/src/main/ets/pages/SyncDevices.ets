@@ -1,4 +1,4 @@
-import { promptAction, router, SymbolGlyphModifier } from '@kit.ArkUI';
+import { promptAction, SymbolGlyphModifier } from '@kit.ArkUI';
 import deviceInfo from '@ohos.deviceInfo';
 import { HdsListItem, HdsSwipeActionOptions } from '@kit.UIDesignKit';
 import { AccountCommerceApi } from '../account/AccountCommerceApi';
@@ -71,7 +71,8 @@ struct SyncDevicesPage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       // 列表铺满整页并从顶栏下方滚过去，上下留白由列表里的占位项提供。
-      PageScaffold({ title: '同步设备', scrollable: false, externalCollapse: this.headerCollapse, edgeToEdge: true, content: () => {
+      PageScaffold({ title: '同步设备', scrollable: false, scroller: this.headerScroller,
+        externalCollapse: this.headerCollapse, edgeToEdge: true, content: () => {
         this.pageContent()
       }, actions: () => {
         this.titleActions()

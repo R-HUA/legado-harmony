@@ -46,6 +46,7 @@ struct ExcerptListPage {
   /** 书架上的书，封面按书架的规则取（自定义封面、书源封面、占位）。 */
   private shelfBooks: Map<string, Book> = new Map<string, Book>();
   private loadGeneration: number = 0;
+  private listScroller: Scroller = new Scroller();
 
   aboutToAppear(): void {
     const params = router.getParams() as Record<string, string>;
@@ -114,6 +115,7 @@ struct ExcerptListPage {
         title: '我的摘录',
         scrollable: false,
         collapsible: false,
+        scroller: this.listScroller,
         content: () => {
           this.pageContent()
         }
@@ -142,7 +144,7 @@ struct ExcerptListPage {
       } else if (this.loaded && this.visibleItems().length === 0) {
         this.emptyState('没有找到', '换个关键词或书名试试。')
       } else if (this.loaded) {
-        List({ space: AppSpacing.MD }) {
+        List({ space: AppSpacing.MD, scroller: this.listScroller }) {
           ForEach(this.visibleItems(), (item: BookAnnotation) => {
             ListItem() {
               this.excerptCard(item)

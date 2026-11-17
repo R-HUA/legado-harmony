@@ -653,8 +653,9 @@ struct ReadingStatsPage {
   }
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      PageScaffold({ title: '阅读统计', scrollable: false, edgeToEdge: true, externalCollapse: this.headerCollapse,
-        actions: (): void => { this.pageActions() }, content: (): void => { this.pageContent() } })
+      PageScaffold({ title: '阅读统计', scrollable: false, edgeToEdge: true, scroller: this.headerScroller,
+        externalCollapse: this.headerCollapse, actions: (): void => { this.pageActions() },
+        content: (): void => { this.pageContent() } })
       Column().width(1).height(1).position({ x: this.contextMenuX, y: this.contextMenuY }).hitTestBehavior(HitTestMode.None)
         .bindPopup(this.showItemActionMenu, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel,
           (): void => { this.itemActionMenu() }, Placement.BottomLeft, this.appDarkMode, this.accentColor(),

@@ -1,4 +1,5 @@
 import { router } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import { common } from '@kit.AbilityKit';
 import picker from '@ohos.file.picker';
 import fs from '@ohos.file.fs';
@@ -18,6 +19,7 @@ import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { CollapsingHeader } from '../utils/CollapsingHeader';
 import { HeaderBackdrop } from '../components/common/HeaderBackdrop';
+import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 
 class CoverGalleryExportResult {
   zipPath: string = '';
@@ -40,6 +42,8 @@ struct CoverGalleryManagerPage {
   @StorageLink('appDarkButtonColor') appDarkButtonColor: string = '#3F8CFF';
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
 
   @State albums: CoverAlbum[] = [];
   @State selectedAlbumId: string = '';
@@ -71,59 +75,60 @@ struct CoverGalleryManagerPage {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Scroll(this.headerScroller) {
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        HdsNavigation() {
+          this.galleryScrollContent()
+        }
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(false)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          content: {
+            title: { mainTitle: '封面图集', subTitle: `${this.albumCount} 个图集` },
+            backIcon: {
+              label: '返回',
+              action: () => {
+                AppStorage.setOrCreate('coverGalleryUpdateTime', Date.now());
+                router.back();
+              }
+            }
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor(),
+            subTitleColor: this.subTextColor()
+          })
+        })
+        .bindToScrollable([this.headerScroller])
+        .dynamicHideTitleBar({
+          hideTitleArea: true,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO
+        })
+        .width('100%')
+        .height('100%')
+      } else {
+        this.galleryScrollContent()
+
+        HeaderBackdrop({ backdropHeight: this.statusBarHeight + 56 - this.headerCollapse,
+          statusBarHeight: this.statusBarHeight,
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode) })
+          .width('100%')
+
+        // 顶栏随列表上滑跟手收起、下滑展开，与其他二级页面一致。
         Column() {
-          Row()
-            .height(56 + this.statusBarHeight)
-
-          this.summaryPanel()
-
-          this.albumSectionTitle()
-          this.albumListPanel()
-
-          if (this.getSelectedAlbum()) {
-            this.sectionTitle('编辑')
-            this.selectedAlbumPanel()
-          }
+          this.titleBar()
         }
         .width('100%')
-        .padding({ bottom: 32 + this.navBarHeight })
+        .height(56 + this.statusBarHeight - this.headerCollapse)
+        .clip(true)
+        .opacity(CollapsingHeader.contentOpacity(this.headerCollapse))
+        .hitTestBehavior(CollapsingHeader.acceptsTouch(this.headerCollapse) ? HitTestMode.Default : HitTestMode.None)
       }
-      .scrollBar(BarState.Off)
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      .backgroundColor(this.pageColor())
-      .onDidScroll((_xOffset: number, yOffset: number) => {
-        this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
-          this.headerScroller.currentOffset().yOffset);
-      })
-      .onScrollStop(() => {
-        const target = CollapsingHeader.settle(this.headerCollapse, this.headerScroller.currentOffset().yOffset);
-        if (target !== this.headerCollapse) {
-          animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-            this.headerCollapse = target;
-          });
-        }
-      })
-
-      HeaderBackdrop({ backdropHeight: this.statusBarHeight + 56 - this.headerCollapse,
-        statusBarHeight: this.statusBarHeight,
-        backdropColor: ThemeRuntime.topBarColor(this.appDarkMode) })
-        .width('100%')
-
-      // 顶栏随列表上滑跟手收起、下滑展开，与其他二级页面一致。
-      Column() {
-        this.titleBar()
-      }
-      .width('100%')
-      .height(56 + this.statusBarHeight - this.headerCollapse)
-      .clip(true)
-      .opacity(CollapsingHeader.contentOpacity(this.headerCollapse))
-      .hitTestBehavior(CollapsingHeader.acceptsTouch(this.headerCollapse) ? HitTestMode.Default : HitTestMode.None)
-
-
-
 
       if (this.deleteParticleBursts.length > 0 && !this.showImageManager) {
         DeleteParticleLayer({ bursts: this.deleteParticleBursts })
@@ -132,7 +137,46 @@ struct CoverGalleryManagerPage {
     .id('cover_gallery_root')
     .width('100%')
     .height('100%')
+    .backgroundColor(this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  galleryScrollContent() {
+    Scroll(this.headerScroller) {
+      Column() {
+        Row()
+          .height(56 + this.statusBarHeight)
+
+        this.summaryPanel()
+
+        this.albumSectionTitle()
+        this.albumListPanel()
+
+        if (this.getSelectedAlbum()) {
+          this.sectionTitle('编辑')
+          this.selectedAlbumPanel()
+        }
+      }
+      .width('100%')
+      .padding({ bottom: 32 + this.navBarHeight })
+    }
+    .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+    .width('100%')
+    .height('100%')
+    .onDidScroll((_xOffset: number, yOffset: number) => {
+      this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+        this.headerScroller.currentOffset().yOffset);
+    })
+    .onScrollStop(() => {
+      const target = CollapsingHeader.settle(this.headerCollapse, this.headerScroller.currentOffset().yOffset);
+      if (target !== this.headerCollapse) {
+        animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+          this.headerCollapse = target;
+        });
+      }
+    })
   }
 
   async reloadAlbums(): Promise<void> {

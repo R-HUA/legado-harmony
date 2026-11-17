@@ -1,5 +1,5 @@
 import { promptAction, router } from '@kit.ArkUI';
-import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
+import { PageScaffold } from '../components/common/PageScaffold';
 import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { Book, HttpClient, JavaRegexCompat, ReplaceRuleImport } from '@legado/sourceengine';
@@ -42,7 +42,6 @@ struct ReaderReplaceRulesPage {
   @State headerCollapse: number = 0;
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State rules: ReaderReplaceRule[] = [];
   @State query: string = '';
@@ -79,6 +78,7 @@ struct ReaderReplaceRulesPage {
   private ruleDragVisited: Set<number> = new Set<number>();
   private ruleDragSelectValue: boolean = true;
   private ruleListScroller: Scroller = new Scroller();
+  private editorScroller: Scroller = new Scroller();
   private ruleSelectionDragging: boolean = false;
   private ruleSelectionLastX: number = 0;
   private ruleSelectionLastY: number = 0;
@@ -301,25 +301,39 @@ struct ReaderReplaceRulesPage {
 
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
-      Column() {
-        // 顶栏随列表上滑跟手收起、下滑展开，与其他二级页面一致。
-        Column() {
-          this.titleBar()
-        }
-        .width('100%')
-        .height(56 + this.statusBarHeight - (this.editing ? 0 : this.headerCollapse))
-        .clip(true)
-        .opacity(CollapsingHeader.contentOpacity((this.editing ? 0 : this.headerCollapse)))
-        .hitTestBehavior(CollapsingHeader.acceptsTouch((this.editing ? 0 : this.headerCollapse)) ? HitTestMode.Default : HitTestMode.None)
-        if (this.editing) {
-          this.editorView()
-        } else {
-          this.managerView()
-        }
+      if (this.editing) {
+        PageScaffold({
+          title: this.draft.name ? '编辑替换规则' : '新增替换规则',
+          scrollable: false,
+          collapsible: false,
+          scroller: this.editorScroller,
+          onBack: () => this.closeEditor(),
+          content: () => {
+            this.editorView()
+          }
+        })
+      } else {
+        PageScaffold({
+          title: this.previewMode ? '替换净化配置' : '替换净化',
+          scrollable: false,
+          collapsible: true,
+          scroller: this.ruleListScroller,
+          externalCollapse: this.headerCollapse,
+          onBack: () => {
+            if (this.selectionMode) {
+              this.exitRuleSelectionMode();
+            } else {
+              router.back();
+            }
+          },
+          actions: () => {
+            this.managerActions()
+          },
+          content: () => {
+            this.managerView()
+          }
+        })
       }
-      .width('100%')
-      .height('100%')
-      .backgroundColor(this.pageColor())
 
       if (!this.editing && !this.selectionMode && !this.isImporting) {
         Stack() {
@@ -371,49 +385,18 @@ struct ReaderReplaceRulesPage {
   }
 
   @Builder
-  titleBar() {
-    Row() {
-      ImmersiveBackButton({
-        iconColor: this.primaryTextColor(),
-        darkMode: this.appDarkMode,
-        buttonSize: 40,
-        containerWidth: 56,
-        materialScale: 0.83,
-        compactLayout: true,
-        onBack: () => {
-          if (this.editing) {
-            this.closeEditor();
-          } else if (this.selectionMode) {
-            this.exitRuleSelectionMode();
-          } else {
-            router.back();
-          }
+  managerActions() {
+    ImmersiveHeaderAction({
+      label: this.selectionMode ? '取消' : '选择',
+      onTap: () => {
+        if (this.selectionMode) {
+          this.exitRuleSelectionMode();
+        } else {
+          this.enterEmptyRuleSelectionMode();
         }
-      })
-      Text(this.editing ? (this.draft.name ? '编辑替换规则' : '新增替换规则') :
-        (this.previewMode ? '替换净化配置' : '替换净化'))
-        .fontSize(AppFontSize.TITLE)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.primaryTextColor())
-        .layoutWeight(1)
-      if (!this.editing) {
-        ImmersiveHeaderAction({
-          label: this.selectionMode ? '取消' : '选择',
-          onTap: () => {
-            if (this.selectionMode) {
-              this.exitRuleSelectionMode();
-            } else {
-              this.enterEmptyRuleSelectionMode();
-            }
-          }
-        })
       }
-    }
-    .width('100%')
-    .height(56 + this.statusBarHeight)
-    // Keep the action text aligned with the content/search field right edge.
-    .padding({ right: AppSpacing.XL, top: this.statusBarHeight })
-    .alignItems(VerticalAlign.Center)
+    })
+      .margin({ right: AppSpacing.XL })
   }
 
   @Builder
@@ -1007,7 +990,7 @@ struct ReaderReplaceRulesPage {
 
   @Builder
   editorView() {
-    Scroll() {
+    Scroll(this.editorScroller) {
       Column({ space: AppSpacing.LG }) {
         if (ReaderReplaceRuleStore.isBuiltin(this.draft)) {
           Column({ space: AppSpacing.XS }) {
@@ -1077,7 +1060,7 @@ struct ReaderReplaceRulesPage {
         .margin({ top: AppSpacing.MD, bottom: 28 })
       }
       .width('100%')
-      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG })
+      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: this.navBarHeight })
     }
     .scrollBar(BarState.Off)
     .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
