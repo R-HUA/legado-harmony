@@ -47,6 +47,9 @@ function harness() {
     compile(read('core/reader/ReaderTitleSplit.ts')) + '\n' +
     compile(read('model/reader/ReaderRegexFontRule.ets')) + '\n' +
     compile(read('model/reader/ReaderTitleStyle.ets')) + '\n' +
+    compile(read('config/LocalBuildFeatures.ets')) + '\n' +
+    // 测试主题切换保留眼动设置的共用路径；生产开关 EYE_TURN === false 由 local-features-check.mjs 校验。
+    'LocalBuildFeatures.EYE_TURN = true;\n' +
     compile(read('utils/ReaderSettingsStore.ets')) + '\n' +
     compile(read('utils/ThemeTypographyDraft.ets')) +
     '\nglobalThis.api = { ReaderSettingsStore, ReaderSettings, ReaderInfoBarConfig, ThemeTypographyDraft };', context);

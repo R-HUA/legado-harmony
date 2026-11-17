@@ -57,4 +57,130 @@ load('utils/TtsSettingsStore.ets');
 const settings = bindings.TtsSettingsStore.fromStorage();
 assert.equal(settings.cloudVoiceId, '');
 assert.equal(settings.customVoiceId, 'custom-test');
-console.log('Local features check passed: commerce blocked before HTTP, sync retained, themes free, old cloud voice disabled.');
+
+// (a) 上游新增账号/密码/注销/绑定接口及华为授权入口必须在 COMMERCE_ENABLED=false 时于发起请求前被拦截。
+for (const action of [
+  () => api.registerWithPassword('user', 'password123'),
+  () => api.loginWithPassword('user', 'password123'),
+  () => api.fetchLoginMethods('token'),
+  () => api.bindHuawei('code', 'token'),
+  () => api.requestAccountDeletion('password123', 'token')
+]) {
+  await assert.rejects(action, error => error.errorCode === 'SERVICE_DISABLED');
+}
+const requestsBeforeAuth = requests.length;
+Object.assign(bindings, {
+  authentication: {
+    HuaweiIDProvider: class {
+      createAuthorizationWithHuaweiIDRequest() {
+        throw new Error('HuaweiIDProvider must not run when commerce is disabled');
+      }
+    },
+    AuthenticationController: class {}
+  },
+  common: {},
+  Context: class {},
+  util: { generateRandomUUID: () => 'uuid', Base64Helper: class {} },
+  image: {},
+  AccountSessionStore: {
+    ...bindings.AccountSessionStore,
+    load: async () => {},
+    isLoggedIn: () => false,
+    token: () => ''
+  },
+  CloudSyncSettingsStore: { STORAGE_ENABLED: 'cloudSyncEnabled', load: async () => {} }
+});
+load('account/HuaweiAccountService.ets');
+await assert.rejects(() => bindings.HuaweiAccountService.login({}), error => error.errorCode === 'SERVICE_DISABLED');
+await assert.rejects(() => bindings.HuaweiAccountService.authorize({}), error => error.errorCode === 'SERVICE_DISABLED');
+assert.equal(requests.length, requestsBeforeAuth, 'Blocked account/auth methods must never reach HTTP');
+
+// (b) main_pages.json 必须为合法 JSON 且不注册账号/会员/云空间路由。
+const readRepo = rel => fs.readFileSync(new URL('../' + rel, import.meta.url), 'utf8');
+const mainPages = JSON.parse(readRepo('entry/src/main/resources/base/profile/main_pages.json'));
+assert.ok(Array.isArray(mainPages.src) && mainPages.src.length > 0, 'main_pages.json must list routes');
+for (const removedRoute of [
+  'pages/AccountCenter',
+  'pages/MemberBenefits',
+  'pages/MemberSettings',
+  'pages/CloudFiles',
+  'pages/AccountPasswordLogin',
+  'pages/AccountSecurity'
+]) {
+  assert.equal(mainPages.src.includes(removedRoute), false, `main_pages.json must exclude ${removedRoute}`);
+}
+
+// (c) SettingsTabPage.ets 必须按开关隐藏账号总结卡和在线阅读入口。
+const settingsTabSource = readRepo('entry/src/main/ets/components/home/SettingsTabPage.ets');
+assert.match(settingsTabSource, /if\s*\(\s*AccountCommerceConfig\.COMMERCE_ENABLED\s*\)\s*\{\s*this\.accountSummaryCard\(\)\s*\}/,
+  'SettingsTabPage.ets must gate accountSummaryCard() by AccountCommerceConfig.COMMERCE_ENABLED');
+assert.match(settingsTabSource, /if\s*\(\s*!LocalBuildFeatures\.WEB_PARSE_ALWAYS_ON\s*\)\s*\{[\s\S]*?'pages\/WebParseSettings'/,
+  'SettingsTabPage.ets must gate pages/WebParseSettings entry by !LocalBuildFeatures.WEB_PARSE_ALWAYS_ON');
+
+// (d) WebParseSettingsStore 在 WEB_PARSE_ALWAYS_ON=true 下应始终开启，忽略磁盘 false 并阻止 disable()。
+load('config/LocalBuildFeatures.ets');
+const webParseStorage = new Map();
+const webParseVm = vm.createContext({
+  AppStorage: {
+    get: key => webParseStorage.get(key),
+    setOrCreate: (key, value) => webParseStorage.set(key, value)
+  },
+  preferences: {
+    getPreferences: async () => ({
+      get: async (_key, fallback) => (fallback === '' ? false : fallback),
+      put: async () => {},
+      flush: async () => {}
+    })
+  },
+  AppDatabase: {
+    getInstance: () => ({
+      initWithContext: async () => {},
+      countBookSources: async () => 0
+    })
+  },
+  console
+});
+const compileModule = file => stripTypeScriptTypes(
+  readRepo('entry/src/main/ets/' + file)
+    .replace(/^import\s[\s\S]*?;\s*$/gm, '')
+    .replace(/^export /gm, ''),
+  { mode: 'strip' }
+);
+vm.runInContext(
+  compileModule('config/LocalBuildFeatures.ets') + '\n' +
+  compileModule('utils/WebParseSettingsStore.ets') +
+  '\nglobalThis.webParseApi = { WebParseSettingsStore };',
+  webParseVm
+);
+const { WebParseSettingsStore } = webParseVm.webParseApi;
+assert.equal(WebParseSettingsStore.enabled(), true);
+assert.equal(WebParseSettingsStore.visibleBook('https://example.com'), true);
+await WebParseSettingsStore.load({});
+assert.equal(webParseStorage.get('webParseEnabled'), true);
+assert.equal(webParseStorage.get('webParseNoticePending'), false);
+await WebParseSettingsStore.disable({});
+assert.equal(WebParseSettingsStore.enabled(), true);
+
+// (e) 眼动翻页入口/XComponent/提示/相机权限关闭，aiengine 仍保留开源 FaceEye 兼容桩。
+assert.equal(bindings.LocalBuildFeatures.EYE_TURN, false);
+const settingsPageSource = readRepo('entry/src/main/ets/pages/Settings.ets');
+assert.match(settingsPageSource, /if\s*\(\s*LocalBuildFeatures\.EYE_TURN\s*\)\s*\{[\s\S]*?眼动翻页（beta）[\s\S]*?新版识别模型（beta）[\s\S]*?eyeTurnCalibrationStatusItem\(\)/,
+  'Settings.ets must gate eye-turn settings block by LocalBuildFeatures.EYE_TURN');
+const readBookSource = readRepo('entry/src/main/ets/pages/ReadBook.ets');
+assert.match(readBookSource, /if\s*\(\s*LocalBuildFeatures\.EYE_TURN\s*\)\s*\{\s*ReaderSettingGroup\(\{\s*title:\s*'眼动'/,
+  'ReadBook.ets must gate eye-turn ReaderSettingGroup by LocalBuildFeatures.EYE_TURN');
+assert.match(readBookSource, /if\s*\(\s*LocalBuildFeatures\.EYE_TURN\s*&&\s*this\.readerEyeTurnEnabled\s*\)\s*\{[\s\S]*?reader_eye_turn_camera_surface/,
+  'ReadBook.ets must gate camera XComponent by LocalBuildFeatures.EYE_TURN');
+assert.match(readBookSource, /readerEyeTurnCueAllowed\(\)\s*:\s*boolean\s*\{\s*return\s+LocalBuildFeatures\.EYE_TURN\s*&&/,
+  'ReadBook.ets must gate readerEyeTurnCueAllowed() by LocalBuildFeatures.EYE_TURN');
+const aiIndexSource = readRepo('aiengine/Index.ets');
+assert.ok(aiIndexSource.includes('FaceEyeLandmarks') && aiIndexSource.includes('FaceEyeSample'),
+  'aiengine/Index.ets must export FaceEyeLandmarks and FaceEyeSample');
+const moduleJson = JSON.parse(readRepo('entry/src/main/module.json5'));
+assert.equal(
+  moduleJson.module.requestPermissions.some(perm => perm.name === 'ohos.permission.CAMERA'),
+  false,
+  'entry/src/main/module.json5 must not request ohos.permission.CAMERA'
+);
+
+console.log('Local features check passed: commerce blocked before HTTP, sync retained, themes free, old cloud voice disabled, web parse always on, eye-turn & camera disabled.');
