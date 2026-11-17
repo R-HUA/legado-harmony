@@ -12,7 +12,8 @@ import { SharedElementBounds } from '../../utils/SharedElementBounds';
 import { DeleteParticles, DeleteParticleLayer, DeleteParticleBurst } from '../common/DeleteParticles';
 import { BookshelfCoverBadges } from '../BookshelfCoverBadges';
 import { BookshelfCoverBadgeSettings } from '../../utils/BookshelfCoverBadgeSettings';
-import { componentUtils, curves, FrameCallback, router, window } from '@kit.ArkUI';
+import { componentUtils, curves, FrameCallback, LengthMetrics, router, window } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationAttribute, HdsNavigationTitleMode, HideMode, TitleBarStyleOptions } from '@kit.UIDesignKit';
 import { common, WantAgent, wantAgent } from '@kit.AbilityKit';
 import { BackgroundPermit } from '../../utils/BackgroundPermit';
 import { notificationManager } from '@kit.NotificationKit';
@@ -80,6 +81,41 @@ import { CloudDownloadQueue } from '../../account/CloudDownloadQueue';
 import { PopupMenuAction } from '../common/PopupMenuAction';
 import { ReaderHaptics } from '../../utils/ReaderHaptics';
 import { BookMarkService } from '../../core/mark/BookMarkService';
+
+/**
+ * 动态绑定当前激活分类页与布局对应的 Scroller 到原生 HdsNavigation，
+ * 并按可收起状态同步标题栏滚动显隐策略。
+ */
+class BookshelfNavModifier implements AttributeModifier<HdsNavigationAttribute> {
+  private scrollers: Array<Scroller>;
+  private collapsible: boolean;
+
+  constructor(scrollers: Array<Scroller>, collapsible: boolean) {
+    this.scrollers = scrollers;
+    this.collapsible = collapsible;
+  }
+
+  applyNormalAttribute(instance: HdsNavigationAttribute): void {
+    if (this.scrollers.length > 0) {
+      instance.bindToScrollable(this.scrollers);
+      instance.dynamicHideTitleBar({
+        hideTitleArea: this.collapsible,
+        hideStatusBar: false,
+        mode: HideMode.SCROLL_UP_TO
+      });
+      if (!this.collapsible) {
+        instance.hideTitleBar(false);
+      }
+      return;
+    }
+    instance.dynamicHideTitleBar({
+      hideTitleArea: false,
+      hideStatusBar: false,
+      mode: HideMode.SCROLL_UP_TO
+    });
+    instance.hideTitleBar(false);
+  }
+}
 
 const SHELF_FULL_TEXT_CACHE_NOTIFICATION_INTERVAL_MS: number = 5000;
 /** 有声书同时下载的章数。 */
@@ -265,6 +301,7 @@ interface ShelfFullTextCacheTask {
 @Component
 export struct BookshelfPage {
   @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
   /** 标题下方“全部 / 网络 / 本地”胶囊的高度。 */
   /** 立体书舞台比封面高出的一截，留给书底的底板。斜靠以舞台底边中点为轴，算封面四角时要用同一个数。 */
   static readonly SHELF_HARDCOVER_STAGE_PAD: number = 4;
@@ -323,7 +360,7 @@ export struct BookshelfPage {
   @State privateShelfRevealed: boolean = false;
   private shelfCategoryPages: Map<string, ShelfCategoryPage> = new Map();
   /** 'all' 为普通书架，'private' 为隐私书架。 */
-  @State shelfScope: string = 'all';
+  @State @Watch('onShelfNavigationScrollTargetChanged') shelfScope: string = 'all';
   /** 当前有书的类型，决定分类栏显示哪几项；“全部”总在第一位。 */
   @State shelfTypeTabIds: string[] = ['all'];
   /** 分类栏的实际宽度：沉浸材质底板需要具体数值。 */
@@ -355,7 +392,7 @@ export struct BookshelfPage {
   /** 筛选弹窗当前页：空串为主页，'tag' / 'origin' 为标签、书源二级页。 */
   @State shelfFilterMenuPage: string = '';
   /** 分类栏选中的书籍类型，只在本次运行内保留（切换页签不丢，重启后回到“全部”）。 */
-  @StorageLink('bookshelfTypeTab') shelfTypeTab: string = 'all';
+  @StorageLink('bookshelfTypeTab') @Watch('onShelfNavigationScrollTargetChanged') shelfTypeTab: string = 'all';
   /** 筛选条件（FILTER_GROUPS 里的键）逗号分隔，同样只在本次运行内保留。 */
   @StorageLink('bookshelfFilterKeys') shelfFilterKeys: string = '';
   /** 书架搜索栏是否展开、框里的原始输入；同样只在本次运行内保留，主页返回键会先收起它。 */
@@ -556,7 +593,7 @@ export struct BookshelfPage {
   @StorageLink('bookshelfShowProgressBar') bookshelfShowProgressBar: boolean = false;
   @StorageLink('bookshelfShowLastReadTime') bookshelfShowLastReadTime: boolean = true;
   @StorageLink('bookshelfShowLastReadChapter') bookshelfShowLastReadChapter: boolean = false;
-  @StorageLink('bookshelfLayoutMode') bookshelfLayoutMode: string = 'companion';
+  @StorageLink('bookshelfLayoutMode') @Watch('onShelfNavigationScrollTargetChanged') bookshelfLayoutMode: string = 'companion';
   @StorageLink('bookshelfLastReadLeafMode') bookshelfLastReadLeafMode: string = 'adaptive';
   @StorageLink('bookshelfLastReadPinMode') @Watch('onLastReadPinModeChanged') bookshelfLastReadPinMode: string = 'large';
   @StorageLink('bookshelfLastReadPinCount') @Watch('onLastReadPinModeChanged') bookshelfLastReadPinCount: number = 1;
@@ -735,6 +772,11 @@ export struct BookshelfPage {
     // are retained.  Replacing them here (and forcing a reload) prevents a retained list/grid
     // from continuing to render the books from the previous group.
     this.reloadShelfDataSources(true, !tileGroupMove);
+    if (!tileGroupMove) {
+      const page = this.shelfCategoryPage(this.shelfPageKey());
+      const offset = this.isTileLayout() ? page.tileOffset : page.listOffset;
+      this.nativeScrollY = Math.min(112, Math.max(0, Math.round(offset || 0)));
+    }
     // 分组页的标题栏不收起，沉浸时底栏另记一份收起量；进分组页先收起，回到书架换回书架的收起量。
     this.tileGroupBarCollapse = this.shelfImmersiveActive() ? CollapsingHeader.DISTANCE : 0;
     this.reportShelfBarCollapse();
@@ -1671,6 +1713,10 @@ export struct BookshelfPage {
 
   /** 标题行收起量，0 为完整显示，CollapsingHeader.DISTANCE 为完全收起；类型页签不收起。 */
   @State @Watch('onShelfHeaderCollapseChanged') shelfHeaderCollapse: number = 0;
+  /** 原生 HdsNavigation 模式下跟踪当前激活列表/网格的滚动位置（仅在 0..2*DISTANCE 区间更新）。 */
+  @State @Watch('onShelfHeaderCollapseChanged') private nativeScrollY: number = 0;
+  @State private headerActionsWidth: number = 160;
+  @State private tileGroupActionsWidth: number = 96;
   // 顶栏毛玻璃按列表实际滚动距离显现，见 CollapsingHeader.backdropReveal。
   @State shelfHeaderBackdropReveal: number = 0;
   onHeaderCollapseChange: (progress: number) => void = () => {};
@@ -1794,43 +1840,102 @@ export struct BookshelfPage {
     .bindSheet(this.showNetworkCoverDialog, this.networkCoverSheet(), this.networkCoverSheetOptions())
   }
 
+  private shelfMainPageKey(): string {
+    return this.shelfScope === 'private' ? 'private' : this.activeShelfTypeTab();
+  }
+
+  private activeShelfNavScrollers(): Array<Scroller> {
+    if (this.isLoading) return [];
+    const key = this.shelfMainPageKey();
+    if (this.shelfBooksForPage(key).length === 0) return [];
+    const page = this.shelfCategoryPage(key);
+    return [this.isTileLayout() ? page.tileScroller : page.listScroller];
+  }
+
+  private activeTileGroupNavScrollers(): Array<Scroller> {
+    if (this.tileGroupLayerGroupId <= 0 || !this.isTileLayout()) return [];
+    const key = this.tileGroupLayerKey();
+    if (this.shelfBooksForPage(key).length === 0) return [];
+    return [this.shelfTileScrollerForPage(key)];
+  }
+
+  private nativeShelfMainTitle(): string {
+    if (this.isBookMultiSelect) return '书架';
+    if (!this.shelfSoloMenuMode() && !this.shelfImmersivePullMode() &&
+      this.isCompanionLayout() && this.shelfBaseGroupId() === -1) {
+      return this.shelfGroupTitle();
+    }
+    return '';
+  }
+
+  private usesNativeShelfMainTitle(): boolean {
+    return ImmersiveMaterialRuntime.supportsHdsTabs() && this.nativeShelfMainTitle().length > 0;
+  }
+
+  private shelfNavigationTitleBarStyle(extraMaskHeight: number = 0): TitleBarStyleOptions {
+    const style = ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+      headerFrosted: this.headerFrosted && !this.shelfSoloMenuMode(),
+      darkMode: this.appDarkMode,
+      contentColor: this.primaryTextColor(),
+      blurEndOffsetVp: this.shelfHasThemeBackdrop() ? CollapsingHeader.BACKDROP_REVEAL_DISTANCE : 8,
+      maskExtraHeight: extraMaskHeight > 0 ? 32 + extraMaskHeight : undefined
+    });
+    if (style.scrollEffectOpts) {
+      style.scrollEffectOpts.enableRefreshOffsetChange = false;
+    }
+    return style;
+  }
+
+  private onShelfNavigationScrollTargetChanged(): void {
+    this.syncNativeScrollYFromActivePage();
+  }
+
+  private syncNativeScrollYFromActivePage(): void {
+    if (this.isTileGroupPage()) return;
+    const page = this.shelfCategoryPage(this.shelfMainPageKey());
+    const offset = this.isTileLayout() ? page.tileOffset : page.listOffset;
+    const clamped = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+    const next = Math.min(CollapsingHeader.DISTANCE * 2, Math.round(clamped));
+    if (next !== this.nativeScrollY) {
+      this.nativeScrollY = next;
+    }
+  }
+
   @Builder
-  shelfPageBody() {
-    // 底色和主题背景图由根部的 shelfBackgroundLayer 垫着；下面的列表和网格要用 shelfSurfaceColor 透出它。
-    Column() {
-      Column() {
-      // 列表上滑时标题行收起：外层按收起量变矮并裁剪，标题行贴底上移并淡出。
-      Stack({ alignContent: Alignment.Bottom }) {
+  shelfHeaderCollapseBar() {
+    // 列表上滑时标题行收起：外层按收起量变矮并裁剪，标题行贴底上移并淡出。
+    Stack({ alignContent: Alignment.Bottom }) {
+      Row() {
+        if (this.usesNativeShelfMainTitle()) {
+          // 多选或陪伴布局“未分组”在原生 HdsNavigation 模式下由 titleBar 绘制左对齐标题。
+        } else if (this.isBookMultiSelect) {
+          Text('书架')
+            .fontSize(AppFontSize.DISPLAY)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.primaryTextColor())
+        } else if (!this.shelfSoloMenuMode() && !this.isCompanionLayout()) {
+          this.shelfGroupSwitcher()
+        } else if (!this.shelfSoloMenuMode() && this.shelfBaseGroupId() === -1) {
+          // 陪伴布局左上角不放标题，分组改由右侧图标切换；只有“未分组”没有单独的分组页，留个名字说明当前在看什么。
+          Text(this.shelfGroupTitle())
+            .fontSize(AppFontSize.TITLE)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.primaryTextColor())
+            .maxLines(1)
+        }
+
+        Blank()
+
         Row() {
           if (this.isBookMultiSelect) {
-            Text('书架')
-              .fontSize(AppFontSize.DISPLAY)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.primaryTextColor())
-          } else if (!this.shelfSoloMenuMode() && !this.isCompanionLayout()) {
-            this.shelfGroupSwitcher()
-          } else if (!this.shelfSoloMenuMode() && this.shelfBaseGroupId() === -1) {
-            // 陪伴布局左上角不放标题，分组改由右侧图标切换；只有“未分组”没有单独的分组页，留个名字说明当前在看什么。
-            Text(this.shelfGroupTitle())
-              .fontSize(AppFontSize.TITLE)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.primaryTextColor())
-              .maxLines(1)
-          }
-
-          if (this.isBookMultiSelect) {
-            Blank()
             ImmersiveHeaderAction({
               label: '取消',
               accessibilityLabel: '退出多选',
               onTap: () => this.exitBookMultiSelect()
             })
           } else if (this.shelfSoloMenuMode()) {
-            Blank()
             this.shelfSoloMenuButton()
           } else {
-            Blank()
-
             if (this.isCompanionLayout()) {
               this.shelfGroupButton()
             }
@@ -1841,154 +1946,232 @@ export struct BookshelfPage {
             this.shelfMoreButton(false)
           }
         }
-        .width('100%')
-        .height(56 + this.statusBarHeight)
-        .padding({
-          left: AppSpacing.XL,
-          right: AppSpacing.XL,
-          top: this.statusBarHeight
-        })
         .alignItems(VerticalAlign.Center)
-        .opacity(this.shelfSoloMenuMode() ? (this.shelfSoloMenuScrolling ? 0.35 : 1) :
-          CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
-        .hitTestBehavior(CollapsingHeader.acceptsTouch(this.shelfHeaderCollapseValue()) ? HitTestMode.Default : HitTestMode.None)
-        // 标题栏里的按钮各自响应单击，双击只在空白处和标题文字上生效。
-        .gesture(TapGesture({ count: 2 }).onAction(() => this.toggleShelfPrivateByHeaderDoubleTap()))
-        .onTouch((event: TouchEvent) => {
-          // 下拉显示的按钮行被碰到就重新计时。
-          if (event.type === TouchType.Down && this.shelfAutoHideLineVisible && this.shelfImmersivePullMode()) {
-            this.startShelfAutoHide();
+        .onAreaChange((_oldValue: Area, newValue: Area) => {
+          const width = this.areaDimension(newValue.width);
+          if (width > 0 && Math.abs(width - this.headerActionsWidth) >= 1) {
+            this.headerActionsWidth = width;
           }
         })
-
-        if (this.shelfAutoHideLineVisible && this.shelfImmersivePullMode()) {
-          Row()
-            .width(`calc(100% - ${AppSpacing.XL * 2}vp)`)
-            .height(2)
-            .borderRadius(1)
-            .backgroundColor(this.accentColor())
-            .opacity(0.5 * CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
-            .scale({ x: this.shelfAutoHideProgress, centerX: 0 })
-            .margin({ bottom: 2 })
-            .hitTestBehavior(HitTestMode.None)
-            .accessibilityLevel('no')
-        }
       }
       .width('100%')
-      .height(56 + this.statusBarHeight - this.shelfHeaderCollapseValue())
-      .clip(!this.shelfCategoryAnimating)
-      .onAreaChange((_oldArea: Area, newArea: Area) => {
-        // 沉浸时底栏和按钮行分开收放，底栏按自己的收起量报。
-        if (this.shelfImmersiveActive()) {
-          this.reportShelfBarCollapse();
-          return;
+      .height(56 + this.statusBarHeight)
+      .padding({
+        left: AppSpacing.XL,
+        right: AppSpacing.XL,
+        top: this.statusBarHeight
+      })
+      .alignItems(VerticalAlign.Center)
+      .opacity(this.shelfSoloMenuMode() ? (this.shelfSoloMenuScrolling ? 0.35 : 1) :
+        CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
+      .hitTestBehavior(CollapsingHeader.acceptsTouch(this.shelfHeaderCollapseValue()) ? HitTestMode.Default : HitTestMode.None)
+      // 标题栏里的按钮各自响应单击，双击只在空白处和标题文字上生效。
+      .gesture(TapGesture({ count: 2 }).onAction(() => this.toggleShelfPrivateByHeaderDoubleTap()))
+      .onTouch((event: TouchEvent) => {
+        // 下拉显示的按钮行被碰到就重新计时。
+        if (event.type === TouchType.Down && this.shelfAutoHideLineVisible && this.shelfImmersivePullMode()) {
+          this.startShelfAutoHide();
         }
-        this.onHeaderCollapseChange((56 + this.statusBarHeight - Number(newArea.height)) /
-          CollapsingHeader.DISTANCE);
       })
 
-      if (this.shelfSearchActive) {
-        this.shelfSearchBar()
-      }
-
-      if (this.showsShelfScopeTabs() && this.shelfCategoryExpanded) {
-        this.shelfScopeTabs()
-      }
-
-      if (this.isBookMultiSelect) {
-        this.bookSelectionStatusBar()
-      }
-
-      }
-      .width('100%')
-      .position({ x: 0, y: 0 })
-      .zIndex(5)
-
-      if (this.showsShelfScopeTabs()) {
-        ShelfCategoryMaterial({
-          expanded: this.shelfCategoryExpanded,
-          viewportWidth: this.contextViewportWidth,
-          side: AppSpacing.XL,
-          top: this.statusBarHeight + 56 +
-            (this.shelfSearchActive ? BookshelfPage.SEARCH_BAR_HEIGHT + AppSpacing.MD : 0),
-          buttonTop: this.statusBarHeight + 8,
-          // 只留菜单按钮时没有分类按钮，收起状态不画按钮底板。
-          collapsedButton: !this.shelfSoloMenuMode(),
-          darkMode: this.appDarkMode, surfaceColor: this.cardColor(), accentColor: this.accentGlowColor(),
-          touching: this.shelfScopeTabsTouching && this.shelfCategoryExpanded,
-          touchX: this.shelfScopeTabsTouchX, touchY: this.shelfScopeTabsTouchY
-        }).position({ x: 0, y: 0 })
-          .translate({ y: -this.shelfHeaderCollapseValue() })
-          .opacity(this.shelfCategoryExpanded ? 1 : CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
-          .zIndex(4)
-      }
-
-      HeaderBackdrop({ backdropHeight: this.shelfHeaderBackdropHeight(),
-        statusBarHeight: this.statusBarHeight,
-        backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
-        reveal: this.shelfHasThemeBackdrop() ? this.shelfHeaderBackdropReveal : 1 })
-        .width('100%')
-        .position({ x: 0, y: 0 })
-        .zIndex(3)
-
-      if (this.isLoading) {
-        Column() {
-          LoadingProgress()
-            .width(40)
-            .height(40)
-          Text('加载中...')
-            .fontSize(AppFontSize.BODY)
-            .fontColor(this.subTextColor())
-            .margin({ top: AppSpacing.MD })
-        }
-        .width('100%')
-        .height('100%')
-        .padding({ top: this.bookshelfTopOverlayHeight() })
-        .justifyContent(FlexAlign.Center)
-
-      } else {
-        // 隐私书架期间分类页停在原来的类型上，退出时直接露出来。
-        CategorySwipePager({
-          pageKeys: this.shelfPageOrder(),
-          selectedIndex: Math.max(0, this.shelfPageOrder().indexOf(this.activeShelfTypeTab())),
-          swipeEnabled: !this.isBookMultiSelect && this.shelfScope !== 'private',
-          swipeExcludedGestureTag: 'recentReadCarouselPan',
-          canSelect: (key: string): boolean => this.canSelectShelfPage(key),
-          onSelect: (key: string): void => this.setShelfPage(key),
-          onSettled: (): void => {
-            if (this.shelfScope !== 'private') this.privateShelfRevealed = false;
-          },
-          onSwipe: (): void => this.markShelfScopePanGesture(240),
-          pageContent: (key: string) => { this.shelfCategoryContent(key); }
-        })
-        .translate({ x: this.shelfScopeTransitionX })
-        .scale({
-          x: this.shelfScopeTransitionScale * this.privateShelfOuterScale(),
-          y: this.shelfScopeTransitionScale * this.privateShelfOuterScale()
-        })
-        .opacity(this.shelfScopeTransitionOpacity * (1 - this.privateShelfLayerProgress))
-        .visibility(this.privateShelfLayerCovering ? Visibility.Hidden : Visibility.Visible)
-        .hitTestBehavior(this.shelfScope === 'private' ? HitTestMode.None : HitTestMode.Default)
-
-        if (this.privateShelfLayerMounted) {
-          // 外层是 Column：不脱离排版的话会排在分类页下面、整层落在屏幕外。
-          Column() {
-            this.shelfCategoryContent('private')
-          }
-          .width('100%')
-          .height('100%')
-          .position({ x: 0, y: 0 })
-          .clip(true)
-          .scale({ x: this.privateShelfInnerScale(), y: this.privateShelfInnerScale() })
-          .opacity(this.privateShelfLayerProgress)
-          .hitTestBehavior(this.shelfScope === 'private' ? HitTestMode.Default : HitTestMode.None)
-        }
+      if (this.shelfAutoHideLineVisible && this.shelfImmersivePullMode()) {
+        Row()
+          .width(`calc(100% - ${AppSpacing.XL * 2}vp)`)
+          .height(2)
+          .borderRadius(1)
+          .backgroundColor(this.accentColor())
+          .opacity(0.5 * CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
+          .scale({ x: this.shelfAutoHideProgress, centerX: 0 })
+          .margin({ bottom: 2 })
+          .hitTestBehavior(HitTestMode.None)
+          .accessibilityLevel('no')
       }
     }
     .width('100%')
-    .height('100%')
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
-    .onTouch((event: TouchEvent) => this.onShelfBodyTouch(event))
+    .height(56 + this.statusBarHeight - this.shelfHeaderCollapseValue())
+    .clip(!this.shelfCategoryAnimating)
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      // 沉浸时底栏和按钮行分开收放，底栏按自己的收起量报。
+      if (this.shelfImmersiveActive()) {
+        this.reportShelfBarCollapse();
+        return;
+      }
+      this.onHeaderCollapseChange((56 + this.statusBarHeight - Number(newArea.height)) /
+        CollapsingHeader.DISTANCE);
+    })
+  }
+
+  @Builder
+  shelfHeaderSubBars() {
+    if (this.shelfSearchActive) {
+      this.shelfSearchBar()
+    }
+
+    if (this.showsShelfScopeTabs() && this.shelfCategoryExpanded) {
+      this.shelfScopeTabs()
+    }
+
+    if (this.isBookMultiSelect) {
+      this.bookSelectionStatusBar()
+    }
+  }
+
+  @Builder
+  shelfCategorySurfaceBackdrop() {
+    if (this.showsShelfScopeTabs()) {
+      ShelfCategoryMaterial({
+        expanded: this.shelfCategoryExpanded,
+        viewportWidth: this.contextViewportWidth,
+        side: AppSpacing.XL,
+        top: this.statusBarHeight + 56 +
+          (this.shelfSearchActive ? BookshelfPage.SEARCH_BAR_HEIGHT + AppSpacing.MD : 0),
+        buttonTop: this.statusBarHeight + 8,
+        // 只留菜单按钮时没有分类按钮，收起状态不画按钮底板。
+        collapsedButton: !this.shelfSoloMenuMode(),
+        darkMode: this.appDarkMode, surfaceColor: this.cardColor(), accentColor: this.accentGlowColor(),
+        touching: this.shelfScopeTabsTouching && this.shelfCategoryExpanded,
+        touchX: this.shelfScopeTabsTouchX, touchY: this.shelfScopeTabsTouchY
+      }).position({ x: 0, y: 0 })
+        .translate({ y: -this.shelfHeaderCollapseValue() })
+        .opacity(this.shelfCategoryExpanded ? 1 : CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
+        .zIndex(4)
+    }
+  }
+
+  @Builder
+  shelfMainContent() {
+    if (this.isLoading) {
+      Column() {
+        LoadingProgress()
+          .width(40)
+          .height(40)
+        Text('加载中...')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.subTextColor())
+          .margin({ top: AppSpacing.MD })
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ top: this.bookshelfTopOverlayHeight() })
+      .justifyContent(FlexAlign.Center)
+
+    } else {
+      // 隐私书架期间分类页停在原来的类型上，退出时直接露出来。
+      CategorySwipePager({
+        pageKeys: this.shelfPageOrder(),
+        selectedIndex: Math.max(0, this.shelfPageOrder().indexOf(this.activeShelfTypeTab())),
+        swipeEnabled: !this.isBookMultiSelect && this.shelfScope !== 'private',
+        swipeExcludedGestureTag: 'recentReadCarouselPan',
+        canSelect: (key: string): boolean => this.canSelectShelfPage(key),
+        onSelect: (key: string): void => this.setShelfPage(key),
+        onSettled: (): void => {
+          if (this.shelfScope !== 'private') this.privateShelfRevealed = false;
+        },
+        onSwipe: (): void => this.markShelfScopePanGesture(240),
+        pageContent: (key: string) => { this.shelfCategoryContent(key); }
+      })
+      .translate({ x: this.shelfScopeTransitionX })
+      .scale({
+        x: this.shelfScopeTransitionScale * this.privateShelfOuterScale(),
+        y: this.shelfScopeTransitionScale * this.privateShelfOuterScale()
+      })
+      .opacity(this.shelfScopeTransitionOpacity * (1 - this.privateShelfLayerProgress))
+      .visibility(this.privateShelfLayerCovering ? Visibility.Hidden : Visibility.Visible)
+      .hitTestBehavior(this.shelfScope === 'private' ? HitTestMode.None : HitTestMode.Default)
+
+      if (this.privateShelfLayerMounted) {
+        // 外层是 Column：不脱离排版的话会排在分类页下面、整层落在屏幕外。
+        Column() {
+          this.shelfCategoryContent('private')
+        }
+        .width('100%')
+        .height('100%')
+        .position({ x: 0, y: 0 })
+        .clip(true)
+        .scale({ x: this.privateShelfInnerScale(), y: this.privateShelfInnerScale() })
+        .opacity(this.privateShelfLayerProgress)
+        .hitTestBehavior(this.shelfScope === 'private' ? HitTestMode.Default : HitTestMode.None)
+      }
+    }
+  }
+
+  @Builder
+  shelfPageBody() {
+    // 底色和主题背景图由根部的 shelfBackgroundLayer 垫着；下面的列表和网格要用 shelfSurfaceColor 透出它。
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        HdsNavigation() {
+          Stack() {
+            this.shelfMainContent()
+          }
+          .width('100%')
+          .height('100%')
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+        }
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(true)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          padding: {
+            start: LengthMetrics.vp(AppSpacing.XL),
+            end: LengthMetrics.vp(Math.max(AppSpacing.XL, this.headerActionsWidth + AppSpacing.XL + AppSpacing.MD))
+          },
+          content: {
+            title: { mainTitle: this.nativeShelfMainTitle() }
+          },
+          style: this.shelfNavigationTitleBarStyle(
+            (this.shelfSearchActive ? BookshelfPage.SEARCH_BAR_HEIGHT : 0) + (this.isBookMultiSelect ? 42 : 0))
+        })
+        .attributeModifier(new BookshelfNavModifier(this.activeShelfNavScrollers(),
+          !this.isBookMultiSelect && !this.shelfSearchActive && !this.shelfSoloMenuMode()))
+        .width('100%')
+        .height('100%')
+
+        this.shelfCategorySurfaceBackdrop()
+
+        Column() {
+          this.shelfHeaderCollapseBar()
+          this.shelfHeaderSubBars()
+        }
+        .width('100%')
+        .position({ x: 0, y: 0 })
+        .zIndex(5)
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
+      .width('100%')
+      .height('100%')
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+      .onTouch((event: TouchEvent) => this.onShelfBodyTouch(event))
+    } else {
+      Column() {
+        Column() {
+          this.shelfHeaderCollapseBar()
+          this.shelfHeaderSubBars()
+        }
+        .width('100%')
+        .position({ x: 0, y: 0 })
+        .zIndex(5)
+
+        this.shelfCategorySurfaceBackdrop()
+
+        HeaderBackdrop({ backdropHeight: this.shelfHeaderBackdropHeight(),
+          statusBarHeight: this.statusBarHeight,
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
+          reveal: this.shelfHasThemeBackdrop() ? this.shelfHeaderBackdropReveal : 1 })
+          .width('100%')
+          .position({ x: 0, y: 0 })
+          .zIndex(3)
+
+        this.shelfMainContent()
+      }
+      .width('100%')
+      .height('100%')
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+      .onTouch((event: TouchEvent) => this.onShelfBodyTouch(event))
+    }
   }
 
   onShelfBodyTouch(event: TouchEvent): void {
@@ -2004,80 +2187,164 @@ export struct BookshelfPage {
     }
   }
 
+  @Builder
+  tileGroupHeaderActions() {
+    Row() {
+      if (this.isBookMultiSelect) {
+        ImmersiveHeaderAction({
+          label: '取消',
+          accessibilityLabel: '退出多选',
+          onTap: () => this.exitBookMultiSelect()
+        })
+      } else {
+        // 按这一层自己的书数：返回时当前分组已切回书架，this.books 不再是这个分组的书。
+        Text(this.shelfBooksForPage(this.tileGroupLayerKey()).length > 0 ?
+          `${this.shelfBooksForPage(this.tileGroupLayerKey()).length}本` : '')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.subTextColor())
+          .margin({ right: AppSpacing.MD })
+        this.shelfMoreButton(true)
+      }
+    }
+    .alignItems(VerticalAlign.Center)
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      const width = this.areaDimension(newValue.width);
+      if (width > 0 && Math.abs(width - this.tileGroupActionsWidth) >= 1) {
+        this.tileGroupActionsWidth = width;
+      }
+    })
+  }
+
   /** 分组页那一层：返回键、分组名、本数和更多按钮，下面是这个分组的书（标题栏不随滚动收起）。 */
   @Builder
   tileGroupPageBody() {
-    Column() {
-      Column() {
-        Row() {
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        HdsNavigation() {
+          Column() {
+            this.shelfCategoryContent(this.tileGroupLayerKey())
+          }
+          .width('100%')
+          .height('100%')
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+        }
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(this.isBookMultiSelect)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          padding: this.isBookMultiSelect ? {
+            start: LengthMetrics.vp(AppSpacing.XL),
+            end: LengthMetrics.vp(Math.max(AppSpacing.XL, this.tileGroupActionsWidth + AppSpacing.XL + AppSpacing.MD))
+          } : {
+            end: LengthMetrics.vp(Math.max(AppSpacing.XL, this.tileGroupActionsWidth + AppSpacing.XL + AppSpacing.MD))
+          },
+          content: {
+            title: { mainTitle: this.isBookMultiSelect ? '书架' : this.tileGroupLayerName() },
+            backIcon: this.isBookMultiSelect ? undefined : {
+              label: '返回',
+              action: () => this.exitTileGroupPage()
+            }
+          },
+          style: this.shelfNavigationTitleBarStyle(this.isBookMultiSelect ? 42 : 0)
+        })
+        .attributeModifier(new BookshelfNavModifier(this.activeTileGroupNavScrollers(), false))
+        .width('100%')
+        .height('100%')
+
+        Column() {
+          Row() {
+            Blank()
+            this.tileGroupHeaderActions()
+          }
+          .width('100%')
+          .height(56 + this.statusBarHeight)
+          .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: this.statusBarHeight })
+          .alignItems(VerticalAlign.Center)
+          .hitTestBehavior(HitTestMode.Transparent)
+
           if (this.isBookMultiSelect) {
-            Text('书架')
-              .fontSize(AppFontSize.DISPLAY)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.primaryTextColor())
-            Blank()
-            ImmersiveHeaderAction({
-              label: '取消',
-              accessibilityLabel: '退出多选',
-              onTap: () => this.exitBookMultiSelect()
-            })
-          } else {
-            ImmersiveBackButton({
-              iconColor: this.primaryTextColor(),
-              darkMode: this.appDarkMode,
-              buttonSize: 40,
-              containerWidth: 56,
-              materialScale: 0.83,
-              compactLayout: true,
-              onBack: () => this.exitTileGroupPage()
-            })
-            Text(this.tileGroupLayerName())
-              .fontSize(AppFontSize.TITLE)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.primaryTextColor())
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            Blank()
-            // 按这一层自己的书数：返回时当前分组已切回书架，this.books 不再是这个分组的书。
-            Text(this.shelfBooksForPage(this.tileGroupLayerKey()).length > 0 ?
-              `${this.shelfBooksForPage(this.tileGroupLayerKey()).length}本` : '')
-              .fontSize(AppFontSize.BODY)
-              .fontColor(this.subTextColor())
-              .margin({ right: AppSpacing.MD })
-            this.shelfMoreButton(true)
+            this.bookSelectionStatusBar()
           }
         }
         .width('100%')
-        .height(56 + this.statusBarHeight)
-        .padding({ left: this.isBookMultiSelect ? AppSpacing.XL : 0, right: AppSpacing.XL, top: this.statusBarHeight })
-        .alignItems(VerticalAlign.Center)
-
-        if (this.isBookMultiSelect) {
-          this.bookSelectionStatusBar()
-        }
+        .position({ x: 0, y: 0 })
+        .zIndex(5)
+        .hitTestBehavior(HitTestMode.Transparent)
       }
       .width('100%')
-      .position({ x: 0, y: 0 })
-      .zIndex(5)
+      .height('100%')
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+      .onTouch((event: TouchEvent) => this.onShelfBodyTouch(event))
+    } else {
+      Column() {
+        Column() {
+          Row() {
+            if (this.isBookMultiSelect) {
+              Text('书架')
+                .fontSize(AppFontSize.DISPLAY)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(this.primaryTextColor())
+              Blank()
+              ImmersiveHeaderAction({
+                label: '取消',
+                accessibilityLabel: '退出多选',
+                onTap: () => this.exitBookMultiSelect()
+              })
+            } else {
+              ImmersiveBackButton({
+                iconColor: this.primaryTextColor(),
+                darkMode: this.appDarkMode,
+                buttonSize: 40,
+                containerWidth: 56,
+                materialScale: 0.83,
+                compactLayout: true,
+                onBack: () => this.exitTileGroupPage()
+              })
+              Text(this.tileGroupLayerName())
+                .fontSize(AppFontSize.TITLE)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(this.primaryTextColor())
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+              Blank()
+              this.tileGroupHeaderActions()
+            }
+          }
+          .width('100%')
+          .height(56 + this.statusBarHeight)
+          .padding({ left: this.isBookMultiSelect ? AppSpacing.XL : 0, right: AppSpacing.XL, top: this.statusBarHeight })
+          .alignItems(VerticalAlign.Center)
 
-      HeaderBackdrop({ backdropHeight: this.statusBarHeight + 56,
-        statusBarHeight: this.statusBarHeight,
-        backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
-        reveal: this.shelfHasThemeBackdrop() ? this.tileGroupBackdropReveal : 1 })
+          if (this.isBookMultiSelect) {
+            this.bookSelectionStatusBar()
+          }
+        }
         .width('100%')
         .position({ x: 0, y: 0 })
-        .zIndex(3)
+        .zIndex(5)
 
-      Column() {
-        this.shelfCategoryContent(this.tileGroupLayerKey())
+        HeaderBackdrop({ backdropHeight: this.statusBarHeight + 56,
+          statusBarHeight: this.statusBarHeight,
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
+          reveal: this.shelfHasThemeBackdrop() ? this.tileGroupBackdropReveal : 1 })
+          .width('100%')
+          .position({ x: 0, y: 0 })
+          .zIndex(3)
+
+        Column() {
+          this.shelfCategoryContent(this.tileGroupLayerKey())
+        }
+        .width('100%')
+        .layoutWeight(1)
       }
       .width('100%')
-      .layoutWeight(1)
+      .height('100%')
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+      .onTouch((event: TouchEvent) => this.onShelfBodyTouch(event))
     }
-    .width('100%')
-    .height('100%')
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
-    .onTouch((event: TouchEvent) => this.onShelfBodyTouch(event))
   }
 
   /** 书架与分组页共用的底色和主题背景图，排版与两层一致（同样只向底部延伸安全区）。 */
@@ -4120,10 +4387,22 @@ export struct BookshelfPage {
 
   /** 书架标题行实际生效的收起量：没有可滚动的列表时标题行始终完整显示（分组页的标题栏不收起）。 */
   shelfHeaderCollapseValue(): number {
-    return !this.isLoading && this.books.length > 0 && !this.isBookMultiSelect ? this.shelfHeaderCollapse : 0;
+    if (this.isLoading || this.books.length === 0 || this.isBookMultiSelect ||
+      (ImmersiveMaterialRuntime.supportsHdsTabs() && this.shelfSearchActive)) {
+      return 0;
+    }
+    if (!ImmersiveMaterialRuntime.supportsHdsTabs() || this.shelfImmersiveActive()) {
+      return this.shelfHeaderCollapse;
+    }
+    return Math.round(Math.max(0, Math.min(CollapsingHeader.DISTANCE, this.nativeScrollY / 2)));
   }
 
   onShelfListScroll(delta: number, offset: number): void {
+    const clampedOffset = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+    const cappedNativeY = Math.min(CollapsingHeader.DISTANCE * 2, Math.round(clampedOffset));
+    if (cappedNativeY !== this.nativeScrollY) {
+      this.nativeScrollY = cappedNativeY;
+    }
     const reveal = CollapsingHeader.backdropReveal(offset);
     if (reveal !== this.shelfHeaderBackdropReveal) this.shelfHeaderBackdropReveal = reveal;
     if (this.shelfCategoryAnimating) return;
@@ -4131,6 +4410,7 @@ export struct BookshelfPage {
       this.onShelfImmersiveScroll(delta, offset);
       return;
     }
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) return;
     const next = CollapsingHeader.next(this.shelfHeaderCollapse, delta, offset);
     if (next !== this.shelfHeaderCollapse) {
       this.shelfHeaderCollapse = next;
@@ -4195,6 +4475,7 @@ export struct BookshelfPage {
     this.showShelfSoloMenu = false;
     this.tileGroupBarCollapse = 0;
     this.shelfBarCollapse = 0;
+    this.syncNativeScrollYFromActivePage();
     const page = this.shelfCategoryPage(this.shelfPageKey());
     const offset = Math.max(0, this.isTileLayout() ? page.tileOffset : page.listOffset);
     if (this.shelfHeaderCollapse > offset) {
@@ -4371,6 +4652,7 @@ export struct BookshelfPage {
       }
       return;
     }
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) return;
     const target = CollapsingHeader.settle(this.shelfHeaderCollapse, offset);
     if (target !== this.shelfHeaderCollapse) {
       animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
@@ -7936,6 +8218,13 @@ export struct BookshelfPage {
   }
 
   scrollShelfToTop(): void {
+    this.nativeScrollY = 0;
+    const page = this.shelfCategoryPage(this.shelfPageKey());
+    if (this.isTileLayout()) {
+      page.tileOffset = 0;
+    } else {
+      page.listOffset = 0;
+    }
     try {
       if (this.isTileLayout()) {
         this.shelfTileScroller.scrollEdge(Edge.Top);
@@ -8039,6 +8328,9 @@ export struct BookshelfPage {
       try {
         if (tile) page.tileScroller.scrollTo({ xOffset: 0, yOffset: offset, animation: false });
         else page.listScroller.scrollTo({ xOffset: 0, yOffset: offset, animation: false });
+        if (key === this.shelfMainPageKey()) {
+          this.nativeScrollY = Math.min(CollapsingHeader.DISTANCE * 2, Math.max(0, Math.round(offset)));
+        }
       } catch (_) {
         // 页已被原生懒加载回收时保留记录，下一次挂载再恢复。
       }
