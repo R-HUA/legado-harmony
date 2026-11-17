@@ -1,6 +1,7 @@
 import { BookSourceGroupStore } from '../../utils/BookSourceGroupStore';
 import { SharedElementMotion } from '../../utils/SharedElementMotion';
 import { LengthMetrics, router } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationAttribute, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import deviceInfo from '@ohos.deviceInfo';
 import { Book, BookSource, SearchBook, BookFieldSanitizer } from '@legado/sourceengine';
 import { AppDatabase } from '../../model/data/AppDatabase';
@@ -66,10 +67,48 @@ class ExploreSidebarSection {
   indices: number[] = [];
 }
 
+class ExploreNavModifier implements AttributeModifier<HdsNavigationAttribute> {
+  private scrollers: Array<Scroller>;
+  private collapsible: boolean;
+
+  constructor(scrollers: Array<Scroller>, collapsible: boolean) {
+    this.scrollers = scrollers;
+    this.collapsible = collapsible;
+  }
+
+  applyNormalAttribute(instance: HdsNavigationAttribute): void {
+    if (this.scrollers.length > 0) {
+      instance.bindToScrollable(this.scrollers);
+      instance.dynamicHideTitleBar({
+        hideTitleArea: this.collapsible,
+        hideBottomBuilder: false,
+        hideStatusBar: false,
+        mode: HideMode.SCROLL_UP_TO,
+        hideRatio: 1.0
+      });
+      if (!this.collapsible) {
+        instance.hideTitleBar(false);
+      }
+      return;
+    }
+    instance.dynamicHideTitleBar({
+      hideTitleArea: false,
+      hideBottomBuilder: false,
+      hideStatusBar: false,
+      mode: HideMode.SCROLL_UP_TO,
+      hideRatio: 1.0
+    });
+    instance.hideTitleBar(false);
+  }
+}
+
 /** 首页"发现"页签：发现源、筛选条件与结果列表；标题行的搜索按钮打开整页的搜索层（SearchPage）。 */
 @Component
 export struct ExplorePage {
   @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
+  /** 标题行内容高度（不含状态栏）。 */
+  static readonly TITLE_ROW_HEIGHT: number = 56;
   /** 顶部书源标签、筛选与刷新按钮的高度。 */
   static readonly HEADER_CONTROL_SIZE: number = 40;
   /** 标题下方频道栏的高度。 */
@@ -95,7 +134,7 @@ export struct ExplorePage {
   @Prop statusBarHeight: number = 0;
   @Prop navBarHeight: number = 0;
   @Prop @Watch('onActiveChanged') isActive: boolean = false;
-  @State entries: ExploreEntry[] = [];
+  @State @Watch('onExploreEntriesChanged') entries: ExploreEntry[] = [];
   @State sourceOptions: ExploreSourceOption[] = [];
   private exploreSourceDataSource: ExploreSourceOptionDataSource = new ExploreSourceOptionDataSource();
   @StorageLink('bookSourceGroupOrder') @Watch('onSourceGroupOrderChanged') sourceGroupOrderRaw: string = '';
@@ -109,7 +148,7 @@ export struct ExplorePage {
   @State sourceNames: string[] = [];
   /** 搜索层的范围“当前书源”要显示名字，放进 AppStorage。 */
   @StorageLink('exploreSourceName') selectedSourceName: string = '';
-  @State selectedIndex: number = 0;
+  @State @Watch('onExploreSelectedIndexChanged') selectedIndex: number = 0;
   @State showExploreSourcePicker: boolean = false;
   @State showExploreMoreMenu: boolean = false;
   /** “更多”菜单当前页：'' 一级，'layout' 结果布局，'search' 搜索设置。 */
@@ -130,21 +169,21 @@ export struct ExplorePage {
   @State exploreSourceFilterKeyword: string = '';
   @State exploreViewportWidth: number = 360;
   @State exploreViewportHeight: number = 720;
-  @State books: SearchBook[] = [];
+  @State @Watch('onExploreActiveDataChanged') books: SearchBook[] = [];
   /** 分类会话同时保留结果、分页、封面和滚动位置；切回不重走加载流程。 */
   @State explorePages: Map<string, ExplorePageSnapshot> = new Map();
   private exploreBooksPageKey: string = '';
   private resultArrivalTracker: ResultArrivalTracker = new ResultArrivalTracker();
   @State shelfBookKeys: string[] = [];
   @State addingShelfBookKeys: string[] = [];
-  @State isLoading: boolean = false;
+  @State @Watch('onExploreActiveDataChanged') isLoading: boolean = false;
   @State isLoadingMore: boolean = false;
   @State hasMoreExploreBooks: boolean = true;
   @State status: string = '';
   @State verificationUrl: string = '';
   private verificationContextToken: string = '';
   @State verificationTitle: string = '';
-  @StorageLink('explorePlatform') selectedPlatform: string = '';
+  @StorageLink('explorePlatform') @Watch('onExploreSourceOrPlatformChanged') selectedPlatform: string = '';
   /**
    * 结果布局，持久保存：'list' 卡片列表，'grid' 封面平铺，'rank' 排行，'overview' 榜单总览，
    * 'sidebar' 侧栏。约定见 ExploreRankStyle。
@@ -165,7 +204,9 @@ export struct ExplorePage {
   private overviewCacheChain: Promise<void> = Promise.resolve();
   private exploreOverviewScroller: Scroller = new Scroller();
   private exploreRailScroller: ListScroller = new ListScroller();
-  @StorageLink('exploreSourceUrl') selectedSourceUrl: string = '';
+  private exploreDefaultResultScroller: ListScroller = new ListScroller();
+  private exploreResultScrollers: Map<string, ListScroller> = new Map();
+  @StorageLink('exploreSourceUrl') @Watch('onExploreSourceOrPlatformChanged') selectedSourceUrl: string = '';
   @StorageLink('bookSourceExploreRefreshNonce') @Watch('onExploreRefreshRequested')
   bookSourceExploreRefreshNonce: number = 0;
   @StorageProp('exploreSourceCacheRevision') @Watch('onExploreSourceCacheInvalidated')
@@ -188,6 +229,9 @@ export struct ExplorePage {
   private exploreChannelScroller: Scroller = new Scroller();
   /** 标题行收起量，0 为完整显示，exploreCollapsibleHeight() 为完全收起。 */
   @State exploreHeaderCollapse: number = 0;
+  @State @Watch('onNativeExploreHeaderStateChanged') private nativeExploreScrollY: number = 0;
+  @State private exploreActionsWidth: number = 160;
+  private lastReportedExploreCollapse: number = -1;
   // 顶栏毛玻璃按列表实际滚动距离显现，见 CollapsingHeader.backdropReveal。
   @State exploreHeaderBackdropReveal: number = 0;
   onHeaderCollapseChange: (progress: number) => void = () => {};
@@ -213,6 +257,9 @@ export struct ExplorePage {
     if (this.isActive) {
       this.ensureLoaded();
       if (this.showsOverviewHome()) this.requestOverviewCards(this.overviewVisibleEnd);
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        this.notifyExploreHeaderCollapse(true);
+      }
     } else {
       this.cancelExploreLoad();
       this.cancelExploreOverview();
@@ -575,136 +622,128 @@ export struct ExplorePage {
     Stack({ alignContent: Alignment.TopStart }) {
       HomeThemeBackdrop({ visibleHeight: this.statusBarHeight + 250, strength: 0.7 })
 
-      Column() {
-        Column() {
-          // 列表上滑时标题行收起：外层按收起量变矮并裁剪，标题行贴底上移并淡出。
-          Stack({ alignContent: Alignment.Bottom }) {
-            Row() {
-              Text('发现')
-                .fontSize(AppFontSize.DISPLAY)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(this.primaryTextColor())
-                .flexShrink(0)
-
-              Blank()
-
-              this.exploreSourceLabel()
-
-              if (this.exploreFilters.length > 0) {
-                this.exploreFilterButton()
-              }
-
-              Row() {
-                this.exploreHeaderCircleButton($r('sys.symbol.magnifyingglass'), false, '搜索书名或作者', () => {
-                  this.openHomeSearch();
-                })
-              }
-              .margin({ right: 10 })
-
-              this.exploreMoreButton()
-            }
-            .width('100%')
-            .height(56 + this.statusBarHeight)
-            .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: this.statusBarHeight })
-            .alignItems(VerticalAlign.Center)
-            .opacity(CollapsingHeader.contentOpacity(this.exploreHeaderCollapseValue()))
-            .hitTestBehavior(CollapsingHeader.acceptsTouch(this.exploreHeaderCollapseValue()) ? HitTestMode.Default : HitTestMode.None)
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        HdsNavigation() {
+          Column() {
+            this.exploreContentBody()
           }
           .width('100%')
-          .height(this.statusBarHeight + this.exploreCollapsibleHeight() - this.exploreHeaderCollapseValue())
-          .clip(true)
-          .onAreaChange((_oldArea: Area, newArea: Area) => {
-            this.onHeaderCollapseChange((this.statusBarHeight + this.exploreCollapsibleHeight() -
-              Number(newArea.height)) / this.exploreCollapsibleHeight());
+          .height('100%')
+          .backgroundColor(this.surfaceColor())
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+        }
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(true)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          padding: {
+            start: LengthMetrics.vp(AppSpacing.XL),
+            end: LengthMetrics.vp(Math.max(AppSpacing.XL, this.exploreActionsWidth))
+          },
+          content: {
+            title: { mainTitle: '发现' },
+            bottomBuilder: this.exploreBottomBuilderHeight() > 0 ? {
+              builder: (): void => this.exploreBottomBuilder(),
+              height: this.exploreBottomBuilderHeight()
+            } : undefined
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor(),
+            blurEndOffsetVp: CollapsingHeader.BACKDROP_REVEAL_DISTANCE
           })
+        })
+        .attributeModifier(new ExploreNavModifier(this.activeExploreScrollers(), this.exploreCanCollapseHeader()))
+        .width('100%')
+        .height('100%')
 
-          if (this.isOverviewLayout() && this.overviewDrilled) {
-            this.exploreOverviewDrillBar()
-          } else if (this.isOverviewLayout() || this.isSidebarLayout()) {
-            if (this.showsExplorePlatformSelector()) {
-              this.explorePlatformBar()
-            }
-          } else if (this.showsExploreChannelBar()) {
-            this.exploreChannelBar()
+        Row() {
+          Row() {
+            this.exploreHeaderActionsRow()
           }
+          .height(ExplorePage.TITLE_ROW_HEIGHT)
+          .padding({ right: AppSpacing.XL })
+          .alignItems(VerticalAlign.Center)
+          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.nativeExploreTitleCollapse()) ?
+            HitTestMode.Default : HitTestMode.None)
+          .onAreaChange((_oldValue: Area, newValue: Area) => {
+            const width = parseFloat(String(newValue.width));
+            if (Number.isFinite(width) && Math.abs(width - this.exploreActionsWidth) >= 1) {
+              this.exploreActionsWidth = width;
+            }
+          })
+        }
+        .width('100%')
+        .height(ExplorePage.TITLE_ROW_HEIGHT)
+        .margin({ top: this.statusBarHeight })
+        .justifyContent(FlexAlign.End)
+        .hitTestBehavior(HitTestMode.Transparent)
+        .opacity(CollapsingHeader.contentOpacity(this.nativeExploreTitleCollapse()))
+        .translate({ y: -this.nativeExploreTitleCollapse() * 0.5 })
+        .accessibilityLevel(CollapsingHeader.acceptsTouch(this.nativeExploreTitleCollapse()) ?
+          'auto' : 'no-hide-descendants')
+      } else {
+        Column() {
+          Column() {
+            // 列表上滑时标题行收起：外层按收起量变矮并裁剪，标题行贴底上移并淡出。
+            Stack({ alignContent: Alignment.Bottom }) {
+              Row() {
+                Text('发现')
+                  .fontSize(AppFontSize.DISPLAY)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(this.primaryTextColor())
+                  .flexShrink(0)
 
-          if (this.shouldShowExploreStatus()) {
-            Row() {
-              Text(this.status)
-                .fontSize(AppFontSize.BODY)
-                .fontColor(this.secondaryTextColor())
-                .maxLines(2)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-                .flexShrink(1)
-                .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XS, bottom: AppSpacing.XS })
-                .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
-                .borderRadius(12)
+                Blank()
 
-              if (this.verificationUrl) {
-                Button('去验证')
-                  .height(28)
-                  .fontSize(AppFontSize.CAPTION)
-                  .borderRadius(14)
-                  .backgroundColor(this.buttonColor())
-                  .fontColor(ThemeRuntime.onAccentColor())
-                  .margin({ left: AppSpacing.LG })
-                  .onClick(() => {
-                    this.openVerification();
-                  })
+                this.exploreHeaderActionsRow()
               }
+              .width('100%')
+              .height(ExplorePage.TITLE_ROW_HEIGHT + this.statusBarHeight)
+              .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: this.statusBarHeight })
+              .alignItems(VerticalAlign.Center)
+              .opacity(CollapsingHeader.contentOpacity(this.exploreHeaderCollapseValue()))
+              .hitTestBehavior(CollapsingHeader.acceptsTouch(this.exploreHeaderCollapseValue()) ?
+                HitTestMode.Default : HitTestMode.None)
             }
             .width('100%')
-            .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.SM, bottom: AppSpacing.SM })
-            .alignItems(VerticalAlign.Center)
+            .height(this.statusBarHeight + this.exploreCollapsibleHeight() - this.exploreHeaderCollapseValue())
+            .clip(true)
+            .onAreaChange((_oldArea: Area, newArea: Area) => {
+              this.onHeaderCollapseChange((this.statusBarHeight + this.exploreCollapsibleHeight() -
+                Number(newArea.height)) / this.exploreCollapsibleHeight());
+            })
+
+            this.exploreSecondaryBar()
+
+            if (this.shouldShowExploreStatus()) {
+              this.exploreStatusRow()
+            }
           }
+          .width('100%')
+          .position({ x: 0, y: 0 })
+          .zIndex(4)
+
+          HeaderBackdrop({ backdropHeight: this.statusBarHeight + this.exploreCollapsibleHeight() -
+            this.exploreHeaderCollapseValue(),
+            statusBarHeight: this.statusBarHeight,
+            backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
+            reveal: ThemeRuntime.homeBackdrop(this.appDarkMode) ? this.exploreHeaderBackdropReveal : 1 })
+            .width('100%')
+            .position({ x: 0, y: 0 })
+            .zIndex(3)
+
+          this.exploreContentBody()
         }
         .width('100%')
-        .position({ x: 0, y: 0 })
-        .zIndex(4)
-
-      HeaderBackdrop({ backdropHeight: this.statusBarHeight + this.exploreCollapsibleHeight() -
-        this.exploreHeaderCollapseValue(),
-        statusBarHeight: this.statusBarHeight,
-        backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
-        reveal: ThemeRuntime.homeBackdrop(this.appDarkMode) ? this.exploreHeaderBackdropReveal : 1 })
-        .width('100%')
-        .position({ x: 0, y: 0 })
-        .zIndex(3)
-
-      if (this.showsOverviewHome() && this.getActiveEntries().length > 0) {
-        this.exploreOverviewHome()
-      } else if (this.isSidebarLayout() && this.getActiveEntries().length > 0) {
-        Row() {
-          this.exploreSidebarRail()
-          this.exploreCurrentResultContent()
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .alignItems(VerticalAlign.Top)
-      } else if (this.isOverviewLayout() && this.getActiveEntries().length > 0) {
-        this.exploreCurrentResultContent()
-      } else if (this.usesExploreCategoryPager()) {
-        CategorySwipePager({
-          pageKeys: this.explorePageKeys(),
-          selectedIndex: this.selectedIndex,
-          onSelect: (key: string): void => {
-            const index = this.explorePageKeys().indexOf(key);
-            if (index >= 0 && index !== this.selectedIndex) this.selectExploreEntry(index);
-          },
-          pageContent: (key: string) => {
-            this.exploreResultContent(key)
-          }
-        })
-        .layoutWeight(1)
-      } else {
-        // 没有分类时，空 key 持续跟随当前内容。
-        this.exploreResultContent('')
+        .height('100%')
+        .backgroundColor(this.surfaceColor())
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       }
-      }
-      .width('100%')
-      .height('100%')
-      .backgroundColor(this.surfaceColor())
-      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
 
       // 长按书源菜单的锚点：放在手指位置的 1×1 节点，弹出层贴着它弹出。
       Column()
@@ -733,6 +772,113 @@ export struct ExplorePage {
     })
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .bindSheet($$this.showExploreCategorySheet, this.exploreCategorySheet(), this.exploreCategorySheetOptions())
+  }
+
+  @Builder
+  exploreHeaderActionsRow() {
+    this.exploreSourceLabel()
+
+    if (this.exploreFilters.length > 0) {
+      this.exploreFilterButton()
+    }
+
+    Row() {
+      this.exploreHeaderCircleButton($r('sys.symbol.magnifyingglass'), false, '搜索书名或作者', () => {
+        this.openHomeSearch();
+      })
+    }
+    .margin({ right: 10 })
+
+    this.exploreMoreButton()
+  }
+
+  @Builder
+  exploreSecondaryBar() {
+    if (this.isOverviewLayout() && this.overviewDrilled) {
+      this.exploreOverviewDrillBar()
+    } else if (this.isOverviewLayout() || this.isSidebarLayout()) {
+      if (this.showsExplorePlatformSelector()) {
+        this.explorePlatformBar()
+      }
+    } else if (this.showsExploreChannelBar()) {
+      this.exploreChannelBar()
+    }
+  }
+
+  @Builder
+  exploreStatusRow() {
+    Row() {
+      Text(this.status)
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.secondaryTextColor())
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .flexShrink(1)
+        .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.XS, bottom: AppSpacing.XS })
+        .backgroundColor(ThemeRuntime.topBarColor(this.appDarkMode))
+        .borderRadius(12)
+
+      if (this.verificationUrl) {
+        Button('去验证')
+          .height(28)
+          .fontSize(AppFontSize.CAPTION)
+          .borderRadius(14)
+          .backgroundColor(this.buttonColor())
+          .fontColor(ThemeRuntime.onAccentColor())
+          .margin({ left: AppSpacing.LG })
+          .onClick(() => {
+            this.openVerification();
+          })
+      }
+    }
+    .width('100%')
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.SM, bottom: AppSpacing.SM })
+    .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder
+  exploreBottomBuilder() {
+    Column() {
+      this.exploreSecondaryBar()
+      if (this.shouldShowExploreStatus()) {
+        this.exploreStatusRow()
+      }
+    }
+    .width('100%')
+    .height(this.exploreBottomBuilderHeight())
+  }
+
+  @Builder
+  exploreContentBody() {
+    if (this.showsOverviewHome() && this.getActiveEntries().length > 0) {
+      this.exploreOverviewHome()
+    } else if (this.isSidebarLayout() && this.getActiveEntries().length > 0) {
+      Row() {
+        this.exploreSidebarRail()
+        this.exploreCurrentResultContent()
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .alignItems(VerticalAlign.Top)
+    } else if (this.isOverviewLayout() && this.getActiveEntries().length > 0) {
+      this.exploreCurrentResultContent()
+    } else if (this.usesExploreCategoryPager()) {
+      CategorySwipePager({
+        pageKeys: this.explorePageKeys(),
+        selectedIndex: this.selectedIndex,
+        onSelect: (key: string): void => {
+          const index = this.explorePageKeys().indexOf(key);
+          if (index >= 0 && index !== this.selectedIndex) this.selectExploreEntry(index);
+        },
+        pageContent: (key: string) => {
+          this.exploreResultContent(key)
+        }
+      })
+      .layoutWeight(1)
+    } else {
+      // 没有分类时，空 key 持续跟随当前内容。
+      this.exploreResultContent('')
+    }
   }
 
   /** 全部分类面板：与详情页目录同一种半模态，停 60% 与全屏两档。 */
@@ -1488,6 +1634,7 @@ export struct ExplorePage {
         books: this.explorePageBooks(key),
         coverCache: this.explorePageSnapshot(key).covers,
         initialScrollOffset: this.explorePageSnapshot(key).scrollOffset,
+        scroller: this.exploreResultScroller(key),
         claimArrival: (book: SearchBook): number => this.claimExploreResultArrival(key, book),
         onResultReady: (book: SearchBook): void => this.onExploreResultReady(key, book),
         orderedReveal: true,
@@ -2152,7 +2299,9 @@ export struct ExplorePage {
     });
     if (previous === layout) return;
     this.exploreHeaderCollapse = 0;
+    this.nativeExploreScrollY = 0;
     this.exploreHeaderBackdropReveal = 0;
+    this.notifyExploreHeaderCollapse(true);
     if (layout === ExploreRankStyle.LAYOUT_OVERVIEW) {
       this.overviewDrilled = false;
       this.startExploreOverview();
@@ -2448,6 +2597,10 @@ export struct ExplorePage {
   onExploreListScroll(delta: number, offset: number): void {
     const reveal = CollapsingHeader.backdropReveal(offset);
     if (reveal !== this.exploreHeaderBackdropReveal) this.exploreHeaderBackdropReveal = reveal;
+    const nativeY = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+    if (nativeY !== this.nativeExploreScrollY) {
+      this.nativeExploreScrollY = nativeY;
+    }
     if (this.usesExploreCategoryPager() && offset <= 0 && delta >= 0) return;
     const next = CollapsingHeader.next(this.exploreHeaderCollapse, delta,
       this.usesExploreCategoryPager() ? this.exploreCollapsibleHeight() : offset, this.exploreCollapsibleHeight());
@@ -2476,6 +2629,146 @@ export struct ExplorePage {
       height += 40;
     }
     return height;
+  }
+
+  exploreBottomBuilderHeight(): number {
+    let height = 0;
+    if (this.showsExploreSecondaryBar()) {
+      height += ExplorePage.CHANNEL_BAR_HEIGHT + AppSpacing.MD;
+    }
+    if (this.shouldShowExploreStatus()) {
+      height += 40;
+    }
+    return height;
+  }
+
+  exploreResultScroller(key: string): ListScroller {
+    if (!key) return this.exploreDefaultResultScroller;
+    let scroller = this.exploreResultScrollers.get(key);
+    if (!scroller) {
+      scroller = new ListScroller();
+      this.exploreResultScrollers.set(key, scroller);
+      while (this.exploreResultScrollers.size > 80) {
+        const oldest = Array.from(this.exploreResultScrollers.keys())[0];
+        if (oldest === undefined || oldest === key) break;
+        this.exploreResultScrollers.delete(oldest);
+      }
+    }
+    return scroller;
+  }
+
+  private activeExploreKey(): string {
+    return this.getActiveEntries().length > 0 ? (this.explorePageKeys()[this.selectedIndex] || '') : '';
+  }
+
+  private exploreCanCollapseHeader(): boolean {
+    if (this.showsOverviewHome() && this.getActiveEntries().length > 0) {
+      return true;
+    }
+    const key = this.activeExploreKey();
+    if (this.usesExploreCategoryPager()) {
+      return this.explorePageBooks(key).length > 0 || this.explorePageLoading(key);
+    }
+    if ((this.isSidebarLayout() || this.isOverviewLayout()) && this.getActiveEntries().length > 0) {
+      return this.explorePageBooks(key).length > 0 ||
+        (this.explorePageLoading(key) && this.nativeExploreScrollY > 0);
+    }
+    return this.explorePageBooks('').length > 0;
+  }
+
+  private activeExploreScrollers(): Array<Scroller> {
+    if (this.showsOverviewHome() && this.getActiveEntries().length > 0) {
+      return [this.exploreOverviewScroller];
+    }
+    const key = this.activeExploreKey();
+    if ((this.isSidebarLayout() || this.isOverviewLayout()) && this.getActiveEntries().length > 0) {
+      return this.explorePageBooks(key).length > 0 ||
+        (this.explorePageLoading(key) && this.nativeExploreScrollY > 0) ?
+        [this.exploreResultScroller(key)] : [];
+    }
+    if (this.usesExploreCategoryPager()) {
+      return this.explorePageBooks(key).length > 0 || this.explorePageLoading(key) ?
+        [this.exploreResultScroller(key)] : [];
+    }
+    return this.explorePageBooks('').length > 0 ? [this.exploreDefaultResultScroller] : [];
+  }
+
+  private nativeExploreTitleCollapse(): number {
+    if (!this.exploreCanCollapseHeader()) return 0;
+    return Math.max(0, Math.min(this.exploreCollapsibleHeight(), this.nativeExploreScrollY));
+  }
+
+  private activeExploreHeaderCollapse(): number {
+    return ImmersiveMaterialRuntime.supportsHdsTabs() ?
+      this.nativeExploreTitleCollapse() : this.exploreHeaderCollapseValue();
+  }
+
+  private readScrollerOffsetY(scroller: Scroller): number {
+    try {
+      const current = scroller.currentOffset();
+      const offset = current ? current.yOffset : -1;
+      return typeof offset === 'number' && Number.isFinite(offset) ? Math.max(0, offset) : -1;
+    } catch (_error) {
+      return -1;
+    }
+  }
+
+  private onExploreEntriesChanged(): void {
+    const activeKeys = new Set<string>(this.explorePageKeys());
+    this.exploreResultScrollers.forEach((_scroller: ListScroller, key: string): void => {
+      if (!activeKeys.has(key)) {
+        this.exploreResultScrollers.delete(key);
+      }
+    });
+    this.notifyExploreHeaderCollapse();
+  }
+
+  private onExploreSourceOrPlatformChanged(): void {
+    this.exploreHeaderCollapse = 0;
+    this.nativeExploreScrollY = 0;
+    this.exploreHeaderBackdropReveal = 0;
+    this.notifyExploreHeaderCollapse(true);
+  }
+
+  private onExploreSelectedIndexChanged(): void {
+    const key = this.activeExploreKey();
+    if (!this.showsOverviewHome() && key) {
+      const scroller = this.exploreResultScroller(key);
+      const liveOffset = this.readScrollerOffsetY(scroller);
+      const snapshotOffset = this.explorePages.get(key)?.scrollOffset || 0;
+      if (liveOffset > 0) {
+        this.nativeExploreScrollY = liveOffset;
+      } else if (this.usesExploreCategoryPager()) {
+        if (snapshotOffset > 0) {
+          this.nativeExploreScrollY = Math.max(this.nativeExploreScrollY, snapshotOffset);
+        } else if (!this.explorePageLoading(key) && this.explorePageBooks(key).length === 0) {
+          this.nativeExploreScrollY = 0;
+        }
+      } else {
+        this.nativeExploreScrollY = snapshotOffset;
+      }
+    }
+    this.notifyExploreHeaderCollapse();
+  }
+
+  private onExploreActiveDataChanged(): void {
+    if (!this.exploreCanCollapseHeader() && this.nativeExploreScrollY !== 0) {
+      this.nativeExploreScrollY = 0;
+    }
+    this.notifyExploreHeaderCollapse();
+  }
+
+  private onNativeExploreHeaderStateChanged(): void {
+    this.notifyExploreHeaderCollapse();
+  }
+
+  private notifyExploreHeaderCollapse(force: boolean = false): void {
+    if (!ImmersiveMaterialRuntime.supportsHdsTabs()) return;
+    const distance = this.exploreCollapsibleHeight();
+    const progress = distance > 0 ? Math.max(0, Math.min(1, this.nativeExploreTitleCollapse() / distance)) : 0;
+    if (!force && Math.abs(progress - this.lastReportedExploreCollapse) < 0.001) return;
+    this.lastReportedExploreCollapse = progress;
+    this.onHeaderCollapseChange(progress);
   }
 
   copyExploreFilterGroups(filters: ExploreFilterGroup[]): ExploreFilterGroup[] {
@@ -2726,7 +3019,7 @@ export struct ExplorePage {
       ListItem() {
         Row()
           .width('100%')
-          .height(Math.max(0, this.exploreTopOverlayHeight() - this.exploreHeaderCollapseValue()))
+          .height(Math.max(0, this.exploreTopOverlayHeight() - this.activeExploreHeaderCollapse()))
       }
 
       ForEach(this.exploreSidebarSections(), (section: ExploreSidebarSection) => {
@@ -2850,16 +3143,20 @@ export struct ExplorePage {
   /** 点进总览里的某个榜单或分类：沿用普通的频道加载，总览卡片已拿到的结果会直接复用。 */
   openOverviewEntry(index: number): void {
     this.exploreHeaderCollapse = 0;
+    this.nativeExploreScrollY = 0;
     this.exploreHeaderBackdropReveal = 0;
     this.overviewDrilled = true;
     this.selectExploreEntry(index);
+    this.notifyExploreHeaderCollapse(true);
   }
 
   onOverviewDrillActiveChanged(): void {
     if (this.overviewDrilled) return;
     this.exploreHeaderCollapse = 0;
+    this.nativeExploreScrollY = 0;
     this.exploreHeaderBackdropReveal = 0;
     if (this.showsOverviewHome()) this.requestOverviewCards(this.overviewVisibleEnd);
+    this.notifyExploreHeaderCollapse(true);
   }
 
   /** 点进总览后标题下面的返回栏：整行点了都回总览。 */

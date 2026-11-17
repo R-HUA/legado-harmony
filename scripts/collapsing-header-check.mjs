@@ -114,15 +114,35 @@ const searchSource = read('components/home/SearchPage');
 const searchGeometry = searchSource.slice(searchSource.indexOf('  searchFieldRowHeight():'),
   searchSource.indexOf('  searchHeaderRowOpacity('));
 const SearchGeometry = vm.runInNewContext(compile(`class SearchGeometry { ${searchGeometry} }; SearchGeometry`), {
-  SearchPage: { TITLE_ROW_HEIGHT: 56, HEADER_CONTROL_SIZE: 40, STATUS_ROW_HEIGHT: 32 }, AppSpacing: { MD: 8 }
+  SearchPage: { FIELD_ROW_TOP_GAP: 8, HEADER_CONTROL_SIZE: 40, STATUS_ROW_HEIGHT: 28 },
+  AppSpacing: { XS: 4, MD: 8 }
 });
 const searchGeometryPage = new SearchGeometry();
-Object.assign(searchGeometryPage, { statusBarHeight: 40, statusMessage: '搜索完成', searchHeaderCollapseValue: () => 0 });
-assert.equal(searchGeometryPage.searchHeaderBackdropHeight(), 176, 'result message is covered by the main mask');
-searchGeometryPage.statusMessage = '';
-assert.equal(searchGeometryPage.searchHeaderBackdropHeight(), 136, 'no message leaves the mask at the search field bottom');
-searchGeometryPage.searchHeaderCollapseValue = () => 136;
+Object.assign(searchGeometryPage, { statusBarHeight: 40, showResult: true, searchHeaderCollapseValue: () => 0 });
+assert.equal(searchGeometryPage.searchFieldRowHeight(), 56, 'search field row keeps 56vp height');
+assert.equal(searchGeometryPage.searchStatusRowHeight(), 32, 'result status row adds 32vp when shown');
+assert.equal(searchGeometryPage.searchCollapsibleHeight(), 88, 'search header collapsible height totals 88vp');
+assert.equal(searchGeometryPage.searchHeaderBackdropHeight(), 128, 'result status row is covered by the main mask');
+searchGeometryPage.showResult = false;
+assert.equal(searchGeometryPage.searchStatusRowHeight(), 0, 'idle search omits the status row');
+assert.equal(searchGeometryPage.searchHeaderBackdropHeight(), 88, 'no result leaves the mask at the search field bottom');
+searchGeometryPage.showResult = true;
+searchGeometryPage.searchHeaderCollapseValue = () => 44;
+assert.equal(searchGeometryPage.searchHeaderBackdropHeight(), 84, 'mid collapse shrinks search mask proportionally');
+searchGeometryPage.searchHeaderCollapseValue = () => 88;
 assert.equal(searchGeometryPage.searchHeaderBackdropHeight(), 40, 'fully collapsed search retains only the status-bar base');
+searchGeometryPage.searchHeaderCollapseValue = () => 120;
+assert.equal(searchGeometryPage.searchHeaderBackdropHeight(), 40, 'over-collapsed search never shrinks below status bar');
+
+const exploreSource = read('components/home/ExplorePage');
+for (const [label, source] of [['ExplorePage', exploreSource], ['SearchPage', searchSource]]) {
+  assert(source.includes("@StorageProp('headerFrosted')"), `${label}: subscribes to headerFrosted`);
+  assert(source.includes('HdsNavigation()'), `${label}: migrates to native HdsNavigation`);
+  assert(source.includes('ImmersiveMaterialRuntime.navigationTitleBarStyle('), `${label}: uses shared titleBar style`);
+  assert(source.includes('.bindToScrollable(') && source.includes('.dynamicHideTitleBar('), `${label}: binds scrollers and dynamicHide`);
+  assert(source.includes('ImmersiveMaterialRuntime.supportsHdsTabs()') && source.includes('HeaderBackdrop('),
+    `${label}: retains API < 23 HeaderBackdrop fallback`);
+}
 
 // Run the actual Index callbacks: native animations must not restart on every layout frame.
 const indexSource = read('pages/Index');
