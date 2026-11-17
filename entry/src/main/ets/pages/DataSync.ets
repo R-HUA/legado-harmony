@@ -1,4 +1,5 @@
 import { promptAction, router } from '@kit.ArkUI';
+import { AccountCommerceConfig } from '../account/AccountCommerceConfig';
 import { AccountSessionStore } from '../account/AccountSessionStore';
 import { CloudSyncSettings, CloudSyncSettingsStore } from '../account/CloudSyncSettingsStore';
 import { CloudSyncCoordinator } from '../account/CloudSyncCoordinator';
@@ -141,8 +142,10 @@ struct DataSyncPage {
 
       this.sectionTitle('同步内容')
       Column() {
-        this.fileSyncRow('本地书籍', '同步加入书架的本地书籍文件', true)
-        this.fileSyncRow('自定义字体', '同步导入的自定义字体文件', false)
+        if (AccountCommerceConfig.COMMERCE_ENABLED || this.isSuperMember()) {
+          this.fileSyncRow('本地书籍', '同步加入书架的本地书籍文件', true)
+          this.fileSyncRow('自定义字体', '同步导入的自定义字体文件', false)
+        }
         SettingSwitchRow({
           title: '阅读数据',
           description: this.webParseEnabled ? '在线书架、分组、排序、进度、书签和阅读统计；本地书同步进度与统计' :
@@ -324,6 +327,10 @@ struct DataSyncPage {
   }
 
   async promptSuperMembership(): Promise<void> {
+    if (!AccountCommerceConfig.COMMERCE_ENABLED) {
+      HdsFeedback.showToast('账号服务暂不可用');
+      return;
+    }
     const result = await promptAction.showDialog({
       title: '终身超级会员专享',
       message: '本地书籍和自定义字体同步仅限终身超级会员，请开通或升级为终身超级会员。',
