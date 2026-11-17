@@ -1,5 +1,6 @@
 import { WebParseSettingsStore } from '../../utils/WebParseSettingsStore';
-import { router } from '@kit.ArkUI';
+import { LengthMetrics, router } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import { Bookmark } from '@legado/sourceengine';
 import { appDb, ReadStatsRow } from '../../model/data/AppDatabase';
 import { readStatsTracker } from '../../core/stats/ReadStatsTracker';
@@ -16,6 +17,7 @@ import { HeaderBackdrop } from '../common/HeaderBackdrop';
 import { HomeThemeBackdrop } from './HomeThemeBackdrop';
 import { BookCover } from '../book/BookCover';
 import { ImmersiveMaterialSurface } from '../ImmersiveMaterialSurface';
+import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 import { BookAnnotation } from '../../model/reader/BookAnnotation';
 import { FootprintLayout } from '../../utils/FootprintLayout';
 import { FootprintSettingsStore } from '../../utils/FootprintSettingsStore';
@@ -69,12 +71,16 @@ export struct FootprintTabPage {
   @StorageProp('bookMarkRevision') @Watch('onBookMarkRevision') bookMarkRevision: number = 0;
   @State loading: boolean = true;
   @State todayKey: string = '';
+  @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageProp('readStatsRecording') readStatsRecording: boolean = true;
   /** 本月日历卡收起与否，在 EntryAbility 里持久化。 */
   @StorageLink('footprintMonthCollapsed') monthCollapsed: boolean = false;
   @StorageProp('footprintLayout') layoutRaw: string = '';
+  @State private nativeActionsCollapse: number = 0;
+  @State private actionsWidth: number = 156;
   private scroller: Scroller = new Scroller();
   private alive: boolean = false;
   private ownerId: string = '';
@@ -193,93 +199,189 @@ export struct FootprintTabPage {
     return ms < FootprintTabPage.LEVEL_STEPS_MS[1] ? 2 : 3;
   }
 
+  private updateHeaderCollapse(nextCollapse: number): void {
+    if (nextCollapse === this.headerCollapse) return;
+    this.headerCollapse = nextCollapse;
+    this.onHeaderCollapseChange(nextCollapse / CollapsingHeader.DISTANCE);
+  }
+
+  private handleScrollDidScroll(yOffset: number): void {
+    const rawOffset = this.scroller.currentOffset().yOffset;
+    if (!Number.isFinite(rawOffset)) return;
+    const offset = Math.max(0, rawOffset);
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      const nextActionsCollapse = Math.max(0, Math.min(CollapsingHeader.DISTANCE, offset / 2));
+      if (Math.abs(nextActionsCollapse - this.nativeActionsCollapse) >= 0.5 ||
+        (nextActionsCollapse === 0 && this.nativeActionsCollapse !== 0) ||
+        (nextActionsCollapse === CollapsingHeader.DISTANCE &&
+          this.nativeActionsCollapse !== CollapsingHeader.DISTANCE)) {
+        this.nativeActionsCollapse = nextActionsCollapse;
+      }
+    } else {
+      const reveal = CollapsingHeader.backdropReveal(offset);
+      if (reveal !== this.headerBackdropReveal) this.headerBackdropReveal = reveal;
+    }
+    this.updateHeaderCollapse(CollapsingHeader.next(this.headerCollapse, yOffset, offset));
+  }
+
+  private handleScrollStop(): void {
+    const rawOffset = this.scroller.currentOffset().yOffset;
+    if (!Number.isFinite(rawOffset)) return;
+    const offset = Math.max(0, rawOffset);
+    const target = CollapsingHeader.settle(this.headerCollapse, offset);
+    if (target !== this.headerCollapse) {
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        this.updateHeaderCollapse(target);
+      } else {
+        animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+          this.updateHeaderCollapse(target);
+        });
+      }
+    }
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       HomeThemeBackdrop({ visibleHeight: this.statusBarHeight + 330, strength: 0.85 })
 
-      Scroll(this.scroller) {
-        Column({ space: AppSpacing.LG }) {
-          Row()
-            .width('100%')
-            .height(56 + this.statusBarHeight)
-
-          if (this.layout().visibleOrder().length === 0) {
-            this.emptyLayoutCard()
-          } else {
-            ForEach(this.layout().visibleOrder(), (id: string) => {
-              this.section(id)
-            }, (id: string) => id)
-          }
-
-          Row()
-            .width('100%')
-            .height(56 + Math.max(this.navBarHeight, 8) + 20)
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        HdsNavigation() {
+          this.footprintScrollBody()
         }
-        .width('calc(100% - 32vp)')
-        .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
-        .justifyContent(FlexAlign.Start)
-      }
-      .scrollBar(BarState.Off)
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      .align(Alignment.TopStart)
-      .backgroundColor(ThemeRuntime.homeSurfaceColor(this.appDarkMode))
-      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
-      .onDidScroll((_xOffset: number, yOffset: number) => {
-        const reveal = CollapsingHeader.backdropReveal(this.scroller.currentOffset().yOffset);
-        if (reveal !== this.headerBackdropReveal) this.headerBackdropReveal = reveal;
-        this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
-          this.scroller.currentOffset().yOffset);
-      })
-      .onScrollStop(() => {
-        const target = CollapsingHeader.settle(this.headerCollapse, this.scroller.currentOffset().yOffset);
-        if (target !== this.headerCollapse) {
-          animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-            this.headerCollapse = target;
-          });
-        }
-      })
-
-      HeaderBackdrop({ backdropHeight: this.statusBarHeight + 56 - this.headerCollapse,
-        statusBarHeight: this.statusBarHeight,
-        backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
-        reveal: ThemeRuntime.homeBackdrop(this.appDarkMode) ? this.headerBackdropReveal : 1 })
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(!this.showBack)
+        .hideToolBar(true)
+        .backgroundColor(Color.Transparent)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          padding: this.showBack ?
+            { end: LengthMetrics.vp(Math.max(16, this.actionsWidth)) } :
+            { start: LengthMetrics.vp(16), end: LengthMetrics.vp(Math.max(16, this.actionsWidth)) },
+          content: this.showBack ? {
+            title: { mainTitle: '足迹' },
+            backIcon: { label: '返回', action: () => router.back() }
+          } : {
+            title: { mainTitle: '足迹' }
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor(),
+            blurEndOffsetVp: ThemeRuntime.homeBackdrop(this.appDarkMode) ?
+              CollapsingHeader.BACKDROP_REVEAL_DISTANCE : 8
+          })
+        })
+        .bindToScrollable([this.scroller])
+        .dynamicHideTitleBar({
+          hideTitleArea: true,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO
+        })
         .width('100%')
+        .height('100%')
 
-      Column() {
-        Row({ space: 10 }) {
-          if (this.showBack) {
-            this.headerButton($r('sys.symbol.chevron_left'), '返回', () => router.back())
+        Row() {
+          Row({ space: 10 }) {
+            this.headerActionButtons()
           }
-          Text('足迹')
-            .fontSize(AppFontSize.DISPLAY)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.primaryTextColor())
-            .layoutWeight(1)
-          this.headerButton($r('sys.symbol.share'), '分享本周阅读海报', () => this.shareWeek())
-          this.headerButton($r('sys.symbol.timer'), '完整阅读统计', () => this.openStats())
-          this.headerButton($r('sys.symbol.dot_grid_2x2'), '设置足迹页内容', () => this.openLayoutSettings())
+          .height(56)
+          .padding({ left: AppSpacing.XS, right: AppSpacing.LG })
+          .alignItems(VerticalAlign.Center)
+          .enabled(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse))
+          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse) ?
+            HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
+          .onAreaChange((_oldValue: Area, newValue: Area) => {
+            const width = parseFloat(String(newValue.width));
+            if (Number.isFinite(width) && Math.abs(width - this.actionsWidth) >= 1) {
+              this.actionsWidth = width;
+            }
+          })
         }
         .width('100%')
-        .height(56 + this.statusBarHeight)
-        .alignItems(VerticalAlign.Center)
-        .padding({ left: this.showBack ? AppSpacing.LG : AppSpacing.XL, right: AppSpacing.LG, top: this.statusBarHeight })
-        .opacity(CollapsingHeader.contentOpacity(this.headerCollapse))
-        .hitTestBehavior(CollapsingHeader.acceptsTouch(this.headerCollapse) ? HitTestMode.Default : HitTestMode.None)
+        .height(56)
+        .margin({ top: this.statusBarHeight })
+        .justifyContent(FlexAlign.End)
+        .hitTestBehavior(HitTestMode.Transparent)
+        .opacity(CollapsingHeader.contentOpacity(this.nativeActionsCollapse))
+        .translate({ y: -this.nativeActionsCollapse * 0.5 })
+        .accessibilityLevel(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse) ?
+          'auto' : 'no-hide-descendants')
+      } else {
+        this.footprintScrollBody()
+
+        HeaderBackdrop({ backdropHeight: this.statusBarHeight + 56 - this.headerCollapse,
+          statusBarHeight: this.statusBarHeight,
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
+          reveal: ThemeRuntime.homeBackdrop(this.appDarkMode) ? this.headerBackdropReveal : 1 })
+          .width('100%')
+
+        Column() {
+          Row({ space: 10 }) {
+            if (this.showBack) {
+              this.headerButton($r('sys.symbol.chevron_left'), '返回', () => router.back())
+            }
+            Text('足迹')
+              .fontSize(AppFontSize.DISPLAY)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.primaryTextColor())
+              .layoutWeight(1)
+            this.headerActionButtons()
+          }
+          .width('100%')
+          .height(56 + this.statusBarHeight)
+          .alignItems(VerticalAlign.Center)
+          .padding({ left: this.showBack ? AppSpacing.LG : AppSpacing.XL, right: AppSpacing.LG, top: this.statusBarHeight })
+          .opacity(CollapsingHeader.contentOpacity(this.headerCollapse))
+          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.headerCollapse) ?
+            HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
+        }
+        .width('100%')
+        .height(56 + this.statusBarHeight - this.headerCollapse)
+        .clip(true)
       }
-      .width('100%')
-      .height(56 + this.statusBarHeight - this.headerCollapse)
-      .clip(true)
-      .onAreaChange((_oldArea: Area, newArea: Area) => {
-        this.onHeaderCollapseChange((56 + this.statusBarHeight - Number(newArea.height)) /
-          CollapsingHeader.DISTANCE);
-      })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(ThemeRuntime.pageColor(this.appDarkMode))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  footprintScrollBody() {
+    Scroll(this.scroller) {
+      Column({ space: AppSpacing.LG }) {
+        Row()
+          .width('100%')
+          .height(56 + this.statusBarHeight)
+
+        if (this.layout().visibleOrder().length === 0) {
+          this.emptyLayoutCard()
+        } else {
+          ForEach(this.layout().visibleOrder(), (id: string) => {
+            this.section(id)
+          }, (id: string) => id)
+        }
+
+        Row()
+          .width('100%')
+          .height(56 + Math.max(this.navBarHeight, 8) + 20)
+      }
+      .width('calc(100% - 32vp)')
+      .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
+      .justifyContent(FlexAlign.Start)
+    }
+    .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+    .width('100%')
+    .height('100%')
+    .align(Alignment.TopStart)
+    .backgroundColor(ImmersiveMaterialRuntime.supportsHdsTabs() ? Color.Transparent :
+      ThemeRuntime.homeSurfaceColor(this.appDarkMode))
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    .onDidScroll((_xOffset: number, yOffset: number) => this.handleScrollDidScroll(yOffset))
+    .onScrollStop(() => this.handleScrollStop())
   }
 
   layout(): FootprintLayout {
@@ -397,6 +499,13 @@ export struct FootprintTabPage {
     router.pushUrl({ url: 'pages/FootprintLayoutSettings' }).catch((error: Error) => {
       console.error('打开足迹页内容设置失败:', error);
     });
+  }
+
+  @Builder
+  headerActionButtons() {
+    this.headerButton($r('sys.symbol.share'), '分享本周阅读海报', () => this.shareWeek())
+    this.headerButton($r('sys.symbol.timer'), '完整阅读统计', () => this.openStats())
+    this.headerButton($r('sys.symbol.dot_grid_2x2'), '设置足迹页内容', () => this.openLayoutSettings())
   }
 
   /** 和书架、发现顶栏的圆钮同一种沉浸光感材质、同样 40 大小。 */

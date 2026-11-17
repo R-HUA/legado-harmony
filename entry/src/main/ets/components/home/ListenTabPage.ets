@@ -1,5 +1,6 @@
 import { WebParseSettingsStore } from '../../utils/WebParseSettingsStore';
-import { router } from '@kit.ArkUI';
+import { LengthMetrics, router } from '@kit.ArkUI';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
 import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 import { PopupMenuAction } from '../common/PopupMenuAction';
 import { Book, BookTypeSupport } from '@legado/sourceengine';
@@ -58,6 +59,7 @@ export struct ListenTabPage {
   @StorageProp('globalTtsTimerRemainingSeconds') ttsTimerRemainingSeconds: number = 0;
   @StorageProp('globalTtsVoiceCode') ttsVoiceCode: string = '';
   @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
   @State showTimerMenu: boolean = false;
   /** 有声书来自网页解析，开关关闭时不显示有声书相关的入口和文案。 */
   @StorageProp('webParseEnabled') webParseEnabled: boolean = false;
@@ -127,120 +129,181 @@ export struct ListenTabPage {
     }
   }
 
+  private updateHeaderCollapse(nextCollapse: number): void {
+    if (nextCollapse === this.headerCollapse) return;
+    this.headerCollapse = nextCollapse;
+    this.onHeaderCollapseChange(nextCollapse / CollapsingHeader.DISTANCE);
+  }
+
+  private handleScrollDidScroll(yOffset: number): void {
+    const rawOffset = this.scroller.currentOffset().yOffset;
+    if (!Number.isFinite(rawOffset)) return;
+    const offset = Math.max(0, rawOffset);
+    if (!ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      const reveal = CollapsingHeader.backdropReveal(offset);
+      if (reveal !== this.headerBackdropReveal) this.headerBackdropReveal = reveal;
+    }
+    this.updateHeaderCollapse(CollapsingHeader.next(this.headerCollapse, yOffset, offset));
+  }
+
+  private handleScrollStop(): void {
+    const rawOffset = this.scroller.currentOffset().yOffset;
+    if (!Number.isFinite(rawOffset)) return;
+    const offset = Math.max(0, rawOffset);
+    const target = CollapsingHeader.settle(this.headerCollapse, offset);
+    if (target !== this.headerCollapse) {
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        this.updateHeaderCollapse(target);
+      } else {
+        animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+          this.updateHeaderCollapse(target);
+        });
+      }
+    }
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       HomeThemeBackdrop({ visibleHeight: this.statusBarHeight + 330, strength: 0.85 })
 
-      Scroll(this.scroller) {
-        Column({ space: AppSpacing.LG }) {
-          Row()
-            .width('100%')
-            .height(56 + this.statusBarHeight)
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        HdsNavigation() {
+          this.listenScrollBody()
+        }
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(true)
+        .hideToolBar(true)
+        .backgroundColor(Color.Transparent)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          padding: {
+            start: LengthMetrics.vp(16),
+            end: LengthMetrics.vp(16)
+          },
+          content: {
+            title: { mainTitle: '听' }
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor(),
+            blurEndOffsetVp: ThemeRuntime.homeBackdrop(this.appDarkMode) ?
+              CollapsingHeader.BACKDROP_REVEAL_DISTANCE : 8
+          })
+        })
+        .bindToScrollable([this.scroller])
+        .dynamicHideTitleBar({
+          hideTitleArea: true,
+          hideStatusBar: false,
+          mode: HideMode.SCROLL_UP_TO
+        })
+        .width('100%')
+        .height('100%')
+      } else {
+        this.listenScrollBody()
 
-          if (this.ttsActive || this.audioBooks.length > 0) {
-            this.heroCard()
-          } else if (this.loaded) {
-            this.emptyCard()
-          }
-
-          if (this.audioBooks.length > 0) {
-            Row() {
-              Text('最近在听')
-                .fontSize(AppFontSize.TITLE)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(this.primaryTextColor())
-                .layoutWeight(1)
-              Text(`${this.audioBooks.length} 本`)
-                .fontSize(AppFontSize.CAPTION)
-                .fontColor(this.subTextColor())
-            }
-            .width('100%')
-            .padding({ left: AppSpacing.XS, right: AppSpacing.XS })
-
-            List({ space: AppSpacing.MD }) {
-              ForEach(this.audioBooks, (item: ListenBookItem) => {
-                ListItem() {
-                  this.audioBookCell(item)
-                }
-              }, (item: ListenBookItem) => `${item.book.bookUrl}|${item.offline}|${item.book.durChapterIndex}`)
-            }
-            .listDirection(Axis.Horizontal)
-            .scrollBar(BarState.Off)
-            .edgeEffect(EdgeEffect.Spring)
-            .width('100%')
-            .height(ListenTabPage.SHELF_COVER_SIZE + 62)
-          }
-
-          Row({ space: AppSpacing.MD }) {
-            ForEach(this.visibleEntries(), (entry: ListenEntry) => {
-              this.entryTile(entry)
-            }, (entry: ListenEntry) => entry.url)
-          }
+        HeaderBackdrop({ backdropHeight: this.statusBarHeight + 56 - this.headerCollapse,
+          statusBarHeight: this.statusBarHeight,
+          backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
+          reveal: ThemeRuntime.homeBackdrop(this.appDarkMode) ? this.headerBackdropReveal : 1 })
           .width('100%')
 
-          Row()
-            .width('100%')
-            .height(56 + Math.max(this.navBarHeight, 8) + 20)
-        }
-        .width('calc(100% - 32vp)')
-        .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
-        .justifyContent(FlexAlign.Start)
-      }
-      .scrollBar(BarState.Off)
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-      .width('100%')
-      .height('100%')
-      .align(Alignment.TopStart)
-      .backgroundColor(ThemeRuntime.homeSurfaceColor(this.appDarkMode))
-      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
-      .onDidScroll((_xOffset: number, yOffset: number) => {
-        const reveal = CollapsingHeader.backdropReveal(this.scroller.currentOffset().yOffset);
-        if (reveal !== this.headerBackdropReveal) this.headerBackdropReveal = reveal;
-        this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
-          this.scroller.currentOffset().yOffset);
-      })
-      .onScrollStop(() => {
-        const target = CollapsingHeader.settle(this.headerCollapse, this.scroller.currentOffset().yOffset);
-        if (target !== this.headerCollapse) {
-          animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-            this.headerCollapse = target;
-          });
-        }
-      })
-
-      HeaderBackdrop({ backdropHeight: this.statusBarHeight + 56 - this.headerCollapse,
-        statusBarHeight: this.statusBarHeight,
-        backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
-        reveal: ThemeRuntime.homeBackdrop(this.appDarkMode) ? this.headerBackdropReveal : 1 })
-        .width('100%')
-
-      Column() {
-        Row() {
-          Text('听')
-            .fontSize(AppFontSize.DISPLAY)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.primaryTextColor())
-            .layoutWeight(1)
+        Column() {
+          Row() {
+            Text('听')
+              .fontSize(AppFontSize.DISPLAY)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.primaryTextColor())
+              .layoutWeight(1)
+          }
+          .width('100%')
+          .height(56 + this.statusBarHeight)
+          .alignItems(VerticalAlign.Center)
+          .padding({ left: AppSpacing.XL, right: AppSpacing.LG, top: this.statusBarHeight })
+          .opacity(CollapsingHeader.contentOpacity(this.headerCollapse))
+          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.headerCollapse) ?
+            HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
         }
         .width('100%')
-        .height(56 + this.statusBarHeight)
-        .alignItems(VerticalAlign.Center)
-        .padding({ left: AppSpacing.XL, right: AppSpacing.LG, top: this.statusBarHeight })
-        .opacity(CollapsingHeader.contentOpacity(this.headerCollapse))
-        .hitTestBehavior(CollapsingHeader.acceptsTouch(this.headerCollapse) ? HitTestMode.Default : HitTestMode.None)
+        .height(56 + this.statusBarHeight - this.headerCollapse)
+        .clip(true)
       }
-      .width('100%')
-      .height(56 + this.statusBarHeight - this.headerCollapse)
-      .clip(true)
-      .onAreaChange((_oldArea: Area, newArea: Area) => {
-        this.onHeaderCollapseChange((56 + this.statusBarHeight - Number(newArea.height)) /
-          CollapsingHeader.DISTANCE);
-      })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(ThemeRuntime.pageColor(this.appDarkMode))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  listenScrollBody() {
+    Scroll(this.scroller) {
+      Column({ space: AppSpacing.LG }) {
+        Row()
+          .width('100%')
+          .height(56 + this.statusBarHeight)
+
+        if (this.ttsActive || this.audioBooks.length > 0) {
+          this.heroCard()
+        } else if (this.loaded) {
+          this.emptyCard()
+        }
+
+        if (this.audioBooks.length > 0) {
+          Row() {
+            Text('最近在听')
+              .fontSize(AppFontSize.TITLE)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.primaryTextColor())
+              .layoutWeight(1)
+            Text(`${this.audioBooks.length} 本`)
+              .fontSize(AppFontSize.CAPTION)
+              .fontColor(this.subTextColor())
+          }
+          .width('100%')
+          .padding({ left: AppSpacing.XS, right: AppSpacing.XS })
+
+          List({ space: AppSpacing.MD }) {
+            ForEach(this.audioBooks, (item: ListenBookItem) => {
+              ListItem() {
+                this.audioBookCell(item)
+              }
+            }, (item: ListenBookItem) => `${item.book.bookUrl}|${item.offline}|${item.book.durChapterIndex}`)
+          }
+          .listDirection(Axis.Horizontal)
+          .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring)
+          .width('100%')
+          .height(ListenTabPage.SHELF_COVER_SIZE + 62)
+        }
+
+        Row({ space: AppSpacing.MD }) {
+          ForEach(this.visibleEntries(), (entry: ListenEntry) => {
+            this.entryTile(entry)
+          }, (entry: ListenEntry) => entry.url)
+        }
+        .width('100%')
+
+        Row()
+          .width('100%')
+          .height(56 + Math.max(this.navBarHeight, 8) + 20)
+      }
+      .width('calc(100% - 32vp)')
+      .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
+      .justifyContent(FlexAlign.Start)
+    }
+    .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+    .width('100%')
+    .height('100%')
+    .align(Alignment.TopStart)
+    .backgroundColor(ImmersiveMaterialRuntime.supportsHdsTabs() ? Color.Transparent :
+      ThemeRuntime.homeSurfaceColor(this.appDarkMode))
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    .onDidScroll((_xOffset: number, yOffset: number) => this.handleScrollDidScroll(yOffset))
+    .onScrollStop(() => this.handleScrollStop())
   }
 
   /**

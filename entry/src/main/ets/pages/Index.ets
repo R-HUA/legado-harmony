@@ -1562,6 +1562,8 @@ struct Index {
     }
     .width('100%')
     .height('100%')
+    .clip(false)
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 
   /** 第四个页签（听/足迹）：和“我的”一样只在显示时挂载。 */
@@ -1650,7 +1652,8 @@ struct Index {
         }
         .height('100%')
         .align(tabId === 'bookshelf' || tabId === 'explore' ? Alignment.Center : Alignment.TopStart)
-        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+        .clip(false)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
         .tabBar(this.bottomTabBar(tabId, this.homeTabTitle(tabId), index))
       }, (tabId: string) => tabId)
     }
@@ -1691,7 +1694,7 @@ struct Index {
     .width('100%')
     .height('100%')
     .backgroundColor(ThemeRuntime.pageColor(this.appDarkMode))
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 
   @Builder
@@ -1703,7 +1706,8 @@ struct Index {
         }
         .height('100%')
         .align(tabId === 'bookshelf' || tabId === 'explore' ? Alignment.Center : Alignment.TopStart)
-        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+        .clip(false)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
         .tabBar(this.compatTabBar(tabId, this.homeTabTitle(tabId), index))
       }, (tabId: string) => tabId)
     }
@@ -1732,7 +1736,7 @@ struct Index {
     .width('100%')
     .height('100%')
     .backgroundColor(ThemeRuntime.pageColor(this.appDarkMode))
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 
   // SVG 图标按 iconStyle 染色，位图保持原色（系统只给 SVG 填色）。
