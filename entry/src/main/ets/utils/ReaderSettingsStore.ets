@@ -10,6 +10,7 @@ import { ReaderThemeHelper } from './ReaderThemeHelper';
 import { CloudSyncChangeTracker } from '../account/CloudSyncChangeTracker';
 import { HexColor } from './HexColor';
 import { ReaderInfoBarConfig } from '../core/reader/ReaderInfoBarModel';
+import { LocalBuildFeatures } from '../config/LocalBuildFeatures';
 
 export class ReaderSettings {
   fontSize: number = 20;
@@ -423,7 +424,7 @@ export class ReaderSettingsStore {
     );
     settings.longPressSelectText = await ReaderSettingsStore.getBoolean(
       store, ReaderSettingsStore.KEY_LONG_PRESS_SELECT_TEXT, true);
-    settings.eyeTurnEnabled = await ReaderSettingsStore.getBoolean(
+    settings.eyeTurnEnabled = LocalBuildFeatures.EYE_TURN && await ReaderSettingsStore.getBoolean(
       store,
       ReaderSettingsStore.KEY_EYE_TURN_ENABLED,
       AppStorage.get<boolean>(ReaderSettingsStore.KEY_EYE_TURN_ENABLED) ?? false
@@ -448,7 +449,7 @@ export class ReaderSettingsStore {
       store, ReaderSettingsStore.KEY_EYE_TURN_PREVIOUS_DWELL_MS, 850, 'eyeTurnDwell');
     settings.eyeTurnNextDwellMs = await ReaderSettingsStore.getNumber(
       store, ReaderSettingsStore.KEY_EYE_TURN_NEXT_DWELL_MS, 650, 'eyeTurnDwell');
-    settings.eyeTurnModelEnabled = await ReaderSettingsStore.getBoolean(
+    settings.eyeTurnModelEnabled = LocalBuildFeatures.EYE_TURN && await ReaderSettingsStore.getBoolean(
       store, ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED,
       AppStorage.get<boolean>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED) ?? false);
     settings.eyeTurnModelPortraitCalibration = await ReaderSettingsStore.getString(
@@ -793,7 +794,7 @@ export class ReaderSettingsStore {
     nextDwellMs: number
   ): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
-    settings.eyeTurnEnabled = enabled;
+    settings.eyeTurnEnabled = LocalBuildFeatures.EYE_TURN && enabled;
     settings.eyeTurnPortraitCalibration = portraitCalibration || '';
     settings.eyeTurnLandscapeCalibration = landscapeCalibration || '';
     settings.eyeTurnPreviousEnabled = previousEnabled === true;
@@ -823,7 +824,7 @@ export class ReaderSettingsStore {
   static async saveEyeTurnModelSettings(context: Context, enabled: boolean, portraitCalibration: string,
     landscapeCalibration: string): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
-    settings.eyeTurnModelEnabled = enabled === true;
+    settings.eyeTurnModelEnabled = LocalBuildFeatures.EYE_TURN && enabled === true;
     settings.eyeTurnModelPortraitCalibration = portraitCalibration || '';
     settings.eyeTurnModelLandscapeCalibration = landscapeCalibration || '';
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
@@ -1341,7 +1342,8 @@ export class ReaderSettingsStore {
   }
 
   private static applyEyeTurnToStorage(settings: ReaderSettings): void {
-    AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_ENABLED, settings.eyeTurnEnabled);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_ENABLED,
+      LocalBuildFeatures.EYE_TURN && settings.eyeTurnEnabled);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_PORTRAIT_CALIBRATION,
       settings.eyeTurnPortraitCalibration);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_LANDSCAPE_CALIBRATION,
@@ -1354,7 +1356,8 @@ export class ReaderSettingsStore {
       settings.eyeTurnPreviousDwellMs);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_NEXT_DWELL_MS,
       settings.eyeTurnNextDwellMs);
-    AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED, settings.eyeTurnModelEnabled);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED,
+      LocalBuildFeatures.EYE_TURN && settings.eyeTurnModelEnabled);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_MODEL_PORTRAIT_CALIBRATION,
       settings.eyeTurnModelPortraitCalibration);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_MODEL_LANDSCAPE_CALIBRATION,
@@ -1484,14 +1487,14 @@ export class ReaderSettingsStore {
     target.screenOrientation = source.screenOrientation;
     target.tapZoneActions = source.tapZoneActions;
     target.longPressSelectText = source.longPressSelectText;
-    target.eyeTurnEnabled = source.eyeTurnEnabled;
+    target.eyeTurnEnabled = LocalBuildFeatures.EYE_TURN && source.eyeTurnEnabled;
     target.eyeTurnPortraitCalibration = source.eyeTurnPortraitCalibration;
     target.eyeTurnLandscapeCalibration = source.eyeTurnLandscapeCalibration;
     target.eyeTurnPreviousEnabled = source.eyeTurnPreviousEnabled;
     target.eyeTurnNextEnabled = source.eyeTurnNextEnabled;
     target.eyeTurnPreviousDwellMs = source.eyeTurnPreviousDwellMs;
     target.eyeTurnNextDwellMs = source.eyeTurnNextDwellMs;
-    target.eyeTurnModelEnabled = source.eyeTurnModelEnabled;
+    target.eyeTurnModelEnabled = LocalBuildFeatures.EYE_TURN && source.eyeTurnModelEnabled;
     target.eyeTurnModelPortraitCalibration = source.eyeTurnModelPortraitCalibration;
     target.eyeTurnModelLandscapeCalibration = source.eyeTurnModelLandscapeCalibration;
     target.screenTimeoutMinutes = source.screenTimeoutMinutes;
@@ -2072,7 +2075,7 @@ export class ReaderSettingsStore {
     settings.screenOrientation = ReaderSettingsStore.normalizeScreenOrientation(source.screenOrientation);
     settings.tapZoneActions = ReaderSettingsStore.normalizeTapZoneActions(source.tapZoneActions);
     settings.longPressSelectText = source.longPressSelectText !== false;
-    settings.eyeTurnEnabled = source.eyeTurnEnabled === true;
+    settings.eyeTurnEnabled = LocalBuildFeatures.EYE_TURN && source.eyeTurnEnabled === true;
     settings.eyeTurnPortraitCalibration = source.eyeTurnPortraitCalibration || '';
     settings.eyeTurnLandscapeCalibration = source.eyeTurnLandscapeCalibration || '';
     settings.eyeTurnPreviousEnabled = source.eyeTurnPreviousEnabled === true;
@@ -2081,7 +2084,7 @@ export class ReaderSettingsStore {
       typeof source.eyeTurnPreviousDwellMs === 'number' ? source.eyeTurnPreviousDwellMs : 850);
     settings.eyeTurnNextDwellMs = ReaderSettingsStore.normalizeEyeTurnDwell(
       typeof source.eyeTurnNextDwellMs === 'number' ? source.eyeTurnNextDwellMs : 650);
-    settings.eyeTurnModelEnabled = source.eyeTurnModelEnabled === true;
+    settings.eyeTurnModelEnabled = LocalBuildFeatures.EYE_TURN && source.eyeTurnModelEnabled === true;
     settings.eyeTurnModelPortraitCalibration = source.eyeTurnModelPortraitCalibration || '';
     settings.eyeTurnModelLandscapeCalibration = source.eyeTurnModelLandscapeCalibration || '';
     settings.screenTimeoutMinutes = ReaderSettingsStore.normalizeScreenTimeoutMinutes(
@@ -2225,7 +2228,8 @@ export class ReaderSettingsStore {
       AppStorage.get<string>(ReaderSettingsStore.KEY_TAP_ZONE_ACTIONS) || ''
     );
     settings.longPressSelectText = AppStorage.get<boolean>(ReaderSettingsStore.KEY_LONG_PRESS_SELECT_TEXT) ?? true;
-    settings.eyeTurnEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_EYE_TURN_ENABLED) ?? false;
+    settings.eyeTurnEnabled =
+      LocalBuildFeatures.EYE_TURN && (AppStorage.get<boolean>(ReaderSettingsStore.KEY_EYE_TURN_ENABLED) ?? false);
     settings.eyeTurnPortraitCalibration =
       AppStorage.get<string>(ReaderSettingsStore.KEY_EYE_TURN_PORTRAIT_CALIBRATION) || '';
     settings.eyeTurnLandscapeCalibration =
@@ -2238,7 +2242,9 @@ export class ReaderSettingsStore {
       AppStorage.get<number>(ReaderSettingsStore.KEY_EYE_TURN_PREVIOUS_DWELL_MS) ?? 850);
     settings.eyeTurnNextDwellMs = ReaderSettingsStore.normalizeEyeTurnDwell(
       AppStorage.get<number>(ReaderSettingsStore.KEY_EYE_TURN_NEXT_DWELL_MS) ?? 650);
-    settings.eyeTurnModelEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED) ?? false;
+    settings.eyeTurnModelEnabled =
+      LocalBuildFeatures.EYE_TURN &&
+      (AppStorage.get<boolean>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED) ?? false);
     settings.eyeTurnModelPortraitCalibration =
       AppStorage.get<string>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_PORTRAIT_CALIBRATION) || '';
     settings.eyeTurnModelLandscapeCalibration =

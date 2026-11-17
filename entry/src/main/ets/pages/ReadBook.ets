@@ -43,6 +43,7 @@ import Animator, { AnimatorResult } from '@ohos.animator';
 import { HdsTabs } from '@kit.UIDesignKit';
 import { ARView } from '@kit.AREngine';
 import { AccountCommerceConfig } from '../account/AccountCommerceConfig';
+import { LocalBuildFeatures } from '../config/LocalBuildFeatures';
 import { AccountCommerceApi } from '../account/AccountCommerceApi';
 
 import { AccountSessionStore } from '../account/AccountSessionStore';
@@ -3776,7 +3777,7 @@ struct ReadBookPage {
       if (this.readerWebFetchRuntimeNeeded) {
         WebBookFetchRuntimeHost()
       }
-      if (this.readerEyeTurnEnabled) {
+      if (LocalBuildFeatures.EYE_TURN && this.readerEyeTurnEnabled) {
         // The camera Surface stays behind the opaque reader background. It is never shown or persisted; only a
         // throttled local PixelMap is sampled while this page is in the foreground.
         XComponent({
@@ -13867,20 +13868,22 @@ struct ReadBookPage {
         })
     }
 
-    ReaderSettingGroup({ title: '眼动', dark: this.isReaderThemeDark(), subTextColor: this.readerPanelSubTextColor() }) {
-      // Builder arguments are passed by value and do not refresh, so this text covers both recognition modes.
-      this.readerSwitchSettingItem('眼动翻页（beta）', '向上看即翻页；摄像头图像仅在本机处理',
-        this.readerEyeTurnEnabled, (checked: boolean) => {
-          this.eyeTurn().setEnabled(checked);
-        })
-
-      if (this.readerEyeTurnEnabled) {
-        this.readerSwitchSettingItem('新版识别模型（beta）',
-          '识别更稳，不怕暗光和眼镜；开启后看向屏幕上沿以外翻页，耗电略多',
-          this.readerEyeTurnModelEnabled, (checked: boolean) => {
-            this.eyeTurn().setModelEnabled(checked);
+    if (LocalBuildFeatures.EYE_TURN) {
+      ReaderSettingGroup({ title: '眼动', dark: this.isReaderThemeDark(), subTextColor: this.readerPanelSubTextColor() }) {
+        // Builder arguments are passed by value and do not refresh, so this text covers both recognition modes.
+        this.readerSwitchSettingItem('眼动翻页（beta）', '向上看即翻页；摄像头图像仅在本机处理',
+          this.readerEyeTurnEnabled, (checked: boolean) => {
+            this.eyeTurn().setEnabled(checked);
           })
-        this.readerEyeTurnCalibrationSettingItem()
+
+        if (this.readerEyeTurnEnabled) {
+          this.readerSwitchSettingItem('新版识别模型（beta）',
+            '识别更稳，不怕暗光和眼镜；开启后看向屏幕上沿以外翻页，耗电略多',
+            this.readerEyeTurnModelEnabled, (checked: boolean) => {
+              this.eyeTurn().setModelEnabled(checked);
+            })
+          this.readerEyeTurnCalibrationSettingItem()
+        }
       }
     }
   }
@@ -14184,7 +14187,8 @@ struct ReadBookPage {
 
   /** 眼动翻页提示可以出现的场合；菜单、目录、段评和校准打开时都不显示。 */
   readerEyeTurnCueAllowed(): boolean {
-    return this.readerEyeTurnEnabled && this.readerInitialPageReady && !this.eyeTurnState.showCalibration &&
+    return LocalBuildFeatures.EYE_TURN && this.readerEyeTurnEnabled && this.readerInitialPageReady &&
+      !this.eyeTurnState.showCalibration &&
       !this.showMenu && !this.showToc && !this.showReaderCommentPanel;
   }
 

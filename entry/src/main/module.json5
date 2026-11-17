@@ -40,17 +40,7 @@
       },
       {
         "name": "ohos.permission.ACCESS_BIOMETRIC"
-      },
-      {
-        "name": "ohos.permission.CAMERA",
-        "reason": "$string:reader_eye_turn_camera_permission",
-        "usedScene": {
-          "abilities": [
-            "EntryAbility"
-          ],
-          "when": "inuse"
-        }
-      },
+      }
     ],
     "abilities": [
       {

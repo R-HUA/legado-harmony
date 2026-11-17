@@ -4,6 +4,7 @@ import { EyeTurnCalibration, EyeTurnController, EyeTurnSample } from './EyeTurnC
 import { ArEyeSignal, ArEyeTurnHost } from './ArEyeTypes';
 import { ReaderEyeCalibrationPoint } from './ReaderEyeModels';
 import { HdsFeedback } from '../../utils/HdsFeedback';
+import { LocalBuildFeatures } from '../../config/LocalBuildFeatures';
 import { ReaderEyeTurnViewState } from './ReaderEyeTurnViewState';
 import {
   buildGazeUpCalibration,
@@ -75,6 +76,7 @@ export class ReaderEyeTurnCoordinator {
   }
 
   setEnabled(enabled: boolean): void {
+    if (!LocalBuildFeatures.EYE_TURN) enabled = false;
     const serial = ++this.permissionRequestSerial;
     if (!enabled) {
       this.host.setEnabled(false);
@@ -135,6 +137,7 @@ export class ReaderEyeTurnCoordinator {
 
   /** Turns the new recognition model on or off; the camera keeps running and only the signal source changes. */
   setModelEnabled(enabled: boolean): void {
+    if (!LocalBuildFeatures.EYE_TURN) enabled = false;
     this.host.setModelEnabled(enabled);
     this.host.saveModelSettings();
     this.state.modelMode = enabled;
@@ -211,6 +214,7 @@ export class ReaderEyeTurnCoordinator {
   }
 
   startIfReady(): void {
+    if (!LocalBuildFeatures.EYE_TURN) return;
     if (!this.host.enabled() || !this.host.pageVisible() || !this.surfaceId) {
       console.info(`[EyeTurn] start skipped enabled=${this.host.enabled()} ` +
         `visible=${this.host.pageVisible()} surface=${this.surfaceId ? 'set' : 'EMPTY'}`);
