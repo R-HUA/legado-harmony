@@ -3,6 +3,7 @@ import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { SearchExploreSettings } from '../../utils/SearchExploreSettingsStore';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { CloudSyncSettingsStore } from '../../account/CloudSyncSettingsStore';
+import { AccountCommerceConfig } from '../../account/AccountCommerceConfig';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { AppSpacing } from '../../theme/AppSpacing';
 import { CollapsingHeader } from '../../utils/CollapsingHeader';
@@ -64,7 +65,9 @@ export struct SettingsPage {
             .width('100%')
             .height(56 + this.statusBarHeight)
 
-          this.accountSummaryCard()
+          if (AccountCommerceConfig.COMMERCE_ENABLED) {
+            this.accountSummaryCard()
+          }
 
           Column() {
             this.syncMenuItem()

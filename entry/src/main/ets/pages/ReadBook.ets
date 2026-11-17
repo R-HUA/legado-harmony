@@ -3735,6 +3735,7 @@ struct ReadBookPage {
       },
       onTextConvertChange: (checked: boolean): void => this.setReaderComicTextConvert(checked),
       onOpenMembership: (): void => {
+        if (!AccountCommerceConfig.COMMERCE_ENABLED) return;
         this.hideReaderPanels();
         router.pushUrl({ url: 'pages/AccountCenter' });
       }
