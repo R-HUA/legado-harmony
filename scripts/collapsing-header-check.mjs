@@ -149,7 +149,9 @@ const indexSource = read('pages/Index');
 const indexMethods = indexSource.slice(indexSource.indexOf('  onCurrentIndexChanged(): void {'),
   indexSource.indexOf('  onBookSourceExploreRefreshRequested(): void {'));
 const HomeBar = vm.runInNewContext(compile(`class HomeBar { ${indexMethods} }; HomeBar`), {
-  HdsAnimationMode: { SCROLL_ANIMATION: 'scroll' }
+  HdsAnimationMode: { SCROLL_ANIMATION: 'scroll' },
+  Index: { FLAT_TAB_BAR_SLIDE_DURATION: 260 },
+  Curve: { Friction: 'friction' }
 });
 const bar = new HomeBar();
 const animations = [];
@@ -157,7 +159,21 @@ Object.assign(bar, {
   currentIndex: 0,
   tabHeaderCollapseProgress: [0, 0, 0, 0],
   immersiveTabBarHidden: false,
+  flatTabBarHidden: false,
+  flatTabBarShift: 0,
+  flatTabBarAnimator: null,
+  homeSearchActive: false,
+  searchHeaderCollapseProgress: 0,
+  globalTtsActive: false,
+  exploreTabIndex: () => 1,
   supportsImmersiveTabs: () => true,
+  useFloatingTabs: () => bar.supportsImmersiveTabs(),
+  flatTabBarAutoHides: () => true,
+  setGlobalTtsBarMerged: () => {},
+  getUIContext: () => ({
+    animateTo: (_opts, fn) => fn(),
+    createAnimator: () => { throw new Error('sync fallback'); }
+  }),
   immersiveTabsController: {
     applyHideAnimation: mode => animations.push(`hide:${mode}`),
     applyShowAnimation: mode => animations.push(`show:${mode}`),
@@ -188,14 +204,18 @@ assert.equal(animations.at(-1), 'show:scroll', 'a recreated shelf restores the v
 let compatY, compatOpacity;
 bar.supportsImmersiveTabs = () => false;
 bar.compatTabSafeHeight = () => 24;
+bar.compatTabBarHeight = () => 50 + bar.compatTabSafeHeight();
 bar.compatTabsController = {
   setTabBarTranslate: value => { compatY = value.y; },
   setTabBarOpacity: value => { compatOpacity = value; }
 };
 const beforeCompat = animations.length;
 bar.onTabHeaderCollapseChange(0, 0.5);
-assert.equal(compatY, 40, 'older systems keep the continuous slide');
-assert.equal(compatOpacity, 0.5, 'older systems keep the continuous fade');
+assert.equal(compatY, 74, 'flat tabs slide fully offscreen once crossing hide threshold');
+assert.equal(compatOpacity, 0, 'flat tabs fade out when hidden');
+bar.onTabHeaderCollapseChange(0, 0.2);
+assert.equal(compatY, 0, 'flat tabs slide back when crossing show threshold');
+assert.equal(compatOpacity, 1, 'flat tabs restore opacity when revealed');
 assert.equal(animations.length, beforeCompat, 'older systems never call HDS animations');
 
 console.log(`Collapsing header checks passed for ${pages.length} List/Scroll integrations and native home bar animations.`);
