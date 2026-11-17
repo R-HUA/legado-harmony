@@ -9,6 +9,7 @@ import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { PageScaffold } from '../components/common/PageScaffold';
 import { SettingNavRow, SettingRow, SettingSwitchRow } from '../components/common/SettingRow';
+import { SettingsSelect } from '../components/SettingsSelect';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { HomeTabBarSettingsStore } from '../utils/HomeTabBarSettingsStore';
@@ -22,7 +23,6 @@ import { AppColorModeApplier } from '../utils/AppColorModeApplier';
 @Entry
 @Component
 struct AppearanceSettingsPage {
-  @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('appThemeMode') appThemeMode: string = 'system';
   @StorageLink('themeRevision') themeRevision: number = 0;
@@ -224,27 +224,15 @@ struct AppearanceSettingsPage {
 
   @Builder
   themeModeSelect() {
-    Select([{ value: '浅色' }, { value: '深色' }, { value: '自动' }])
-      .selected(this.themeModeIndex())
-      .value(['浅色', '深色', '自动'][this.themeModeIndex()])
-      .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
-      .optionFont({ family: this.applicationFontFamily })
-      .selectedOptionFont({ family: this.applicationFontFamily })
-      .fontColor(this.subTextColor())
-      .backgroundColor(Color.Transparent)
-      .arrowPosition(ArrowPosition.END)
-      .padding({ left: 0, right: 0 })
-      .borderRadius(16)
-      .border({ width: 0 })
-      .divider(null)
-      .optionBgColor(Color.Transparent)
-      .optionFontColor(this.primaryTextColor())
-      .selectedOptionFontColor(this.accentColor())
-      .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-      .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-      .menuBackgroundBlurStyle(BlurStyle.NONE)
-      .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel))
-      .onSelect((index: number) => this.applyThemeMode(index))
+    SettingsSelect({
+      options: [{ value: '浅色' }, { value: '深色' }, { value: '自动' }],
+      selectedIndex: this.themeModeIndex(),
+      selectedLabel: ['浅色', '深色', '自动'][this.themeModeIndex()],
+      darkMode: this.appDarkMode,
+      textSize: AppFontSize.BODY,
+      textColor: this.subTextColor(),
+      onSelected: (index: number) => this.applyThemeMode(index)
+    })
   }
 
   pageColor(): string {
@@ -562,78 +550,43 @@ struct AppearanceSettingsPage {
 
   @Builder
   tabBarStyleSelect() {
-    Select([{ value: '悬浮' }, { value: '平铺' }])
-      .enabled(ImmersiveMaterialRuntime.supportsHdsTabs())
-      .selected(this.tabBarStyleIndex())
-      .value(this.tabBarStyleIndex() === 0 ? '悬浮' : '平铺')
-      .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
-      .optionFont({ family: this.applicationFontFamily })
-      .selectedOptionFont({ family: this.applicationFontFamily })
-      .fontColor(this.subTextColor())
-      .backgroundColor(Color.Transparent)
-      .arrowPosition(ArrowPosition.END)
-      .padding({ left: 0, right: 0 })
-      .borderRadius(16)
-      .border({ width: 0 })
-      .divider(null)
-      .optionBgColor(Color.Transparent)
-      .optionFontColor(this.primaryTextColor())
-      .selectedOptionFontColor(this.accentColor())
-      .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-      .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-      .menuBackgroundBlurStyle(BlurStyle.NONE)
-      .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel))
-      .onSelect((index: number) => this.saveTabBarStyle(index))
+    SettingsSelect({
+      options: [{ value: '悬浮' }, { value: '平铺' }],
+      selectedIndex: this.tabBarStyleIndex(),
+      selectedLabel: this.tabBarStyleIndex() === 0 ? '悬浮' : '平铺',
+      selectEnabled: ImmersiveMaterialRuntime.supportsHdsTabs(),
+      darkMode: this.appDarkMode,
+      textSize: AppFontSize.BODY,
+      textColor: this.subTextColor(),
+      onSelected: (index: number) => this.saveTabBarStyle(index)
+    })
   }
 
   @Builder
   extraTabSelect() {
-    Select([{ value: '关' }, { value: '听' }, { value: '足迹' }])
-      .selected(this.extraTabIndex())
-      .value(['关', '听', '足迹'][this.extraTabIndex()])
-      .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
-      .optionFont({ family: this.applicationFontFamily })
-      .selectedOptionFont({ family: this.applicationFontFamily })
-      .fontColor(this.subTextColor())
-      .backgroundColor(Color.Transparent)
-      .arrowPosition(ArrowPosition.END)
-      .padding({ left: 0, right: 0 })
-      .borderRadius(16)
-      .border({ width: 0 })
-      .divider(null)
-      .optionBgColor(Color.Transparent)
-      .optionFontColor(this.primaryTextColor())
-      .selectedOptionFontColor(this.accentColor())
-      .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-      .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-      .menuBackgroundBlurStyle(BlurStyle.NONE)
-      .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel))
-      .onSelect((index: number) => this.saveExtraTab(index))
+    SettingsSelect({
+      options: [{ value: '关' }, { value: '听' }, { value: '足迹' }],
+      selectedIndex: this.extraTabIndex(),
+      selectedLabel: ['关', '听', '足迹'][this.extraTabIndex()],
+      darkMode: this.appDarkMode,
+      textSize: AppFontSize.BODY,
+      textColor: this.subTextColor(),
+      onSelected: (index: number) => this.saveExtraTab(index)
+    })
   }
 
   @Builder
   immersiveLightLevelSelect() {
-    Select(this.immersiveLightLevelOptions())
-      .enabled(!this.savingImmersiveLight)
-      .selected(this.savingImmersiveLight ? -1 : this.immersiveLightLevelSelectedIndex())
-      .value(this.savingImmersiveLight ? '保存中…' : this.immersiveLightLevelOptions()[this.immersiveLightLevelSelectedIndex()].value)
-      .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
-      .optionFont({ family: this.applicationFontFamily })
-      .selectedOptionFont({ family: this.applicationFontFamily })
-      .fontColor(this.subTextColor())
-      .backgroundColor(Color.Transparent)
-      .arrowPosition(ArrowPosition.END)
-      .padding({ left: 0, right: 0 })
-      .borderRadius(16)
-      .border({ width: 0 })
-      .divider(null)
-      .optionBgColor(Color.Transparent)
-      .optionFontColor(this.primaryTextColor())
-      .selectedOptionFontColor(this.accentColor())
-      .selectedOptionBgColor(ThemeRuntime.accentSurfaceColor(this.appDarkMode))
-      .menuBackgroundColor(ThemeRuntime.dropdownPanelColor(this.appDarkMode))
-      .menuBackgroundBlurStyle(BlurStyle.NONE)
-      .attributeModifier(ImmersiveMaterialRuntime.selectMenuModifier(this.immersiveLightLevel))
-      .onSelect((index: number) => this.setImmersiveLightLevel(index))
+    SettingsSelect({
+      options: this.immersiveLightLevelOptions(),
+      selectedIndex: this.savingImmersiveLight ? -1 : this.immersiveLightLevelSelectedIndex(),
+      selectedLabel: this.savingImmersiveLight ? '保存中…' :
+        this.immersiveLightLevelOptions()[this.immersiveLightLevelSelectedIndex()].value,
+      selectEnabled: !this.savingImmersiveLight,
+      darkMode: this.appDarkMode,
+      textSize: AppFontSize.BODY,
+      textColor: this.subTextColor(),
+      onSelected: (index: number) => this.setImmersiveLightLevel(index)
+    })
   }
 }

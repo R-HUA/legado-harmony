@@ -2,13 +2,6 @@
 # 仓库 Settings › Pages 的 Source 需选 “GitHub Actions”。
 name: pages
 on:
-  push:
-    branches: [main]
-    paths:
-      - docs/manual/**
-      - tools/theme-editor/**
-      - entry/src/main/ets/theme/**
-      - .github/workflows/pages.yml
   workflow_dispatch:
 permissions:
   contents: read

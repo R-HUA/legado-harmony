@@ -7,6 +7,7 @@ import { LanReaderPasswordStore } from '../core/lan/LanReaderPasswordStore';
 import { HdsFeedback } from '../utils/HdsFeedback';
 import { PageScaffold } from '../components/common/PageScaffold';
 import { SettingNavRow, SettingRow, SettingSwitchRow } from '../components/common/SettingRow';
+import { SettingsSelect } from '../components/SettingsSelect';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
 import { NetworkSettingsStore } from '../utils/NetworkSettingsStore';
@@ -18,7 +19,6 @@ import { NetworkSettingsStore } from '../utils/NetworkSettingsStore';
 @Entry
 @Component
 struct LabSettingsPage {
-  @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
   @StorageProp('webParseEnabled') webParseEnabled: boolean = false;
   @StorageLink('networkForceHttp1') networkForceHttp1: boolean = false;
   @StorageLink('readerImageConcurrency') readerImageConcurrency: number = 4;
@@ -67,16 +67,16 @@ struct LabSettingsPage {
       this.sectionTitle('兼容与诊断')
       Column() {
         SettingRow({ title: '图片下载并发', description: '默认 4 张；网络较快时可提高，图片站限流或加载不稳时调回 4 张' }) {
-          Select([{ value: '4 张' }, { value: '8 张' }, { value: '12 张' }])
-            .selected(Math.max(0, [4, 8, 12].indexOf(this.readerImageConcurrency)))
-            .value(`${this.readerImageConcurrency} 张`)
-            .font({ size: AppFontSize.BODY, family: this.applicationFontFamily })
-            .optionFont({ family: this.applicationFontFamily })
-            .selectedOptionFont({ family: this.applicationFontFamily })
-            .fontColor(this.primaryTextColor())
-            .backgroundColor(Color.Transparent)
-            .enabled(!this.savingImageConcurrency)
-            .onSelect((index: number) => { this.saveImageConcurrency([4, 8, 12][index] || 4); })
+          SettingsSelect({
+            options: [{ value: '4 张' }, { value: '8 张' }, { value: '12 张' }],
+            selectedIndex: Math.max(0, [4, 8, 12].indexOf(this.readerImageConcurrency)),
+            selectedLabel: `${this.readerImageConcurrency} 张`,
+            selectEnabled: !this.savingImageConcurrency,
+            darkMode: this.appDarkMode,
+            textSize: AppFontSize.BODY,
+            textColor: this.primaryTextColor(),
+            onSelected: (index: number) => { this.saveImageConcurrency([4, 8, 12][index] || 4); }
+          })
         }
         SettingSwitchRow({
           title: 'HTTP/1.1 兼容模式',
