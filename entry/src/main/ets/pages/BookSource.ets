@@ -19,7 +19,7 @@ import { BookSourceGroupStore } from '../utils/BookSourceGroupStore';
 import { ResponsiveManagerListLayout } from '../utils/ResponsiveManagerListLayout';
 import { SystemDialogSession } from '../utils/SystemDialogSession';
 import deviceInfo from '@ohos.deviceInfo';
-import { HdsListItem, HdsSwipeActionOptions } from '@kit.UIDesignKit';
+import { BottomBuilderParams, BottomBuilderShowType, HdsListItem, HdsNavigation, HdsNavigationAttribute, HdsNavigationMenuItemOptions, HdsNavigationTitleMode, HdsSwipeActionOptions, HideMode, TextStyleMode } from '@kit.UIDesignKit';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { VirtualListScrollbar } from '../utils/VirtualListScrollbar';
@@ -132,6 +132,42 @@ const SOURCE_SEARCH_ROW_HEIGHT: number = 40 + AppSpacing.MD * 2;
 const SOURCE_HEADER_CONTROL_SIZE: number = ImmersiveHeaderAction.SIZE;
 const SOURCE_SEARCH_INPUT_KEY: string = 'book_source_search_input';
 const SOURCE_SELECTION_ROW_HEIGHT: number = 42;
+const BOOK_SOURCE_FILTER_BUTTON_ID: string = 'book_source_filter_btn';
+const BOOK_SOURCE_MORE_BUTTON_ID: string = 'book_source_more_btn';
+
+class BookSourceNavModifier implements AttributeModifier<HdsNavigationAttribute> {
+  private scrollers: Array<Scroller>;
+  private collapsible: boolean;
+
+  constructor(scrollers: Array<Scroller>, collapsible: boolean) {
+    this.scrollers = scrollers;
+    this.collapsible = collapsible;
+  }
+
+  applyNormalAttribute(instance: HdsNavigationAttribute): void {
+    if (this.scrollers.length > 0) {
+      instance.bindToScrollable(this.scrollers);
+      instance.dynamicHideTitleBar({
+        hideTitleArea: this.collapsible,
+        hideBottomBuilder: this.collapsible,
+        hideStatusBar: false,
+        mode: HideMode.SCROLL_UP_TO
+      });
+      if (!this.collapsible) {
+        instance.hideTitleBar(false);
+      }
+      return;
+    }
+    instance.bindToScrollable([]);
+    instance.dynamicHideTitleBar({
+      hideTitleArea: false,
+      hideBottomBuilder: false,
+      hideStatusBar: false,
+      mode: HideMode.SCROLL_UP_TO
+    });
+    instance.hideTitleBar(false);
+  }
+}
 
 interface BookSourceHeaderButtonOptions {
   icon: Resource;
@@ -147,6 +183,7 @@ interface BookSourceHeaderButtonOptions {
 struct BookSourcePage {
   @StorageProp('applicationFontFamily') applicationFontFamily: string = '';
   @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
+  @StorageProp('headerFrosted') headerFrosted: boolean = true;
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
@@ -173,6 +210,15 @@ struct BookSourcePage {
   @State sourceScrollbarDragging: boolean = false;
   @State sourceScrollbarDragOffset: number = 0;
   @State sourceHeaderCollapse: number = 0;
+  @State private sourceNativeScrollY: number = 0;
+  @State private bottomBuilderHostWidth: number = 0;
+  @State private filterMenuPopupX: number = 292;
+  @State private filterMenuPopupY: number = 96;
+  @State private moreMenuPopupX: number = 344;
+  @State private moreMenuPopupY: number = 96;
+  private navModifier: BookSourceNavModifier | null = null;
+  private navModifierHasScroller: boolean = false;
+  private navModifierCollapsible: boolean = true;
   @State sourceGroups: string[] = [];
   @State isLoading: boolean = false;
   @State searchText: string = '';
@@ -392,6 +438,16 @@ struct BookSourcePage {
     }
   }
 
+  onBackPress(): boolean {
+    if (this.selectionMode) {
+      if (!this.isBatchOperating) {
+        this.exitSelectionMode();
+      }
+      return true;
+    }
+    return false;
+  }
+
   async refreshSources(): Promise<void> {
     const hadSources = this.sources.length > 0;
     const firstIndex = this.sourceFirstVisibleIndex;
@@ -399,6 +455,7 @@ struct BookSourcePage {
     const visibleCount = this.sourceVisibleItemCount;
     const scrollOffset = hadSources ? this.sourceListScroller.currentOffset().yOffset : 0;
     const headerCollapse = this.sourceHeaderCollapse;
+    const nativeScrollY = this.sourceNativeScrollY;
     await this.loadSources(true);
     if (!hadSources || this.sources.length === 0) return;
 
@@ -408,6 +465,7 @@ struct BookSourcePage {
     this.sourceFirstVisibleIndex = targetIndex;
     this.sourceVisibleItemCount = visibleCount;
     this.sourceHeaderCollapse = headerCollapse;
+    this.sourceNativeScrollY = nativeScrollY;
     setTimeout(() => {
       if (!this.pageVisible || this.sources.length === 0) return;
       if (anchorIndex === firstIndex) {
@@ -453,349 +511,660 @@ struct BookSourcePage {
     await this.openActionSourceLogin();
   }
 
+  private getNavModifier(hasScroller: boolean, collapsible: boolean): BookSourceNavModifier {
+    if (this.navModifier === null || this.navModifierHasScroller !== hasScroller ||
+      this.navModifierCollapsible !== collapsible) {
+      this.navModifierHasScroller = hasScroller;
+      this.navModifierCollapsible = collapsible;
+      this.navModifier = new BookSourceNavModifier(hasScroller ? [this.sourceListScroller] : [], collapsible);
+    }
+    return this.navModifier;
+  }
+
+  private sourceTitleText(): string {
+    if (this.selectionMode) {
+      return `已选择 ${this.selectedSourceUrls.length}/${this.sources.length}`;
+    }
+    return '书源管理';
+  }
+
+  private sourceMenuItems(): Array<HdsNavigationMenuItemOptions> {
+    if (this.selectionMode) {
+      return [{
+        content: {
+          label: this.isAllSelected() ? '取消全选' : '全选',
+          type: TextStyleMode.NORMAL,
+          isEnabled: !this.isBatchOperating,
+          action: () => {
+            if (!this.isBatchOperating) {
+              this.toggleAllSources();
+            }
+          }
+        }
+      }];
+    }
+    const searchActive = this.sourceSearchOpen || this.searchText.trim().length > 0;
+    const searchItem: HdsNavigationMenuItemOptions = {
+      content: {
+        label: '搜索书源',
+        icon: $r('sys.symbol.magnifyingglass'),
+        isEnabled: true,
+        action: () => {
+          this.toggleSourceSearch();
+        }
+      }
+    };
+    if (searchActive) {
+      searchItem.badge = { value: '' };
+    }
+    const filterItem: HdsNavigationMenuItemOptions = {
+      content: {
+        label: this.hasActiveSourceFilters() ?
+          `筛选，已启用 ${this.activeSourceFilterCount()} 项` : '筛选书源',
+        icon: $r('sys.symbol.funnel'),
+        isEnabled: true,
+        componentId: BOOK_SOURCE_FILTER_BUTTON_ID,
+        action: () => {
+          this.openSourceFilterMenuFromBar();
+        }
+      }
+    };
+    if (this.hasActiveSourceFilters()) {
+      filterItem.badge = { count: this.activeSourceFilterCount() };
+    }
+    const moreItem: HdsNavigationMenuItemOptions = {
+      content: {
+        label: `更多操作，${this.sourceSortSummary()}${this.isCheckingSources ? '，正在校验' : ''}`,
+        icon: $r('sys.symbol.more'),
+        isEnabled: true,
+        componentId: BOOK_SOURCE_MORE_BUTTON_ID,
+        action: () => {
+          this.openSourceMoreMenuFromBar();
+        }
+      }
+    };
+    if (this.isCheckingSources) {
+      moreItem.badge = { value: '' };
+    }
+    return [searchItem, filterItem, moreItem];
+  }
+
+  private resolveMenuPopupAnchor(componentId: string, fallbackRightOffset: number): [number, number] {
+    const fallbackX = Math.max(AppSpacing.XL, this.contextViewportWidth - fallbackRightOffset);
+    const fallbackY = this.statusBarHeight + 52;
+    try {
+      const ui = this.getUIContext();
+      const rootRect = ui.getComponentUtils().getRectangleById('book_source_root');
+      const btnRect = ui.getComponentUtils().getRectangleById(componentId);
+      if (rootRect.size.width > 0 && btnRect.size.width > 0 && btnRect.size.height > 0) {
+        const x = ui.px2vp(btnRect.windowOffset.x - rootRect.windowOffset.x + btnRect.size.width);
+        const y = ui.px2vp(btnRect.windowOffset.y - rootRect.windowOffset.y + btnRect.size.height);
+        if (Number.isFinite(x) && Number.isFinite(y) && x > 0 && y > 0) {
+          return [x, y];
+        }
+      }
+    } catch (_) {
+    }
+    return [fallbackX, fallbackY];
+  }
+
+  private openSourceFilterMenuFromBar(): void {
+    this.showSourceMoreMenu = false;
+    const next = !this.showSourceFilterMenu;
+    if (next) {
+      const anchor = this.resolveMenuPopupAnchor(BOOK_SOURCE_FILTER_BUTTON_ID,
+        AppSpacing.XL + SOURCE_HEADER_CONTROL_SIZE + AppSpacing.MD);
+      this.filterMenuPopupX = anchor[0];
+      this.filterMenuPopupY = anchor[1];
+    }
+    this.showSourceFilterMenu = next;
+  }
+
+  private openSourceMoreMenuFromBar(): void {
+    this.sourceMoreMenuPage = '';
+    this.showSourceFilterMenu = false;
+    const next = !this.showSourceMoreMenu;
+    if (next) {
+      const anchor = this.resolveMenuPopupAnchor(BOOK_SOURCE_MORE_BUTTON_ID, AppSpacing.XL);
+      this.moreMenuPopupX = anchor[0];
+      this.moreMenuPopupY = anchor[1];
+    }
+    this.showSourceMoreMenu = next;
+  }
+
+  private nativeBottomBuilderHeight(): number {
+    let height = this.sourceSearchRowHeight();
+    if (!this.selectionMode) {
+      height += SOURCE_FORMAT_BAR_HEIGHT + AppSpacing.MD;
+      if (this.showCompatSourceNotice()) {
+        height += COMPAT_SOURCE_NOTICE_HEIGHT + AppSpacing.MD;
+      }
+    }
+    return height;
+  }
+
+  private nativeSourceListTopInset(): number {
+    return 56 + this.statusBarHeight + this.nativeBottomBuilderHeight();
+  }
+
+  private effectiveSourceListTopInset(): number {
+    return ImmersiveMaterialRuntime.supportsHdsTabs() ?
+      this.nativeSourceListTopInset() : this.sourceListTopInset();
+  }
+
+  private effectiveHeaderCollapsibleHeight(): number {
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      return this.selectionMode ? 0 : 56 + this.nativeBottomBuilderHeight();
+    }
+    return this.sourceHeaderCollapsibleHeight();
+  }
+
+  private effectiveHeaderCollapseValue(): number {
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      const collapsible = this.effectiveHeaderCollapsibleHeight();
+      if (this.isLoading || this.sources.length === 0 || this.selectionMode || collapsible <= 0) {
+        return 0;
+      }
+      return Math.min(collapsible, Math.max(0, this.sourceNativeScrollY / 2));
+    }
+    return this.sourceHeaderCollapseValue();
+  }
+
+  private bottomBuilderHorizontalPadding(): number {
+    if (this.bottomBuilderHostWidth <= 0) {
+      return 0;
+    }
+    const systemInset = Math.max(0, (this.contextViewportWidth - this.bottomBuilderHostWidth) / 2);
+    if (systemInset >= AppSpacing.XL - 1) {
+      return 0;
+    }
+    return Math.max(0, AppSpacing.XL - systemInset);
+  }
+
+  private nativeTitleBottomBuilderOptions(): BottomBuilderParams | undefined {
+    const height = this.nativeBottomBuilderHeight();
+    if (height <= 0) {
+      return undefined;
+    }
+    return {
+      builder: (): void => {
+        this.nativeTitleBottomBuilder();
+      },
+      height: height,
+      showType: BottomBuilderShowType.DIRECTLY_SHOW
+    };
+  }
+
+  @Builder
+  nativeTitleBottomBuilder() {
+    Column() {
+      if (this.sourceSearchOpen) {
+        this.sourceSearchBarRow(this.bottomBuilderHorizontalPadding(), false)
+      }
+      if (!this.selectionMode) {
+        this.sourceFormatBar(this.bottomBuilderHorizontalPadding())
+        if (this.showCompatSourceNotice()) {
+          this.compatSourceNoticeBar(this.bottomBuilderHorizontalPadding(), false)
+        }
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      const width = Math.floor(Number(newValue.width));
+      if (Number.isFinite(width) && width > 0 && width !== this.bottomBuilderHostWidth) {
+        this.bottomBuilderHostWidth = width;
+      }
+    })
+  }
+
+  @Builder
+  sourceSearchBarRow(horizontalPadding: number = AppSpacing.XL, applyCollapseFade: boolean = true) {
+    Row({ space: AppSpacing.MD }) {
+      Row() {
+        SymbolGlyph($r('sys.symbol.magnifyingglass'))
+          .fontSize(18)
+          .fontColor([this.secondaryTextColor()])
+          .margin({ left: AppSpacing.LG })
+          .hitTestBehavior(HitTestMode.None)
+        TextInput({ placeholder: '书源名称、地址或分组', text: this.searchText })
+          .key(SOURCE_SEARCH_INPUT_KEY)
+          .layoutWeight(1)
+          .height(40)
+          .fontSize(AppFontSize.BODY_LARGE)
+          .backgroundColor(Color.Transparent)
+          .fontColor(this.primaryTextColor())
+          .placeholderColor(this.secondaryTextColor())
+          .padding({ left: AppSpacing.MD, right: AppSpacing.LG })
+          .onChange((value: string) => {
+            this.searchText = value;
+            this.searchSources();
+          })
+      }
+        .height(40)
+        .borderRadius(20)
+        .backgroundColor(this.inputColor())
+        .layoutWeight(1)
+
+      Text('取消')
+        .fontSize(AppFontSize.BODY_LARGE)
+        .fontColor(this.primaryTextColor())
+        .height(40)
+        .accessibilityText('取消搜索书源')
+        .onClick(() => this.closeSourceSearch())
+    }
+    .width('100%')
+    .padding({ left: horizontalPadding, right: horizontalPadding, top: AppSpacing.MD, bottom: AppSpacing.MD })
+    .opacity(applyCollapseFade ? this.sourceHeaderRowOpacity(56, SOURCE_SEARCH_ROW_HEIGHT) : 1)
+    .hitTestBehavior(applyCollapseFade ? this.sourceHeaderRowHitTest(56, SOURCE_SEARCH_ROW_HEIGHT) : HitTestMode.Default)
+    .transition(TransitionEffect.OPACITY
+      .combine(TransitionEffect.translate({ y: -12 }))
+      .combine(TransitionEffect.scale({ x: 0.96, y: 0.96, centerX: '50%', centerY: '0%' })))
+  }
+
+  @Builder
+  sourceBodyContent(useNativeHds: boolean) {
+    if (this.isLoading) {
+      Column() {
+        LoadingProgress()
+          .width(40)
+          .height(40)
+        Text('加载中...')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.subTextColor())
+          .margin({ top: AppSpacing.MD })
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .padding(useNativeHds ? { top: this.effectiveSourceListTopInset(), bottom: this.selectionMode ? 0 : this.navBarHeight } : { top: 0, bottom: 0 })
+      .justifyContent(FlexAlign.Center)
+    } else if (this.sources.length === 0) {
+      Column() {
+        Text(this.emptySourceTitle())
+          .fontSize(AppFontSize.BODY_LARGE)
+          .fontColor(this.subTextColor())
+        Text(this.emptySourceDescription())
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.subTextColor())
+          .margin({ top: AppSpacing.MD })
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .padding(useNativeHds ? { top: this.effectiveSourceListTopInset(), bottom: this.selectionMode ? 0 : this.navBarHeight } : { top: 0, bottom: 0 })
+      .justifyContent(FlexAlign.Center)
+    } else {
+      Stack({ alignContent: Alignment.TopEnd }) {
+        List({ space: AppSpacing.MD, scroller: this.sourceListScroller }) {
+        ForEach(this.sourceListSpacerKeys(), (_spacerKey: string) => {
+          ListItem() {
+            Row()
+              .height(this.effectiveSourceListTopInset())
+              .hitTestBehavior(HitTestMode.None)
+          }
+        }, (spacerKey: string) => spacerKey)
+
+        LazyForEach(this.currentSourceListDataSource(), (source: BookSource) => {
+          if (deviceInfo.sdkApiVersion >= 26) {
+            HdsListItem({
+              customItemBuilder: () => {
+                this.sourceSwipeCard(source)
+              },
+              swipeActionOptions: this.sourceSwipeActions(source)
+            })
+          } else {
+          // 两个并列 if 会让每个条目下挂两个分支节点，onMove 拖动排序要求条目只有一个子节点，所以用 else。
+          ListItem() {
+            Row() {
+              if (this.selectionMode) {
+                this.sourceSelectionSafeArea(source)
+              }
+
+              if (this.sourceDragEnabled()) {
+                Stack({ alignContent: Alignment.Center }) {
+                  Text('☰')
+                    .fontSize(AppFontSize.SUBTITLE)
+                    .fontColor(this.subTextColor())
+                }
+                .width(52)
+                .height(56)
+                .margin({ left: -8, right: AppSpacing.XS })
+                .hitTestBehavior(HitTestMode.Transparent)
+                .accessibilityText(`长按拖动排序：${source.bookSourceName}`)
+              }
+
+              this.sourceSummary(source)
+            }
+            .width('100%')
+            .padding(AppSpacing.LG)
+            .backgroundColor(this.glassCardColor())
+            .borderRadius(ThemeRuntime.mediumRadius())
+            .border({ width: ThemeRuntime.glassBorderWidth(), color: this.glassBorderColor() })
+            .shadow({ radius: ThemeRuntime.glassShadowRadius(), color: this.glassShadowColor(), offsetX: ThemeRuntime.glassShadowOffsetX(), offsetY: ThemeRuntime.glassShadowOffsetY() })
+            .opacity(this.isSourceDissolving(source) ? 0 : (source.enabled ? 1 : 0.45))
+            .scale(ListDissolve.scale(this.isSourceDissolving(source)))
+            .blur(ListDissolve.blur(this.isSourceDissolving(source)))
+            .hitTestBehavior(this.isSourceDissolving(source) ? HitTestMode.None : HitTestMode.Default)
+            .id(this.sourceCardElementId(source.bookSourceUrl))
+            .onClick(() => {
+              if (this.isBatchOperating) {
+                return;
+              }
+              if (this.selectionMode) {
+                if (Date.now() < this.sourceSelectionSuppressClickUntil) return;
+                this.toggleSourceSelected(source.bookSourceUrl);
+              }
+            })
+          }
+          .width('100%')
+          .borderRadius(ThemeRuntime.mediumRadius())
+          .clip(true)
+          .onAreaChange((_oldValue: Area, area: Area) => {
+            if (this.selectionMode) this.rememberSourceSelectionArea(source.bookSourceUrl, area);
+          })
+          .swipeAction(this.selectionMode || source.isLocked ? {} : {
+            end: {
+              builder: () => {
+                this.sourceFallbackSwipeActions(source)
+              },
+              actionAreaDistance: 128,
+              onAction: () => {
+                if (!this.selectionMode && !this.isBatchOperating) this.deleteSourceFromSwipe(source);
+              }
+            },
+            edgeEffect: SwipeEdgeEffect.Spring
+          })
+          }
+        }, (source: BookSource) => this.sourceListItemKey(source))
+          // List 自带的 onItemDragStart 只给一张悬浮预览，其他条目不让位、拖到边缘也不滚动；
+          // LazyForEach.onMove 由 List 原地抬起条目、挤压让位并在边缘自动滚动，和分组排序的手感一致。
+          .onMove(this.sourceDragEnabled() ?
+            (from: number, to: number) => this.moveSourceDuringDrag(from, to) : undefined, {
+            onDragStart: (index: number) => this.beginSourceReorderDrag(index),
+            onDrop: (index: number) => {
+              this.finishSourceReorderDrag(index);
+            }
+          })
+
+        ForEach(this.sourceListSpacerKeys(), (_spacerKey: string) => {
+          ListItem() {
+            Row()
+              .height(this.sourceListBottomInset())
+              .hitTestBehavior(HitTestMode.None)
+          }
+        }, (spacerKey: string) => `${spacerKey}_bottom`)
+        }
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .width('100%')
+        .height('100%')
+        .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
+        .lanes(ResponsiveManagerListLayout.laneCount(this.contextViewportWidth),
+          ResponsiveManagerListLayout.gutter(this.contextViewportWidth))
+        .scrollBar(BarState.Off)
+        .cachedCount(8)
+        .clip(true)
+        .onDidScroll((delta: number) => {
+          this.onSourceListScroll(delta);
+        })
+        .onScrollStop(() => {
+          this.onSourceListScrollStop();
+        })
+        .onScrollIndex((start: number, end: number) => {
+          // 顶部 spacer 按列数占满一整行，源条目索引 = ListItem 索引 - 列数（单列时退化为 -1）。
+          this.sourceFirstVisibleIndex = Math.max(0, start - this.sourceListLaneCount());
+          this.sourceVisibleItemCount = Math.max(1, end - start + 1);
+        })
+
+        if (!useNativeHds) {
+          // 展开时止于搜索框底边；收起后由同一层过渡为状态栏渐变。
+          HeaderBackdrop({ backdropHeight: this.sourceHeaderBackdropHeight(),
+            statusBarHeight: this.statusBarHeight, backdropColor: ThemeRuntime.topBarColor(this.appDarkMode) })
+            .width('100%')
+            .position({ x: 0, y: 0 })
+            .zIndex(1)
+        }
+
+        this.sourceVirtualScrollbar()
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .margin({ top: useNativeHds ? 0 : -this.sourceListTopInset() })
+      .zIndex(0)
+      .onAreaChange((_oldValue: Area, newValue: Area) => {
+        this.sourceListViewportHeight = Number(newValue.height);
+        this.sourceSelectionViewportTop = Number(newValue.globalPosition.y);
+        this.sourceSelectionViewportBottom = this.sourceSelectionViewportTop + Number(newValue.height);
+      })
+    }
+  }
+
+  @Builder
+  selectionBottomBar(useNativeHds: boolean) {
+    Row() {
+      Button('启用')
+        .layoutWeight(1)
+        .height(42)
+        .enabled(this.selectedSourceUrls.length > 0 && !this.isBatchOperating)
+        .backgroundColor(this.buttonColor())
+        .fontColor(ThemeRuntime.onAccentColor())
+        .onClick(() => {
+          this.batchSetEnabled(true);
+        })
+
+      Button('禁用')
+        .layoutWeight(1)
+        .height(42)
+        .margin({ left: AppSpacing.MD })
+        .enabled(this.selectedSourceUrls.length > 0 && !this.isBatchOperating)
+        .backgroundColor(this.inputColor())
+        .fontColor(this.primaryTextColor())
+        .onClick(() => {
+          this.batchSetEnabled(false);
+        })
+
+      Button('分组')
+        .layoutWeight(1)
+        .height(42)
+        .margin({ left: AppSpacing.MD })
+        .enabled(this.selectedSourceUrls.length > 0 && !this.isBatchOperating)
+        .backgroundColor(this.inputColor())
+        .fontColor(this.primaryTextColor())
+        .onClick(() => {
+          this.groupNameInput = this.commonSelectedGroupName();
+          this.showGroupDialog = true;
+        })
+
+      Button('更多')
+        .layoutWeight(1)
+        .height(42)
+        .margin({ left: AppSpacing.MD })
+        .enabled(this.selectedSourceUrls.length > 0 && !this.isBatchOperating)
+        .backgroundColor(this.inputColor())
+        .fontColor(this.primaryTextColor())
+        .onClick(() => {
+          this.showMoreActionDialog = true;
+        })
+        .bindPopup(this.showMoreActionDialog, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
+          this.batchMorePopupMenu()
+        }, Placement.TopRight, this.appDarkMode, this.accentColor(), () => {
+          this.showMoreActionDialog = false;
+        }))
+    }
+    .width('100%')
+    .padding({
+      left: AppSpacing.XL,
+      right: AppSpacing.XL,
+      top: AppSpacing.MD,
+      bottom: useNativeHds ? AppSpacing.LG + this.navBarHeight : AppSpacing.LG
+    })
+    .backgroundColor(this.glassCardColor())
+    .border({ width: ThemeRuntime.glassBorderWidth(), color: this.glassBorderColor() })
+    .zIndex(2)
+  }
+
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
       WebBookFetchRuntimeHost()
-      Column() {
+
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        HdsNavigation() {
+          Column() {
+            this.sourceBodyContent(true)
+            if (this.selectionMode) {
+              this.selectionBottomBar(true)
+            }
+          }
+          .width('100%')
+          .height('100%')
+        }
+        .mode(NavigationMode.Stack)
+        .titleMode(HdsNavigationTitleMode.MINI)
+        .hideBackButton(false)
+        .hideToolBar(true)
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .titleBar({
+          avoidLayoutSafeArea: true,
+          content: {
+            title: {
+              mainTitle: this.sourceTitleText()
+            },
+            backIcon: {
+              label: this.selectionMode ? '退出多选' : '返回',
+              isEnabled: !this.selectionMode || !this.isBatchOperating,
+              action: () => {
+                if (this.selectionMode) {
+                  if (!this.isBatchOperating) {
+                    this.exitSelectionMode();
+                  }
+                } else {
+                  router.back();
+                }
+              }
+            },
+            menu: {
+              maxCount: 3,
+              value: this.sourceMenuItems()
+            },
+            bottomBuilder: this.nativeTitleBottomBuilderOptions()
+          },
+          style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
+            headerFrosted: this.headerFrosted,
+            darkMode: this.appDarkMode,
+            contentColor: this.primaryTextColor(),
+            blurEndOffsetVp: 24
+          })
+        })
+        .attributeModifier(this.getNavModifier(!this.isLoading && this.sources.length > 0, !this.selectionMode))
+        .width('100%')
+        .height('100%')
+      } else {
         Column() {
-          if (this.sourceSearchOpen) {
-            Row({ space: AppSpacing.MD }) {
+          Column() {
+            if (this.sourceSearchOpen) {
+              this.sourceSearchBarRow(AppSpacing.XL, true)
+            }
+
+            if (!this.selectionMode) {
+              // 类型切换栏独立悬浮，这里仅保留展开时的占位，避免列表随收起跳动。
+              Row()
+                .width('100%')
+                .height(SOURCE_FORMAT_BAR_HEIGHT + AppSpacing.MD)
+                .hitTestBehavior(HitTestMode.None)
+              if (this.showCompatSourceNotice()) {
+                this.compatSourceNoticeBar(AppSpacing.XL, true)
+              }
+            }
+
+            if (this.selectionMode) {
               Row() {
-                SymbolGlyph($r('sys.symbol.magnifyingglass'))
-                  .fontSize(18)
-                  .fontColor([this.secondaryTextColor()])
-                  .margin({ left: AppSpacing.LG })
-                  .hitTestBehavior(HitTestMode.None)
-                TextInput({ placeholder: '书源名称、地址或分组', text: this.searchText })
-                  .key(SOURCE_SEARCH_INPUT_KEY)
+                Text(this.isAllSelected() ? '☑' : '☐')
+                  .fontSize(AppFontSize.TITLE)
+                  .fontColor(this.accentColor())
+                  .width(28)
+                  .textAlign(TextAlign.Center)
+                  .onClick(() => {
+                    if (this.isBatchOperating) {
+                      return;
+                    }
+                    this.toggleAllSources();
+                  })
+
+                Text(`已选择 ${this.selectedSourceUrls.length}/${this.sources.length}`)
+                  .fontSize(AppFontSize.BODY)
+                  .fontColor(this.secondaryTextColor())
+                  .margin({ left: AppSpacing.MD })
                   .layoutWeight(1)
-                  .height(40)
-                  .fontSize(AppFontSize.BODY_LARGE)
-                  .backgroundColor(Color.Transparent)
-                  .fontColor(this.primaryTextColor())
-                  .placeholderColor(this.secondaryTextColor())
-                  .padding({ left: AppSpacing.MD, right: AppSpacing.LG })
-                  .onChange((value: string) => {
-                    this.searchText = value;
-                    this.searchSources();
+
+                Text(this.isAllSelected() ? '取消全选' : '全选')
+                  .fontSize(AppFontSize.BODY)
+                  .fontColor(this.isBatchOperating ? this.subTextColor() : this.accentColor())
+                  .onClick(() => {
+                    if (this.isBatchOperating) {
+                      return;
+                    }
+                    this.toggleAllSources();
                   })
               }
-                .height(40)
-                .borderRadius(20)
-                .backgroundColor(this.inputColor())
-                .layoutWeight(1)
-
-              Text('取消')
-                .fontSize(AppFontSize.BODY_LARGE)
-                .fontColor(this.primaryTextColor())
-                .height(40)
-                .accessibilityText('取消搜索书源')
-                .onClick(() => this.closeSourceSearch())
-            }
-            .width('100%')
-            .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.MD, bottom: AppSpacing.MD })
-            .opacity(this.sourceHeaderRowOpacity(56, SOURCE_SEARCH_ROW_HEIGHT))
-            .hitTestBehavior(this.sourceHeaderRowHitTest(56, SOURCE_SEARCH_ROW_HEIGHT))
-            .transition(TransitionEffect.OPACITY
-              .combine(TransitionEffect.translate({ y: -12 }))
-              .combine(TransitionEffect.scale({ x: 0.96, y: 0.96, centerX: '50%', centerY: '0%' })))
-          }
-
-          if (!this.selectionMode) {
-            // 类型切换栏独立悬浮，这里仅保留展开时的占位，避免列表随收起跳动。
-            Row()
               .width('100%')
-              .height(SOURCE_FORMAT_BAR_HEIGHT + AppSpacing.MD)
-              .hitTestBehavior(HitTestMode.None)
-            if (this.showCompatSourceNotice()) {
-              this.compatSourceNoticeBar()
+              .height(SOURCE_SELECTION_ROW_HEIGHT)
+              .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
             }
           }
+          .width('100%')
+          .translate({ y: -this.sourceHeaderCollapseValue() })
+          .zIndex(2)
+
+          this.sourceBodyContent(false)
 
           if (this.selectionMode) {
-            Row() {
-              Text(this.isAllSelected() ? '☑' : '☐')
-                .fontSize(AppFontSize.TITLE)
-                .fontColor(this.accentColor())
-                .width(28)
-                .textAlign(TextAlign.Center)
-                .onClick(() => {
-                  if (this.isBatchOperating) {
-                    return;
-                  }
-                  this.toggleAllSources();
-                })
-
-              Text(`已选择 ${this.selectedSourceUrls.length}/${this.sources.length}`)
-                .fontSize(AppFontSize.BODY)
-                .fontColor(this.secondaryTextColor())
-                .margin({ left: AppSpacing.MD })
-                .layoutWeight(1)
-
-              Text(this.isAllSelected() ? '取消全选' : '全选')
-                .fontSize(AppFontSize.BODY)
-                .fontColor(this.isBatchOperating ? this.subTextColor() : this.accentColor())
-                .onClick(() => {
-                  if (this.isBatchOperating) {
-                    return;
-                  }
-                  this.toggleAllSources();
-                })
-            }
-            .width('100%')
-            .height(SOURCE_SELECTION_ROW_HEIGHT)
-            .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
+            this.selectionBottomBar(false)
           }
         }
         .width('100%')
-        .translate({ y: -this.sourceHeaderCollapseValue() })
-        .zIndex(2)
+        .height('100%')
+        .padding({ top: 56 + this.statusBarHeight })
+        .backgroundColor(this.pageColor())
 
-        if (this.isLoading) {
+        if (!this.selectionMode) {
           Column() {
-            LoadingProgress()
-              .width(40)
-              .height(40)
-            Text('加载中...')
-              .fontSize(AppFontSize.BODY)
-              .fontColor(this.subTextColor())
-              .margin({ top: AppSpacing.MD })
+            this.sourceFormatBar(AppSpacing.XL)
           }
           .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.Center)
-        } else if (this.sources.length === 0) {
-          Column() {
-            Text(this.emptySourceTitle())
-              .fontSize(AppFontSize.BODY_LARGE)
-              .fontColor(this.subTextColor())
-            Text(this.emptySourceDescription())
-              .fontSize(AppFontSize.BODY)
-              .fontColor(this.subTextColor())
-              .margin({ top: AppSpacing.MD })
-          }
-          .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.Center)
-        } else {
-          Stack({ alignContent: Alignment.TopEnd }) {
-            List({ space: AppSpacing.MD, scroller: this.sourceListScroller }) {
-            ForEach(this.sourceListSpacerKeys(), (_spacerKey: string) => {
-              ListItem() {
-                Row()
-                  .height(this.sourceListTopInset())
-                  .hitTestBehavior(HitTestMode.None)
-              }
-            }, (spacerKey: string) => spacerKey)
-
-            LazyForEach(this.currentSourceListDataSource(), (source: BookSource) => {
-              if (deviceInfo.sdkApiVersion >= 26) {
-                HdsListItem({
-                  customItemBuilder: () => {
-                    this.sourceSwipeCard(source)
-                  },
-                  swipeActionOptions: this.sourceSwipeActions(source)
-                })
-              } else {
-              // 两个并列 if 会让每个条目下挂两个分支节点，onMove 拖动排序要求条目只有一个子节点，所以用 else。
-              ListItem() {
-                Row() {
-                  if (this.selectionMode) {
-                    this.sourceSelectionSafeArea(source)
-                  }
-
-                  if (this.sourceDragEnabled()) {
-                    Stack({ alignContent: Alignment.Center }) {
-                      Text('☰')
-                        .fontSize(AppFontSize.SUBTITLE)
-                        .fontColor(this.subTextColor())
-                    }
-                    .width(52)
-                    .height(56)
-                    .margin({ left: -8, right: AppSpacing.XS })
-                    .hitTestBehavior(HitTestMode.Transparent)
-                    .accessibilityText(`长按拖动排序：${source.bookSourceName}`)
-                  }
-
-                  this.sourceSummary(source)
-                }
-                .width('100%')
-                .padding(AppSpacing.LG)
-                .backgroundColor(this.glassCardColor())
-                .borderRadius(ThemeRuntime.mediumRadius())
-                .border({ width: ThemeRuntime.glassBorderWidth(), color: this.glassBorderColor() })
-                .shadow({ radius: ThemeRuntime.glassShadowRadius(), color: this.glassShadowColor(), offsetX: ThemeRuntime.glassShadowOffsetX(), offsetY: ThemeRuntime.glassShadowOffsetY() })
-                .opacity(this.isSourceDissolving(source) ? 0 : (source.enabled ? 1 : 0.45))
-                .scale(ListDissolve.scale(this.isSourceDissolving(source)))
-                .blur(ListDissolve.blur(this.isSourceDissolving(source)))
-                .hitTestBehavior(this.isSourceDissolving(source) ? HitTestMode.None : HitTestMode.Default)
-                .id(this.sourceCardElementId(source.bookSourceUrl))
-                .onClick(() => {
-                  if (this.isBatchOperating) {
-                    return;
-                  }
-                  if (this.selectionMode) {
-                    if (Date.now() < this.sourceSelectionSuppressClickUntil) return;
-                    this.toggleSourceSelected(source.bookSourceUrl);
-                  }
-                })
-              }
-              .width('100%')
-              .borderRadius(ThemeRuntime.mediumRadius())
-              .clip(true)
-              .onAreaChange((_oldValue: Area, area: Area) => {
-                if (this.selectionMode) this.rememberSourceSelectionArea(source.bookSourceUrl, area);
-              })
-              .swipeAction(this.selectionMode || source.isLocked ? {} : {
-                end: {
-                  builder: () => {
-                    this.sourceFallbackSwipeActions(source)
-                  },
-                  actionAreaDistance: 128,
-                  onAction: () => {
-                    if (!this.selectionMode && !this.isBatchOperating) this.deleteSourceFromSwipe(source);
-                  }
-                },
-                edgeEffect: SwipeEdgeEffect.Spring
-              })
-              }
-            }, (source: BookSource) => this.sourceListItemKey(source))
-              // List 自带的 onItemDragStart 只给一张悬浮预览，其他条目不让位、拖到边缘也不滚动；
-              // LazyForEach.onMove 由 List 原地抬起条目、挤压让位并在边缘自动滚动，和分组排序的手感一致。
-              .onMove(this.sourceDragEnabled() ?
-                (from: number, to: number) => this.moveSourceDuringDrag(from, to) : undefined, {
-                onDragStart: (index: number) => this.beginSourceReorderDrag(index),
-                onDrop: (index: number) => {
-                  this.finishSourceReorderDrag(index);
-                }
-              })
-
-            ForEach(this.sourceListSpacerKeys(), (_spacerKey: string) => {
-              ListItem() {
-                Row()
-                  .height(this.sourceListBottomInset())
-                  .hitTestBehavior(HitTestMode.None)
-              }
-            }, (spacerKey: string) => `${spacerKey}_bottom`)
-            }
-            .scrollBar(BarState.Off)
-            .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-            .width('100%')
-            .height('100%')
-            .padding({ left: AppSpacing.XL, right: AppSpacing.XL })
-            .lanes(ResponsiveManagerListLayout.laneCount(this.contextViewportWidth),
-              ResponsiveManagerListLayout.gutter(this.contextViewportWidth))
-            .scrollBar(BarState.Off)
-            .cachedCount(8)
-            .clip(true)
-            .onDidScroll((delta: number) => {
-              this.onSourceListScroll(delta);
-            })
-            .onScrollStop(() => {
-              this.onSourceListScrollStop();
-            })
-            .onScrollIndex((start: number, end: number) => {
-              // 顶部 spacer 按列数占满一整行，源条目索引 = ListItem 索引 - 列数（单列时退化为 -1）。
-              this.sourceFirstVisibleIndex = Math.max(0, start - this.sourceListLaneCount());
-              this.sourceVisibleItemCount = Math.max(1, end - start + 1);
-            })
-
-            // 展开时止于搜索框底边；收起后由同一层过渡为状态栏渐变。
-            HeaderBackdrop({ backdropHeight: this.sourceHeaderBackdropHeight(),
-              statusBarHeight: this.statusBarHeight, backdropColor: ThemeRuntime.topBarColor(this.appDarkMode) })
-              .width('100%')
-              .position({ x: 0, y: 0 })
-              .zIndex(1)
-
-            this.sourceVirtualScrollbar()
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .margin({ top: -this.sourceListTopInset() })
+          .position({ x: 0, y: this.sourceFormatBarTop() })
+          // 与页面内容同级，按声明顺序悬浮；后续菜单和遮罩必须覆盖分类栏。
           .zIndex(0)
-          .onAreaChange((_oldValue: Area, newValue: Area) => {
-            this.sourceListViewportHeight = Number(newValue.height);
-            this.sourceSelectionViewportTop = Number(newValue.globalPosition.y);
-            this.sourceSelectionViewportBottom = this.sourceSelectionViewportTop + Number(newValue.height);
-          })
         }
 
-        if (this.selectionMode) {
-          Row() {
-            Button('启用')
-              .layoutWeight(1)
-              .height(42)
-              .enabled(this.selectedSourceUrls.length > 0 && !this.isBatchOperating)
-              .backgroundColor(this.buttonColor())
-              .fontColor(ThemeRuntime.onAccentColor())
-              .onClick(() => {
-                this.batchSetEnabled(true);
-              })
-
-            Button('禁用')
-              .layoutWeight(1)
-              .height(42)
-              .margin({ left: AppSpacing.MD })
-              .enabled(this.selectedSourceUrls.length > 0 && !this.isBatchOperating)
-              .backgroundColor(this.inputColor())
-              .fontColor(this.primaryTextColor())
-              .onClick(() => {
-                this.batchSetEnabled(false);
-              })
-
-            Button('分组')
-              .layoutWeight(1)
-              .height(42)
-              .margin({ left: AppSpacing.MD })
-              .enabled(this.selectedSourceUrls.length > 0 && !this.isBatchOperating)
-              .backgroundColor(this.inputColor())
-              .fontColor(this.primaryTextColor())
-              .onClick(() => {
-                this.groupNameInput = this.commonSelectedGroupName();
-                this.showGroupDialog = true;
-              })
-
-            Button('更多')
-              .layoutWeight(1)
-              .height(42)
-              .margin({ left: AppSpacing.MD })
-              .enabled(this.selectedSourceUrls.length > 0 && !this.isBatchOperating)
-              .backgroundColor(this.inputColor())
-              .fontColor(this.primaryTextColor())
-              .onClick(() => {
-                this.showMoreActionDialog = true;
-              })
-              .bindPopup(this.showMoreActionDialog, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
-                this.batchMorePopupMenu()
-              }, Placement.TopRight, this.appDarkMode, this.accentColor(), () => {
-                this.showMoreActionDialog = false;
-              }))
-          }
-          .width('100%')
-          .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.MD, bottom: AppSpacing.LG })
-          .backgroundColor(this.glassCardColor())
-          .border({ width: ThemeRuntime.glassBorderWidth(), color: this.glassBorderColor() })
-        }
+        this.bookSourceTitleBar()
       }
-      .width('100%')
-      .height('100%')
-      .padding({ top: 56 + this.statusBarHeight })
-      .backgroundColor(this.pageColor())
-
-      if (!this.selectionMode) {
-        Column() {
-          this.sourceFormatBar()
-        }
-        .width('100%')
-        .position({ x: 0, y: this.sourceFormatBarTop() })
-        // 与页面内容同级，按声明顺序悬浮；后续菜单和遮罩必须覆盖分类栏。
-        .zIndex(0)
-      }
-
-      this.bookSourceTitleBar()
 
       if (!this.selectionMode && !this.isImporting && !this.isBatchOperating) {
         this.addSourceFloatingButton()
+      }
+
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        Column()
+          .width(1)
+          .height(1)
+          .position({ x: this.filterMenuPopupX, y: this.filterMenuPopupY })
+          .hitTestBehavior(HitTestMode.None)
+          .bindPopup(this.showSourceFilterMenu, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
+            this.sourceFilterMenu()
+          }, Placement.BottomRight, this.appDarkMode, this.accentColor(), () => {
+            this.showSourceFilterMenu = false;
+          }))
+
+        Column()
+          .width(1)
+          .height(1)
+          .position({ x: this.moreMenuPopupX, y: this.moreMenuPopupY })
+          .hitTestBehavior(HitTestMode.None)
+          .bindPopup(this.showSourceMoreMenu, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
+            this.sourceMoreMenu()
+          }, Placement.BottomRight, this.appDarkMode, this.accentColor(), () => {
+            this.showSourceMoreMenu = false;
+            this.sourceMoreMenuPage = '';
+          }))
       }
 
       Column()
@@ -2135,7 +2504,7 @@ struct BookSourcePage {
       }
       .width(24)
       .height(this.sourceScrollbarViewportHeight())
-      .translate({ y: this.sourceListTopInset() - this.sourceHeaderCollapseValue() })
+      .translate({ y: this.effectiveSourceListTopInset() - this.effectiveHeaderCollapseValue() })
       .zIndex(10)
       .gesture(
         GestureGroup(GestureMode.Exclusive,
@@ -2155,7 +2524,8 @@ struct BookSourcePage {
   }
 
   sourceScrollbarViewportHeight(): number {
-    return Math.max(0, this.sourceListViewportHeight - this.sourceListTopInset() + this.sourceHeaderCollapseValue());
+    return Math.max(0,
+      this.sourceListViewportHeight - this.effectiveSourceListTopInset() + this.effectiveHeaderCollapseValue());
   }
 
   sourceScrollbarThumbLength(): number {
@@ -2281,7 +2651,14 @@ struct BookSourcePage {
   }
 
   sourceChromeCollapseProgress(): number {
-    return this.sourceHeaderCollapseValue() / this.sourceHeaderCollapsibleHeight();
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      if (this.isLoading || this.sources.length === 0 || this.selectionMode) {
+        return 0;
+      }
+      return Math.max(0, Math.min(1, this.sourceNativeScrollY / (CollapsingHeader.DISTANCE * 2)));
+    }
+    const collapsible = this.sourceHeaderCollapsibleHeight();
+    return collapsible > 0 ? this.sourceHeaderCollapseValue() / collapsible : 0;
   }
 
   sourceHeaderRowOpacity(top: number, height: number): number {
@@ -2293,13 +2670,27 @@ struct BookSourcePage {
   }
 
   onSourceListScroll(delta: number): void {
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      if (this.selectionMode || this.isLoading || this.sources.length === 0) return;
+      const maxScroll = Math.max(CollapsingHeader.DISTANCE, this.effectiveHeaderCollapsibleHeight()) * 2;
+      const rawOffset = this.sourceListScroller.currentOffset().yOffset;
+      if (Number.isFinite(rawOffset)) {
+        const clamped = Math.max(0, Math.min(maxScroll, rawOffset));
+        if (Math.abs(clamped - this.sourceNativeScrollY) >= 1 ||
+          (clamped === 0 && this.sourceNativeScrollY !== 0) ||
+          (clamped === maxScroll && this.sourceNativeScrollY !== maxScroll)) {
+          this.sourceNativeScrollY = clamped;
+        }
+      }
+      return;
+    }
     if (this.selectionMode || this.isLoading) return;
     this.sourceHeaderCollapse = CollapsingHeader.next(this.sourceHeaderCollapseValue(), delta,
       this.sourceListScroller.currentOffset().yOffset, this.sourceHeaderCollapsibleHeight());
   }
 
   onSourceListScrollStop(): void {
-    if (this.selectionMode || this.isLoading) return;
+    if (ImmersiveMaterialRuntime.supportsHdsTabs() || this.selectionMode || this.isLoading) return;
     const target = CollapsingHeader.settle(this.sourceHeaderCollapseValue(),
       this.sourceListScroller.currentOffset().yOffset, this.sourceHeaderCollapsibleHeight());
     if (target !== this.sourceHeaderCollapse) {
@@ -2460,101 +2851,104 @@ struct BookSourcePage {
 
 
   @Builder
-  sourceFormatBar() {
+  sourceFormatBar(horizontalMargin: number = AppSpacing.XL) {
     Row() {
-      if (this.sourceFormatBarWidth > 0) {
-        ImmersiveMaterialSurface({
-          surfaceWidth: this.sourceFormatBarWidth,
-          surfaceHeight: SOURCE_FORMAT_BAR_HEIGHT,
-          darkMode: this.appDarkMode,
-          fallbackColor: this.cardColor(),
-          glowColor: `#40${this.accentColor().substring(1)}`
-        }) {
-          Row() {
-            Row({ space: AppSpacing.XS }) {
-              Text(this.sourceGroupLabel())
-                .fontSize(AppFontSize.BODY)
-                .fontWeight(FontWeight.Medium)
-                .fontColor(this.activeSourceGroup === '__all__' ? this.primaryTextColor() : this.accentColor())
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-                .layoutWeight(1)
-              SymbolGlyph(this.showSourceGroupToolsMenu ? $r('sys.symbol.chevron_up') :
-                $r('sys.symbol.chevron_down'))
-                .fontSize(12)
-                .fontColor([this.secondaryTextColor()])
-            }
-            .width(Math.min(140, Math.max(88, this.sourceFormatBarWidth * 0.32)))
-            .height('100%')
-            .padding({ left: AppSpacing.XL, right: AppSpacing.MD })
-            .alignItems(VerticalAlign.Center)
-            .accessibilityGroup(true)
-            .accessibilityText(`当前分组：${this.sourceGroupLabel()}，切换分组`)
-            .bindPopup(this.showSourceGroupToolsMenu, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
-              this.sourceGroupToolsMenu()
-            }, Placement.BottomLeft, this.appDarkMode, this.accentColor(), () => {
-              this.showSourceGroupToolsMenu = false;
-            }))
-            .onClick(() => {
-              this.showSourceGroupToolsMenu = !this.showSourceGroupToolsMenu;
-            })
-
-            Divider()
-              .vertical(true)
-              .height(18)
-              .strokeWidth(1)
-              .color(ThemeRuntime.hairlineColor(this.appDarkMode))
-
+      Row() {
+        if (this.sourceFormatBarWidth > 0) {
+          ImmersiveMaterialSurface({
+            surfaceWidth: this.sourceFormatBarWidth,
+            surfaceHeight: SOURCE_FORMAT_BAR_HEIGHT,
+            darkMode: this.appDarkMode,
+            fallbackColor: this.cardColor(),
+            glowColor: `#40${this.accentColor().substring(1)}`
+          }) {
             Row() {
-              ForEach(['all', 'native', 'compat'], (format: string) => {
-                Column({ space: 3 }) {
-                  Text(format === 'all' ? '全部' : (format === 'native' ? '原生' : '兼容'))
-                    .fontSize(AppFontSize.BODY_LARGE)
-                    .fontWeight(this.sourceFormatFilter === format ? FontWeight.Medium : FontWeight.Regular)
-                    .fontColor(this.sourceFormatFilter === format ? this.accentColor() : this.secondaryTextColor())
-                    .maxLines(1)
-                  Row()
-                    .width(SOURCE_FORMAT_INDICATOR_WIDTH)
-                    .height(3)
-                    .borderRadius(1.5)
-                    .backgroundColor(this.accentColor())
-                    .opacity(this.sourceFormatFilter === format ? 1 : 0)
-                    .scale({ x: this.sourceFormatFilter === format ? 1 : 0.4, y: 1 })
-                    .animation({ duration: 220, curve: Curve.Friction })
-                }
-                .height('100%')
-                .layoutWeight(1)
-                .padding({ top: AppSpacing.SM })
-                .justifyContent(FlexAlign.Center)
-                .accessibilityGroup(true)
-                .accessibilityText(format === 'all' ? '全部书源' : (format === 'native' ? '原生书源' : '兼容书源'))
-                .accessibilitySelected(this.sourceFormatFilter === format)
-                .onClick(() => {
-                  if (this.sourceFormatFilter === format) return;
-                  this.showSourceGroupToolsMenu = false;
-                  this.sourceFormatFilter = format;
-                  this.applySourceFilters();
-                })
-              }, (format: string) => format)
+              Row({ space: AppSpacing.XS }) {
+                Text(this.sourceGroupLabel())
+                  .fontSize(AppFontSize.BODY)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(this.activeSourceGroup === '__all__' ? this.primaryTextColor() : this.accentColor())
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .layoutWeight(1)
+                SymbolGlyph(this.showSourceGroupToolsMenu ? $r('sys.symbol.chevron_up') :
+                  $r('sys.symbol.chevron_down'))
+                  .fontSize(12)
+                  .fontColor([this.secondaryTextColor()])
+              }
+              .width(Math.min(140, Math.max(88, this.sourceFormatBarWidth * 0.32)))
+              .height('100%')
+              .padding({ left: AppSpacing.XL, right: AppSpacing.MD })
+              .alignItems(VerticalAlign.Center)
+              .accessibilityGroup(true)
+              .accessibilityText(`当前分组：${this.sourceGroupLabel()}，切换分组`)
+              .bindPopup(this.showSourceGroupToolsMenu, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel, (): void => {
+                this.sourceGroupToolsMenu()
+              }, Placement.BottomLeft, this.appDarkMode, this.accentColor(), () => {
+                this.showSourceGroupToolsMenu = false;
+              }))
+              .onClick(() => {
+                this.showSourceGroupToolsMenu = !this.showSourceGroupToolsMenu;
+              })
+
+              Divider()
+                .vertical(true)
+                .height(18)
+                .strokeWidth(1)
+                .color(ThemeRuntime.hairlineColor(this.appDarkMode))
+
+              Row() {
+                ForEach(['all', 'native', 'compat'], (format: string) => {
+                  Column({ space: 3 }) {
+                    Text(format === 'all' ? '全部' : (format === 'native' ? '原生' : '兼容'))
+                      .fontSize(AppFontSize.BODY_LARGE)
+                      .fontWeight(this.sourceFormatFilter === format ? FontWeight.Medium : FontWeight.Regular)
+                      .fontColor(this.sourceFormatFilter === format ? this.accentColor() : this.secondaryTextColor())
+                      .maxLines(1)
+                    Row()
+                      .width(SOURCE_FORMAT_INDICATOR_WIDTH)
+                      .height(3)
+                      .borderRadius(1.5)
+                      .backgroundColor(this.accentColor())
+                      .opacity(this.sourceFormatFilter === format ? 1 : 0)
+                      .scale({ x: this.sourceFormatFilter === format ? 1 : 0.4, y: 1 })
+                      .animation({ duration: 220, curve: Curve.Friction })
+                  }
+                  .height('100%')
+                  .layoutWeight(1)
+                  .padding({ top: AppSpacing.SM })
+                  .justifyContent(FlexAlign.Center)
+                  .accessibilityGroup(true)
+                  .accessibilityText(format === 'all' ? '全部书源' : (format === 'native' ? '原生书源' : '兼容书源'))
+                  .accessibilitySelected(this.sourceFormatFilter === format)
+                  .onClick(() => {
+                    if (this.sourceFormatFilter === format) return;
+                    this.showSourceGroupToolsMenu = false;
+                    this.sourceFormatFilter = format;
+                    this.applySourceFilters();
+                  })
+                }, (format: string) => format)
+              }
+              .layoutWeight(1)
+              .height('100%')
+              .padding({ left: SOURCE_FORMAT_BAR_PADDING, right: SOURCE_FORMAT_BAR_PADDING })
             }
-            .layoutWeight(1)
+            .width('100%')
             .height('100%')
-            .padding({ left: SOURCE_FORMAT_BAR_PADDING, right: SOURCE_FORMAT_BAR_PADDING })
           }
-          .width('100%')
-          .height('100%')
         }
       }
+      .width('100%')
+      .height(SOURCE_FORMAT_BAR_HEIGHT)
+      .onAreaChange((_oldValue: Area, newValue: Area) => {
+        const width = Math.floor(Number(newValue.width));
+        if (Number.isFinite(width) && width > 0 && width !== this.sourceFormatBarWidth) {
+          this.sourceFormatBarWidth = width;
+        }
+      })
     }
-    .width(`calc(100% - ${AppSpacing.XL * 2}vp)`)
-    .height(SOURCE_FORMAT_BAR_HEIGHT)
-    .margin({ left: AppSpacing.XL, right: AppSpacing.XL, bottom: AppSpacing.MD })
-    .onAreaChange((_oldValue: Area, newValue: Area) => {
-      const width = Math.floor(Number(newValue.width));
-      if (Number.isFinite(width) && width > 0 && width !== this.sourceFormatBarWidth) {
-        this.sourceFormatBarWidth = width;
-      }
-    })
+    .width('100%')
+    .padding({ left: horizontalMargin, right: horizontalMargin, bottom: AppSpacing.MD })
   }
 
   @Builder
@@ -2835,6 +3229,7 @@ struct BookSourcePage {
     }, (): void => {
       this.sourceSearchOpen = true;
       this.sourceHeaderCollapse = 0;
+      this.sourceNativeScrollY = 0;
     });
   }
 
@@ -2963,33 +3358,37 @@ struct BookSourcePage {
   }
 
   @Builder
-  compatSourceNoticeBar() {
-    Row({ space: AppSpacing.MD }) {
-      Text('兼容书源格式已过时，仍可正常使用。新书源建议使用原生格式。')
-        .fontSize(AppFontSize.CAPTION)
-        .fontColor(this.secondaryTextColor())
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
-      SymbolGlyph($r('sys.symbol.xmark'))
-        .fontSize(16)
-        .fontColor([this.subTextColor()])
-        .width(28)
-        .height(40)
-        .accessibilityText('关闭提示')
-        .onClick(() => {
-          this.compatSourceNoticeDismissed = true;
-        })
+  compatSourceNoticeBar(horizontalMargin: number = AppSpacing.XL, applyCollapseFade: boolean = true) {
+    Row() {
+      Row({ space: AppSpacing.MD }) {
+        Text('兼容书源格式已过时，仍可正常使用。新书源建议使用原生格式。')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.secondaryTextColor())
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.xmark'))
+          .fontSize(16)
+          .fontColor([this.subTextColor()])
+          .width(28)
+          .height(40)
+          .accessibilityText('关闭提示')
+          .onClick(() => {
+            this.compatSourceNoticeDismissed = true;
+          })
+      }
+      .width('100%')
+      .height(COMPAT_SOURCE_NOTICE_HEIGHT)
+      .padding({ left: AppSpacing.LG, right: AppSpacing.SM })
+      .borderRadius(ThemeRuntime.smallRadius())
+      .backgroundColor(this.inputColor())
     }
-    .height(COMPAT_SOURCE_NOTICE_HEIGHT)
-    .padding({ left: AppSpacing.LG, right: AppSpacing.SM })
-    .borderRadius(ThemeRuntime.smallRadius())
-    .backgroundColor(this.inputColor())
-    .margin({ left: AppSpacing.XL, right: AppSpacing.XL, bottom: AppSpacing.MD })
-    .opacity(this.sourceHeaderRowOpacity(56 + this.sourceSearchRowHeight(),
-      COMPAT_SOURCE_NOTICE_HEIGHT + AppSpacing.MD))
-    .hitTestBehavior(this.sourceHeaderRowHitTest(56 + this.sourceSearchRowHeight(),
-      COMPAT_SOURCE_NOTICE_HEIGHT + AppSpacing.MD))
+    .width('100%')
+    .padding({ left: horizontalMargin, right: horizontalMargin, bottom: AppSpacing.MD })
+    .opacity(applyCollapseFade ? this.sourceHeaderRowOpacity(56 + this.sourceSearchRowHeight(),
+      COMPAT_SOURCE_NOTICE_HEIGHT + AppSpacing.MD) : 1)
+    .hitTestBehavior(applyCollapseFade ? this.sourceHeaderRowHitTest(56 + this.sourceSearchRowHeight(),
+      COMPAT_SOURCE_NOTICE_HEIGHT + AppSpacing.MD) : HitTestMode.Default)
   }
 
   @Builder
@@ -3961,6 +4360,7 @@ struct BookSourcePage {
 
   applySourceFilters(): void {
     this.sourceHeaderCollapse = 0;
+    this.sourceNativeScrollY = 0;
     const keyword = this.searchText.trim().toLowerCase();
     let filtered: BookSource[] = this.allSources;
     if (this.activeSourceGroup === '__ungrouped__') {
@@ -4206,6 +4606,10 @@ struct BookSourcePage {
     this.actionSourceDetail = null;
     this.showAddDialog = false;
     this.showMoreActionDialog = false;
+    this.showSourceFilterMenu = false;
+    this.showSourceMoreMenu = false;
+    this.sourceHeaderCollapse = 0;
+    this.sourceNativeScrollY = 0;
     this.selectionMode = true;
     this.selectedSourceUrls = [sourceUrl];
   }
@@ -5542,13 +5946,18 @@ struct BookSourcePage {
 
   enterSelectionMode(): void {
     this.sourceHeaderCollapse = 0;
+    this.sourceNativeScrollY = 0;
     this.showAddDialog = false;
+    this.showSourceFilterMenu = false;
+    this.showSourceMoreMenu = false;
     this.selectionMode = true;
     this.selectedSourceUrls = [];
   }
 
   exitSelectionMode(): void {
     this.stopSourceSelectionAutoScroll();
+    this.sourceHeaderCollapse = 0;
+    this.sourceNativeScrollY = 0;
     this.selectionMode = false;
     this.selectedSourceUrls = [];
     this.showBatchDeleteDialog = false;
