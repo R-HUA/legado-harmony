@@ -13,6 +13,7 @@ import { MembershipIcons } from '../../account/MembershipIcons';
 import { AppThemeModeStore } from '../../utils/AppThemeModeStore';
 import { AppColorModeApplier } from '../../utils/AppColorModeApplier';
 import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
+import { LocalBuildFeatures } from '../../config/LocalBuildFeatures';
 
 class ThemeModeOption {
   mode: string = '';
@@ -91,10 +92,12 @@ export struct SettingsPage {
 
           // 在线阅读（网页解析开关）：关闭时只有这一行；开启后书源管理、搜索与发现直接摆在这里。
           Column() {
-            this.menuItem($r('sys.symbol.worldclock'), '在线阅读', this.webParseEnabled, () => {
-              router.pushUrl({ url: 'pages/WebParseSettings' });
-            }, this.webParseEnabled ? (this.webParseNoticePending ? '待确认须知' : '已开启') : '未开启')
-            if (this.webParseEnabled) {
+            if (!LocalBuildFeatures.WEB_PARSE_ALWAYS_ON) {
+              this.menuItem($r('sys.symbol.worldclock'), '在线阅读', this.webParseEnabled, () => {
+                router.pushUrl({ url: 'pages/WebParseSettings' });
+              }, this.webParseEnabled ? (this.webParseNoticePending ? '待确认须知' : '已开启') : '未开启')
+            }
+            if (LocalBuildFeatures.WEB_PARSE_ALWAYS_ON || this.webParseEnabled) {
               this.menuItem($r('sys.symbol.list_bullet'), '书源管理', true, () => {
                 router.pushUrl({ url: 'pages/BookSource' });
               })

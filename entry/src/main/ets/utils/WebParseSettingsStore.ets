@@ -1,6 +1,7 @@
 import { Context } from '@kit.AbilityKit';
 import preferences from '@ohos.data.preferences';
 import { AppDatabase } from '../model/data/AppDatabase';
+import { LocalBuildFeatures } from '../config/LocalBuildFeatures';
 
 /** 使用须知里的一条：小标题加一两句说明。 */
 export class WebParseNoticeItem {
@@ -59,6 +60,7 @@ export class WebParseSettingsStore {
 
   /** 非界面代码用它判断；界面用 @StorageProp('webParseEnabled')。 */
   static enabled(): boolean {
+    if (LocalBuildFeatures.WEB_PARSE_ALWAYS_ON) return true;
     return AppStorage.get<boolean>(WebParseSettingsStore.KEY) === true;
   }
 
@@ -68,6 +70,11 @@ export class WebParseSettingsStore {
   }
 
   static async load(context: Context): Promise<void> {
+    if (LocalBuildFeatures.WEB_PARSE_ALWAYS_ON) {
+      AppStorage.setOrCreate(WebParseSettingsStore.KEY, true);
+      AppStorage.setOrCreate(WebParseSettingsStore.KEY_NOTICE_PENDING, false);
+      return;
+    }
     const revision = WebParseSettingsStore.revision;
     const store = await preferences.getPreferences(context, WebParseSettingsStore.STORE_NAME);
     const saved = await store.get(WebParseSettingsStore.KEY, '');
@@ -104,6 +111,7 @@ export class WebParseSettingsStore {
 
   /** 关闭只改开关，已同意的须知版本保留，再次开启仍要重新确认。 */
   static disable(context: Context): Promise<void> {
+    if (LocalBuildFeatures.WEB_PARSE_ALWAYS_ON) return Promise.resolve();
     return WebParseSettingsStore.write(context, false, false);
   }
 
