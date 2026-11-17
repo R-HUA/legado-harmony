@@ -26,6 +26,7 @@ import { ShelfGreetingEditor } from '../components/home/ShelfGreetingEditor';
 import { ShelfSectionTitleEditor } from '../components/home/ShelfSectionTitleEditor';
 import { ShelfGreetingTemplate } from '../utils/ShelfGreetingTemplate';
 import { BookshelfSortHelper } from '../utils/BookshelfSortHelper';
+import { CoverDimSettings } from '../utils/CoverDimSettings';
 
 @Entry
 @Component
@@ -48,11 +49,17 @@ struct BookshelfSettingsPage {
   @StorageLink('bookshelfTypeCategoryEnabled') bookshelfTypeCategoryEnabled: boolean = true;
   @StorageLink('bookshelfShowAllTypeTab') bookshelfShowAllTypeTab: boolean = true;
   @StorageLink('bookshelfCompanionStagger') bookshelfCompanionStagger: boolean = true;
+  @StorageLink('bookshelfCompanionCoverShadow') bookshelfCompanionCoverShadow: boolean = true;
   @StorageLink('bookshelfCompanionReadingNote') bookshelfCompanionReadingNote: boolean = true;
   @StorageLink('bookshelfGreetingMode') bookshelfGreetingMode: string = 'time';
   @StorageLink('bookshelfGreetingTitle') bookshelfGreetingTitle: string = '';
   @StorageLink('bookshelfGreetingSubtitle') bookshelfGreetingSubtitle: string = '';
   @StorageLink('bookshelfCompanionSectionTitle') bookshelfCompanionSectionTitle: string = '';
+  @StorageLink('bookshelfAutoRefresh') bookshelfAutoRefresh: boolean = true;
+  @StorageLink('bookshelfImmersive') bookshelfImmersive: boolean = false;
+  @StorageLink('bookshelfImmersiveButtons') bookshelfImmersiveButtons: string = 'pull';
+  @StorageLink('bookshelfRememberGroup') bookshelfRememberGroup: boolean = false;
+  @StorageProp('webParseEnabled') webParseEnabled: boolean = false;
   @StorageProp('accountDisplayName') accountDisplayName: string = '';
   @StorageProp('shelfTodayReadMs') shelfTodayReadMs: number = 0;
   @StorageLink('bookshelfCoverAlbums') @Watch('onCoverAlbumsChanged') bookshelfCoverAlbums: string = '';
@@ -63,6 +70,8 @@ struct BookshelfSettingsPage {
   @StorageLink('bookshelfIgnoreSourceCover') bookshelfIgnoreSourceCover: boolean = false;
   @StorageLink('bookshelfIgnoreEmptyCoverOnly') bookshelfIgnoreEmptyCoverOnly: boolean = false;
   @StorageLink('bookshelfCoverMode') bookshelfCoverMode: string = 'sequence';
+  @StorageLink('bookshelfDarkCoverDim') bookshelfDarkCoverDim: boolean = false;
+  @StorageLink('bookshelfDarkCoverDimLevel') bookshelfDarkCoverDimLevel: number = 20;
   @StorageLink('coverGalleryUpdateTime') @Watch('onCoverGalleryUpdateTimeChanged') coverGalleryUpdateTime: number = 0;
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
@@ -166,6 +175,17 @@ struct BookshelfSettingsPage {
       })
       this.itemDivider()
       SettingSwitchRow({
+        title: '封面阴影',
+        description: '书本落在书架上的投影；关闭后书本不再有阴影',
+        isOn: this.bookshelfCompanionCoverShadow,
+        showDivider: false,
+        onChange: (value: boolean) => {
+          this.bookshelfCompanionCoverShadow = value;
+          this.onDisplaySettingChanged();
+        }
+      })
+      this.itemDivider()
+      SettingSwitchRow({
         title: '阅读小记',
         description: '在继续阅读下方显示今日时长、近 7 天和连续阅读天数',
         isOn: this.bookshelfCompanionReadingNote,
@@ -234,6 +254,45 @@ struct BookshelfSettingsPage {
       showDivider: false,
       onChange: (value: boolean) => {
         this.bookshelfBookOpenAnimation = value;
+        this.onDisplaySettingChanged();
+      }
+    })
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    this.sectionTitle('进入书架')
+    Column() {
+    SettingSwitchRow({
+      title: '沉浸书架',
+      description: '进入书架时隐藏顶部按钮和底栏，向下滑动时出现',
+      isOn: this.bookshelfImmersive,
+      showDivider: false,
+      onChange: (value: boolean) => {
+        this.bookshelfImmersive = value;
+        this.onDisplaySettingChanged();
+      }
+    })
+    if (this.bookshelfImmersive) {
+      this.itemDivider()
+      this.selectItem('顶部按钮', '下拉显示：在书架顶部下拉时出现，几秒后收起；只留菜单按钮：右上角一个按钮收进全部操作',
+        this.immersiveButtonsOptions(), this.immersiveButtonsSelectedIndex(),
+        (index: number) => {
+          this.bookshelfImmersiveButtons = index === 1 ? 'menu' : 'pull';
+          this.onDisplaySettingChanged();
+        })
+    }
+    this.itemDivider()
+    SettingSwitchRow({
+      title: '记住打开分组',
+      description: '重新打开应用时回到上次所在的文件夹和分类；关闭后每次从书架首页开始',
+      isOn: this.bookshelfRememberGroup,
+      showDivider: false,
+      onChange: (value: boolean) => {
+        this.bookshelfRememberGroup = value;
         this.onDisplaySettingChanged();
       }
     })
@@ -342,11 +401,30 @@ struct BookshelfSettingsPage {
       this.targetBooksPanel()
     }
     this.itemDivider()
-    this.selectItem('封面模式', '多张封面的展示顺序',
+    this.selectItem('封面模式', '多张封面轮流显示、随机换一张或每本书固定一张',
       this.modeOptions(), this.modeSelectedIndex(), (index: number) => {
-        this.bookshelfCoverMode = index === 1 ? 'random' : 'sequence';
+        this.bookshelfCoverMode = index === 2 ? 'fixed' : index === 1 ? 'random' : 'sequence';
         this.onCoverSettingChanged();
       })
+    this.itemDivider()
+    SettingSwitchRow({
+      title: '深色模式调暗封面',
+      description: '深色模式下降低封面亮度，夜里看书架不刺眼',
+      isOn: this.bookshelfDarkCoverDim,
+      showDivider: false,
+      onChange: (value: boolean) => {
+        this.bookshelfDarkCoverDim = value;
+        this.onCoverSettingChanged();
+      }
+    })
+    if (this.bookshelfDarkCoverDim) {
+      this.itemDivider()
+      this.selectItem('调暗程度', '封面亮的书多可以选强一些',
+        this.darkCoverDimOptions(), this.darkCoverDimSelectedIndex(), (index: number) => {
+          this.bookshelfDarkCoverDimLevel = CoverDimSettings.LEVELS[index] ?? CoverDimSettings.DEFAULT_LEVEL;
+          this.onCoverSettingChanged();
+        })
+    }
     this.itemDivider()
     SettingSwitchRow({
       title: '忽略原始封面',
@@ -377,6 +455,27 @@ struct BookshelfSettingsPage {
     .borderRadius(ThemeRuntime.cardRadius())
     .clip(true)
     .backgroundColor(this.cardColor())
+
+    if (this.webParseEnabled) {
+      this.sectionTitle('书籍更新')
+      Column() {
+        SettingSwitchRow({
+          title: '自动获取更新',
+          description: '打开应用时在后台检查连载书籍的新章节；关闭后只在下拉书架时检查',
+          isOn: this.bookshelfAutoRefresh,
+          showDivider: false,
+          onChange: (value: boolean) => {
+            this.bookshelfAutoRefresh = value;
+            this.onDisplaySettingChanged();
+          }
+        })
+      }
+      .width('calc(100% - 24vp)')
+      .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+      .borderRadius(ThemeRuntime.cardRadius())
+      .clip(true)
+      .backgroundColor(this.cardColor())
+    }
 
     this.sectionTitle('隐私书架')
     Column() {
@@ -450,11 +549,16 @@ struct BookshelfSettingsPage {
       this.bookshelfTypeCategoryEnabled = settings.typeCategoryEnabled;
       this.bookshelfShowAllTypeTab = settings.showAllTypeTab;
       this.bookshelfCompanionStagger = settings.companionStagger;
+      this.bookshelfCompanionCoverShadow = settings.companionCoverShadow;
       this.bookshelfCompanionReadingNote = settings.companionReadingNote;
       this.bookshelfGreetingMode = settings.greetingMode;
       this.bookshelfGreetingTitle = settings.greetingTitle;
       this.bookshelfGreetingSubtitle = settings.greetingSubtitle;
       this.bookshelfCompanionSectionTitle = settings.companionSectionTitle;
+      this.bookshelfAutoRefresh = settings.autoRefresh;
+      this.bookshelfImmersive = settings.immersive;
+      this.bookshelfImmersiveButtons = settings.immersiveButtons;
+      this.bookshelfRememberGroup = settings.rememberGroup;
     } catch (e) {
       console.warn('重新加载书架显示设置失败:', e);
     }
@@ -640,11 +744,16 @@ struct BookshelfSettingsPage {
     settings.typeCategoryEnabled = this.bookshelfTypeCategoryEnabled;
     settings.showAllTypeTab = this.bookshelfShowAllTypeTab;
     settings.companionStagger = this.bookshelfCompanionStagger;
+    settings.companionCoverShadow = this.bookshelfCompanionCoverShadow;
     settings.companionReadingNote = this.bookshelfCompanionReadingNote;
     settings.greetingMode = this.bookshelfGreetingMode;
     settings.greetingTitle = this.bookshelfGreetingTitle;
     settings.greetingSubtitle = this.bookshelfGreetingSubtitle;
     settings.companionSectionTitle = this.bookshelfCompanionSectionTitle;
+    settings.autoRefresh = this.bookshelfAutoRefresh;
+    settings.immersive = this.bookshelfImmersive;
+    settings.immersiveButtons = this.bookshelfImmersiveButtons;
+    settings.rememberGroup = this.bookshelfRememberGroup;
     BookshelfDisplaySettingsStore.applyToStorage(settings);
     BookshelfDisplaySettingsStore.save(getContext(this), settings).catch((e: Error) => {
       console.warn('保存书架显示设置失败:', e);
@@ -665,6 +774,8 @@ struct BookshelfSettingsPage {
     this.bookshelfIgnoreSourceCover = snapshot.ignoreSourceCover;
     this.bookshelfIgnoreEmptyCoverOnly = snapshot.ignoreEmptyCoverOnly;
     this.bookshelfCoverMode = snapshot.coverMode;
+    this.bookshelfDarkCoverDim = snapshot.darkDim;
+    this.bookshelfDarkCoverDimLevel = snapshot.darkDimLevel;
     this.syncAlbums(albumsRaw);
     this.bumpSettingsRender();
     if (this.showTargetBookList) {
@@ -766,6 +877,8 @@ struct BookshelfSettingsPage {
     snapshot.ignoreSourceCover = this.bookshelfIgnoreSourceCover;
     snapshot.ignoreEmptyCoverOnly = this.bookshelfIgnoreEmptyCoverOnly;
     snapshot.coverMode = this.bookshelfCoverMode;
+    snapshot.darkDim = this.bookshelfDarkCoverDim;
+    snapshot.darkDimLevel = CoverDimSettings.normalizeLevel(this.bookshelfDarkCoverDimLevel);
     return snapshot;
   }
 
@@ -783,11 +896,23 @@ struct BookshelfSettingsPage {
   }
 
   modeOptions(): SelectOption[] {
-    return [{ value: '顺序' }, { value: '随机' }];
+    return [{ value: '顺序' }, { value: '随机' }, { value: '固定' }];
   }
 
   modeSelectedIndex(): number {
+    if (this.bookshelfCoverMode === 'fixed') return 2;
     return this.bookshelfCoverMode === 'random' ? 1 : 0;
+  }
+
+  darkCoverDimOptions(): SelectOption[] {
+    return CoverDimSettings.LEVELS.map((level: number, index: number): SelectOption => {
+      const option: SelectOption = { value: `${CoverDimSettings.LEVEL_NAMES[index]}（${level}%）` };
+      return option;
+    });
+  }
+
+  darkCoverDimSelectedIndex(): number {
+    return Math.max(0, CoverDimSettings.LEVELS.indexOf(CoverDimSettings.normalizeLevel(this.bookshelfDarkCoverDimLevel)));
   }
 
   albumOptions(): SelectOption[] {
@@ -836,6 +961,14 @@ struct BookshelfSettingsPage {
 
   scopeOptions(): SelectOption[] {
     return [{ value: '全部应用' }, { value: '指定书籍' }];
+  }
+
+  immersiveButtonsOptions(): SelectOption[] {
+    return [{ value: '下拉显示' }, { value: '只留菜单按钮' }];
+  }
+
+  immersiveButtonsSelectedIndex(): number {
+    return this.bookshelfImmersiveButtons === 'menu' ? 1 : 0;
   }
 
   greetingModeOptions(): SelectOption[] {

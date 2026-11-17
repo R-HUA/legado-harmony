@@ -1,3 +1,4 @@
+import { WebParseSettingsStore } from '../utils/WebParseSettingsStore';
 import { MembershipBadge } from '../components/common/MembershipBadge';
 import { promptAction, router } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
@@ -110,15 +111,29 @@ struct AccountCenterPage {
   private pointsUsageDialogBuilder: CustomBuilder | undefined = undefined;
   private pointsUsageDialogId: number = -1;
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+  /** 上次显示时是否已登录：从用户名登录页回来要补做登录后的刷新，申请注销后回来要清掉会员信息。 */
+  private shownLoggedIn: boolean = false;
 
   aboutToAppear(): void {
     this.membership = AccountSessionStore.account().membership || new MembershipSnapshot();
+    this.shownLoggedIn = AccountSessionStore.isLoggedIn();
     if (AccountCommerceConfig.COMMERCE_ENABLED) this.initialize();
     this.syncBars();
   }
 
   onPageShow(): void {
     this.syncBars();
+    const loggedIn = AccountSessionStore.isLoggedIn();
+    if (loggedIn && !this.shownLoggedIn) {
+      this.shownLoggedIn = true;
+      this.afterLogin();
+      return;
+    }
+    if (!loggedIn && this.shownLoggedIn) {
+      this.shownLoggedIn = false;
+      this.resetLoggedOutState();
+      return;
+    }
     // 从我的权益页领取礼包后返回，入口提示要跟着更新。
     if (this.accountLoggedIn) {
       this.membership = AccountSessionStore.account().membership || new MembershipSnapshot();
@@ -249,12 +264,10 @@ struct AccountCenterPage {
     this.loading = true;
     try {
       await HuaweiAccountService.login(this.context);
-      // 换设备登录后立即拉取云空间的书籍与字体，不必等回到前台或打开云空间页。
-      CloudAutoSync.schedule(this.context, 0);
-      HdsFeedback.showToast('登录成功，点数、会员和主题权益已同步');
-      await this.refreshMembership(false);
-      await this.loadIapProducts();
-      await this.recoverUnfinishedPurchases();
+      this.shownLoggedIn = true;
+      HdsFeedback.showToast(HuaweiAccountService.lastLoginCancelledDeletion ?
+        '登录成功，已撤销账号注销申请' : '登录成功，点数、会员和主题权益已同步');
+      await this.afterLogin();
     } catch (e) {
       const error = e as BusinessError;
       // 1001502012: the user dismissed the authorization sheet.
@@ -264,6 +277,26 @@ struct AccountCenterPage {
     } finally {
       this.loading = false;
     }
+  }
+
+  /** 登录成功后（华为账号或用户名登录页返回）拉取会员、内购商品与未完成订单。 */
+  async afterLogin(): Promise<void> {
+    // 换设备登录后立即拉取云空间的书籍与字体，不必等回到前台或打开云空间页。
+    CloudAutoSync.schedule(this.context, 0);
+    try {
+      await this.refreshMembership(false);
+      await this.loadIapProducts();
+      await this.recoverUnfinishedPurchases();
+    } catch (e) {
+      console.warn('登录后刷新账号失败:', e);
+    }
+  }
+
+  resetLoggedOutState(): void {
+    this.editingProfile = false;
+    this.membership = new MembershipSnapshot();
+    this.orders = [];
+    this.ordersExpanded = false;
   }
 
   async refreshAccount(): Promise<void> {
@@ -342,12 +375,10 @@ struct AccountCenterPage {
       return;
     }
     await HuaweiAccountService.logout(this.context);
+    this.shownLoggedIn = false;
     // 退出后字体下拉框不再显示云端未下载的字体。
     CloudAutoSync.schedule(this.context, 0);
-    this.editingProfile = false;
-    this.membership = new MembershipSnapshot();
-    this.orders = [];
-    this.ordersExpanded = false;
+    this.resetLoggedOutState();
     HdsFeedback.showToast('已退出登录');
   }
 
@@ -714,7 +745,7 @@ struct AccountCenterPage {
       return;
     }
     if (!this.accountLoggedIn) {
-      HdsFeedback.showToast('请先登录华为账号');
+      HdsFeedback.showToast('请先登录');
       return;
     }
     this.purchasingProductId = product.productId;
@@ -890,7 +921,7 @@ struct AccountCenterPage {
       '2. 月度、年度会员可叠加续费，有效期顺延；终身会员不重复购买，可补差价升级为终身超级会员。定期会员升级终身时，按尚未使用的时长折算抵扣，抵扣不退回、不提现。\n' +
       '3. 会员主题包含现有及以后加入会员主题库的主题，单独售卖的主题除外；已单独购买的主题保留原有效期。\n' +
       '4. 月度会员不含每月朗读礼包。年度会员每月标准 5000 字或精品 2500 字，终身会员 8000/4000 字，终身超级会员 12000/6000 字。按北京时间自然月（每月1日至月末）领取，每个账号每月标准或精品二选一，升级或重新开通不重复领取，未领不补发。领取时须有有效的年度或终身权益；年度会员用月度续费延长的时段不含礼包。已领字数可累计，在连续会员期内有效，到期后重新开通不恢复旧周期额度。\n' +
-      '5. 终身超级会员的云空间为书籍、字体与书源共用 1GB。下载额度按北京时间自然月计算，每月 1GB，每月1日零点重置，未用额度不结转。\n' +
+      '5. 终身超级会员的云空间为书籍、字体与同步配置共用 1GB。下载额度按北京时间自然月计算，每月 1GB，每月1日零点重置，未用额度不结转。\n' +
       '6. 发生内购退款形成欠款时，会员权益暂停，补齐后恢复。\n' +
       '7. 自定义主题方案上限：普通用户 5 套、月度会员 10 套、年度会员 20 套、终身会员 50 套、终身超级会员 100 套。会员到期、退出登录或权益降级后，已有方案保留并可继续编辑使用，达到当前上限时不能新增。\n' +
       '8. 主题分享（Beta）：有效会员可以导出、导入自定义主题包。主题包不包含也不转让任何主题的使用权，导入方尚未获得的主题部件显示为默认样式；会员到期后已导入的方案保留，但不能再导出或导入。';
@@ -1365,11 +1396,11 @@ struct AccountCenterPage {
   }
 
   memberCardBenefits(): string {
-    if (!this.membershipSku) return '会员主题库 · 朗读礼包 · 在线朗读优先 · 书源同步';
+    if (!this.membershipSku) return '会员主题库 · 朗读礼包 · 在线朗读优先';
     const items: string[] = ['会员主题库'];
     if (this.isSuperMember()) items.push('专属主题');
     if (MembershipGiftRules.included(this.membership, this.membershipSku)) items.push('每月朗读礼包');
-    items.push('在线朗读优先', '书源同步');
+    items.push('在线朗读优先');
     if (this.isSuperMember()) items.push('1GB 云空间');
     return items.join(' · ');
   }
@@ -1403,15 +1434,18 @@ struct AccountCenterPage {
       new BenefitCompareRow('主题分享 Beta', '导出、导入 .qytheme 主题包', ['—', '✓', '✓', '✓', '✓']),
       new BenefitCompareRow('有效期', '不自动续费', ['—', '1 个月', '12 个月', '永久', '永久'])
     ];
-    if (limits) {
-      rows.push(new BenefitCompareRow('书源同步数量', '', ['50 个', '500 个', '500 个', '500 个', '不限']));
+    // 配置同步的额度只是云同步的容量说明，不作为会员卖点；没开启网页解析的用户用不到，不列出。
+    if (WebParseSettingsStore.enabled()) {
+      if (limits) {
+        rows.push(new BenefitCompareRow('配置同步数量', '', ['50 个', '500 个', '500 个', '500 个', '不限']));
+      }
+      rows.push(new BenefitCompareRow('单个配置大小', '云同步上限',
+        limits ? ['50KB', '512KB', '512KB', '512KB', '960KB'] : ['512KB', '512KB', '512KB', '512KB', '960KB']));
     }
-    rows.push(new BenefitCompareRow('单个书源大小', '云同步上限',
-      limits ? ['50KB', '512KB', '512KB', '512KB', '960KB'] : ['512KB', '512KB', '512KB', '512KB', '960KB']));
     rows.push(new BenefitCompareRow('动态头像', 'GIF / WebP 动图', ['—', '—', '—', '✓', '✓']));
     rows.push(new BenefitCompareRow('上传字体云端同步', '导入即上传，换机可选', ['—', '—', '—', '—', '✓']));
     rows.push(new BenefitCompareRow('本地书籍云端同步', '加入书架即上传', ['—', '—', '—', '—', '✓']));
-    rows.push(new BenefitCompareRow('云端空间', '书籍、字体与书源共用', ['—', '—', '—', '—', '1GB']));
+    rows.push(new BenefitCompareRow('云端空间', '书籍、字体等文件共用', ['—', '—', '—', '—', '1GB']));
     rows.push(new BenefitCompareRow('每月下载额度', '云空间下载', ['—', '—', '—', '—', '1GB']));
     return rows;
   }
@@ -1579,7 +1613,7 @@ struct AccountCenterPage {
       .width('100%')
       .alignItems(VerticalAlign.Top)
 
-      Text('超级会员的书源与云文件共用 1GB；单个书源 960KB 为技术上限。单独售卖的主题不在会员主题库内。')
+      Text('超级会员的同步配置与云文件共用 1GB；单个配置 960KB 为技术上限。单独售卖的主题不在会员主题库内。')
         .fontSize(AppFontSize.MICRO)
         .lineHeight(15)
         .fontColor(this.subTextColor())
@@ -1745,7 +1779,7 @@ struct AccountCenterPage {
     Column() {
       // 云空间是终身超级会员权益，有空间时在这里直达，不必再绕到我的权益页。
       if (this.isSuperMember()) {
-        this.serviceRow($r('sys.symbol.folder'), '我的云空间', '书籍、字体与书源的云端存储', true, () => {
+        this.serviceRow($r('sys.symbol.folder'), '我的云空间', '书籍与字体的云端存储', true, () => {
           router.pushUrl({ url: 'pages/CloudFiles' });
         })
       }
@@ -2201,6 +2235,7 @@ struct AccountCenterPage {
           }
         }, (product: RechargeProduct) => product.productId)
       }
+      .scrollBar(BarState.Off)
       .columnsTemplate(this.rechargeColumnsTemplate())
       .columnsGap(AppSpacing.MD)
       .rowsGap(AppSpacing.MD)
@@ -2216,6 +2251,15 @@ struct AccountCenterPage {
 
   @Builder
   accountActions() {
+    Column() {
+      this.serviceRow($r('sys.symbol.checkmark_shield'), '登录与账号安全', '华为账号、用户名密码、恢复码与注销', false, () => {
+        router.pushUrl({ url: 'pages/AccountSecurity' });
+      })
+    }
+    .width('100%')
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
     Text('退出登录')
       .width('100%')
       .height(48)
@@ -2242,6 +2286,24 @@ struct AccountCenterPage {
         .fontColor(this.subTextColor())
         .lineHeight(22)
         .width('100%')
+      Row() {
+        Text('不用华为账号？用用户名登录或注册')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.accentColor())
+          .layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(16)
+          .fontColor([this.accentColor()])
+      }
+      .width('100%')
+      .padding({ top: AppSpacing.XS })
+      .onClick(() => {
+        if (!AccountCommerceConfig.isServerConfigured()) {
+          HdsFeedback.showToast('请先配置账号服务端地址');
+          return;
+        }
+        router.pushUrl({ url: 'pages/AccountPasswordLogin' });
+      })
     }
     .width('100%')
     .padding(AppSpacing.XL)
@@ -2261,7 +2323,7 @@ struct AccountCenterPage {
         .borderRadius(ThemeRuntime.mediumRadius())
         .backgroundColor(this.appDarkMode ? '#332216' : '#FFF3E8')
     } else {
-      Text('登录和购买表示你同意应用的用户协议、隐私政策与点数服务规则。登录时会获取华为账号的昵称和头像作为默认资料，昵称和头像保存到账号服务端并随账号同步；点数仅用于本应用数字内容，不支持转让或提现。')
+      Text('登录和购买表示你同意应用的用户协议、隐私政策与点数服务规则。华为账号登录时会获取昵称和头像作为默认资料，用户名注册只保存用户名和加密后的密码；昵称和头像保存到账号服务端并随账号同步；点数仅用于本应用数字内容，不支持转让或提现。')
         .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor())
         .lineHeight(17)

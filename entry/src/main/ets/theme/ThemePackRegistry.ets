@@ -3,11 +3,49 @@ import {
   packageIdOfThemeId,
   packReaderBackgroundId,
   packThemeId,
+  findImageCrop,
+  findShelfBackdrop,
+  normalizeOrnamentScale,
+  shelfBackdropFor,
+  ThemeImageCrop,
+  ThemePackageBubbleSlice,
+  BubbleFrameBreak,
+  BubbleFrameRepeat,
+  bubbleFrameSliceOrDefault,
+  bubbleFor,
+  normalizeCommentBubble,
+  commentBubbleFor,
+  COMMENT_IMAGE_NONE,
+  isPackTitleBubbleStyle,
+  packTitleBubbleStyleId,
+  titleBubbleFor,
+  chapterHeadFor,
+  ThemePackageBubble,
   ThemePackageCredits,
   ThemePackageParts,
-  ThemePackageVariantParts
+  ThemePackageShelfBackdrop,
+  ThemePackageVariantParts,
+  NAVIGATION_ICON_KEYS
 } from './share/ThemePackageFormat';
 import { ThemePack, ThemeVariant } from './ThemeModels';
+import { ImageFileSize } from '../utils/ImageFileSize';
+
+/** 带显示区域的素材位，见 ThemePackRegistry.imageCrop。 */
+export class ThemeImageSlots {
+  static readonly COVER: string = 'cover';
+  static readonly FOLDER: string = 'folder';
+  static readonly BACKDROP: string = 'backdrop';
+}
+
+/** 正文要画的气泡边框：素材地址与已换成具体值的拉伸设置（缺省都已补上）。 */
+export class ResolvedBubbleFrame {
+  asset: string = '';
+  aspect: number = 3;
+  slice: ThemePackageBubbleSlice = new ThemePackageBubbleSlice();
+  round: boolean = false;
+  cut: boolean = false;
+  tint: boolean = false;
+}
 
 /** 安装在本机的主题包落盘记录（theme_packs/<packageId>/pack.json）：素材引用是包目录下的相对路径。 */
 export class ThemePackRecord {
@@ -22,6 +60,10 @@ export class ThemePackRecord {
   parts: ThemePackageParts = new ThemePackageParts();
   // 只在本机：编辑器逐个上传导航图标时，没传的页签用这套内置图标（第一次上传时导航来源主题的图标）。
   navFallbackIconPackId: string = '';
+  // 只在本机：编辑器只给某种书架布局传了背景、没传通用首页背景时，通用那张继续用这套内置主题的
+  // （上传时“首页背景”来源所选的主题），浅色、深色各记各的。
+  homeBackdropFallbackLight: string = '';
+  homeBackdropFallbackDark: string = '';
 }
 
 export class InstalledThemePackReader {
@@ -31,6 +73,9 @@ export class InstalledThemePackReader {
   trailing: string = '';
   image: string = '';
   imageFit: string = 'cover';
+  // 左上、右下角饰各自的显示大小倍数（0.5–2）。
+  leadingScale: number = 1;
+  trailingScale: number = 1;
 }
 
 export class InstalledThemePackTtsPanel {
@@ -38,6 +83,27 @@ export class InstalledThemePackTtsPanel {
   skyColor: string = '';
   surfaceColor: string = '';
   glowColor: string = '';
+}
+
+/** 某个模式下的包内气泡：素材已换成本机地址，端饰、边框已按 bubbleFor 补上另一种模式的。 */
+export class InstalledThemePackBubble {
+  frame: string = '';
+  cap: string = '';
+  // 边框的拉伸设置，原样来自所属那张边框（见 ThemePackageBubble）。
+  frameSlice: ThemePackageBubbleSlice | null = null;
+  frameRepeat: string = '';
+  frameBreak: string = '';
+  frameTint: boolean = false;
+  private aspectValue: number = 0;
+
+  /** 边框原图的宽 / 高，读不出来时按 3:1；第一次用到时才读文件头。 */
+  frameAspect(): number {
+    if (this.aspectValue <= 0 && this.frame) {
+      const aspect = ImageFileSize.aspect(this.frame);
+      this.aspectValue = aspect > 0 ? aspect : 3;
+    }
+    return this.aspectValue;
+  }
 }
 
 export class InstalledThemePackStartup {
@@ -75,17 +141,40 @@ export class InstalledThemePack {
   navListenSelected: string = '';
   navFootprintSelected: string = '';
   navHideLabels: boolean = false;
+  // 深色模式单独的图标（键同 NAVIGATION_ICON_KEYS），没给的沿用上面那些。
+  navDark: Map<string, string> = new Map<string, string>();
   // 编辑器逐个上传导航图标时可能只有几张：缺的页签用基底主题的这套图标。
   navFallbackIconPackId: string = '';
   covers: string[] = [];
+  // 深色模式单独的一套封面；空着时深色也用 covers。
+  coversDark: string[] = [];
   shelfFrame: string = '';
+  // 深色模式单独的书架边框；空着时深色也用 shelfFrame。
+  shelfFrameDark: string = '';
   shelfFolder: string = '';
+  // 深色模式单独的文件夹插画；空着时深色也用 shelfFolder。
+  shelfFolderDark: string = '';
   startupLight: InstalledThemePackStartup | null = null;
   startupDark: InstalledThemePackStartup | null = null;
-  bubbleFrame: string = '';
-  bubbleCap: string = '';
+  bubbleLight: InstalledThemePackBubble = new InstalledThemePackBubble();
+  bubbleDark: InstalledThemePackBubble = new InstalledThemePackBubble();
+  // 标题强调用的端饰与边框，按 titleBubbleFor 补齐两种模式。
+  titleBubbleLight: InstalledThemePackBubble = new InstalledThemePackBubble();
+  titleBubbleDark: InstalledThemePackBubble = new InstalledThemePackBubble();
   homeBackdropLight: string = '';
   homeBackdropDark: string = '';
+  // 按书架布局分别给的背景，素材和区域都已换成本机地址。
+  shelfBackdrops: ThemePackageShelfBackdrop[] = [];
+  // 包里没有通用首页背景时接着用的内置主题（见 ThemePackRecord）。
+  homeBackdropFallbackLight: string = '';
+  homeBackdropFallbackDark: string = '';
+  // 显示区域（动图取景）；image 已换成本机地址，和上面的素材地址对得上。
+  coverCrops: ThemeImageCrop[] = [];
+  coverCropsDark: ThemeImageCrop[] = [];
+  shelfFolderCrop: ThemeImageCrop | null = null;
+  shelfFolderCropDark: ThemeImageCrop | null = null;
+  homeBackdropLightCrop: ThemeImageCrop | null = null;
+  homeBackdropDarkCrop: ThemeImageCrop | null = null;
   logo: string = '';
   preview: string = '';
   appFont: string = '';
@@ -100,12 +189,50 @@ export class InstalledThemePack {
     return !!this.navBookshelf || !!this.navExplore || !!this.navMine || !!this.navListen || !!this.navFootprint;
   }
 
+  /** 端饰和边框有一样就算包内气泡：只有边框时强调文字照样套边框，不画端饰。两种模式的素材互相补齐，看一种就够。 */
   hasBubble(): boolean {
-    return !!this.bubbleCap;
+    return !!this.bubbleLight.cap || !!this.bubbleLight.frame;
+  }
+
+  bubble(darkMode: boolean): InstalledThemePackBubble {
+    return darkMode ? this.bubbleDark : this.bubbleLight;
+  }
+
+  /** 标题气泡（titleBubble）有端饰或边框。 */
+  hasTitleBubble(): boolean {
+    return !!this.titleBubbleLight.cap || !!this.titleBubbleLight.frame;
+  }
+
+  titleBubble(darkMode: boolean): InstalledThemePackBubble {
+    return darkMode ? this.titleBubbleDark : this.titleBubbleLight;
+  }
+
+  /** 气泡样式 pack:<id>:title 用标题气泡，pack:<id> 用强调气泡。 */
+  bubbleForStyle(styleId: string, darkMode: boolean): InstalledThemePackBubble {
+    return isPackTitleBubbleStyle(styleId) ? this.titleBubble(darkMode) : this.bubble(darkMode);
+  }
+
+  hasBubbleForStyle(styleId: string): boolean {
+    return isPackTitleBubbleStyle(styleId) ? this.hasTitleBubble() : this.hasBubble();
+  }
+
+  shelfFrameFor(darkMode: boolean): string {
+    return darkMode ? (this.shelfFrameDark || this.shelfFrame) : (this.shelfFrame || this.shelfFrameDark);
   }
 
   reader(darkMode: boolean): InstalledThemePackReader {
     return darkMode ? this.readerDark : this.readerLight;
+  }
+
+  /** 某个模式下显示的封面：没有深色那套就用 covers，只有深色那套时浅色也用它（同 bookCoversFor）。 */
+  coversFor(darkMode: boolean): string[] {
+    if (darkMode) return this.coversDark.length > 0 ? this.coversDark : this.covers;
+    return this.covers.length > 0 ? this.covers : this.coversDark;
+  }
+
+  /** 某个模式下显示的文件夹插画，规则同封面（同 bookFolderFor）。 */
+  shelfFolderFor(darkMode: boolean): string {
+    return darkMode ? (this.shelfFolderDark || this.shelfFolder) : (this.shelfFolder || this.shelfFolderDark);
   }
 
   startup(darkMode: boolean): InstalledThemePackStartup | null {
@@ -114,6 +241,21 @@ export class InstalledThemePack {
 
   homeBackdrop(darkMode: boolean): string {
     return darkMode ? this.homeBackdropDark : this.homeBackdropLight;
+  }
+
+  /** 某种书架布局专属的背景；没有时为空串。 */
+  shelfBackdrop(layout: string, darkMode: boolean): string {
+    return shelfBackdropFor(this.shelfBackdrops, layout, darkMode);
+  }
+
+  hasShelfBackdrop(darkMode: boolean): boolean {
+    return this.shelfBackdrops.some((item: ThemePackageShelfBackdrop): boolean => !!(darkMode ? item.dark : item.light));
+  }
+
+  /** 包里没有通用首页背景时接着用哪套内置主题的；没记或包里有通用那张时为空串。 */
+  homeBackdropFallback(darkMode: boolean): string {
+    if (this.homeBackdrop(darkMode)) return '';
+    return darkMode ? this.homeBackdropFallbackDark : this.homeBackdropFallbackLight;
   }
 
   ttsPanel(darkMode: boolean): InstalledThemePackTtsPanel | null {
@@ -138,6 +280,25 @@ export class ThemePackRegistry {
   }
 
   /** 认得 pack:<id> 和 pack:<id>:light 这类带后缀的素材键。 */
+  /**
+   * 气泡样式是主题包且包里有边框时给出正文要画的边框；内置样式的横幅边框不逐行画，返回 null。
+   * pack:<id>:title 取包里的标题气泡。
+   */
+  static bubbleFrame(styleId: string, darkMode: boolean = false): ResolvedBubbleFrame | null {
+    if (!ThemePackRegistry.isPackId(styleId)) return null;
+    const pack = ThemePackRegistry.get(styleId);
+    const bubble = pack ? pack.bubbleForStyle(styleId, darkMode) : null;
+    if (!bubble || !bubble.frame) return null;
+    const frame = new ResolvedBubbleFrame();
+    frame.asset = bubble.frame;
+    frame.aspect = bubble.frameAspect();
+    frame.slice = bubbleFrameSliceOrDefault(bubble.frameSlice, frame.aspect);
+    frame.round = bubble.frameRepeat === BubbleFrameRepeat.ROUND;
+    frame.cut = bubble.frameBreak === BubbleFrameBreak.CUT;
+    frame.tint = bubble.frameTint;
+    return frame;
+  }
+
   static get(themeId: string): InstalledThemePack | null {
     const packageId = packageIdOfThemeId(themeId);
     return packageId ? (ThemePackRegistry.packs.get(packageId) || null) : null;
@@ -173,6 +334,58 @@ export class ThemePackRegistry {
     ThemePackRegistry.bump();
   }
 
+  /**
+   * 已安装主题包里某张图的显示区域。slot 是 ThemeImageSlots 之一，src 是素材的本机地址；没有区域时返回 null。
+   * 首页背景两种模式可能用同一张图、各取各的区域，优先取 darkMode 对应的那条。
+   */
+  static imageCrop(slot: string, src: string, darkMode: boolean = false, shelfLayout: string = ''): ThemeImageCrop | null {
+    if (!src) return null;
+    let found: ThemeImageCrop | null = null;
+    ThemePackRegistry.packs.forEach((pack: InstalledThemePack) => {
+      if (found) return;
+      // 书架页按布局取的背景：同一张图可以既是通用背景又是某个布局的专属图，先看这个布局自己记的区域。
+      if (slot === ThemeImageSlots.BACKDROP && shelfLayout) {
+        const item = findShelfBackdrop(pack.shelfBackdrops, shelfLayout);
+        const own = item ? (darkMode ? item.darkCrop : item.lightCrop) : null;
+        if (item && (darkMode ? item.dark : item.light) === src) {
+          found = own && own.image === src ? own : null;
+          return;
+        }
+      }
+      if (slot === ThemeImageSlots.COVER) {
+        // 同一张图可以同时在浅色和深色两套封面里，各取各的区域。
+        found = findImageCrop(darkMode ? pack.coverCropsDark : pack.coverCrops, src) ||
+          findImageCrop(darkMode ? pack.coverCrops : pack.coverCropsDark, src);
+      } else if (slot === ThemeImageSlots.FOLDER) {
+        const first = darkMode ? pack.shelfFolderCropDark : pack.shelfFolderCrop;
+        const second = darkMode ? pack.shelfFolderCrop : pack.shelfFolderCropDark;
+        if (first && first.image === src) found = first;
+        else if (second && second.image === src) found = second;
+      } else if (slot === ThemeImageSlots.BACKDROP) {
+        const first = darkMode ? pack.homeBackdropDarkCrop : pack.homeBackdropLightCrop;
+        const second = darkMode ? pack.homeBackdropLightCrop : pack.homeBackdropDarkCrop;
+        if (first && first.image === src) found = first;
+        else if (second && second.image === src) found = second;
+      }
+    });
+    return found;
+  }
+
+  private static resolveCrop(crop: ThemeImageCrop | null, uri: (value: string) => string): ThemeImageCrop | null {
+    if (!crop) return null;
+    const image = uri(crop.image);
+    if (!image) return null;
+    const resolved = new ThemeImageCrop();
+    resolved.image = image;
+    resolved.x = crop.x;
+    resolved.y = crop.y;
+    resolved.width = crop.width;
+    resolved.height = crop.height;
+    resolved.imageWidth = crop.imageWidth;
+    resolved.imageHeight = crop.imageHeight;
+    return resolved;
+  }
+
   private static bump(): void {
     AppStorage.setOrCreate(ThemePackRegistry.STORAGE_REVISION,
       (AppStorage.get<number>(ThemePackRegistry.STORAGE_REVISION) || 0) + 1);
@@ -205,6 +418,10 @@ export class ThemePackRegistry {
 
     ThemePackRegistry.applyVariant(pack.light, parts.light, installed.readerLight, record.packageId, false, uri);
     ThemePackRegistry.applyVariant(pack.dark, parts.dark, installed.readerDark, record.packageId, true, uri);
+    ThemePackRegistry.applyCommentBubble(pack.light, parts, false, uri);
+    ThemePackRegistry.applyCommentBubble(pack.dark, parts, true, uri);
+    ThemePackRegistry.applyChapterHead(pack.light, parts, false, uri);
+    ThemePackRegistry.applyChapterHead(pack.dark, parts, true, uri);
 
     if (parts.ttsPanelLight) {
       installed.ttsLight = new InstalledThemePackTtsPanel();
@@ -232,6 +449,14 @@ export class ThemePackRegistry {
       installed.navListenSelected = uri(parts.navigation.listenSelected || '');
       installed.navFootprintSelected = uri(parts.navigation.footprintSelected || '');
       installed.navHideLabels = parts.navigation.labels === 'hidden';
+      // 本机旧版记录里没有深色图标。
+      const navigationDark = parts.navigationDark ? parts.navigationDark as Object as Record<string, string> : null;
+      if (navigationDark) {
+        for (const key of NAVIGATION_ICON_KEYS) {
+          const resolved = uri(navigationDark[key] || '');
+          if (resolved) installed.navDark.set(key, resolved);
+        }
+      }
       installed.navFallbackIconPackId = record.navFallbackIconPackId || pack.navigation.iconPackId;
       if (installed.hasAnyNavigation()) pack.navigation.iconPackId = themeId;
     }
@@ -241,10 +466,29 @@ export class ThemePackRegistry {
         if (resolved) installed.covers.push(resolved);
       }
       installed.shelfFrame = uri(parts.book.shelfFrame);
+      installed.shelfFrameDark = uri(parts.book.shelfFrameDark || '');
       installed.shelfFolder = uri(parts.book.shelfFolder);
-      if (installed.covers.length > 0) pack.book.coverAssetId = themeId;
-      if (installed.shelfFrame) pack.book.shelfFrameAssetId = themeId;
-      if (installed.shelfFolder) pack.book.shelfFolderAssetId = themeId;
+      for (const cover of parts.book.covers) {
+        const crop = ThemePackRegistry.resolveCrop(findImageCrop(parts.book.coverCrops, cover), uri);
+        if (crop) installed.coverCrops.push(crop);
+      }
+      // 本机旧版记录里没有深色封面字段。
+      for (const cover of parts.book.coversDark || []) {
+        const resolved = uri(cover);
+        if (resolved) installed.coversDark.push(resolved);
+        const crop = ThemePackRegistry.resolveCrop(findImageCrop(parts.book.coverCropsDark, cover), uri);
+        if (crop) installed.coverCropsDark.push(crop);
+      }
+      installed.shelfFolderCrop = parts.book.shelfFolderCrop && parts.book.shelfFolderCrop.image === parts.book.shelfFolder ?
+        ThemePackRegistry.resolveCrop(parts.book.shelfFolderCrop, uri) : null;
+      // 本机旧版记录里没有深色文件夹插画字段。
+      installed.shelfFolderDark = uri(parts.book.shelfFolderDark || '');
+      const folderCropDark = parts.book.shelfFolderCropDark;
+      installed.shelfFolderCropDark = folderCropDark && folderCropDark.image === parts.book.shelfFolderDark ?
+        ThemePackRegistry.resolveCrop(folderCropDark, uri) : null;
+      if (installed.coversFor(false).length > 0) pack.book.coverAssetId = themeId;
+      if (installed.shelfFrameFor(false)) pack.book.shelfFrameAssetId = themeId;
+      if (installed.shelfFolderFor(false)) pack.book.shelfFolderAssetId = themeId;
     }
     if (parts.startupLight) {
       installed.startupLight = new InstalledThemePackStartup();
@@ -259,17 +503,44 @@ export class ThemePackRegistry {
       installed.startupDark.subtitle = parts.startupDark.subtitle;
     }
     if (installed.startupLight || installed.startupDark) pack.startup.styleId = themeId;
-    if (parts.bubble) {
-      installed.bubbleFrame = uri(parts.bubble.frame);
-      installed.bubbleCap = uri(parts.bubble.cap);
-      if (installed.hasBubble()) {
-        pack.light.regexEmphasis.bubbleStyle = themeId;
-        pack.dark.regexEmphasis.bubbleStyle = themeId;
+    // 本机旧版记录里没有深色气泡和拉伸设置字段，bubbleFor 都按缺省补齐。
+    installed.bubbleLight = ThemePackRegistry.resolveBubble(bubbleFor(parts, false), uri);
+    installed.bubbleDark = ThemePackRegistry.resolveBubble(bubbleFor(parts, true), uri);
+    installed.titleBubbleLight = ThemePackRegistry.resolveBubble(titleBubbleFor(parts, false), uri);
+    installed.titleBubbleDark = ThemePackRegistry.resolveBubble(titleBubbleFor(parts, true), uri);
+    // 包里有标题气泡、标题强调又没指定样式时用它。
+    if (installed.hasTitleBubble()) {
+      for (const variant of [pack.light, pack.dark]) {
+        if (!variant.regexEmphasis.title.bubbleStyle) variant.regexEmphasis.title.bubbleStyle = packTitleBubbleStyleId(themeId);
       }
+    }
+    if (installed.hasBubble()) {
+      pack.light.regexEmphasis.bubbleStyle = themeId;
+      pack.dark.regexEmphasis.bubbleStyle = themeId;
     }
     // 本机旧版记录里没有这两个字段。
     installed.homeBackdropLight = uri(parts.homeBackdropLight || '');
     installed.homeBackdropDark = uri(parts.homeBackdropDark || '');
+    const lightCrop = parts.homeBackdropLightCrop || null;
+    const darkCrop = parts.homeBackdropDarkCrop || null;
+    installed.homeBackdropLightCrop = lightCrop && lightCrop.image === parts.homeBackdropLight ?
+      ThemePackRegistry.resolveCrop(lightCrop, uri) : null;
+    installed.homeBackdropDarkCrop = darkCrop && darkCrop.image === parts.homeBackdropDark ?
+      ThemePackRegistry.resolveCrop(darkCrop, uri) : null;
+    // 本机旧版记录里没有按布局的背景。
+    for (const item of parts.shelfBackdrops || []) {
+      const resolved = new ThemePackageShelfBackdrop();
+      resolved.layout = item.layout;
+      resolved.light = uri(item.light || '');
+      resolved.dark = uri(item.dark || '');
+      resolved.lightCrop = item.lightCrop && item.lightCrop.image === item.light ?
+        ThemePackRegistry.resolveCrop(item.lightCrop, uri) : null;
+      resolved.darkCrop = item.darkCrop && item.darkCrop.image === item.dark ?
+        ThemePackRegistry.resolveCrop(item.darkCrop, uri) : null;
+      if (resolved.light || resolved.dark) installed.shelfBackdrops.push(resolved);
+    }
+    installed.homeBackdropFallbackLight = record.homeBackdropFallbackLight || '';
+    installed.homeBackdropFallbackDark = record.homeBackdropFallbackDark || '';
     installed.logo = uri(parts.logo);
     installed.preview = uri(parts.preview);
     installed.appFont = uri(parts.appFont);
@@ -285,6 +556,21 @@ export class ThemePackRegistry {
     }
     installed.pack = pack;
     return installed;
+  }
+
+  private static resolveBubble(source: ThemePackageBubble | null,
+    uri: (value: string) => string): InstalledThemePackBubble {
+    const bubble = new InstalledThemePackBubble();
+    if (!source) return bubble;
+    bubble.cap = uri(source.cap || '');
+    bubble.frame = uri(source.frame || '');
+    if (bubble.frame) {
+      bubble.frameSlice = source.frameSlice || null;
+      bubble.frameRepeat = source.frameRepeat || '';
+      bubble.frameBreak = source.frameBreak || '';
+      bubble.frameTint = source.frameTint === true;
+    }
+    return bubble;
   }
 
   private static applyVariant(variant: ThemeVariant, source: ThemePackageVariantParts | null,
@@ -315,6 +601,8 @@ export class ThemePackRegistry {
       reader.trailing = uri(readerParts.trailing || '');
       reader.image = uri(readerParts.image || '');
       reader.imageFit = readerParts.imageFit || 'cover';
+      reader.leadingScale = normalizeOrnamentScale(readerParts.leadingScale);
+      reader.trailingScale = normalizeOrnamentScale(readerParts.trailingScale);
       if (mode === 'none') {
         variant.reader.backgroundAssetId = '';
       } else if (mode === 'ornaments' || mode === 'image') {
@@ -329,5 +617,36 @@ export class ThemePackRegistry {
       if (emphasis.color) variant.regexEmphasis.emphasisColor = emphasis.color;
       if (emphasis.textColor) variant.regexEmphasis.emphasisTextColor = emphasis.textColor;
     }
+    // 包写了标题强调就整组换成包的（没写的字段为空，不沿用基底主题）；本机旧记录里没有。
+    const title = source.titleEmphasis;
+    if (title) {
+      variant.regexEmphasis.title.mode = title.mode || '';
+      variant.regexEmphasis.title.bubbleStyle = title.bubbleStyle || '';
+      variant.regexEmphasis.title.color = title.color || '';
+      variant.regexEmphasis.title.textColor = title.textColor || '';
+    }
+  }
+
+  /**
+   * 段评设置按模式取（气泡图、角标图只给了一种模式时两种都用，见 commentBubbleFor），素材换成本机 URI。
+   * 本机旧版记录里没有这一节，这时沿用基底主题的。
+   */
+  private static applyCommentBubble(variant: ThemeVariant, parts: ThemePackageParts, darkMode: boolean,
+    uri: (value: string) => string): void {
+    const comment = commentBubbleFor(parts, darkMode);
+    if (!comment) return;
+    if (comment.image && comment.image !== COMMENT_IMAGE_NONE) comment.image = uri(comment.image);
+    comment.ornamentImage = uri(comment.ornamentImage);
+    variant.regexEmphasis.commentBubble = normalizeCommentBubble(comment);
+  }
+
+  /** 章首装饰按模式取（饰图只给了一种模式时两种都用，见 chapterHeadFor），素材换成本机 URI。 */
+  private static applyChapterHead(variant: ThemeVariant, parts: ThemePackageParts, darkMode: boolean,
+    uri: (value: string) => string): void {
+    const head = chapterHeadFor(parts, darkMode);
+    if (!head) return;
+    head.image = uri(head.image);
+    head.dropCapImage = uri(head.dropCapImage);
+    variant.regexEmphasis.chapterHead = head;
   }
 }

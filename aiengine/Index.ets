@@ -16,3 +16,4 @@ export { ChineseTaiwanConversion, ChineseTaiwanConverter } from './src/main/ets/
 export { TextTranslator } from './src/main/ets/core/reader/TextTranslator';
 export { ComicColorModels, ComicColorResult, ComicColorizer } from './src/main/ets/core/reader/ComicColorizer';
 export { ComicColorCandidate, ReaderComicColorSession } from './src/main/ets/core/reader/ReaderComicColorSession';
+export { FaceEyeLandmarks, FaceEyeMetrics, FaceEyeSample } from './src/main/ets/core/reader/FaceEyeLandmarks';

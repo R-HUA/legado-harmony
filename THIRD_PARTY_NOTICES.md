@@ -49,6 +49,13 @@
 
 `aiengine/` 中的漫画文字识别与超分代码来自 qingye-reader 提交 `8a783195b0da9191742e41f32086d084017439c3`（GPL-3.0），按 GPL-3.0 再分发，来源与改动见 [aiengine/NOTICE.md](aiengine/NOTICE.md)。本构建不包含上游的漫画着色模型（Manga-Colorizer / AlacGAN）。
 
+## MediaPipe 人脸关键点模型
+
+- 上游：MediaPipe Face Landmarker v1（float16），作者：The MediaPipe Authors
+- 许可证：Apache-2.0
+- 用途：转换为 MindSpore Lite 格式，在设备上估计视线方向，用于眼动翻页；相机画面只在本机处理。
+- 来源、转换参数与 SHA-256 见 [model.json](harmony-book-ai-engine/aiengine/src/main/resources/rawfile/face-landmarks/model.json)，声明见 [LICENSE](harmony-book-ai-engine/aiengine/src/main/resources/rawfile/face-landmarks/LICENSE)，由 AI HAR 合并到 HAP。
+
 ## 完整许可文本
 
 为确保源码和二进制发行均携带必要声明，MIT 与 Apache-2.0 的完整许可文本统一存放于：

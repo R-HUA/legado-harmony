@@ -18,6 +18,7 @@ const reportedErrors = [];
 const sandbox = vm.createContext({ console: { ...console, error: (...args) => reportedErrors.push(args) }, px2vp: n => n / 2,
   setTimeout: fn => { timers.set(++timerId, fn); return timerId; }, clearTimeout: id => timers.delete(id),
   ReaderTitleStyleCodec: { decode: () => ({}) },
+  ReaderTextRuling: { stamp: spec => spec ? 'on' : 'off' },
   ReaderV2DocumentParser: { parse: chunk => ({ chunk }) },
   ReaderV2Paginator: { layoutContinuousAsync: (document, snapshot, valid) => {
     // The fourth parameter is the validity callback in the production signature.
@@ -33,7 +34,8 @@ sandbox.ReaderV2Paginator.layoutContinuousAsync = (document, snapshot, styles, v
 };
 const names = ['readerContinuousV2Request', 'readerContinuousV2State', 'readerContinuousV2Layout',
   'queueReaderContinuousLayout', 'scheduleReaderContinuousLayout', 'runReaderContinuousLayout',
-  'pruneReaderContinuousLayouts', 'warmReaderContinuousLayouts', 'cancelReaderContinuousLayouts', 'updatePagedReaderArea'];
+  'pruneReaderContinuousLayouts', 'warmReaderContinuousLayouts', 'cancelReaderContinuousLayouts', 'updatePagedReaderArea',
+  'readerAnnotationStamp', 'decorateReaderV2Page'];
 vm.runInContext(stripTypeScriptTypes(requestSource.replace(/^import .*;\r?\n/gm, '')
   .replace(/^@Observed\r?\n/gm, '').replace(/^export /gm, '') +
   `\nclass Reader { ${names.map(method).join('\n')} }; globalThis.Reader = Reader;`), sandbox);
@@ -47,11 +49,13 @@ function fixture() {
     readerContinuousLayoutRequests: new Map(), readerContinuousLayoutQueue: [],
     readerContinuousV2Layouts: new Map(), readerContinuousV2Documents: new Map(),
     readerContinuousV2Sources: new Map(), readerContinuousV2Controllers: new Map(), readerPageVisible: true,
+    readerAnnotations: [], readerAnnotationVersion: 0, readerAnnotationShowNoteDot: false,
+    readerTextRulingSpec: () => null,
     sourceText: 'chapter', usesReaderContinuousV2: () => true,
     readerContinuousChapterOf: n => n < 0 ? 0 : n, readerContinuousV2ChunkText: (_index, text) => text,
     readerContinuousV2ChunkStart: index => index * 1800, readerContinuousSourceOf() { return this.sourceText; },
     readerContinuousEndsOf: () => new Array(100), hashText: s => s, readerPaginationSourceHash: s => s,
-    buildReaderV2Snapshot: () => { snapshotCalls++; return snapshot; }, readerV2HeadingHints: () => [], getChapterTitle: () => '', readerLayoutChapterTitle: () => '',
+    buildReaderV2Snapshot: () => { snapshotCalls++; return snapshot; }, readerV2HeadingHints: () => [], readerCommentDisplay: () => null, getChapterTitle: () => '', readerLayoutChapterTitle: () => '',
     buildReaderV2RegexStyles: () => [], toMeasureNonNegativePx: n => n * 2,
     readerComicPageDataSource: { itemAt: n => n === 0 ?
       { chapterIndex: 0, pageIndex: 0, text: 'first', isPage: () => true } : null },

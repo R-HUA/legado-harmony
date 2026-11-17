@@ -29,6 +29,33 @@ export class ReaderV2Rect {
   }
 }
 
+/** 章首装饰：章节标题旁的主题饰图，和分段标题第一段的颜色。image 为空时不画饰图。 */
+export class ReaderV2ChapterHeadStyle {
+  /** 饰图文件（沙箱路径或 file:// URI）。 */
+  image: string = '';
+  /** 原图宽 / 高。 */
+  aspect: number = 1;
+  /** 'side'（贴版心左边、上下居中于整组标题）、'top'、'bottom'（单独占一行，跟着标题的对齐方式）。 */
+  placement: string = 'side';
+  /** 0.5–2。 */
+  scale: number = 1;
+  /** 分段标题第一段的颜色（ARGB）；0 表示和标题同色。 */
+  numberColor: number = 0;
+  /** 首字装饰占几行：0 不处理，2 或 3。 */
+  capLines: number = 0;
+  /** 首字底下的印章图文件；空串只放大。 */
+  capImage: string = '';
+  /** 首字颜色（ARGB）；0 表示和正文同色。 */
+  capColor: number = 0;
+  /** 垫印章图时字高占印章边长的比例。 */
+  capRatio: number = 0.62;
+
+  identity(): string {
+    return `${this.image}_${Math.round(this.aspect * 1000)}_${this.placement}_${this.scale}_${this.numberColor}_` +
+      `${this.capLines}_${this.capImage}_${this.capColor}_${this.capRatio}`;
+  }
+}
+
 export class ReaderV2LayoutInput {
   viewportWidthPx: number = 0;
   viewportHeightPx: number = 0;
@@ -52,6 +79,7 @@ export class ReaderV2LayoutInput {
   titleMarginTopPx: number = 0;
   titleMarginBottomPx: number = 0;
   titleSinglePage: boolean = false;
+  chapterHead: ReaderV2ChapterHeadStyle = new ReaderV2ChapterHeadStyle();
   lineSpacingPx: number = 0;
   paragraphSpacingPx: number = 0;
   letterSpacingPx: number = 0;
@@ -67,6 +95,16 @@ export class ReaderV2LayoutInput {
   commentHitSlopXPx: number = 16;
   commentHitSlopYPx: number = 12;
   commentsEnabled: boolean = true;
+  /** 热评卡片：0 关闭，1 卡片，2 引文，3 挂件。见 ReaderCommentCardSettings。 */
+  commentCardStyle: number = 0;
+  /** 单独成段的本章说入口画成整宽卡片，与热评卡片样式无关。 */
+  commentChapterCard: boolean = false;
+  /** 每页最多几张段评热评卡，0 不限。 */
+  commentCardMaxPerPage: number = 0;
+  commentCardLines: number = 1;
+  commentCardFontSizePx: number = 30;
+  /** 卡片上“热评”标签的颜色。 */
+  commentCardTagColor: number = 0xFFC4473A;
   regexEnabled: boolean = false;
   /** 图片原始像素按 vp 解释，这里是 1vp 对应的物理像素。 */
   imagePxPerVp: number = 1;
@@ -93,6 +131,7 @@ export class ReaderV2LayoutSnapshot {
   titleMarginTopPx: number = 0;
   titleMarginBottomPx: number = 0;
   titleSinglePage: boolean = false;
+  chapterHead: ReaderV2ChapterHeadStyle = new ReaderV2ChapterHeadStyle();
   lineSpacingPx: number = 0;
   paragraphSpacingPx: number = 0;
   letterSpacingPx: number = 0;
@@ -108,6 +147,12 @@ export class ReaderV2LayoutSnapshot {
   commentHitSlopXPx: number = 16;
   commentHitSlopYPx: number = 12;
   commentsEnabled: boolean = true;
+  commentCardStyle: number = 0;
+  commentChapterCard: boolean = false;
+  commentCardMaxPerPage: number = 0;
+  commentCardLines: number = 1;
+  commentCardFontSizePx: number = 30;
+  commentCardTagColor: number = 0xFFC4473A;
   regexEnabled: boolean = false;
   imagePxPerVp: number = 1;
   imageMinHeightPx: number = 0;
@@ -150,6 +195,7 @@ export class ReaderV2LayoutSnapshot {
     snapshot.titleMarginTopPx = Number.isFinite(input.titleMarginTopPx) ? Math.max(0, input.titleMarginTopPx) : 0;
     snapshot.titleMarginBottomPx = Number.isFinite(input.titleMarginBottomPx) ? Math.max(0, input.titleMarginBottomPx) : 0;
     snapshot.titleSinglePage = input.titleSinglePage === true;
+    snapshot.chapterHead = input.chapterHead || new ReaderV2ChapterHeadStyle();
     snapshot.lineSpacingPx = Math.max(0, input.lineSpacingPx);
     snapshot.paragraphSpacingPx = Math.max(0, input.paragraphSpacingPx);
     snapshot.letterSpacingPx = input.letterSpacingPx;
@@ -164,6 +210,13 @@ export class ReaderV2LayoutSnapshot {
     snapshot.commentHitSlopXPx = Math.max(0, input.commentHitSlopXPx);
     snapshot.commentHitSlopYPx = Math.max(0, input.commentHitSlopYPx);
     snapshot.commentsEnabled = input.commentsEnabled;
+    snapshot.commentCardStyle = input.commentCardStyle >= 0 && input.commentCardStyle <= 3 ?
+      Math.round(input.commentCardStyle) : 0;
+    snapshot.commentChapterCard = input.commentChapterCard === true;
+    snapshot.commentCardMaxPerPage = Math.max(0, Math.round(input.commentCardMaxPerPage));
+    snapshot.commentCardLines = input.commentCardLines === 2 ? 2 : 1;
+    snapshot.commentCardFontSizePx = Math.max(1, input.commentCardFontSizePx);
+    snapshot.commentCardTagColor = input.commentCardTagColor;
     snapshot.regexEnabled = input.regexEnabled;
     snapshot.imagePxPerVp = Math.max(0.01, input.imagePxPerVp);
     snapshot.imageMinHeightPx = Math.max(0, input.imageMinHeightPx);
@@ -178,9 +231,11 @@ export class ReaderV2LayoutSnapshot {
       snapshot.fontSizePx, snapshot.fontWeight, snapshot.titleFontSizePx, snapshot.titleFontWeight, snapshot.lineSpacingPx, snapshot.paragraphSpacingPx,
       snapshot.titleSecondaryScale, snapshot.titleLineGapPx,
       snapshot.titleAlignment, snapshot.titleMarginTopPx, snapshot.titleMarginBottomPx,
-      snapshot.titleSinglePage ? 1 : 0,
+      snapshot.titleSinglePage ? 1 : 0, snapshot.chapterHead.identity(),
       snapshot.letterSpacingPx, snapshot.textAlign, snapshot.noteColor, snapshot.commentFontSizePx, snapshot.commentBubbleSize, snapshot.commentBubble.identity(),
-      snapshot.commentsEnabled ? 1 : 0, snapshot.regexEnabled ? 1 : 0
+      snapshot.commentsEnabled ? 1 : 0, snapshot.regexEnabled ? 1 : 0,
+      snapshot.commentCardStyle, snapshot.commentCardMaxPerPage, snapshot.commentCardLines,
+      snapshot.commentCardFontSizePx, snapshot.commentCardTagColor, snapshot.commentChapterCard ? 1 : 0
     ];
     const rounded = values.map((value: string | number): string =>
       typeof value === 'number' ? `${Math.round(value * 100) / 100}` : value).join('_');

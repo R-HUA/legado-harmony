@@ -261,6 +261,7 @@ struct AboutPage {
           this.noticeText('项目说明', AboutContent.PROJECT_DESCRIPTION)
           this.noticeText('合规说明', AboutContent.COMPLIANCE_NOTICE)
           this.noticeText('使用提醒', AboutContent.USAGE_NOTICE)
+          this.noticeText('版权与投诉', AboutContent.COMPLAINT_NOTICE)
           Text('请仅使用自有、授权或明确允许访问的内容与规则。')
             .fontSize(AppFontSize.CAPTION)
             .fontColor(this.subTextColor())
@@ -453,6 +454,13 @@ struct AboutPage {
           this.closeDialog();
           CommunityGroup.open(this.getUIContext().getHostContext() as common.UIAbilityContext);
         })
+        this.contactRow($r('sys.symbol.doc_text'), '崩溃记录', '闪退、卡死后留下的记录，可分享给开发者', () => {
+          this.closeDialog();
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/CrashReports' }).catch((error: Error) => {
+            console.warn('打开崩溃记录失败:', error);
+            HdsFeedback.showToast('暂时无法打开崩溃记录');
+          });
+        })
       } else {
         Text('GPL-3.0')
           .fontSize(AppFontSize.BODY_LARGE)
@@ -490,7 +498,7 @@ struct AboutPage {
     }
     .width('100%')
     .constraintSize({ maxHeight: Math.max(120, this.viewportHeight * 0.82) })
-    .scrollBar(BarState.Auto)
+    .scrollBar(BarState.Off)
   }
 
   build() {

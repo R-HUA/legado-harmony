@@ -1,6 +1,5 @@
 import { router } from '@kit.ArkUI';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { BookSource } from '@legado/sourceengine';
 import { SearchExploreSettings } from '../../utils/SearchExploreSettingsStore';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { CloudSyncSettingsStore } from '../../account/CloudSyncSettingsStore';
@@ -12,6 +11,7 @@ import { HomeThemeBackdrop } from './HomeThemeBackdrop';
 import { CommunityGroup } from '../../utils/CommunityGroup';
 import { MembershipIcons } from '../../account/MembershipIcons';
 import { AppThemeModeStore } from '../../utils/AppThemeModeStore';
+import { AppColorModeApplier } from '../../utils/AppColorModeApplier';
 import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 
 class ThemeModeOption {
@@ -31,6 +31,9 @@ export struct SettingsPage {
   private scroller: Scroller = new Scroller();
   onHeaderCollapseChange: (progress: number) => void = () => {};
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
+  @StorageProp('readStatsRecording') readStatsRecording: boolean = true;
+  @StorageProp('webParseEnabled') webParseEnabled: boolean = false;
+  @StorageProp('webParseNoticePending') webParseNoticePending: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('accountLoggedIn') accountLoggedIn: boolean = false;
   @StorageLink('accountDisplayName') accountDisplayName: string = '';
@@ -64,8 +67,11 @@ export struct SettingsPage {
 
           Column() {
             this.syncMenuItem()
-            this.menuItem($r('sys.symbol.timer'), '阅读统计', false, () => {
+            this.menuItem($r('sys.symbol.timer'), '阅读统计', true, () => {
               router.pushUrl({ url: 'pages/ReadingStats' });
+            }, this.readStatsRecording ? '' : '已暂停')
+            this.menuItem($r('sys.symbol.star'), '我的标记', false, () => {
+              router.pushUrl({ url: 'pages/BookMarkList' });
             })
           }
           .width('100%')
@@ -74,12 +80,28 @@ export struct SettingsPage {
           .backgroundColor(this.glassCardColor())
 
           Column() {
-            this.menuItem($r('sys.symbol.externaldrive'), '书源管理', true, () => {
-              router.pushUrl({ url: 'pages/BookSource' });
-            })
             this.menuItem($r('sys.symbol.download'), '书籍导入', false, () => {
               router.pushUrl({ url: 'pages/BookImport' });
             })
+          }
+          .width('100%')
+          .borderRadius(ThemeRuntime.largeRadius())
+          .clip(true)
+          .backgroundColor(this.glassCardColor())
+
+          // 在线阅读（网页解析开关）：关闭时只有这一行；开启后书源管理、搜索与发现直接摆在这里。
+          Column() {
+            this.menuItem($r('sys.symbol.worldclock'), '在线阅读', this.webParseEnabled, () => {
+              router.pushUrl({ url: 'pages/WebParseSettings' });
+            }, this.webParseEnabled ? (this.webParseNoticePending ? '待确认须知' : '已开启') : '未开启')
+            if (this.webParseEnabled) {
+              this.menuItem($r('sys.symbol.list_bullet'), '书源管理', true, () => {
+                router.pushUrl({ url: 'pages/BookSource' });
+              })
+              this.menuItem($r('sys.symbol.magnifyingglass'), '搜索与发现', false, () => {
+                router.pushUrl({ url: 'pages/SearchExploreSettings' });
+              })
+            }
           }
           .width('100%')
           .borderRadius(ThemeRuntime.largeRadius())
@@ -93,14 +115,17 @@ export struct SettingsPage {
             this.menuItem($r('sys.symbol.bookshelf'), '书架设置', true, () => {
               router.pushUrl({ url: 'pages/BookshelfSettings' });
             })
-            this.menuItem($r('sys.symbol.magnifyingglass'), '搜索/发现配置', true, () => {
-              router.pushUrl({ url: 'pages/SearchExploreSettings' });
-            })
             this.menuItem($r('sys.symbol.circle_lefthalf_inset_filled'), '主题', true, () => {
               router.pushUrl({ url: 'pages/ThemeSettings' });
             })
-            this.menuItem($r('sys.symbol.gearshape'), '其他设置', false, () => {
+            this.menuItem($r('sys.symbol.paintbrush'), '外观', true, () => {
+              router.pushUrl({ url: 'pages/AppearanceSettings' });
+            })
+            this.menuItem($r('sys.symbol.gearshape'), '其他设置', true, () => {
               router.pushUrl({ url: 'pages/OtherSettings' });
+            })
+            this.menuItem($r('sys.symbol.lightbulb'), '实验室', false, () => {
+              router.pushUrl({ url: 'pages/LabSettings' });
             })
           }
           .width('100%')
@@ -132,6 +157,7 @@ export struct SettingsPage {
         .margin({ left: AppSpacing.XL, right: AppSpacing.XL })
         .justifyContent(FlexAlign.Start)
       }
+      .scrollBar(BarState.Off)
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       .width('100%')
       .height('100%')
@@ -270,15 +296,12 @@ export struct SettingsPage {
     const context = getContext(this) as common.UIAbilityContext;
     const systemDarkMode = context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
     const nextDarkMode = mode === 'dark' || (mode === 'system' && systemDarkMode);
-    const colorMode = mode === 'dark' ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK :
-      (mode === 'light' ? ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT :
-        ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     // 先同步模式来源，setColorMode 触发的配置更新才不会读到旧模式又改回去。
     AppThemeModeStore.applyToStorage(mode);
     if (this.appDarkMode !== nextDarkMode) {
       this.appDarkMode = nextDarkMode;
     }
-    context.getApplicationContext().setColorMode(colorMode);
+    AppColorModeApplier.apply(context, AppColorModeApplier.colorModeFor(mode));
     AppThemeModeStore.save(context, mode).catch((e: Error) => {
       console.warn('保存显示模式失败:', e);
     });
@@ -309,7 +332,7 @@ export struct SettingsPage {
 
         Column({ space: AppSpacing.XS }) {
           Row({ space: AppSpacing.SM }) {
-            Text(this.accountLoggedIn ? this.accountDisplayName : '登录华为账号')
+            Text(this.accountLoggedIn ? this.accountDisplayName : '登录账号')
               .fontSize(AppFontSize.SUBTITLE)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.nameColor())
@@ -437,7 +460,7 @@ export struct SettingsPage {
   }
 
   @Builder
-  menuItem(icon: Resource, title: string, showDivider: boolean, onClick: () => void) {
+  menuItem(icon: Resource, title: string, showDivider: boolean, onClick: () => void, value: string = '') {
     Column() {
       Row() {
         SymbolGlyph(icon)
@@ -450,6 +473,13 @@ export struct SettingsPage {
           .fontColor(this.primaryTextColor())
           .layoutWeight(1)
           .margin({ left: AppSpacing.LG })
+
+        if (value) {
+          Text(value)
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(ThemeRuntime.warningColor(this.appDarkMode))
+            .margin({ right: AppSpacing.XS })
+        }
 
         SymbolGlyph($r('sys.symbol.chevron_right'))
           .fontSize(18)

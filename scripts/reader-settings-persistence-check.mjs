@@ -104,6 +104,7 @@ function openChromePanel(h) {
       readerHeaderEnabled = AppStorage.get('readerHeaderEnabled');
       readerFooterEnabled = AppStorage.get('readerFooterEnabled');
       readerInfoBarConfig = AppStorage.get('readerInfoBarConfig');
+      modeDark = AppStorage.get('appDarkMode') === true;
       options = new Map();
       onChanged = (header, footer, raw) => page.saveReaderChromeSettings(header, footer, raw);
       switchItem(options) { this.options.set(options.title, options); }
@@ -111,7 +112,7 @@ function openChromePanel(h) {
       ${method(source, 'private commit').replace('private ', '')}
       ${method(source, 'private notifyChanged').replace('private ', '')}
       ${method(source, 'private setInfoColor').replace('private ', '')}
-      ${['stepperValue', 'isOffsetStepper', 'isShrinkStepper', 'isOpacityStepper', 'stepperMin',
+      ${['stepperValue', 'isOffsetStepper', 'isShrinkStepper', 'isHeaderInset', 'isLeftInset', 'isOpacityStepper', 'stepperMin',
         'stepperMax', 'stepperText', 'stepBy', 'canStep'].map(name =>
         method(source, `private ${name}`).replace('private ', '')).join('\n')}
       buildOptions() { ${calls.join('\n')} }
@@ -239,9 +240,10 @@ const tests = {
     assert.equal((await h.settings.reload({})).longPressSelectText, false);
     h.values.set('appDarkMode', true);
     assert.equal((await h.settings.reload({})).longPressSelectText, false);
+    // Reading settings are shared by every theme: a legacy profile without the field does not reset it.
     h.disk.set('readerThemeProfileV1_legacy', JSON.stringify({ fontSize: 23 }));
     h.values.set('appThemeId', 'legacy');
-    assert.equal((await h.settings.switchThemeProfile({}, 'classic-blue', 'legacy')).longPressSelectText, true);
+    assert.equal((await h.settings.switchThemeProfile({}, 'classic-blue', 'legacy')).longPressSelectText, false);
     h.values.set('appThemeId', 'classic-blue');
     assert.equal((await h.settings.switchThemeProfile({}, 'legacy', 'classic-blue')).longPressSelectText, false);
     await h.settings.saveReadingInteractionSettings({}, -1, false, true);
@@ -270,34 +272,42 @@ const tests = {
     h.values.set('appThemeId', 'classic-blue');
     assert.equal((await h.settings.switchThemeProfile({}, 'legacy', 'classic-blue')).commentBubbleSize, 175);
   },
-  async 'header and footer colors persist independently and can return to theme defaults'() {
+  async 'header and footer colors persist per light/dark mode and can return to theme defaults'() {
     const h = harness();
     let panel = openChromePanel(h);
     panel.setInfoColor(true, '#ff0011');
     let loaded = h.Config.parse((await h.settings.reload({})).readerInfoBarConfig);
-    assert.equal(loaded.headerColor, '#FF0011');
-    assert.equal(loaded.footerColor, '');
+    assert.equal(loaded.textColor(true, false, '#CCCCCC'), '#FF0011');
+    assert.equal(loaded.textColor(false, false, '#CCCCCC'), '#CCCCCC');
+    assert.equal(loaded.textColor(true, true, '#444444'), '#444444', 'a light-mode color leaves dark mode on the theme');
     panel.setInfoColor(false, '#1122aa');
     loaded = h.Config.parse((await h.settings.reload({})).readerInfoBarConfig);
-    assert.equal(loaded.headerColor, '#FF0011');
-    assert.equal(loaded.footerColor, '#1122AA');
+    assert.equal(loaded.textColor(true, false, '#CCCCCC'), '#FF0011');
+    assert.equal(loaded.textColor(false, false, '#CCCCCC'), '#1122AA');
     h.values.set('appDarkMode', true);
     panel = openChromePanel(h);
-    assert.equal(panel.config().headerColor, '#FF0011');
-    assert.equal(panel.config().footerColor, '#1122AA');
+    assert.equal(panel.config().customColor(true, true), '');
+    panel.setInfoColor(true, '#00ff00');
+    loaded = h.Config.parse((await h.settings.reload({})).readerInfoBarConfig);
+    assert.equal(loaded.textColor(true, true, '#444444'), '#00FF00');
+    assert.equal(loaded.textColor(true, false, '#CCCCCC'), '#FF0011', 'dark-mode edits keep the light color');
     panel.setInfoColor(true, '');
     loaded = h.Config.parse((await h.settings.reload({})).readerInfoBarConfig);
-    assert.equal(loaded.textColor(true, '#CCCCCC'), '#CCCCCC');
-    assert.equal(loaded.footerColor, '#1122AA');
+    assert.equal(loaded.textColor(true, true, '#444444'), '#444444');
+    assert.equal(loaded.textColor(true, false, '#CCCCCC'), '#FF0011');
+    h.values.set('appDarkMode', false);
+    panel = openChromePanel(h);
+    panel.setInfoColor(true, '');
     panel.setInfoColor(false, '');
     loaded = h.Config.parse((await h.settings.reload({})).readerInfoBarConfig);
-    assert.equal(loaded.textColor(false, '#808080'), '#808080');
+    assert.equal(loaded.textColor(true, false, '#CCCCCC'), '#CCCCCC');
+    assert.equal(loaded.textColor(false, false, '#808080'), '#808080');
   },
-  async 'header and footer shrink step independently through zero and persist after reload'() {
+  async 'header and footer side insets step independently through zero and persist after reload'() {
     const h = harness();
     let panel = openChromePanel(h);
-    const header = panel.constructor.STEPPER_HEADER_SHRINK;
-    const footer = panel.constructor.STEPPER_FOOTER_SHRINK;
+    const header = panel.constructor.STEPPER_HEADER_INSET_LEFT;
+    const footer = panel.constructor.STEPPER_FOOTER_INSET_RIGHT;
     for (const field of [header, footer]) {
       assert.equal(panel.stepperValue(field), 0);
       assert.equal(panel.canStep(field, -1), true);
@@ -306,27 +316,31 @@ const tests = {
     panel.stepBy(header, -1);
     panel.stepBy(footer, 1);
     let loaded = h.Config.parse((await h.settings.reload({})).readerInfoBarConfig);
-    assert.equal(loaded.headerShrink, -1);
-    assert.equal(loaded.footerShrink, 1);
+    assert.equal(loaded.headerInsetLeft, -1);
+    assert.equal(loaded.footerInsetRight, 1);
+    assert.equal(loaded.headerInsetRight, 0);
+    assert.equal(loaded.footerInsetLeft, 0);
     panel = openChromePanel(h);
     assert.equal(panel.stepperText(header), '-1');
     assert.equal(panel.stepperText(footer), '1');
     panel.stepBy(header, 1);
     panel.stepBy(header, 1);
     loaded = h.Config.parse((await h.settings.reload({})).readerInfoBarConfig);
-    assert.equal(loaded.headerShrink, 1);
-    assert.equal(loaded.footerShrink, 1);
+    assert.equal(loaded.headerInsetLeft, 1);
+    assert.equal(loaded.footerInsetRight, 1);
+    assert.equal(loaded.headerInsetRight, 0);
+    assert.equal(loaded.footerInsetLeft, 0);
     const extreme = new h.Config();
-    extreme.headerShrink = -350;
-    extreme.footerShrink = 350;
+    extreme.headerInsetLeft = -350;
+    extreme.footerInsetRight = 350;
     panel.commit(extreme);
     assert.equal(panel.canStep(header, -1), false);
     assert.equal(panel.canStep(footer, 1), false);
     panel.stepBy(header, -1);
     panel.stepBy(footer, 1);
     loaded = h.Config.parse((await h.settings.reload({})).readerInfoBarConfig);
-    assert.equal(loaded.headerShrink, -350);
-    assert.equal(loaded.footerShrink, 350);
+    assert.equal(loaded.headerInsetLeft, -350);
+    assert.equal(loaded.footerInsetRight, 350);
   },
   async 'legacy keep-indent switch is ignored when restoring preferences'() {
     for (const keep of [false, true]) {
@@ -505,11 +519,12 @@ const tests = {
     assert.equal(after.lightCustomThemeBackgroundColor, '#112233');
     assert.equal(await h.receive(JSON.stringify(h.sync.toPayload(after))), false);
   },
-  async 'sync payload contains only font rules and themes'() {
+  async 'sync payload contains only font rules, themes and the typography-follows-theme switch'() {
     const h = harness();
     const local = await h.settings.load({});
     const payload = h.sync.toPayload(local);
-    const allowed = ['syncVersion', 'regexFontEnabled', 'regexFontPattern', 'regexFontMode',
+    // typographyFollowsTheme 不在 ReaderSettings 里，由同步协调器另外填入。
+    const allowed = ['syncVersion', 'typographyFollowsTheme', 'regexFontEnabled', 'regexFontPattern', 'regexFontMode',
       'regexFontFamily', 'regexFontSize', 'regexShadowColor', 'regexFontRulesRaw',
       'lightThemeIndex', 'darkThemeIndex', 'lightCustomThemeBackgroundColor', 'lightCustomThemeTextColor',
       'darkCustomThemeBackgroundColor', 'darkCustomThemeTextColor', 'customThemesRaw'];
@@ -626,31 +641,25 @@ const tests = {
     assert.equal(loaded.preloadEnabled, false);
     assert.equal(loaded.readerHeaderEnabled, true);
   },
-  async 'obsidian uses 3D once and preserves subsequent manual choices'() {
+  async 'a theme no longer changes page turning: obsidian keeps the current mode and animation'() {
+    // Page turning is a reading setting shared by every theme, so the former one-time 3D preset is gone.
     const h = harness();
     await h.settings.load({});
-    h.values.set('appThemeId', 'obsidian-archive');
-    let settings = await h.settings.switchThemeProfile({}, 'classic-blue', 'obsidian-archive');
-    assert.equal(settings.pageTurnAnimationType, 7);
-    assert.notEqual(settings.pageTurnMode, 0);
     await h.settings.savePageTurnAnimationType({}, 1);
-    settings = await h.settings.reload({});
-    assert.equal(settings.pageTurnAnimationType, 1);
-    h.values.set('appThemeId', 'classic-blue');
-    settings = await h.settings.switchThemeProfile({}, 'obsidian-archive', 'classic-blue');
-    assert.equal(settings.pageTurnAnimationType, 1);
-  },
-  async 'existing obsidian profile upgrades without altering typography'() {
-    const h = harness();
-    h.disk.set('readerThemeProfileV1_obsidian-archive', JSON.stringify({
-      pageTurnMode: 0, pageTurnAnimationType: 4, fontSize: 27
-    }));
     h.values.set('appThemeId', 'obsidian-archive');
-    const settings = await h.settings.reload({});
-    assert.equal(settings.pageTurnMode, 2);
-    assert.equal(settings.pageTurnAnimationType, 7);
-    assert.equal(settings.fontSize, 27);
-    assert.equal((await h.settings.reload({})).pageTurnAnimationType, 7);
+    const switched = await h.settings.switchThemeProfile({}, 'classic-blue', 'obsidian-archive');
+    assert.equal(switched.pageTurnAnimationType, 1);
+
+    const h2 = harness();
+    h2.disk.set('readerThemeProfileV1_obsidian-archive', JSON.stringify({
+      pageTurnMode: 2, pageTurnAnimationType: 4, fontSize: 27
+    }));
+    h2.values.set('appThemeId', 'obsidian-archive');
+    const reloaded = await h2.settings.reload({});
+    // The theme was reached without switchThemeProfile, so the reading settings come from the settings in use
+    // before (default animation 1) and the typography from the theme profile; nothing turns it into 3D.
+    assert.equal(reloaded.pageTurnAnimationType, 1);
+    assert.equal(reloaded.fontSize, 27);
   },
   async 'theme profiles remain independent after queued saves'() {
     const h = harness();

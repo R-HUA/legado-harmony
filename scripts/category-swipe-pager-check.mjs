@@ -238,6 +238,12 @@ for (const [file, prefix] of [['ExplorePage', 'explore'], ['SearchPage', 'search
   const distance = isSearch ? page.searchCollapsibleHeight() : page.exploreCollapsibleHeight();
   const collapseKey = `${prefix}HeaderCollapse`;
   const value = () => page[`${prefix}HeaderCollapseValue`]();
+  if (isSearch) {
+    // 一条结果都没有时顶栏完整显示；只要别的分类有结果，切到空分类仍保持收起。
+    page[collapseKey] = distance;
+    assert.equal(value(), 0, 'SearchPage: no result list keeps the header expanded');
+    page.displayedSearchResults = [{}];
+  }
   page[collapseKey] = distance;
   assert.equal(value(), distance, `${file}: loading/empty incoming page preserves the collapsed header`);
   const expandedInset = page[`${prefix}TopOverlayHeight`]();
@@ -249,7 +255,7 @@ for (const [file, prefix] of [['ExplorePage', 'explore'], ['SearchPage', 'search
 
   const name = isSearch ? 'Search' : 'Explore';
   let atEnd = false;
-  const list = methods('SearchBookResultList', ['isEndOverscrollRebound'], 'book');
+  const list = methods('SearchBookResultList', ['isEndOverscrollRebound', 'markUserScrolled'], 'book');
   Object.assign(list, { userScrollOnly: true, gridUserScrolled: false,
     scroller: { currentOffset: () => ({ yOffset: 0 }), isAtEnd: () => atEnd },
     onListScroll: (delta, offset) => page[`on${name}ListScroll`](delta, offset),
@@ -300,7 +306,7 @@ let gridOffset = 0;
 let scrollCalls = 0;
 Object.assign(grid, {
   drainCoverQueue() {}, pendingCovers: new Map(), coverGeneration: 0,
-  layoutMode: 'grid', userScrollOnly: true, gridPageActive: true, gridHeaderCollapse: 56,
+  layoutMode: 'grid', userScrollOnly: true, gridPageActive: true, gridHeaderCollapse: () => 56,
   gridAlignTimer: -1, gridUserScrolled: false, restoredScroll: false, initialScrollOffset: 0,
   scroller: {
     currentOffset: () => ({ yOffset: gridOffset }),
@@ -312,7 +318,7 @@ grid.onGridPageActiveChanged();
 assert.equal(scrollCalls, 0, 'initial alignment waits for the List to mount');
 flush();
 assert.equal(gridOffset, 56, 'a new category starts below the collapsed header without a blank gap');
-grid.gridHeaderCollapse = 20;
+grid.gridHeaderCollapse = () => 20;
 flush();
 assert.equal(scrollCalls, 1, 'header scrolling alone never queues another alignment');
 gridOffset = 240;

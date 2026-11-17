@@ -11,6 +11,8 @@ import { ReaderCommentBubbleSize } from '../core/reader/ReaderCommentBubbleSize'
 import { promptAction, router } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { syncSystemBars } from '../utils/SystemBars';
+import { ReaderNavIndicatorStore } from '../utils/ReaderNavIndicatorStore';
+import { AudioBookSettingsStore } from '../utils/AudioBookSettingsStore';
 import { ReaderSettings, ReaderSettingsStore } from '../utils/ReaderSettingsStore';
 import { ReaderThemeHelper, ReaderThemeItem } from '../utils/ReaderThemeHelper';
 import { ReaderCustomThemeData, ReaderCustomThemeHelper, ReaderCustomThemeScheme } from '../utils/ReaderCustomThemeHelper';
@@ -42,6 +44,7 @@ import { ScreenTimeoutStepper } from '../components/common/ScreenTimeoutStepper'
 import { CloudAutoSync, CloudRemoteFont } from '../account/CloudAutoSync';
 import { CloudFontMenu } from '../account/CloudFontMenu';
 import { ReaderHaptics } from '../utils/ReaderHaptics';
+import { ReaderCommentCardSettings } from '../utils/ReaderCommentCardSettings';
 import { ReaderTypographyThemes, TypographyThemeOption } from '../utils/ReaderTypographyThemes';
 class ReaderCustomFontItem {
   familyName: string = '';
@@ -126,18 +129,22 @@ struct SettingsPage {
   private doublePageSerial: number = 0;
   @StorageLink('readerScreenOrientation') readerScreenOrientation: string =
     ReaderSettingsStore.SCREEN_ORIENTATION_SYSTEM;
-  @StorageLink('readerTapZoneActions') readerTapZoneActions: string = '3,3,3,3,1,2,2,2,2';
+  @StorageLink('readerTapZoneActions') readerTapZoneActions: string = '3,3,2,3,1,2,2,2,2';
   @StorageProp('readerVolumeTurnScope') readerVolumeTurnScope: number = 0;
   @StorageProp('readerSmartKeyTurnScope') readerSmartKeyTurnScope: number = 0;
   @StorageProp('readerSmartKeyTurnSupported') readerSmartKeyTurnSupported: boolean = false;
   @StorageProp('audioBookAutoPlay') audioBookAutoPlay: boolean = true;
+  @StorageProp('audioMixWithOthers') audioMixWithOthers: boolean = false;
+  /** 有声书、段评、预缓存只对网页解析的内容有意义，开关关闭时不显示。 */
+  @StorageProp('webParseEnabled') webParseEnabled: boolean = false;
   @StorageProp('ttsSpeed') ttsSpeed: number = 1;
   @StorageLink('readerLongPressSelectText') readerLongPressSelectText: boolean = true;
+  @StorageLink('readerCommentCard') readerCommentCard: string = ReaderCommentCardSettings.DEFAULT;
   @StorageLink('readerScreenTimeoutMinutes') readerScreenTimeoutMinutes: number =
     ReaderSettingsStore.SCREEN_TIMEOUT_ALWAYS_ON;
   @StorageLink('readerExtendToStatusBar') readerExtendToStatusBar: boolean = false;
   @StorageLink('readerChineseConverterType') chineseConverterType: number = 0;
-
+  @StorageProp('readerHideNavIndicator') readerHideNavIndicator: boolean = false;
   @StorageLink('readerHeaderEnabled') readerHeaderEnabled: boolean = false;
   @StorageLink('readerFooterEnabled') readerFooterEnabled: boolean = true;
   @StorageLink('readerInfoBarConfig') readerInfoBarConfig: string = '';
@@ -148,10 +155,14 @@ struct SettingsPage {
   @StorageLink('readerEyeTurnNextEnabled') readerEyeTurnNextEnabled: boolean = true;
   @StorageLink('readerEyeTurnPreviousDwellMs') readerEyeTurnPreviousDwellMs: number = 850;
   @StorageLink('readerEyeTurnNextDwellMs') readerEyeTurnNextDwellMs: number = 650;
+  @StorageLink('readerEyeTurnModelEnabled') readerEyeTurnModelEnabled: boolean = false;
+  @StorageLink('readerEyeTurnModelPortraitCalibration') readerEyeTurnModelPortraitCalibration: string = '';
+  @StorageLink('readerEyeTurnModelLandscapeCalibration') readerEyeTurnModelLandscapeCalibration: string = '';
   @StorageLink('readerPreloadEnabled') readerPreloadEnabled: boolean = true;
   @StorageLink('readerAiProcessingIndicatorEnabled') readerAiProcessingIndicatorEnabled: boolean = true;
   @StorageLink('readerPreloadChapterCount') readerPreloadChapterCount: number = 1;
   @StorageLink('readerQuickBookmarkEnabled') readerQuickBookmarkEnabled: boolean = true;
+  @StorageLink('readerScrollTapTurn') readerScrollTapTurn: boolean = false;
   @StorageProp('readerPageTurnHapticsScope') readerPageTurnHapticsScope: number = 0;
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
@@ -378,7 +389,7 @@ struct SettingsPage {
         .width('100%')
         .layoutWeight(1)
         .align(Alignment.TopStart)
-        .scrollBar(BarState.Auto)
+        .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring)
         Text('框内滑动调整 · 实时预览')
           .fontSize(AppFontSize.CAPTION)
@@ -523,15 +534,17 @@ struct SettingsPage {
           router.pushUrl({ url: 'pages/PdfSettings' });
         }
       })
-      SettingNavRow({
-        title: '有声书',
-        description: '自动播放、边听边下、离线下载',
-        value: this.audioBookAutoPlay ? '自动播放' : '手动播放',
-        icon: $r('sys.symbol.earphone'),
-        onTap: () => {
-          router.pushUrl({ url: 'pages/AudioBookSettings' });
-        }
-      })
+      if (this.webParseEnabled) {
+        SettingNavRow({
+          title: '有声书',
+          description: '自动播放、边听边下、离线下载',
+          value: this.audioBookAutoPlay ? '自动播放' : '手动播放',
+          icon: $r('sys.symbol.earphone'),
+          onTap: () => {
+            router.pushUrl({ url: 'pages/AudioBookSettings' });
+          }
+        })
+      }
       SettingNavRow({
         title: '朗读',
         description: '音色、倍速、MiMo 朗读、在线朗读字数',
@@ -549,21 +562,40 @@ struct SettingsPage {
     .clip(true)
     .backgroundColor(this.cardColor())
 
-    this.sectionTitle('阅读通用（小说、漫画共用）')
+    this.sectionTitle('收听')
+    Column() {
+      SettingSwitchRow({
+        title: '与其他应用同时播放',
+        description: '朗读和有声书不再被游戏、视频的声音打断，开始播放时也不暂停其他应用；来电和语音通话仍会暂停',
+        isOn: this.audioMixWithOthers,
+        showDivider: false,
+        onChange: (value: boolean) => {
+          AudioBookSettingsStore.saveMixWithOthers(getContext(this), value)
+            .catch((error: Error) => console.warn('保存同时播放失败:', error));
+        }
+      })
+    }
+    .width('calc(100% - 24vp)')
+    .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+    .borderRadius(ThemeRuntime.cardRadius())
+    .clip(true)
+    .backgroundColor(this.cardColor())
+
+    this.sectionTitle('阅读通用')
     Column() {
       this.tapZoneSettingItem()
+      SettingSwitchRow({
+        title: '滚动阅读时点击翻屏',
+        description: '按点击区域动作上下翻一屏；关闭时点击正文只呼出菜单',
+        isOn: this.readerScrollTapTurn,
+        onChange: (value: boolean) => {
+          this.setReaderScrollTapTurn(value);
+        }
+      })
       this.selectItem('屏幕方向', '阅读时的屏幕方向',
         this.screenOrientationOptions(), this.screenOrientationSelectedIndex(), (index: number) => {
           this.setReaderScreenOrientationByIndex(index);
         }, 'settings_screen_orientation_select')
-      SettingScopeRow({
-        title: '双翻页',
-        description: '横屏、折叠屏展开等宽屏下并排显示两页；漫画条漫与滚动阅读不生效',
-        scope: this.doublePageScope(),
-        labels: ReaderInputKind.LABELS,
-        values: ReaderInputKind.VALUES,
-        onToggle: (kind: number, on: boolean): void => this.toggleDoublePage(kind, on)
-      })
       SettingRow({ title: '亮屏时间设置', description: '无操作达到所选分钟数后恢复系统息屏，0 为常亮' }) {
         ScreenTimeoutStepper({
           minutes: this.readerScreenTimeoutMinutes,
@@ -575,6 +607,14 @@ struct SettingsPage {
           onChange: (minutes: number): void => this.setReaderScreenTimeoutMinutes(minutes)
         })
       }
+      SettingScopeRow({
+        title: '双翻页',
+        description: '横屏、折叠屏展开等宽屏下并排显示两页；漫画条漫与滚动阅读不生效',
+        scope: this.doublePageScope(),
+        labels: ReaderInputKind.LABELS,
+        values: ReaderInputKind.VALUES,
+        onToggle: (kind: number, on: boolean): void => this.toggleDoublePage(kind, on)
+      })
       SettingScopeRow({
         title: '音量键翻页',
         description: '音量上/下键翻到上一页/下一页，条漫为翻一屏',
@@ -614,7 +654,17 @@ struct SettingsPage {
       this.selectItem('简繁转换', '在繁体中文与简体中文之间转换正文',
         this.chineseConverterOptions(), this.chineseConverterSelectedIndex(), (index: number) => {
           this.setChineseConverterByIndex(index);
-        }, 'settings_reader_chinese_converter_select', false)
+        }, 'settings_reader_chinese_converter_select', true)
+      SettingSwitchRow({
+        title: '隐藏底部小白条',
+        description: '阅读正文时收起底部导航条，呼出菜单时恢复；小说、漫画、PDF 都生效',
+        isOn: this.readerHideNavIndicator,
+        showDivider: false,
+        onChange: (value: boolean) => {
+          ReaderNavIndicatorStore.save(getContext(this), value)
+            .catch((error: Error) => console.error('保存隐藏底部小白条设置失败:', error));
+        }
+      })
     }
     .width('calc(100% - 24vp)')
     .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
@@ -622,15 +672,18 @@ struct SettingsPage {
     .clip(true)
     .backgroundColor(this.cardColor())
 
-    this.sectionTitle('缓存与提示')
+    this.sectionTitle(this.webParseEnabled ? '缓存与提示' : '提示')
     Column() {
       SettingSwitchRow({
         title: 'AI处理标识',
         description: '显示 EPUB 插图、漫画和 PDF 的 AI 处理及超分提示',
         isOn: this.readerAiProcessingIndicatorEnabled,
+        showDivider: this.webParseEnabled,
         onChange: (enabled: boolean): void => this.setReaderAiProcessingIndicatorEnabled(enabled)
       })
-      this.preloadSettingPanel()
+      if (this.webParseEnabled) {
+        this.preloadSettingPanel()
+      }
     }
     .width('calc(100% - 24vp)')
     .margin({ left: AppSpacing.LG, right: AppSpacing.LG, bottom: AppSpacing.XXL })
@@ -687,6 +740,48 @@ struct SettingsPage {
     .clip(true)
     .backgroundColor(this.cardColor())
 
+    if (this.webParseEnabled) {
+      this.sectionTitle('段评')
+      Column() {
+        SettingSwitchRow({
+          title: '段评气泡',
+          description: '段落末尾的评论数气泡；关闭后不显示，热评卡片仍可点开评论',
+          isOn: ReaderCommentCardSettings.bubbles(this.readerCommentCard),
+          onChange: (checked: boolean): void => {
+            this.setReaderCommentCard(-1, -1, -1, checked ? 1 : 0, -1);
+          }
+        })
+        this.selectItem('热评卡片', '段评热评显示在段落下方；关闭后热评只算作段评气泡',
+          this.commentCardOptions(ReaderCommentCardSettings.STYLE_LABELS),
+          ReaderCommentCardSettings.style(this.readerCommentCard), (index: number) => {
+            this.setReaderCommentCard(index, -1, -1, -1, -1);
+          }, 'settings_comment_card_style_select')
+        if (ReaderCommentCardSettings.style(this.readerCommentCard) !== ReaderCommentCardSettings.STYLE_OFF) {
+          this.selectItem('每页最多', '只限段评热评，书源自带的热评卡总会显示',
+            this.commentCardOptions(ReaderCommentCardSettings.MAX_LABELS),
+            Math.max(0, ReaderCommentCardSettings.MAX_VALUES.indexOf(
+              ReaderCommentCardSettings.maxPerPage(this.readerCommentCard))), (index: number) => {
+              this.setReaderCommentCard(-1, ReaderCommentCardSettings.MAX_VALUES[index] ?? -1, -1, -1, -1);
+            }, 'settings_comment_card_max_select')
+          this.selectItem('卡片行数', '热评超出时末尾显示省略号',
+            this.commentCardOptions(ReaderCommentCardSettings.LINE_LABELS),
+            ReaderCommentCardSettings.lines(this.readerCommentCard) - 1, (index: number) => {
+              this.setReaderCommentCard(-1, -1, index + 1, -1, -1);
+            }, 'settings_comment_card_lines_select')
+        }
+        this.selectItem('本章说', '章末的本章评论入口；选卡片时，单独成段的入口显示为整宽卡片',
+          this.commentCardOptions(ReaderCommentCardSettings.CHAPTER_LABELS),
+          ReaderCommentCardSettings.chapter(this.readerCommentCard), (index: number) => {
+            this.setReaderCommentCard(-1, -1, -1, -1, index);
+          }, 'settings_comment_chapter_select', false)
+      }
+      .width('calc(100% - 24vp)')
+      .margin({ left: AppSpacing.LG, right: AppSpacing.LG })
+      .borderRadius(ThemeRuntime.cardRadius())
+      .clip(true)
+      .backgroundColor(this.cardColor())
+    }
+
     this.sectionTitle('翻页')
     Column() {
       this.selectItem('翻页方式', '上下滑动、横向滑动或滚动阅读',
@@ -714,7 +809,7 @@ struct SettingsPage {
       })
       SettingSwitchRow({
         title: '眼动翻页（beta）',
-        description: '看到页底后向上看即翻页；摄像头图像仅在本机处理',
+        description: '向上看即翻页；摄像头图像仅在本机处理',
         isOn: this.readerEyeTurnEnabled,
         showDivider: this.readerEyeTurnEnabled,
         onChange: (value: boolean) => {
@@ -722,6 +817,15 @@ struct SettingsPage {
         }
       })
       if (this.readerEyeTurnEnabled) {
+        SettingSwitchRow({
+          title: '新版识别模型（beta）',
+          description: '识别更稳，不怕暗光和眼镜；开启后看向屏幕上沿以外翻页，耗电略多',
+          isOn: this.readerEyeTurnModelEnabled,
+          showDivider: true,
+          onChange: (value: boolean) => {
+            this.setReaderEyeTurnModelEnabled(value);
+          }
+        })
         this.eyeTurnCalibrationStatusItem()
       }
     }
@@ -1087,10 +1191,14 @@ struct SettingsPage {
     this.readerEyeTurnNextEnabled = settings.eyeTurnNextEnabled;
     this.readerEyeTurnPreviousDwellMs = settings.eyeTurnPreviousDwellMs;
     this.readerEyeTurnNextDwellMs = settings.eyeTurnNextDwellMs;
+    this.readerEyeTurnModelEnabled = settings.eyeTurnModelEnabled;
+    this.readerEyeTurnModelPortraitCalibration = settings.eyeTurnModelPortraitCalibration;
+    this.readerEyeTurnModelLandscapeCalibration = settings.eyeTurnModelLandscapeCalibration;
     this.readerPreloadEnabled = settings.preloadEnabled;
     this.readerAiProcessingIndicatorEnabled = settings.aiProcessingIndicatorEnabled;
     this.readerPreloadChapterCount = settings.preloadChapterCount;
     this.readerQuickBookmarkEnabled = settings.quickBookmarkEnabled;
+    this.readerScrollTapTurn = settings.scrollTapTurn;
     this.readerFontFamily = settings.fontFamily || '';
     this.readerFontFilePath = settings.fontFilePath || '';
     this.readerFontSourceName = settings.fontSourceName || '系统默认';
@@ -1324,7 +1432,7 @@ struct SettingsPage {
   }
 
   fileNameFromUri(uri: string): string {
-    const decoded = decodeURIComponent(uri || '');
+    const decoded = ReaderFontHelper.safeDecodeURIComponent(uri || '');
     const index = Math.max(decoded.lastIndexOf('/'), decoded.lastIndexOf('\\'));
     return index >= 0 ? decoded.substring(index + 1) : decoded || '自定义字体';
   }
@@ -1462,7 +1570,7 @@ struct SettingsPage {
   }
 
   readerTapZoneActionsList(): number[] {
-    const fallback = [3, 3, 3, 3, 1, 2, 2, 2, 2];
+    const fallback = [3, 3, 2, 3, 1, 2, 2, 2, 2];
     const parts = (this.readerTapZoneActions || '').split(',');
     const result: number[] = [];
     for (let i = 0; i < 9; i++) {
@@ -1493,7 +1601,7 @@ struct SettingsPage {
   }
 
   normalizeTapZoneActions(actions: string): string {
-    const fallback = [3, 3, 3, 3, 1, 2, 2, 2, 2];
+    const fallback = [3, 3, 2, 3, 1, 2, 2, 2, 2];
     const parts = (actions || '').split(',');
     const result: number[] = [];
     for (let i = 0; i < 9; i++) {
@@ -2055,6 +2163,25 @@ struct SettingsPage {
     return ReaderSettingsStore.PAGE_TURN_ANIMATION_SLIDE;
   }
 
+  commentCardOptions(labels: string[]): SelectOption[] {
+    return labels.map((label: string): SelectOption => ({ value: label }));
+  }
+
+  /** 传 -1 的项保持不变。 */
+  setReaderCommentCard(style: number, maxPerPage: number, lines: number, bubbles: number, chapter: number): void {
+    const current = this.readerCommentCard;
+    const next = ReaderCommentCardSettings.encode(
+      style >= 0 ? style : ReaderCommentCardSettings.style(current),
+      maxPerPage >= 0 ? maxPerPage : ReaderCommentCardSettings.maxPerPage(current),
+      lines >= 0 ? lines : ReaderCommentCardSettings.lines(current),
+      bubbles >= 0 ? bubbles === 1 : ReaderCommentCardSettings.bubbles(current),
+      chapter >= 0 ? chapter : ReaderCommentCardSettings.chapter(current));
+    if (next === ReaderCommentCardSettings.normalize(current)) return;
+    ReaderCommentCardSettings.save(getContext(this), next).catch((error: Error) => {
+      console.warn('保存段评显示设置失败:', error);
+    });
+  }
+
   saveReaderInteractionSettings(): void {
     ReaderSettingsStore.saveReadingInteractionSettings(
       getContext(this),
@@ -2161,9 +2288,22 @@ struct SettingsPage {
   }
 
   readerEyeCalibrationSummary(): string {
-    const portrait = this.readerEyeTurnPortraitCalibration ? '已校准' : '未校准';
-    const landscape = this.readerEyeTurnLandscapeCalibration ? '已校准' : '未校准';
-    return `竖屏 ${portrait} · 横屏 ${landscape}`;
+    // The old heuristic and the new model keep separate calibrations; show the one in use.
+    const model = this.readerEyeTurnModelEnabled;
+    const portrait = (model ? this.readerEyeTurnModelPortraitCalibration : this.readerEyeTurnPortraitCalibration) ?
+      '已校准' : '未校准';
+    const landscape = (model ? this.readerEyeTurnModelLandscapeCalibration : this.readerEyeTurnLandscapeCalibration) ?
+      '已校准' : '未校准';
+    return `${model ? '新版模型 · ' : ''}竖屏 ${portrait} · 横屏 ${landscape}`;
+  }
+
+  setReaderEyeTurnModelEnabled(enabled: boolean): void {
+    this.readerEyeTurnModelEnabled = enabled;
+    ReaderSettingsStore.saveEyeTurnModelSettings(getContext(this), enabled,
+      this.readerEyeTurnModelPortraitCalibration, this.readerEyeTurnModelLandscapeCalibration)
+      .catch((error: Error): void => {
+        console.warn('保存眼动翻页新版模型设置失败:', error.message);
+      });
   }
 
   setReaderScreenTimeoutMinutes(minutes: number): void {
@@ -2197,6 +2337,13 @@ struct SettingsPage {
     ReaderSettingsStore.saveAiProcessingIndicatorEnabled(getContext(this), enabled).catch((error: Error): void => {
       console.error('保存 AI 处理标识设置失败:', error);
       HdsFeedback.showToast('AI处理标识设置保存失败');
+    });
+  }
+
+  setReaderScrollTapTurn(enabled: boolean): void {
+    this.readerScrollTapTurn = enabled;
+    ReaderSettingsStore.saveScrollTapTurn(getContext(this), enabled).catch((e: Error) => {
+      console.error('保存滚动阅读点击翻屏设置失败:', e);
     });
   }
 
@@ -2759,6 +2906,7 @@ struct SettingsPage {
   readerHeaderFooterSettingsPanel() {
     ReaderHeaderFooterSettings({
       dark: this.appDarkMode,
+      modeDark: this.appDarkMode,
       textColor: this.primaryTextColor(),
       subTextColor: this.subTextColor(),
       accentColor: this.accentColor(),
@@ -2842,8 +2990,8 @@ struct SettingsPage {
       SettingSwitchRow({
         title: '排版跟随主题',
         description: this.typographyFollowsTheme ?
-          `每套主题各记一套排版，换主题即换排版；当前排版记在「${this.typographyThemeName}」` :
-          '所有主题共用一套排版，换主题时排版不变',
+          `每套主题各记一套排版，换主题一起换；翻页、点按区域等阅读设置所有主题共用。当前排版记在「${this.typographyThemeName}」` :
+          '所有主题共用排版，换主题只换阅读背景；翻页、点按区域等阅读设置始终共用',
         isOn: this.typographyFollowsTheme,
         onChange: (enabled: boolean): void => {
           this.setTypographyFollowsTheme(enabled);
@@ -2906,7 +3054,8 @@ struct SettingsPage {
   async setTypographyFollowsTheme(enabled: boolean): Promise<void> {
     try {
       await ReaderSettingsStore.setTypographyFollowsTheme(getContext(this), enabled);
-      HdsFeedback.showToast(enabled ? '已开启，之后换主题会换成那套主题的排版' : '已关闭，所有主题共用当前排版');
+      HdsFeedback.showToast(enabled ? '已开启，之后换主题会换成那套主题的排版和翻页设置' :
+        '已关闭，所有主题共用当前排版和翻页设置');
     } catch (e) {
       console.warn('保存排版跟随主题失败:', e);
       HdsFeedback.showToast('保存失败，请稍后重试');

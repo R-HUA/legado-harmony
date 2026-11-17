@@ -6,6 +6,7 @@ import {
   ThemeColorTokens,
   ThemeComponentSourceIds,
   ThemeEmphasisOverrides,
+  ThemeTitleEmphasisTokens,
   ThemeIds,
   ThemePack,
   ThemeRadiusOverrides,
@@ -17,6 +18,18 @@ import { ReaderSettings, ReaderSettingsStore } from './ReaderSettingsStore';
 import { ReaderThemeHelper, ReaderThemeItem } from './ReaderThemeHelper';
 import { CloudSyncChangeTracker } from '../account/CloudSyncChangeTracker';
 import { HexColor } from './HexColor';
+import {
+  CHAPTER_HEAD_NONE,
+  COMMENT_IMAGE_NONE,
+  commentBubbleHasImage,
+  commentBubbleIsEmpty,
+  copyCommentImage,
+  isPackThemeId,
+  normalizeChapterHead,
+  normalizeCommentBubble,
+  ThemePackageChapterHead,
+  ThemePackageCommentBubble
+} from '../theme/share/ThemePackageFormat';
 
 export class AppThemeSettings {
   themeId: string = '';
@@ -494,8 +507,8 @@ export class AppThemeSettingsStore {
   static applyOverrides(theme: ThemePack, settings: AppThemeSettings): void {
     AppThemeSettingsStore.applyPaletteOverride(theme.light.colors, settings.customLightPalette);
     AppThemeSettingsStore.applyPaletteOverride(theme.dark.colors, settings.customDarkPalette);
-    AppThemeSettingsStore.applyEmphasisOverride(theme.light.regexEmphasis, settings.customLightEmphasis);
-    AppThemeSettingsStore.applyEmphasisOverride(theme.dark.regexEmphasis, settings.customDarkEmphasis);
+    AppThemeSettingsStore.applyEmphasisOverride(theme.light.regexEmphasis, settings.customLightEmphasis, false);
+    AppThemeSettingsStore.applyEmphasisOverride(theme.dark.regexEmphasis, settings.customDarkEmphasis, true);
     if (settings.customAppFontFamily) theme.typography.appFontFamily = settings.customAppFontFamily;
     const radius = settings.customRadius;
     if (radius.small >= 0) theme.radius.small = radius.small;
@@ -516,11 +529,75 @@ export class AppThemeSettingsStore {
     if (override.dangerColor) colors.dangerColor = override.dangerColor;
   }
 
-  private static applyEmphasisOverride(tokens: ThemeRegexEmphasisTokens, override: ThemeEmphasisOverrides): void {
+  private static applyEmphasisOverride(tokens: ThemeRegexEmphasisTokens, override: ThemeEmphasisOverrides,
+    darkMode: boolean): void {
     if (override.mode) tokens.emphasisMode = override.mode;
     if (override.bubbleStyle) tokens.bubbleStyle = override.bubbleStyle;
     if (override.color) tokens.emphasisColor = override.color;
     if (override.textColor) tokens.emphasisTextColor = override.textColor;
+    const comment = normalizeCommentBubble(override.comment);
+    if (!commentBubbleIsEmpty(comment)) {
+      // 逐项盖在来源主题的段评设置上；换一个新对象，不改到来源主题。
+      const merged = normalizeCommentBubble(tokens.commentBubble);
+      if (comment.shape) merged.shape = comment.shape;
+      if (comment.radius >= 0) merged.radius = comment.radius;
+      if (comment.fill) merged.fill = comment.fill;
+      if (comment.stroke) merged.stroke = comment.stroke;
+      if (comment.text) merged.text = comment.text;
+      if (comment.ornament) merged.ornament = comment.ornament;
+      if (comment.ornamentColor) merged.ornamentColor = comment.ornamentColor;
+      if (comment.ornamentCorner) merged.ornamentCorner = comment.ornamentCorner;
+      if (comment.ornamentSize >= 0) merged.ornamentSize = comment.ornamentSize;
+      if (comment.image === COMMENT_IMAGE_NONE) {
+        copyCommentImage(merged, new ThemePackageCommentBubble());
+      } else if (isPackThemeId(comment.image)) {
+        const packComment = AppThemeSettingsStore.packCommentBubble(comment.image, darkMode);
+        if (commentBubbleHasImage(packComment)) copyCommentImage(merged, packComment);
+        else copyCommentImage(merged, new ThemePackageCommentBubble());
+      }
+      if (isPackThemeId(comment.ornamentImage)) {
+        merged.ornamentImage = AppThemeSettingsStore.packCommentBubble(comment.ornamentImage, darkMode).ornamentImage;
+      }
+      tokens.commentBubble = merged;
+    }
+    const title = AppThemeSettingsStore.normalizeTitleEmphasis(override.title);
+    if (AppThemeSettingsStore.titleEmphasisOverridden(title)) {
+      // 同样换一个新对象。mode 为 off 时整组清空（来源主题设了标题强调、方案要不设置）。
+      const next = new ThemeTitleEmphasisTokens();
+      const base = tokens.title;
+      if (title.mode !== 'off') {
+        next.mode = title.mode || (base ? base.mode : '');
+        next.bubbleStyle = title.bubbleStyle || (base ? base.bubbleStyle : '');
+        next.color = title.color || (base ? base.color : '');
+        next.textColor = title.textColor || (base ? base.textColor : '');
+      }
+      tokens.title = next;
+    }
+    // 章首装饰整套换：'none' 清空，pack:<id> 取那个包这个模式的（包不在这台设备上时等于没有）。
+    const head = AppThemeSettingsStore.normalizeChapterHeadOverride(override.chapterHead);
+    if (head === CHAPTER_HEAD_NONE) {
+      tokens.chapterHead = new ThemePackageChapterHead();
+    } else if (head) {
+      const pack = BuiltinThemeRegistry.findById(head);
+      tokens.chapterHead = pack.id === head ?
+        normalizeChapterHead((darkMode ? pack.dark : pack.light).regexEmphasis.chapterHead) : new ThemePackageChapterHead();
+    }
+  }
+
+  /** 只收空串、'none' 和 pack:<id>。 */
+  static normalizeChapterHeadOverride(value: string | null | undefined): string {
+    const text = typeof value === 'string' ? value.trim() : '';
+    return text === CHAPTER_HEAD_NONE || isPackThemeId(text) ? text.substring(0, 80) : '';
+  }
+
+  /**
+   * 方案覆盖里 pack:<id> 指向的那个包这个模式的段评设置（素材已是本机 URI）。包不在这台设备上时
+   * findById 回到默认主题，取出来没有图片，段评按形状画。
+   */
+  private static packCommentBubble(packThemeId: string, darkMode: boolean): ThemePackageCommentBubble {
+    const pack = BuiltinThemeRegistry.findById(packThemeId);
+    if (pack.id !== packThemeId) return new ThemePackageCommentBubble();
+    return normalizeCommentBubble((darkMode ? pack.dark : pack.light).regexEmphasis.commentBubble);
   }
 
   static hasOverrides(settings: AppThemeSettings): boolean {
@@ -539,7 +616,9 @@ export class AppThemeSettingsStore {
   }
 
   static hasEmphasisOverride(override: ThemeEmphasisOverrides): boolean {
-    return !!(override.mode || override.bubbleStyle || override.color || override.textColor);
+    return !!(override.mode || override.bubbleStyle || override.color || override.textColor) ||
+      !commentBubbleIsEmpty(override.comment) || AppThemeSettingsStore.titleEmphasisOverridden(override.title) ||
+      !!AppThemeSettingsStore.normalizeChapterHeadOverride(override.chapterHead);
   }
 
   static hasRadiusOverride(radius: ThemeRadiusOverrides): boolean {
@@ -636,7 +715,27 @@ export class AppThemeSettingsStore {
     result.bubbleStyle = (source.bubbleStyle || '').trim().substring(0, 80);
     result.color = HexColor.parseAlpha(source.color || '');
     result.textColor = HexColor.parseAlpha(source.textColor || '');
+    result.comment = normalizeCommentBubble(source.comment);
+    result.title = AppThemeSettingsStore.normalizeTitleEmphasis(source.title);
+    result.chapterHead = AppThemeSettingsStore.normalizeChapterHeadOverride(source.chapterHead);
     return result;
+  }
+
+  /** 标题强调覆盖：mode 只收 off/none/text/highlight/bubble（off 表示强制不设置），颜色可带透明度。 */
+  static normalizeTitleEmphasis(source: ThemeTitleEmphasisTokens | null | undefined): ThemeTitleEmphasisTokens {
+    const result = new ThemeTitleEmphasisTokens();
+    if (!source || typeof source !== 'object') return result;
+    const mode = (source.mode || '').trim();
+    result.mode = mode === 'off' || mode === 'none' || mode === 'text' || mode === 'highlight' || mode === 'bubble' ?
+      mode : '';
+    result.bubbleStyle = (source.bubbleStyle || '').trim().substring(0, 80);
+    result.color = HexColor.parseAlpha(source.color || '');
+    result.textColor = HexColor.parseAlpha(source.textColor || '');
+    return result;
+  }
+
+  static titleEmphasisOverridden(source: ThemeTitleEmphasisTokens | null | undefined): boolean {
+    return !!source && !!(source.mode || source.bubbleStyle || source.color || source.textColor);
   }
 
   private static async putOverrides(store: preferences.Preferences, settings: AppThemeSettings): Promise<void> {

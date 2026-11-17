@@ -22,7 +22,7 @@ import { ReaderProgressCheckpoint } from '../utils/ReaderProgressCheckpoint';
 import { RecentReadShortcut } from '../utils/RecentReadShortcut';
 import { ReaderOpenTrace } from '../utils/ReaderOpenTrace';
 import { window } from '@kit.ArkUI';
-import { syncDesktopTitleBar, syncSystemSafeAreas } from '../utils/SystemBars';
+import { applyReaderSystemBars, syncDesktopTitleBar, syncSystemSafeAreas } from '../utils/SystemBars';
 import { readStatsTracker } from '../core/stats/ReadStatsTracker';
 import { CloudAutoSync } from '../account/CloudAutoSync';
 import { CloudSyncCoordinator } from '../account/CloudSyncCoordinator';
@@ -35,7 +35,7 @@ import { ReaderPdfSettingsStore } from '../core/book/pdf/ReaderPdfSettingsStore'
 import {
   ReaderShelfCoverOpening, SHELF_COVER_OPEN_ANGLE, SHELF_COVER_OPEN_DURATION, SHELF_COVER_OPEN_START_CAP,
   SHELF_COVER_CLOSE_DURATION, SHELF_COVER_FRAME_RATE, SHELF_BOOK_MOTION_UNTIL_KEY, SHELF_BOOK_MOTION_SETTLE,
-  detachedShelfSharedCoverId, shelfCoverCropAspect,
+  detachedShelfSharedCoverId, shelfCoverCropAspect, shelfCoverLean,
   SHELF_OPENING_BACKDROP_KEY, SHELF_OPENING_COVER_KEY, ShelfOpeningCover, ShelfOpeningFrameStarter,
   SHELF_COVER_MOTION_CURVE, SHELF_OPENING_PAGE_SNAPSHOT_KEY
 } from '../components/reader/ReaderShelfCoverOpening';
@@ -48,6 +48,7 @@ import { ReaderTocPanel, ReaderTocPanelController } from '../components/reader/R
 import { PopupMenuAction } from '../components/common/PopupMenuAction';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { ReaderInfoBarClock } from '../core/reader/ReaderInfoBarClock';
+import { ScreenCornerInset } from '../utils/ScreenCornerInset';
 import { ReaderPageTurnAnimation } from '../core/reader/ReaderPageTurnAnimation';
 import { ReaderKeyboard, ReaderKeyboardSettings } from '../core/reader/ReaderKeyboard';
 import { ReaderKeyboardSettingsStore } from '../utils/ReaderKeyboardSettingsStore';
@@ -61,7 +62,7 @@ import {
   ReaderSnapshotPageTurn, ReaderSnapshotTurnController, ReaderSnapshotTurnHost
 } from '../components/reader/ReaderSnapshotPageTurn';
 
-const DEFAULT_TAP_ZONES: number[] = [3, 3, 3, 3, 1, 2, 2, 2, 2];
+const DEFAULT_TAP_ZONES: number[] = [3, 3, 2, 3, 1, 2, 2, 2, 2];
 /** 截图翻页层截的是这一层：PDF 页面加角标与书签角。 */
 const PDF_PAGE_SURFACE_ID = 'pdf_page_surface';
 /** 翻页时跳到目标页后，等页码回报的上限与再给渲染留的时间。 */
@@ -78,7 +79,7 @@ struct PdfReadBookPage {
   @StorageProp('aiTrialOpen') @Watch('refreshAiAccess') aiTrialOpen: boolean = false;
   @StorageLink('launchShortcutNonce') @Watch('onShortcut') shortcutNonce: number = 0;
   // 与书籍共用：点击区域、智控键支持；音量键、智控键开关与翻页动画在打开时从阅读设置读。
-  @StorageLink('readerTapZoneActions') readerTapZoneActions: string = '3,3,3,3,1,2,2,2,2';
+  @StorageLink('readerTapZoneActions') readerTapZoneActions: string = '3,3,2,3,1,2,2,2,2';
   @StorageProp('readerSmartKeyTurnSupported') @Watch('updateTurnKeys') smartKeySupported: boolean = false;
   // 按键翻页按阅读类型生效，这里只看 PDF 一类。
   @StorageProp('readerVolumeTurnScope') @Watch('updateTurnKeys') volumeTurnScope: number = 0;
@@ -120,11 +121,14 @@ struct PdfReadBookPage {
   @State pageCount: number = 0;
   @State pageIndex: number = 0;
   @State previewIndex: number = -1;
+  /** 快速跳转撤销：第一次从进度条跳走前的页，关菜单即作废。 */
+  @State quickJumpUndoIndex: number = -1;
   @State initialPage: number = 0;
   @State @Watch('applySystemBars') ready: boolean = false;
   @State statusText: string = '正在打开 PDF…';
   @State failed: boolean = false;
-  @State @Watch('applySystemBars') menuVisible: boolean = false;
+  @State @Watch('onMenuVisibleChange') menuVisible: boolean = false;
+  @StorageProp('readerHideNavIndicator') @Watch('applySystemBars') readerHideNavIndicator: boolean = false;
   @State activePanel: string = '';
   @State jumpInput: string = '';
   @State searchInput: string = '';
@@ -182,6 +186,8 @@ struct PdfReadBookPage {
   @State shelfOpenScaleY: number = 1;
   @State shelfOpenTranslateX: number = 0;
   @State shelfOpenTranslateY: number = 0;
+  /** 书架上的书斜靠时，整页缩到封面处的同时以左上角为轴转到同样的角度（度，顺时针为正）。 */
+  @State shelfOpenLean: number = 0;
   private openedWithShelfAnimation: boolean = false;
   private shelfOpeningCover: ShelfOpeningCover | null = null;
   private shelfPendingSharedCoverId: string = '';
@@ -417,6 +423,11 @@ struct PdfReadBookPage {
    * Like the comic reader, the document runs under a hidden status bar and the bar returns with the menu.
    * Layout stays full screen either way, and the safe-area heights ignore visibility, so nothing shifts.
    */
+  onMenuVisibleChange(): void {
+    if (!this.menuVisible) this.quickJumpUndoIndex = -1;
+    this.applySystemBars();
+  }
+
   applySystemBars(): void {
     const context = this.getUIContext().getHostContext();
     if (!context) return;
@@ -426,7 +437,7 @@ struct PdfReadBookPage {
       const dark = this.darkMode;
       mainWindow.setWindowBackgroundColor(ThemeRuntime.pageColor(dark));
       mainWindow.setWindowLayoutFullScreen(true);
-      mainWindow.setWindowSystemBarEnable(showStatus ? ['navigation', 'status'] : ['navigation']);
+      applyReaderSystemBars(mainWindow, showStatus, this.alive && this.visible && this.ready && !this.menuVisible);
       syncDesktopTitleBar(mainWindow, dark);
       syncSystemSafeAreas(mainWindow);
       mainWindow.setWindowSystemBarProperties({
@@ -517,44 +528,22 @@ struct PdfReadBookPage {
       .catch((error: Error): void => { console.warn('[PDF] recent card reload failed:', error); });
   }
 
-  private jumpConfirming: boolean = false;
-
-  /** 快速跳转松手后确认，文案与小说阅读页的“确认跳转”一致；确认后提示跳到第几页。 */
-  private async confirmQuickJump(index: number, percent: number): Promise<void> {
-    if (!this.ready || this.jumpConfirming) return;
+  /** 快速跳转松手直接跳；第一次跳走前记下原页，胶囊上的撤销键可回去。 */
+  private quickJump(index: number): void {
+    if (!this.ready) return;
     const target = PdfPagePosition.clamp(index, this.pageCount);
     if (target === this.pageIndex) {
       this.previewIndex = -1;
       return;
     }
-    const count = this.pageCount;
-    const token = this.generation;
-    this.jumpConfirming = true;
-    let confirmed = false;
-    try {
-      const result = await this.getUIContext().getPromptAction().showDialog({
-        title: '确认跳转',
-        message: percent >= 0 ? `跳转到全书 ${percent.toFixed(1)}%？
-第 ${target + 1} 页 · 共 ${count} 页` :
-          `跳转到第 ${target + 1} 页？
-共 ${count} 页`,
-        buttons: [
-          { text: '取消', color: ThemeRuntime.subTextColor(this.darkMode) },
-          { text: '跳转', color: ThemeRuntime.accentColor(this.darkMode) }
-        ]
-      });
-      confirmed = result.index === 1 && this.alive && token === this.generation && count === this.pageCount;
-    } catch (error) {
-      console.warn('[PDF] quick jump dialog failed:', error);
-    } finally {
-      this.jumpConfirming = false;
-    }
-    if (!confirmed) {
-      this.previewIndex = -1;
-      return;
-    }
+    if (this.quickJumpUndoIndex < 0) this.quickJumpUndoIndex = this.pageIndex;
     this.goTo(target);
-    HdsFeedback.showToast(`已跳转至第 ${target + 1} 页`);
+  }
+
+  private undoQuickJump(): void {
+    const target = this.quickJumpUndoIndex;
+    this.quickJumpUndoIndex = -1;
+    if (target >= 0 && target < this.pageCount) this.goTo(target);
   }
 
   private goTo(index: number): void {
@@ -745,6 +734,7 @@ struct PdfReadBookPage {
     this.shelfOpenScaleY = cover.boundsHeight / cover.windowHeight;
     this.shelfOpenTranslateX = cover.boundsX;
     this.shelfOpenTranslateY = cover.boundsY;
+    this.shelfOpenLean = shelfCoverLean(cover);
     this.shelfCoverAngle = 0;
     this.shelfCoverScaleX = 1;
     this.shelfCoverShade = 0;
@@ -780,6 +770,7 @@ struct PdfReadBookPage {
       this.shelfOpenScaleY = 1;
       this.shelfOpenTranslateX = 0;
       this.shelfOpenTranslateY = 0;
+      this.shelfOpenLean = 0;
       this.shelfCoverAngle = SHELF_COVER_OPEN_ANGLE;
       this.shelfCoverScaleX = 0;
       this.shelfCoverShade = 0.5;
@@ -796,6 +787,7 @@ struct PdfReadBookPage {
     this.shelfOpenScaleY = 1;
     this.shelfOpenTranslateX = 0;
     this.shelfOpenTranslateY = 0;
+    this.shelfOpenLean = 0;
     if (this.shelfCoverAngle === SHELF_COVER_OPEN_ANGLE) this.shelfCoverVisible = false;
     this.shelfCoverFillImage = false;
     if (this.shelfPendingSharedCoverId) {
@@ -914,6 +906,7 @@ struct PdfReadBookPage {
         this.shelfOpenScaleY = target.boundsHeight / target.windowHeight;
         this.shelfOpenTranslateX = target.boundsX;
         this.shelfOpenTranslateY = target.boundsY;
+        this.shelfOpenLean = shelfCoverLean(target);
         this.shelfCoverAngle = 0;
         this.shelfCoverScaleX = 1;
         this.shelfCoverShade = 0;
@@ -1030,6 +1023,13 @@ struct PdfReadBookPage {
     this.turnController.invalidate();
     this.savePdfDefaults((settings: ReaderPdfSettings): void => { settings.pageBadge = enabled; });
     this.syncInfoClock();
+  }
+
+  /** 页码角标贴右下角，按屏幕圆角往里让，免得大圆角手机上被切掉。 */
+  private pageBadgePosition(): Edges {
+    const offset = ScreenCornerInset.place(this.viewWidth, 10, 10, 10);
+    const edges: Edges = { right: offset.right, bottom: offset.bottom };
+    return edges;
   }
 
   /** 应用夜间模式时交给视图的显示方式；白天一律原样。 */
@@ -1412,6 +1412,7 @@ struct PdfReadBookPage {
             superResolution: this.superResolution && this.superResolutionAccess === ReaderComicSuperResolutionAccess.READY,
             showOriginal: this.showOriginal, enhancementSuspended: !this.visible || this.activePanel === 'search',
             layoutRevision: this.layoutRevision, nightMode: this.viewNightMode(),
+            spreadSpine: this.doublePage && this.wideWindow,
             onEnhancementStatus: (text: string): void => { this.enhancementStatus = text; this.refreshAiAccess(); },
             onReady: (count: number, page: number): void => { this.documentReady(count, page); },
             onPage: (index: number): void => { this.onPage(index); },
@@ -1432,7 +1433,7 @@ struct PdfReadBookPage {
               timeText: this.infoTimeText,
               battery: this.infoBatteryPercent
             })
-              .position({ right: 10, bottom: 10 })
+              .position(this.pageBadgePosition())
           }
         }
         .width('100%')
@@ -1478,7 +1479,9 @@ struct PdfReadBookPage {
         navigationContent: (): void => { this.tocPanel(); },
         onClose: (): void => { this.close(); }, onPanelChange: (panel: string): void => { this.setPanel(panel); },
         onPageChange: (index: number): void => { this.goTo(index); },
-        onQuickJump: (index: number, percent: number): void => { this.confirmQuickJump(index, percent); },
+        quickJumpUndoIndex: this.quickJumpUndoIndex,
+        onQuickJump: (index: number): void => { this.quickJump(index); },
+        onQuickJumpUndo: (): void => { this.undoQuickJump(); },
         onPreview: (index: number): void => { this.previewIndex = index; },
         onJump: (text: string): void => { this.jumpInput = text; this.jump(); },
         onContinuousChange: (checked: boolean): void => { this.setViewPreference(ReaderPdfSettings.CONTINUOUS, checked); },
@@ -1539,6 +1542,7 @@ struct PdfReadBookPage {
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       .scale({ x: this.shelfOpenScaleX, y: this.shelfOpenScaleY, centerX: 0, centerY: 0 })
       .translate({ x: this.shelfOpenTranslateX, y: this.shelfOpenTranslateY })
+      .rotate({ angle: this.shelfOpenLean, centerX: 0, centerY: 0 })
       .sharedTransition(this.shelfSharedCoverId, {
         duration: SHELF_COVER_OPEN_DURATION, curve: Curve.EaseInOut, type: SharedTransitionEffectType.Exchange
       })

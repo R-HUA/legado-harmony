@@ -164,9 +164,9 @@ export class TtsVoicePicker {
     options.speed = this.speed;
   }
 
-  /** 改语速（0.5–2）；连续拖动时合并成一次保存。返回是否真的变了。 */
+  /** 改语速（0.5–3）；连续拖动时合并成一次保存。返回是否真的变了。 */
   setSpeed(value: number): boolean {
-    const next = Math.max(0.5, Math.min(2, Math.round((value || 1) * 10) / 10));
+    const next = Math.max(0.5, Math.min(3, Math.round((value || 1) * 10) / 10));
     if (Math.abs(next - this.speed) < 0.01) return false;
     this.speed = next;
     AppStorage.setOrCreate('globalTtsSpeed', next);
@@ -307,7 +307,7 @@ export class TtsVoicePicker {
 
   private useCloudVoice(voice: TtsVoiceInfo): boolean {
     if (!AccountSessionStore.isLoggedIn()) {
-      HdsFeedback.showToast('请先登录华为账号后使用在线音色');
+      HdsFeedback.showToast('请先登录账号后使用在线音色');
       return false;
     }
     this.leaveMimo();

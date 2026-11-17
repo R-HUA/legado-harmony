@@ -1,5 +1,7 @@
+import { WebParseSettingsStore } from '../../utils/WebParseSettingsStore';
 import { SharedElementMotion } from '../../utils/SharedElementMotion';
 import { ShelfCoverLocator } from '../../utils/ShelfCoverLocator';
+import { ShelfBookPerspective, ShelfBookShape } from '../../utils/ShelfBookPerspective';
 import { PdfPagePosition } from '../../core/book/pdf/PdfModels';
 import {
   SHELF_COVER_OPEN_DURATION, SHELF_COVER_OPEN_START_CAP, SHELF_BOOK_MOTION_UNTIL_KEY, SHELF_BOOK_MOTION_SETTLE,
@@ -12,7 +14,7 @@ import { BookshelfCoverBadges } from '../BookshelfCoverBadges';
 import { BookshelfCoverBadgeSettings } from '../../utils/BookshelfCoverBadgeSettings';
 import { componentUtils, curves, FrameCallback, router, window } from '@kit.ArkUI';
 import { common, WantAgent, wantAgent } from '@kit.AbilityKit';
-import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
+import { BackgroundPermit } from '../../utils/BackgroundPermit';
 import { notificationManager } from '@kit.NotificationKit';
 import deviceInfo from '@ohos.deviceInfo';
 import image from '@ohos.multimedia.image';
@@ -36,6 +38,7 @@ import { HomeThemeBackdrop } from './HomeThemeBackdrop';
 import { HdsFeedback } from '../../utils/HdsFeedback';
 import { BookDisplayHelper } from '../../utils/BookDisplayHelper';
 import { BookTileLayout } from '../../utils/BookTileLayout';
+import { AnimatedImagePolicy } from '../../utils/AnimatedImagePolicy';
 import { BookCoverCache } from '../../utils/BookCoverCache';
 import { CoverImageService } from '../../core/book/CoverImageService';
 import { CoverGallerySettings } from '../../utils/CoverGallerySettings';
@@ -43,6 +46,7 @@ import { BookshelfDisplaySettingsStore } from '../../utils/BookshelfDisplaySetti
 import { BookshelfStateStore } from '../../utils/BookshelfStateStore';
 import { SearchExplorePendingBook } from '../../utils/SearchExplorePendingBook';
 import { BookshelfSortHelper } from '../../utils/BookshelfSortHelper';
+import { ShelfCoverSlots } from '../../utils/ShelfCoverSlots';
 import { RecentReadCarousel } from './RecentReadCarousel';
 import { ShelfReadingNoteCard } from './ShelfReadingNoteCard';
 import { ShelfGreetingEditor } from './ShelfGreetingEditor';
@@ -53,7 +57,11 @@ import { ShelfCategoryMaterial } from './ShelfCategoryMaterial';
 import { SearchExploreSettingsStore } from '../../utils/SearchExploreSettingsStore';
 import { AppThemeSettingsStore } from '../../utils/AppThemeSettingsStore';
 import { ThemeAssetRegistry } from '../../theme/ThemeAssetRegistry';
+import { ThemeImageSlots } from '../../theme/ThemePackRegistry';
+import { ThemeImageCrop } from '../../theme/share/ThemePackageFormat';
+import { ThemeCroppedImage } from '../theme/ThemeCroppedImage';
 import { ThemeBookCoverSettings } from '../../utils/ThemeBookCoverSettings';
+import { CoverDimSettings } from '../../utils/CoverDimSettings';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { HexColor } from '../../utils/HexColor';
 import { LocalBookService } from '../../core/book/LocalBookService';
@@ -71,10 +79,32 @@ import { CloudAutoSync } from '../../account/CloudAutoSync';
 import { CloudDownloadQueue } from '../../account/CloudDownloadQueue';
 import { PopupMenuAction } from '../common/PopupMenuAction';
 import { ReaderHaptics } from '../../utils/ReaderHaptics';
+import { BookMarkService } from '../../core/mark/BookMarkService';
 
 const SHELF_FULL_TEXT_CACHE_NOTIFICATION_INTERVAL_MS: number = 5000;
 /** 有声书同时下载的章数。 */
 const SHELF_AUDIO_DOWNLOAD_CONCURRENCY: number = 2;
+/**
+ * 书架检查更新同时刷新的书数，每路各用一个后台引擎。耗时主要在等网络，并发能把总时长压到接近最慢的几本。
+ * 同一书源最多同时刷 SHELF_REFRESH_PER_SOURCE 本，没填 concurrentRate 的书源也不至于被一下子打满。
+ */
+const SHELF_REFRESH_CONCURRENCY: number = 6;
+const SHELF_REFRESH_PER_SOURCE: number = 2;
+/**
+ * 单本检查更新的时长上限。网络请求有自己的超时，但网页解析、书源脚本卡住时不会结束，那一路会一直占着、进度停住；
+ * 超时就算这本失败，这一路丢掉旧引擎（它可能还卡在这本书上）换个新的接着查。
+ */
+const SHELF_REFRESH_BOOK_TIMEOUT_MS: number = 60000;
+/** 单本查了这么久，封面圆钮显示秒数、清单里给出“跳过”。 */
+const SHELF_REFRESH_STUCK_MS: number = 15000;
+/** 最近一次检查更新失败的原因，封面显示红色“!”；下次检查成功或点开这本书时清除。 */
+const SHELF_REFRESH_ERROR_VARIABLE: string = 'shelfRefreshError';
+const SHELF_REFRESH_STUCK_COLOR: string = '#E6E08A00';
+const SHELF_REFRESH_ERROR_COLOR: string = '#E5484D';
+/** 胶囊清单的三段：正在检查、有更新、失败。 */
+const SHELF_REFRESH_SECTION_ACTIVE: number = 0;
+const SHELF_REFRESH_SECTION_UPDATED: number = 1;
+const SHELF_REFRESH_SECTION_FAILED: number = 2;
 const SHELF_COVER_INITIAL_PREFETCH_COUNT: number = 16;
 const SHELF_COVER_UPDATE_BATCH_MS: number = 48;
 const SHELF_UPDATE_BADGE_VARIABLE: string = 'shelfHasUpdate';
@@ -158,6 +188,54 @@ class ShelfFilterOption {
   count: number = 0;
 }
 
+/** 检查更新时正在查的一本书，封面圆钮与胶囊清单按 startedAt 算已用时。 */
+class ShelfRefreshActiveBook {
+  book: Book;
+  startedAt: number;
+
+  constructor(book: Book, startedAt: number) {
+    this.book = book;
+    this.startedAt = startedAt;
+  }
+}
+
+/** 本轮检查更新失败的一本书，胶囊清单里列出，点一行去换源。 */
+class ShelfRefreshFailure {
+  book: Book;
+  reason: string;
+
+  constructor(book: Book, reason: string) {
+    this.book = book;
+    this.reason = reason;
+  }
+}
+
+/** 本轮查到新章节的一本书，胶囊清单里列出，点一行去读。newChapters 为 0 表示比不出新增几章（如首次检查）。 */
+class ShelfRefreshUpdate {
+  book: Book;
+  newChapters: number;
+  latestTitle: string;
+
+  constructor(book: Book, newChapters: number, latestTitle: string) {
+    this.book = book;
+    this.newChapters = newChapters;
+    this.latestTitle = latestTitle;
+  }
+}
+
+/** 一本书的检查结果；abandoned 表示超时或被跳过，引擎可能还卡在这本书上。 */
+class ShelfRefreshResult {
+  update: ShelfRefreshUpdate | null;
+  error: string;
+  abandoned: boolean;
+
+  constructor(update: ShelfRefreshUpdate | null, error: string, abandoned: boolean) {
+    this.update = update;
+    this.error = error;
+    this.abandoned = abandoned;
+  }
+}
+
 interface ShelfFullTextCacheTask {
   taskId: number;
   bookUrl: string;
@@ -188,6 +266,8 @@ interface ShelfFullTextCacheTask {
 export struct BookshelfPage {
   @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   /** 标题下方“全部 / 网络 / 本地”胶囊的高度。 */
+  /** 立体书舞台比封面高出的一截，留给书底的底板。斜靠以舞台底边中点为轴，算封面四角时要用同一个数。 */
+  static readonly SHELF_HARDCOVER_STAGE_PAD: number = 4;
   static readonly SCOPE_TABS_HEIGHT: number = 44;
   static readonly SCOPE_TABS_PADDING: number = 6;
   static readonly SCOPE_TAB_INDICATOR_WIDTH: number = 18;
@@ -217,10 +297,14 @@ export struct BookshelfPage {
   static readonly MENU_ITEM_HEIGHT: number = 44;
   // 加密的书源封面解密完成后递增，读取它的封面会重新取到本地文件地址。
   @StorageProp('sourceCoverRevision') sourceCoverRevision: number = 0;
+  /** 动图开关切换或第一帧静图生成后递增，封面地址重新经过 AnimatedImagePolicy。 */
+  @StorageProp('animatedImageRevision') animatedImageRevision: number = 0;
   @Prop statusBarHeight: number = 0;
   @Prop navBarHeight: number = 0;
   @Link isBookMultiSelect: boolean;
   @Link @Watch('onActiveShelfGroupChanged') activeShelfGroupId: number;
+  /** 首页每次“进入书架”（切回书架页签、从别的页面返回首页）加一，沉浸书架据此收起顶栏和底栏。 */
+  @Prop @Watch('onShelfEnterTick') shelfEnterTick: number = 0;
   @StorageLink('appThemeBookCoverEnabled') themeBookCoverEnabled: boolean = false;
   @StorageLink('appThemeId') appThemeId: string = AppThemeSettingsStore.DEFAULT_THEME_ID;
   @StorageLink('appCustomBaseThemeId') appCustomBaseThemeId: string = AppThemeSettingsStore.DEFAULT_THEME_ID;
@@ -275,7 +359,7 @@ export struct BookshelfPage {
   /** 筛选条件（FILTER_GROUPS 里的键）逗号分隔，同样只在本次运行内保留。 */
   @StorageLink('bookshelfFilterKeys') shelfFilterKeys: string = '';
   /** 书架搜索栏是否展开、框里的原始输入；同样只在本次运行内保留，主页返回键会先收起它。 */
-  @StorageLink('bookshelfSearchActive') shelfSearchActive: boolean = false;
+  @StorageLink('bookshelfSearchActive') @Watch('onShelfSearchActiveChanged') shelfSearchActive: boolean = false;
   @StorageLink('bookshelfSearchKeyword') @Watch('onShelfSearchKeywordChanged') shelfSearchKeyword: string = '';
   /** 实际参与筛选的关键词（转小写、空白归一），输入停顿后才从 shelfSearchKeyword 同步过来。 */
   @State shelfAppliedSearchKeyword: string = '';
@@ -321,10 +405,6 @@ export struct BookshelfPage {
   /** 缩放中心（相对书架根节点，vp）。 */
   @State tileGroupZoomX: number = 0;
   @State tileGroupZoomY: number = 0;
-  /** 开合期间两层都不画底色和主题背景图（由 tileGroupBackgroundLayer 垫着）：缩放的只有内容，背景不动。 */
-  @State tileGroupBareBody: boolean = false;
-  /** 开合期间垫在最底下的页面背景（底色与主题背景图），书架或分组页淡出时露出的仍是同样的背景。 */
-  @State tileGroupMotionBackground: boolean = false;
   /** 打开分组时为真：分组页挂上的本地封面登记进 tileGroupPendingCovers，后台解码完移出，都解码完分组页才浮起。 */
   private tileGroupAwaitCovers: boolean = false;
   private tileGroupPendingCovers: Set<string> = new Set();
@@ -334,6 +414,11 @@ export struct BookshelfPage {
   @State shelfReorderCurtainOpacity: number = 1;
   /** 关书回到书架到挪位动画结束；期间不在 loadBooks 里放掉按住的阅读时间。 */
   private shelfReturnMotionActive: boolean = false;
+  /**
+   * 最近从书架点开的书。读完回来它的卡片会因进度变化整体重建，封面后台解码要空一两帧；这一本改成同步解码。
+   * 只限这一本：整屏都同步解码会在滚动时堵主线程。
+   */
+  private shelfLastOpenedBookUrl: string = '';
   private tileGroupPendingBack: boolean = false;
   /** 已开始但还没切过去的目标分组（-1 表示没有）；兜底收尾时直接切过去，不让点击落空。 */
   private tileGroupPendingTarget: number = -1;
@@ -427,6 +512,20 @@ export struct BookshelfPage {
   @State shelfRefreshCapsuleWidth: number = 0;
   private shelfRefreshSummaryPending: boolean = false;
   private shelfRefreshCapsuleTimer: number = -1;
+  /** 正在查的书（最多 SHELF_REFRESH_CONCURRENCY 本），封面圆钮与胶囊清单都读它。 */
+  @State shelfRefreshActive: ShelfRefreshActiveBook[] = [];
+  /** 本轮失败的书，胶囊清单里列出。 */
+  @State shelfRefreshFailures: ShelfRefreshFailure[] = [];
+  /** 本轮查到新章节的书，按查完先后排，胶囊清单里列出。 */
+  @State shelfRefreshUpdates: ShelfRefreshUpdate[] = [];
+  /** 本轮失败、还没落库重载的书；封面“!”在检查进行中就能显示。 */
+  @State shelfRefreshFailedUrls: string[] = [];
+  /** 检查进行中每秒更新一次，只有封面圆钮和清单里的已用秒数读它。 */
+  @State shelfRefreshNow: number = 0;
+  @State shelfRefreshSheetVisible: boolean = false;
+  private shelfRefreshTicker: number = -1;
+  /** 正在查的书各自的放弃入口：超时与清单里的“跳过”都走这里。 */
+  private shelfRefreshCancels: Map<string, (reason: string) => void> = new Map();
   @State editingTags: string[] = [];
   @State tagInput: string = '';
   @State shelfCoverMap: Map<string, string> = new Map();
@@ -439,6 +538,8 @@ export struct BookshelfPage {
   /** 正在消散的书：卡片淡出、缩小、模糊，动画结束后才真正从列表里拿掉。 */
   @State shelfDissolvingUrls: string[] = [];
   @State shelfDissolveBursts: DeleteParticleBurst[] = [];
+  /** 正在消散的文件夹（删除分组时）。 */
+  @State shelfDissolvingGroupIds: number[] = [];
   @StorageLink('shelfUpdateTime') @Watch('onShelfChanged') shelfUpdateTime: number = 0;
   @StorageLink('bookshelfSortMode') sortMode: string = 'recentRead';
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
@@ -469,8 +570,22 @@ export struct BookshelfPage {
   /** 书架设置“错落摆放”：关闭后陪伴网格里的书一样大、全部立正。 */
   @StorageLink('bookshelfCompanionStagger') @Watch('onCompanionStaggerChanged')
   bookshelfCompanionStagger: boolean = true;
+  /** 书架设置“封面阴影”：关闭后陪伴布局的书不再投下阴影，封面也去掉斜向打光，书脊与压槽保留。 */
+  @StorageLink('bookshelfCompanionCoverShadow') @Watch('onCompanionStaggerChanged')
+  bookshelfCompanionCoverShadow: boolean = true;
   /** 书架设置“阅读小记”：关闭后陪伴布局不显示阅读小记卡片。 */
   @StorageLink('bookshelfCompanionReadingNote') bookshelfCompanionReadingNote: boolean = true;
+  /** 书架设置“沉浸书架”：进入书架时按钮行和底栏收起，手指往下滑才出现，往上滑在列表顶部也收起。 */
+  @StorageLink('bookshelfImmersive') @Watch('onShelfImmersiveChanged') bookshelfImmersive: boolean = false;
+  /** 沉浸时的顶部按钮：pull 只在顶部下拉时出现、几秒后收起；menu 右上角只留一个菜单按钮。 */
+  @StorageLink('bookshelfImmersiveButtons') @Watch('onShelfImmersiveButtonsChanged') bookshelfImmersiveButtons: string = 'pull';
+  /** 下拉显示时按钮行下方的自动收起倒计时细线：1 为刚出现，缩到 0 时收起。 */
+  @State shelfAutoHideProgress: number = 0;
+  @State shelfAutoHideLineVisible: boolean = false;
+  /** 只留菜单按钮时，滚动中按钮变淡。 */
+  @State shelfSoloMenuScrolling: boolean = false;
+  /** 只留菜单按钮时的一级菜单。 */
+  @State showShelfSoloMenu: boolean = false;
   /** 陪伴布局左上角问候语：time 内置按时段，custom 用户自写两行（可含占位符），off 不显示。 */
   @StorageLink('bookshelfGreetingMode') bookshelfGreetingMode: string = 'time';
   @StorageLink('bookshelfGreetingTitle') bookshelfGreetingTitle: string = '';
@@ -487,6 +602,8 @@ export struct BookshelfPage {
   @StorageLink('bookshelfIgnoreSourceCover') @Watch('onShelfCoverSettingsChanged') bookshelfIgnoreSourceCover: boolean = false;
   @StorageLink('bookshelfIgnoreEmptyCoverOnly') @Watch('onShelfCoverSettingsChanged') bookshelfIgnoreEmptyCoverOnly: boolean = false;
   @StorageLink('bookshelfCoverMode') @Watch('onShelfCoverSettingsChanged') bookshelfCoverMode: string = 'sequence';
+  @StorageProp('bookshelfDarkCoverDim') bookshelfDarkCoverDim: boolean = false;
+  @StorageProp('bookshelfDarkCoverDimLevel') bookshelfDarkCoverDimLevel: number = 20;
   @StorageLink('appLightAccentColor') appLightAccentColor: string = '#007DFF';
   @StorageLink('appDarkAccentColor') appDarkAccentColor: string = '#4E9BFF';
   @StorageLink('appLightButtonColor') appLightButtonColor: string = '#007DFF';
@@ -503,7 +620,8 @@ export struct BookshelfPage {
   private cacheTocLoadPromise: Promise<boolean> | null = null;
   private cacheDialogOpenedAt: number = 0;
   private fullTextCacheTasks: Map<string, ShelfFullTextCacheTask> = new Map();
-  private shelfRefreshRunning: boolean = false;
+  /** 清单按它分进行中/已结束两种排法，要能触发刷新。 */
+  @State shelfRefreshRunning: boolean = false;
   private fullTextCacheTaskId: number = 0;
   private fullTextCacheCancelRequested: boolean = false;
   private fullTextCacheCancelSeenNonce: number = 0;
@@ -537,6 +655,8 @@ export struct BookshelfPage {
   private localBookIntroMigrationGeneration: number = 0;
   private shelfComponentActive: boolean = false;
   private shelfUpdateAcknowledgedAt: Map<string, number> = new Map();
+  /** 陪伴布局每本书高矮、侧转、斜靠取值用的种子，按书的地址记（见 shelfBookJitterSeed）。 */
+  private shelfJitterSeeds: Map<string, number> = new Map();
 
   private readonly shelfCoverLocate = (bookUrl: string): ShelfOpeningCover | null => this.locateShelfCover(bookUrl);
   /** 首页根节点整张截图（含标签栏），阅读页放大、缩回时垫在后面；被盖住的页面照样能离屏截图。 */
@@ -571,6 +691,12 @@ export struct BookshelfPage {
 
   aboutToDisappear(): void {
     this.shelfComponentActive = false;
+    this.stopShelfRefreshTicker();
+    this.stopShelfAutoHide();
+    if (this.shelfSoloDimTimer >= 0) {
+      clearTimeout(this.shelfSoloDimTimer);
+      this.shelfSoloDimTimer = -1;
+    }
     ShelfCoverLocator.unregister(this.shelfCoverLocate);
     this.discardShelfOpeningBackdrop();
     this.cancelTileGroupMotion();
@@ -609,6 +735,9 @@ export struct BookshelfPage {
     // are retained.  Replacing them here (and forcing a reload) prevents a retained list/grid
     // from continuing to render the books from the previous group.
     this.reloadShelfDataSources(true, !tileGroupMove);
+    // 分组页的标题栏不收起，沉浸时底栏另记一份收起量；进分组页先收起，回到书架换回书架的收起量。
+    this.tileGroupBarCollapse = this.shelfImmersiveActive() ? CollapsingHeader.DISTANCE : 0;
+    this.reportShelfBarCollapse();
     if (this.shelfStateRestored) {
       BookshelfStateStore.saveActiveGroupId(getContext(this), this.activeShelfGroupId).catch((e: Error) => {
         console.warn('保存书架分组状态失败:', e);
@@ -641,11 +770,18 @@ export struct BookshelfPage {
       this.bookshelfTypeCategoryEnabled = settings.typeCategoryEnabled;
       this.bookshelfShowAllTypeTab = settings.showAllTypeTab;
       this.bookshelfCompanionStagger = settings.companionStagger;
+      this.bookshelfCompanionCoverShadow = settings.companionCoverShadow;
       this.bookshelfCompanionReadingNote = settings.companionReadingNote;
       this.bookshelfGreetingMode = settings.greetingMode;
       this.bookshelfGreetingTitle = settings.greetingTitle;
       this.bookshelfGreetingSubtitle = settings.greetingSubtitle;
       this.bookshelfCompanionSectionTitle = settings.companionSectionTitle;
+      // 记住打开分组只在冷启动时读一次，这里只放进 AppStorage，免得长按改问候语等按内存值保存时把它冲掉。
+      AppStorage.setOrCreate('bookshelfRememberGroup', settings.rememberGroup);
+      this.bookshelfImmersiveButtons = settings.immersiveButtons;
+      this.bookshelfImmersive = settings.immersive;
+      // 书架挂载（冷启动）时直接从收起状态开始；书还没读出来时 shelfHeaderCollapseValue 为 0，读出来后首帧就是收起的。
+      if (settings.immersive) this.collapseShelfChromeForImmersive(false);
     } catch (e) {
       console.warn('恢复书架显示设置失败:', e);
     }
@@ -679,7 +815,7 @@ export struct BookshelfPage {
     this.reloadShelfDataSources(true);
   }
 
-  // 书的高矮、斜靠和分组叠法都跟着开关变；渲染键带上开关值，重建数据源让已有的书和分组按新样式重画。
+  // 书的高矮、斜靠、分组叠法与投影都跟着“错落摆放”“封面阴影”变；渲染键带上开关值，重建数据源让已有的书和分组按新样式重画。
   onCompanionStaggerChanged(): void {
     this.reloadShelfDataSources(true);
   }
@@ -714,21 +850,39 @@ export struct BookshelfPage {
       const db = AppDatabase.getInstance();
       await db.initWithContext(getContext(this));
       await PrivateShelfStore.load(getContext(this));
-      const loadedBooks = SearchExplorePendingBook.filterShelfBooks(await db.getAllBooks());
+      const storedBooks = await db.getAllBooks();
+      const loadedBooks = SearchExplorePendingBook.filterShelfBooks(storedBooks);
       const loadedGroups = await db.getCustomBookGroups();
+      // 在书架首次显示前排好“固定”封面序号；暂时隐藏的网页书源书也算在内，免得开关一次就重新编号。
+      await ShelfCoverSlots.sync(getContext(this),
+        storedBooks.filter((book: Book) => !SearchExplorePendingBook.isPendingAddToShelf(book)));
       if (loadSerial !== this.shelfLoadSerial) return;
       if (!this.shelfStateRestored) {
+        let rememberGroup = false;
         try {
-          this.activeShelfGroupId = await BookshelfStateStore.loadActiveGroupId(getContext(this));
+          rememberGroup = (await BookshelfDisplaySettingsStore.load(getContext(this))).rememberGroup;
         } catch (e) {
-          console.warn('恢复书架分组状态失败:', e);
+          console.warn('读取记住打开分组设置失败:', e);
         }
-        try {
-          // 在首帧书架出现前恢复，分类页直接停在上次的类型；该类型暂时没书时由 activeShelfTypeTab 回退显示。
-          const typeTab = await BookshelfStateStore.loadTypeTab(getContext(this));
-          if (BookshelfPage.TYPE_TAB_IDS.indexOf(typeTab) >= 0) this.shelfTypeTab = typeTab;
-        } catch (e) {
-          console.warn('恢复书架分类状态失败:', e);
+        if (rememberGroup) {
+          try {
+            this.activeShelfGroupId = await BookshelfStateStore.loadActiveGroupId(getContext(this));
+          } catch (e) {
+            console.warn('恢复书架分组状态失败:', e);
+          }
+          try {
+            // 在首帧书架出现前恢复，分类页直接停在上次的类型；该类型暂时没书时由 activeShelfTypeTab 回退显示。
+            const typeTab = await BookshelfStateStore.loadTypeTab(getContext(this));
+            if (BookshelfPage.TYPE_TAB_IDS.indexOf(typeTab) >= 0) this.shelfTypeTab = typeTab;
+          } catch (e) {
+            console.warn('恢复书架分类状态失败:', e);
+          }
+        } else {
+          // “记住打开分组”关闭：每次冷启动都从书架首页开始（不在分组里、分类停在“全部”或第一个分类）。
+          // 同时把记录改成首页，之后再打开开关时不会跳回很久以前的分组；运行期间照常记录。
+          this.shelfTypeTab = 'all';
+          BookshelfStateStore.saveActiveGroupId(getContext(this), 0).catch((): void => {});
+          BookshelfStateStore.saveTypeTab(getContext(this), 'all').catch((): void => {});
         }
         if (loadSerial !== this.shelfLoadSerial) return;
         this.shelfStateRestored = true;
@@ -746,6 +900,8 @@ export struct BookshelfPage {
         this.activeShelfGroupId = 0;
       }
       this.applyShelfScope();
+      // 只留菜单按钮时标题行高度不变，书读出来后补报一次底栏状态（冷启动时底栏已收起）。
+      if (this.shelfImmersiveActive()) this.reportShelfBarCollapse();
       this.reloadShelfDataSources(forceDataSourceReload);
       this.refreshOfflineBookUrls();
       this.refreshShelfCoverCache(this.books);
@@ -795,7 +951,17 @@ export struct BookshelfPage {
     bookshelfColdStartRefreshStarted = true;
     // Run once per process after the first local shelf snapshot is visible. The refresh deliberately
     // has no spinner or toast so cold startup remains responsive.
-    setTimeout(() => {
+    // 书架设置“自动获取更新”关闭时跳过（只在网页解析开启时显示，关闭网页解析时在线书本就不在书架上）。
+    setTimeout(async () => {
+      try {
+        const settings = await BookshelfDisplaySettingsStore.load(getContext(this));
+        if (!settings.autoRefresh) {
+          console.info('[ShelfRefresh] cold-start silent refresh skipped: auto refresh off');
+          return;
+        }
+      } catch (e) {
+        console.warn('[ShelfRefresh] read auto refresh setting failed:', e);
+      }
       console.info('[ShelfRefresh] cold-start silent refresh started');
       this.refreshBookshelfToc(true).then(() => {
         console.info('[ShelfRefresh] cold-start silent refresh finished');
@@ -1201,6 +1367,12 @@ export struct BookshelfPage {
       const result = await new picker.DocumentViewPicker(getContext(this)).select(options);
       if (!result || result.length === 0 || !result[0]) return;
       const source = result[0];
+      // 动图原样复制、书架上照常播放；太大的拒收，免得一屏解码拖慢书架。
+      const oversize = await AnimatedImagePolicy.oversizeAnimatedMessage(source);
+      if (oversize) {
+        HdsFeedback.showToast(oversize);
+        return;
+      }
       const db = AppDatabase.getInstance();
       const current = await db.getBook(book.bookUrl);
       if (!current) {
@@ -1268,7 +1440,7 @@ export struct BookshelfPage {
       `${book.totalChapterNum}_${book.getVariable('readStarted')}_` +
       `badges_${book.getVariable('shelfHasUpdate')}_${book.origin}_${book.originName}_` +
       `${progressChapterIndex}_${progressPageCount}_cover_${this.shelfCoverRenderVersions.get(book.bookUrl) || 0}_` +
-      `stagger_${this.bookshelfCompanionStagger ? '1' : '0'}`;
+      `stagger_${this.bookshelfCompanionStagger ? '1' : '0'}_shadow_${this.bookshelfCompanionCoverShadow ? '1' : '0'}`;
   }
 
   openCustomNetworkCoverDialog(): void {
@@ -1502,14 +1674,29 @@ export struct BookshelfPage {
   // 顶栏毛玻璃按列表实际滚动距离显现，见 CollapsingHeader.backdropReveal。
   @State shelfHeaderBackdropReveal: number = 0;
   onHeaderCollapseChange: (progress: number) => void = () => {};
+  /** 沉浸书架时分组页底栏的收起量（分组页标题栏不收起），0 到 CollapsingHeader.DISTANCE。 */
+  private tileGroupBarCollapse: number = 0;
+  /** 关书动画期间进入书架，收起推迟到挪位结束。 */
+  private shelfImmersivePendingCollapse: boolean = false;
+  /** 沉浸时顶部下拉多远放出按钮行和底栏，比刷新阈值小得多。 */
+  private static readonly IMMERSIVE_REVEAL_PULL: number = 12;
+  /** 沉浸时底栏的收起量，0 到 CollapsingHeader.DISTANCE；按钮行另算，往回滑只放出底栏。 */
+  private shelfBarCollapse: number = 0;
+  private shelfAutoHideTimer: number = -1;
+  private shelfAutoHideStartTimer: number = -1;
+  private shelfSoloDimTimer: number = -1;
+  /** 下拉显示的按钮行停留多久没碰就收起。 */
+  private static readonly IMMERSIVE_AUTO_HIDE_MS: number = 4000;
+  /** 一级菜单收起后再弹二级菜单的间隔，两个气泡挂在同一个按钮上，太快会互相打断。 */
+  private static readonly SOLO_MENU_SWAP_DELAY: number = 160;
   private shelfListScroller: ListScroller = new ListScroller();
   private shelfTileScroller: Scroller = new Scroller();
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
-      if (this.tileGroupMotionBackground) {
-        this.tileGroupBackgroundLayer()
-      }
+      // 底色与主题背景图只此一份、常驻最底层：书架和分组页两层都是透明的，开合时缩放淡出的只有内容。
+      // 早先开合前后在层里层外来回挂背景，每次重挂都要重新解码、取景先按拉伸排一帧、动图从头播，会闪一下。
+      this.shelfBackgroundLayer()
       // 书架一直在底下，分组页打开后藏起来（不排版、不拆）；分组页另成一层盖在上面。
       Stack() {
         this.shelfPageBody()
@@ -1609,14 +1796,8 @@ export struct BookshelfPage {
 
   @Builder
   shelfPageBody() {
+    // 底色和主题背景图由根部的 shelfBackgroundLayer 垫着；下面的列表和网格要用 shelfSurfaceColor 透出它。
     Column() {
-      // 主题背景图垫在最底层，不占布局、不随列表滚动；下面的列表和网格要用 shelfSurfaceColor 透出它。
-      // 分组开合期间由 tileGroupBackgroundLayer 垫着，这里不画。
-      if (!this.tileGroupBareBody) {
-        HomeThemeBackdrop()
-          .position({ x: 0, y: 0 })
-      }
-
       Column() {
       // 列表上滑时标题行收起：外层按收起量变矮并裁剪，标题行贴底上移并淡出。
       Stack({ alignContent: Alignment.Bottom }) {
@@ -1626,9 +1807,9 @@ export struct BookshelfPage {
               .fontSize(AppFontSize.DISPLAY)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.primaryTextColor())
-          } else if (!this.isCompanionLayout()) {
+          } else if (!this.shelfSoloMenuMode() && !this.isCompanionLayout()) {
             this.shelfGroupSwitcher()
-          } else if (this.shelfBaseGroupId() === -1) {
+          } else if (!this.shelfSoloMenuMode() && this.shelfBaseGroupId() === -1) {
             // 陪伴布局左上角不放标题，分组改由右侧图标切换；只有“未分组”没有单独的分组页，留个名字说明当前在看什么。
             Text(this.shelfGroupTitle())
               .fontSize(AppFontSize.TITLE)
@@ -1644,6 +1825,9 @@ export struct BookshelfPage {
               accessibilityLabel: '退出多选',
               onTap: () => this.exitBookMultiSelect()
             })
+          } else if (this.shelfSoloMenuMode()) {
+            Blank()
+            this.shelfSoloMenuButton()
           } else {
             Blank()
 
@@ -1654,7 +1838,7 @@ export struct BookshelfPage {
               this.shelfCategoryButton()
             }
             this.shelfFilterButton()
-            this.shelfMoreButton(!this.isTileGroupPage())
+            this.shelfMoreButton(false)
           }
         }
         .width('100%')
@@ -1665,15 +1849,40 @@ export struct BookshelfPage {
           top: this.statusBarHeight
         })
         .alignItems(VerticalAlign.Center)
-        .opacity(CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
+        .opacity(this.shelfSoloMenuMode() ? (this.shelfSoloMenuScrolling ? 0.35 : 1) :
+          CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
         .hitTestBehavior(CollapsingHeader.acceptsTouch(this.shelfHeaderCollapseValue()) ? HitTestMode.Default : HitTestMode.None)
         // 标题栏里的按钮各自响应单击，双击只在空白处和标题文字上生效。
         .gesture(TapGesture({ count: 2 }).onAction(() => this.toggleShelfPrivateByHeaderDoubleTap()))
+        .onTouch((event: TouchEvent) => {
+          // 下拉显示的按钮行被碰到就重新计时。
+          if (event.type === TouchType.Down && this.shelfAutoHideLineVisible && this.shelfImmersivePullMode()) {
+            this.startShelfAutoHide();
+          }
+        })
+
+        if (this.shelfAutoHideLineVisible && this.shelfImmersivePullMode()) {
+          Row()
+            .width(`calc(100% - ${AppSpacing.XL * 2}vp)`)
+            .height(2)
+            .borderRadius(1)
+            .backgroundColor(this.accentColor())
+            .opacity(0.5 * CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
+            .scale({ x: this.shelfAutoHideProgress, centerX: 0 })
+            .margin({ bottom: 2 })
+            .hitTestBehavior(HitTestMode.None)
+            .accessibilityLevel('no')
+        }
       }
       .width('100%')
       .height(56 + this.statusBarHeight - this.shelfHeaderCollapseValue())
       .clip(!this.shelfCategoryAnimating)
       .onAreaChange((_oldArea: Area, newArea: Area) => {
+        // 沉浸时底栏和按钮行分开收放，底栏按自己的收起量报。
+        if (this.shelfImmersiveActive()) {
+          this.reportShelfBarCollapse();
+          return;
+        }
         this.onHeaderCollapseChange((56 + this.statusBarHeight - Number(newArea.height)) /
           CollapsingHeader.DISTANCE);
       })
@@ -1703,6 +1912,8 @@ export struct BookshelfPage {
           top: this.statusBarHeight + 56 +
             (this.shelfSearchActive ? BookshelfPage.SEARCH_BAR_HEIGHT + AppSpacing.MD : 0),
           buttonTop: this.statusBarHeight + 8,
+          // 只留菜单按钮时没有分类按钮，收起状态不画按钮底板。
+          collapsedButton: !this.shelfSoloMenuMode(),
           darkMode: this.appDarkMode, surfaceColor: this.cardColor(), accentColor: this.accentGlowColor(),
           touching: this.shelfScopeTabsTouching && this.shelfCategoryExpanded,
           touchX: this.shelfScopeTabsTouchX, touchY: this.shelfScopeTabsTouchY
@@ -1715,7 +1926,7 @@ export struct BookshelfPage {
       HeaderBackdrop({ backdropHeight: this.shelfHeaderBackdropHeight(),
         statusBarHeight: this.statusBarHeight,
         backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
-        reveal: ThemeRuntime.homeBackdrop(this.appDarkMode) ? this.shelfHeaderBackdropReveal : 1 })
+        reveal: this.shelfHasThemeBackdrop() ? this.shelfHeaderBackdropReveal : 1 })
         .width('100%')
         .position({ x: 0, y: 0 })
         .zIndex(3)
@@ -1776,10 +1987,8 @@ export struct BookshelfPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(this.tileGroupBareBody ? Color.Transparent : this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     .onTouch((event: TouchEvent) => this.onShelfBodyTouch(event))
-    // 开合期间的背景由 tileGroupBackgroundLayer 负责。
   }
 
   onShelfBodyTouch(event: TouchEvent): void {
@@ -1799,11 +2008,6 @@ export struct BookshelfPage {
   @Builder
   tileGroupPageBody() {
     Column() {
-      if (!this.tileGroupBareBody) {
-        HomeThemeBackdrop()
-          .position({ x: 0, y: 0 })
-      }
-
       Column() {
         Row() {
           if (this.isBookMultiSelect) {
@@ -1840,7 +2044,7 @@ export struct BookshelfPage {
               .fontSize(AppFontSize.BODY)
               .fontColor(this.subTextColor())
               .margin({ right: AppSpacing.MD })
-            this.shelfMoreButton(this.isTileGroupPage())
+            this.shelfMoreButton(true)
           }
         }
         .width('100%')
@@ -1859,7 +2063,7 @@ export struct BookshelfPage {
       HeaderBackdrop({ backdropHeight: this.statusBarHeight + 56,
         statusBarHeight: this.statusBarHeight,
         backdropColor: ThemeRuntime.topBarColor(this.appDarkMode),
-        reveal: ThemeRuntime.homeBackdrop(this.appDarkMode) ? this.tileGroupBackdropReveal : 1 })
+        reveal: this.shelfHasThemeBackdrop() ? this.tileGroupBackdropReveal : 1 })
         .width('100%')
         .position({ x: 0, y: 0 })
         .zIndex(3)
@@ -1872,21 +2076,21 @@ export struct BookshelfPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(this.tileGroupBareBody ? Color.Transparent : this.pageColor())
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     .onTouch((event: TouchEvent) => this.onShelfBodyTouch(event))
   }
 
-  /** 和分组页一样的底色与主题背景图：书架或分组页整页淡出时，背景留在原处不跟着淡。 */
+  /** 书架与分组页共用的底色和主题背景图，排版与两层一致（同样只向底部延伸安全区）。 */
   @Builder
-  tileGroupBackgroundLayer() {
+  shelfBackgroundLayer() {
     Column() {
-      HomeThemeBackdrop()
+      HomeThemeBackdrop({ shelfLayout: this.bookshelfLayoutMode })
         .position({ x: 0, y: 0 })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(this.pageColor())
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     .hitTestBehavior(HitTestMode.None)
     .accessibilityLevel('no-hide-descendants')
   }
@@ -1896,7 +2100,13 @@ export struct BookshelfPage {
     Stack({ alignContent: Alignment.TopStart }) {
       ForEach(this.tileGroupFlyers, (flyer: TileGroupFlyer) => {
         Stack() {
-          if (flyer.cover) {
+          if (flyer.cover && flyer.fill && this.themeImageCrop(ThemeImageSlots.COVER, flyer.cover)) {
+            ThemeCroppedImage({ src: flyer.cover,
+              crop: this.themeImageCrop(ThemeImageSlots.COVER, flyer.cover) as ThemeImageCrop,
+              syncLoad: this.coverSyncLoadable(flyer.cover) })
+              .width('100%')
+              .height('100%')
+          } else if (flyer.cover) {
             Image(flyer.cover)
               .width('100%')
               .height('100%')
@@ -1907,6 +2117,9 @@ export struct BookshelfPage {
             Text(flyer.initial)
               .fontSize(28)
               .fontColor('#FFFFFF')
+          }
+          if (!flyer.fill && this.shelfCoverDimOpacity() > 0) {
+            this.shelfCoverDimLayer()
           }
         }
         .width(flyer.width)
@@ -2075,6 +2288,7 @@ export struct BookshelfPage {
             if (pageKey !== this.shelfPageKey()) return;
             this.shelfRefreshPullOffset = offset;
             this.trackShelfRefreshPullOffset(offset);
+            this.revealShelfChromeOnPull(offset);
           })
           .onRefreshing(() => {
             if (pageKey === this.shelfPageKey()) this.onShelfPullRefresh();
@@ -2138,6 +2352,13 @@ export struct BookshelfPage {
     }))
   }
 
+  /** 分组下拉菜单里置顶分组排在前面，其余保持原有顺序。 */
+  shelfGroupsPinnedFirst(): BookGroup[] {
+    const pinned = this.shelfGroups.filter((group: BookGroup): boolean => group.pinned === true);
+    if (pinned.length === 0) return this.shelfGroups;
+    return pinned.concat(this.shelfGroups.filter((group: BookGroup): boolean => group.pinned !== true));
+  }
+
   /** 书架标题栏上的分组名（书架底层那一层所在的分组）。 */
   shelfGroupTitle(): string {
     const groupId = this.shelfBaseGroupId();
@@ -2156,9 +2377,9 @@ export struct BookshelfPage {
       Scroll() {
         Column({ space: AppSpacing.XXS }) {
           this.shelfGroupMenuItem('全部书籍', 0)
-          ForEach(this.shelfGroups, (group: BookGroup) => {
+          ForEach(this.shelfGroupsPinnedFirst(), (group: BookGroup) => {
             this.shelfGroupMenuItem(group.groupName, group.groupId, group)
-          }, (group: BookGroup) => `${group.groupId}_${group.groupName}`)
+          }, (group: BookGroup) => `${group.groupId}_${group.groupName}_${group.pinned ? '1' : '0'}`)
           this.shelfGroupMenuItem('未分组', -1)
         }
         .width('100%')
@@ -2190,7 +2411,7 @@ export struct BookshelfPage {
       })
 
       if (this.shelfGroups.length > 0) {
-        Text('长按分组可重命名或删除')
+        Text('长按分组可置顶、重命名或删除')
           .fontSize(AppFontSize.MICRO)
           .fontColor(this.secondaryTextColor())
           .width('100%')
@@ -2211,6 +2432,12 @@ export struct BookshelfPage {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
+      if (group?.pinned) {
+        SymbolGlyph($r('sys.symbol.pin'))
+          .fontSize(13)
+          .fontColor([this.secondaryTextColor()])
+          .accessibilityText('已置顶')
+      }
       Text(`${this.shelfGroupBookCount(groupId)}`)
         .fontSize(AppFontSize.CAPTION)
         .fontColor(this.secondaryTextColor())
@@ -2372,6 +2599,16 @@ export struct BookshelfPage {
     Scroll() {
       Column() {
         if (this.pendingActionBook) {
+          if (this.hasShelfRefreshError(this.pendingActionBook) && !LocalBookService.isLocalBook(this.pendingActionBook)) {
+            this.contextActionItem($r('sys.symbol.exclamationmark_circle'),
+              `检查失败：${this.shelfRefreshErrorReason(this.pendingActionBook)}，去换源`, SHELF_REFRESH_ERROR_COLOR, () => {
+                if (this.pendingActionBook) {
+                  const book = this.pendingActionBook;
+                  this.closeBookActions();
+                  this.openShelfChangeSource(book);
+                }
+              })
+          }
           this.contextActionItem($r('sys.symbol.info_circle'), '查看书籍详情', this.primaryTextColor(), () => {
             if (this.pendingActionBook) {
               const book = this.pendingActionBook;
@@ -2819,6 +3056,12 @@ export struct BookshelfPage {
   bookGroupActionMenu() {
     Scroll() {
       Column() {
+        this.contextActionItem($r('sys.symbol.pin'), this.pendingBookGroup?.pinned ? '取消置顶' : '置顶',
+          this.primaryTextColor(), () => {
+            const group = this.pendingBookGroup;
+            this.showBookGroupActionMenu = false;
+            if (group) this.toggleBookGroupPinned(group);
+          })
         this.contextActionItem($r('sys.symbol.square_and_pencil'), '重命名', this.primaryTextColor(), () => {
           this.renameBookGroupName = this.pendingBookGroup?.groupName || '';
           this.showBookGroupActionMenu = false;
@@ -3349,7 +3592,7 @@ export struct BookshelfPage {
   }
 
   /**
-   * 开合：两层都撤掉底色和主题背景图（由 tileGroupBackgroundLayer 垫着），缩放的只有内容。打开时在书架上面建分组页
+   * 开合：两层本来就不带底色和主题背景图（由 shelfBackgroundLayer 常驻垫着），缩放的只有内容。打开时在书架上面建分组页
    * （透明、停在起点），等这一屏封面解码完；返回时把藏着的书架显出来（只排版、不重建），等它画出来。然后两层一口气走完。
    * 建页时主线程堵着、动画也画不出帧（真机实测整段冻住），所以动画不提前开始。
    */
@@ -3357,8 +3600,6 @@ export struct BookshelfPage {
     const entering = groupId > 0;
     this.tileGroupZoomX = fromFolder ? this.tileGroupOriginX : this.contextViewportWidth / 2;
     this.tileGroupZoomY = fromFolder ? this.tileGroupOriginY : this.contextViewportHeight / 2;
-    this.tileGroupMotionBackground = true;
-    this.tileGroupBareBody = true;
     const run = (): void => {
       this.getUIContext().animateTo({
         duration: entering ? SHELF_GROUP_ZOOM_IN_DURATION : SHELF_GROUP_ZOOM_OUT_DURATION,
@@ -3573,8 +3814,6 @@ export struct BookshelfPage {
   clearTileGroupMotionLayers(): void {
     this.tileGroupShelfScale = 1;
     this.tileGroupPageScale = 1;
-    this.tileGroupBareBody = false;
-    this.tileGroupMotionBackground = false;
     this.tileGroupAwaitCovers = false;
     this.tileGroupPendingCovers.clear();
     this.tileGroupShelfOpacity = 1;
@@ -3759,6 +3998,18 @@ export struct BookshelfPage {
     HdsFeedback.showToast('分组已重命名');
   }
 
+  async toggleBookGroupPinned(group: BookGroup): Promise<void> {
+    const nextPinned = !group.pinned;
+    try {
+      await AppDatabase.getInstance().setBookGroupPinned(group.groupId, nextPinned);
+      await this.loadBooks();
+      HdsFeedback.showToast(nextPinned ? `已置顶分组《${group.groupName}》` : `已取消置顶分组《${group.groupName}》`);
+    } catch (e) {
+      console.error('更新分组置顶状态失败:', e);
+      HdsFeedback.showToast(nextPinned ? '置顶失败' : '取消置顶失败');
+    }
+  }
+
   closeDeleteBookGroupDialog(): void {
     this.showDeleteBookGroupDialog = false;
     this.deleteBookGroupDialogSession.close(this.getUIContext());
@@ -3769,12 +4020,59 @@ export struct BookshelfPage {
   async deleteShelfBookGroup(): Promise<void> {
     const group = this.pendingDeleteBookGroup;
     if (!group) return;
-    const db = AppDatabase.getInstance();
-    await db.deleteBookGroup(group.groupId);
-    if (this.activeShelfGroupId === group.groupId) this.activeShelfGroupId = -1;
+    // 先关掉确认框露出书架，文件夹消散与删库同时进行；播完再重读，里面的书回到未分组。
     this.closeDeleteBookGroupDialog();
+    const dissolve = this.dissolveShelfGroupFolder(group.groupId);
+    try {
+      await AppDatabase.getInstance().deleteBookGroup(group.groupId);
+    } catch (e) {
+      console.error('删除分组失败:', e);
+      await dissolve;
+      this.shelfDissolvingGroupIds = this.shelfDissolvingGroupIds.filter((id: number) => id !== group.groupId);
+      HdsFeedback.showToast('删除分组失败');
+      return;
+    }
+    if (this.activeShelfGroupId === group.groupId) this.activeShelfGroupId = -1;
+    await dissolve;
     await this.loadBooks();
+    // 文件夹格子被拿掉时还会播一段系统默认的消失转场，消散状态等它结束再清（同 commitShelfBookRemoval）。
+    setTimeout(() => {
+      this.shelfDissolvingGroupIds = this.shelfDissolvingGroupIds.filter((id: number) => id !== group.groupId);
+    }, 600);
     HdsFeedback.showToast('分组已删除，书籍已移到未分组');
+  }
+
+  isShelfGroupDissolving(groupId: number): boolean {
+    return this.shelfDissolvingGroupIds.length > 0 && this.shelfDissolvingGroupIds.indexOf(groupId) >= 0;
+  }
+
+  /** 当前页上看得见这个文件夹时让它散成颗粒（颜色取文件夹画面的主色），等淡出完再返回；看不见就直接返回。 */
+  async dissolveShelfGroupFolder(groupId: number): Promise<void> {
+    // 等确认框退场，否则消散被遮罩挡住。
+    await sleepMs(240);
+    const elementId = this.tileGroupElementId(groupId, this.shelfPageKey());
+    const bounds = this.measureTileGroupRect(elementId);
+    if (!bounds || bounds.width < 4 || bounds.height < 4) return;
+    if (this.contextViewportWidth > 0 && (bounds.x + bounds.width <= 0 || bounds.x >= this.contextViewportWidth)) return;
+    if (this.contextViewportHeight > 0 && (bounds.y + bounds.height <= 0 || bounds.y >= this.contextViewportHeight)) return;
+    const ui = this.getUIContext();
+    const burst = new DeleteParticleBurst();
+    burst.x = bounds.x;
+    burst.y = bounds.y;
+    burst.width = bounds.width;
+    burst.height = bounds.height;
+    burst.id = DeleteParticles.newId();
+    burst.colors = await DeleteParticles.pickColors(ui, elementId,
+      this.appDarkMode ? ['#C8CCD2', '#8A9099', '#5F6670'] : ['#5F6670', '#9AA0A6', '#C4C8CE']);
+    burst.count = DeleteParticles.particleCount(burst.width, burst.height, 1);
+    this.shelfDissolveBursts = [...this.shelfDissolveBursts, burst];
+    ui.animateTo({ duration: DeleteParticles.FADE_MS, curve: Curve.EaseIn }, () => {
+      this.shelfDissolvingGroupIds = [...this.shelfDissolvingGroupIds, groupId];
+    });
+    setTimeout(() => {
+      this.shelfDissolveBursts = this.shelfDissolveBursts.filter((item: DeleteParticleBurst) => item.id !== burst.id);
+    }, DeleteParticles.LAYER_MS);
+    await sleepMs(DeleteParticles.FADE_MS);
   }
 
   async assignSelectedBooksToGroup(groupId: number): Promise<void> {
@@ -3829,14 +4127,250 @@ export struct BookshelfPage {
     const reveal = CollapsingHeader.backdropReveal(offset);
     if (reveal !== this.shelfHeaderBackdropReveal) this.shelfHeaderBackdropReveal = reveal;
     if (this.shelfCategoryAnimating) return;
+    if (this.shelfImmersiveActive()) {
+      this.onShelfImmersiveScroll(delta, offset);
+      return;
+    }
     const next = CollapsingHeader.next(this.shelfHeaderCollapse, delta, offset);
     if (next !== this.shelfHeaderCollapse) {
       this.shelfHeaderCollapse = next;
     }
   }
 
+  /**
+   * 沉浸时的滚动。收起量不受列表顶部限制（在顶部往上推也收起），所以按已滚过整段收起距离算。
+   * 底栏上滑收起、往回滑放出；按钮行只跟着上滑收起，往回滑不出来，要在顶部下拉（revealShelfChromeOnPull）。
+   * 只留菜单按钮时按钮行不收，滚动中变淡。
+   */
+  onShelfImmersiveScroll(delta: number, offset: number): void {
+    const cap = Math.max(offset, CollapsingHeader.DISTANCE);
+    const bar = CollapsingHeader.next(this.shelfBarCollapse, delta, cap);
+    if (bar !== this.shelfBarCollapse) {
+      this.shelfBarCollapse = bar;
+      this.reportShelfBarCollapse();
+    }
+    if (this.bookshelfImmersiveButtons === 'menu') {
+      this.markShelfSoloScrolling();
+      return;
+    }
+    if (delta > 0) {
+      const next = CollapsingHeader.next(this.shelfHeaderCollapse, delta, cap);
+      if (next !== this.shelfHeaderCollapse) {
+        this.shelfHeaderCollapse = next;
+        this.stopShelfAutoHide();
+      }
+    }
+  }
+
+  /** 沉浸书架生效：多选和书架内搜索时顶栏照常固定显示。 */
+  shelfImmersiveActive(): boolean {
+    return this.bookshelfImmersive && !this.isBookMultiSelect && !this.shelfSearchActive;
+  }
+
+  /** 沉浸且顶部按钮为“下拉显示”。 */
+  shelfImmersivePullMode(): boolean {
+    return this.shelfImmersiveActive() && this.bookshelfImmersiveButtons !== 'menu';
+  }
+
+  /** 沉浸且顶部按钮为“只留菜单按钮”；分组页那一层有自己的标题栏，不算。 */
+  shelfSoloMenuMode(): boolean {
+    return this.shelfImmersiveActive() && this.bookshelfImmersiveButtons === 'menu' && !this.isTileGroupPage();
+  }
+
+  onShelfEnterTick(): void {
+    if (!this.shelfImmersiveActive()) return;
+    // 关书缩回、挪位期间书架上盖着截图，等揭开后再收，免得栏在盖图揭开那一下闪出来又滑走。
+    if (this.shelfReturnMotionActive) {
+      this.shelfImmersivePendingCollapse = true;
+      return;
+    }
+    this.collapseShelfChromeForImmersive(true);
+  }
+
+  onShelfImmersiveChanged(): void {
+    if (this.bookshelfImmersive) return;
+    // 关掉沉浸后标题行回到按滚动距离收起的规则：在顶部附近的直接展开。
+    this.shelfImmersivePendingCollapse = false;
+    this.stopShelfAutoHide();
+    this.showShelfSoloMenu = false;
+    this.tileGroupBarCollapse = 0;
+    this.shelfBarCollapse = 0;
+    const page = this.shelfCategoryPage(this.shelfPageKey());
+    const offset = Math.max(0, this.isTileLayout() ? page.tileOffset : page.listOffset);
+    if (this.shelfHeaderCollapse > offset) {
+      animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+        this.shelfHeaderCollapse = Math.min(this.shelfHeaderCollapse, offset);
+      });
+    }
+    this.reportShelfBarCollapse();
+  }
+
+  onShelfImmersiveButtonsChanged(): void {
+    this.showShelfSoloMenu = false;
+    if (!this.shelfImmersiveActive()) return;
+    this.collapseShelfChromeForImmersive(true);
+  }
+
+  onShelfSearchActiveChanged(): void {
+    if (this.shelfSearchActive) {
+      // 搜索时顶栏固定显示（只留菜单按钮时换回完整按钮行）。
+      this.stopShelfAutoHide();
+      this.showShelfSoloMenu = false;
+      if (this.bookshelfImmersive && this.shelfHeaderCollapse > 0) {
+        animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+          this.shelfHeaderCollapse = 0;
+        });
+      }
+      return;
+    }
+    if (this.shelfImmersivePullMode() && this.shelfHeaderCollapse === 0) this.startShelfAutoHide();
+  }
+
+  /** 进入书架时收起底栏；下拉显示同时收起按钮行，只留菜单按钮时按钮行（那一个圆钮）保持显示。 */
+  collapseShelfChromeForImmersive(animated: boolean): void {
+    this.shelfImmersivePendingCollapse = false;
+    this.stopShelfAutoHide();
+    if (this.isTileGroupPage()) {
+      this.tileGroupBarCollapse = CollapsingHeader.DISTANCE;
+      this.reportShelfBarCollapse();
+      return;
+    }
+    this.shelfBarCollapse = CollapsingHeader.DISTANCE;
+    const headerTarget = this.bookshelfImmersiveButtons === 'menu' ? 0 : CollapsingHeader.DISTANCE;
+    if (this.shelfHeaderCollapse !== headerTarget) {
+      if (animated) {
+        animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
+          this.shelfHeaderCollapse = headerTarget;
+        });
+      } else {
+        this.shelfHeaderCollapse = headerTarget;
+      }
+    }
+    this.reportShelfBarCollapse();
+  }
+
+  /** 沉浸时在列表顶部往下拉：先放出底栏（下拉显示还放出按钮行并开始倒计时），继续拉到原来的距离照常刷新。 */
+  revealShelfChromeOnPull(offset: number): void {
+    if (!this.shelfImmersiveActive() || offset < BookshelfPage.IMMERSIVE_REVEAL_PULL) return;
+    if (this.shelfBarCollapse > 0) {
+      this.shelfBarCollapse = 0;
+      this.reportShelfBarCollapse();
+    }
+    if (this.bookshelfImmersiveButtons === 'menu' || this.shelfHeaderCollapse <= 0) return;
+    animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, () => {
+      this.shelfHeaderCollapse = 0;
+    });
+    this.startShelfAutoHide();
+  }
+
+  /**
+   * 下拉显示的按钮行自动收起：细线 4 秒缩到头时收起。碰按钮行重新计时；到点时开着它的菜单就再等一轮。
+   */
+  startShelfAutoHide(): void {
+    this.stopShelfAutoHide();
+    this.shelfAutoHideLineVisible = true;
+    animateTo({ duration: 0 }, () => {
+      this.shelfAutoHideProgress = 1;
+    });
+    // 下一帧再开始缩短，免得和上面置满合成一次赋值。
+    this.shelfAutoHideStartTimer = setTimeout((): void => {
+      this.shelfAutoHideStartTimer = -1;
+      animateTo({ duration: BookshelfPage.IMMERSIVE_AUTO_HIDE_MS, curve: Curve.Linear }, () => {
+        this.shelfAutoHideProgress = 0;
+      });
+    }, 16);
+    this.shelfAutoHideTimer = setTimeout((): void => {
+      this.shelfAutoHideTimer = -1;
+      if (!this.shelfComponentActive || !this.shelfImmersivePullMode() || this.shelfHeaderCollapse > 0) {
+        this.stopShelfAutoHide();
+        return;
+      }
+      if (this.showShelfGroupMenu || this.showShelfFilterMenu || this.showShelfMoreMenu) {
+        this.startShelfAutoHide();
+        return;
+      }
+      this.stopShelfAutoHide();
+      animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
+        this.shelfHeaderCollapse = CollapsingHeader.DISTANCE;
+      });
+    }, BookshelfPage.IMMERSIVE_AUTO_HIDE_MS);
+  }
+
+  stopShelfAutoHide(): void {
+    if (this.shelfAutoHideTimer >= 0) {
+      clearTimeout(this.shelfAutoHideTimer);
+      this.shelfAutoHideTimer = -1;
+    }
+    if (this.shelfAutoHideStartTimer >= 0) {
+      clearTimeout(this.shelfAutoHideStartTimer);
+      this.shelfAutoHideStartTimer = -1;
+    }
+    if (this.shelfAutoHideLineVisible) this.shelfAutoHideLineVisible = false;
+  }
+
+  /** 只留菜单按钮时滚动中把圆钮调淡，停下 300ms 后恢复。 */
+  markShelfSoloScrolling(): void {
+    if (!this.shelfSoloMenuScrolling) {
+      animateTo({ duration: 150, curve: Curve.EaseOut }, () => {
+        this.shelfSoloMenuScrolling = true;
+      });
+    }
+    if (this.shelfSoloDimTimer >= 0) clearTimeout(this.shelfSoloDimTimer);
+    this.shelfSoloDimTimer = setTimeout((): void => {
+      this.shelfSoloDimTimer = -1;
+      animateTo({ duration: 250, curve: Curve.EaseOut }, () => {
+        this.shelfSoloMenuScrolling = false;
+      });
+    }, 300);
+  }
+
+  /** 沉浸时分组页的滚动：标题栏不动，只收放底栏。 */
+  onTileGroupBarScroll(delta: number, offset: number): void {
+    if (!this.shelfImmersiveActive()) return;
+    const next = CollapsingHeader.next(this.tileGroupBarCollapse, delta, Math.max(offset, CollapsingHeader.DISTANCE));
+    if (next === this.tileGroupBarCollapse) return;
+    this.tileGroupBarCollapse = next;
+    this.reportShelfBarCollapse();
+  }
+
+  onTileGroupBarScrollStop(): void {
+    if (!this.shelfImmersiveActive()) return;
+    const target = CollapsingHeader.settle(this.tileGroupBarCollapse, CollapsingHeader.DISTANCE);
+    if (target === this.tileGroupBarCollapse) return;
+    this.tileGroupBarCollapse = target;
+    this.reportShelfBarCollapse();
+  }
+
+  /**
+   * 报给首页的底栏收起量。非沉浸时就是标题行的收起量（平时由标题行 onAreaChange 报，进出分组页时补报，
+   * 分组页沿用书架的值，和以前一样）；沉浸时底栏单独记，书架和分组页各一份，没有书时不收。
+   */
+  reportShelfBarCollapse(): void {
+    let value = this.shelfHeaderCollapseValue();
+    if (this.shelfImmersiveActive()) {
+      value = this.isTileGroupPage() ? this.tileGroupBarCollapse :
+        (!this.isLoading && this.books.length > 0 ? this.shelfBarCollapse : 0);
+    }
+    this.onHeaderCollapseChange(value / CollapsingHeader.DISTANCE);
+  }
+
   onShelfListScrollStop(offset: number): void {
     if (this.shelfCategoryAnimating) return;
+    if (this.shelfImmersiveActive()) {
+      const bar = CollapsingHeader.settle(this.shelfBarCollapse, CollapsingHeader.DISTANCE);
+      if (bar !== this.shelfBarCollapse) {
+        this.shelfBarCollapse = bar;
+        this.reportShelfBarCollapse();
+      }
+      // 下拉显示：按钮行停在半截时直接收起（往上滑就收回）。
+      if (this.bookshelfImmersiveButtons !== 'menu' && this.shelfHeaderCollapse > 0 &&
+        this.shelfHeaderCollapse < CollapsingHeader.DISTANCE) {
+        animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+          this.shelfHeaderCollapse = CollapsingHeader.DISTANCE;
+        });
+      }
+      return;
+    }
     const target = CollapsingHeader.settle(this.shelfHeaderCollapse, offset);
     if (target !== this.shelfHeaderCollapse) {
       animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
@@ -3864,6 +4398,8 @@ export struct BookshelfPage {
   }
 
   shelfHeaderBackdropHeight(): number {
+    // 只留菜单按钮时标题行只剩一个自带底板的圆钮，顶栏不铺磨砂，内容一直透到状态栏下。
+    if (this.shelfSoloMenuMode()) return this.statusBarHeight;
     // 搜索框的底边不包含下面的间距和沉浸光感分类栏。
     return this.statusBarHeight + 56 - this.shelfHeaderCollapseValue() +
       (this.shelfSearchActive ? BookshelfPage.SEARCH_BAR_HEIGHT : 0);
@@ -4146,8 +4682,8 @@ export struct BookshelfPage {
     const cacheKey = `${mode}_${viewKey}_${this.shelfBaseGroupId()}_${this.isBookMultiSelect ? '1' : '0'}_` +
       `${this.shouldShowLatestExpandedTileBook() ? latestBookUrls : ''}_` +
       `${books.map((book: Book) => `${book.bookUrl}:${book.name}:${book.author}:${this.getBookReadTime(book)}:${this.getBookAddTime(book)}:` +
-        `${BookshelfSortHelper.getBookUpdateTime(book)}:${book.group}:${book.isPinned ? '1' : '0'}`).join('|')}_` +
-      `${this.shelfGroups.map((group: BookGroup) => `${group.groupId}:${group.groupName}`).join('|')}`;
+        `${this.shelfUpdateSortTime(book)}:${book.group}:${book.isPinned ? '1' : '0'}`).join('|')}_` +
+      `${this.shelfGroups.map((group: BookGroup) => `${group.groupId}:${group.groupName}:${group.pinned ? '1' : '0'}`).join('|')}`;
     if (cacheKey === this.shelfTileEntriesCacheKey) {
       return this.shelfTileEntriesCache;
     }
@@ -4162,7 +4698,7 @@ export struct BookshelfPage {
       entry.book = book;
       entry.readTime = this.getBookReadTime(book);
       entry.addTime = this.getBookAddTime(book);
-      entry.updateTime = BookshelfSortHelper.getBookUpdateTime(book);
+      entry.updateTime = this.shelfUpdateSortTime(book);
       entry.name = this.normalizeBookName(book.name);
       entry.pinned = book.isPinned;
       entry.originalOrder = index;
@@ -4179,8 +4715,10 @@ export struct BookshelfPage {
       entry.readTime = this.latestTileGroupReadTime(groupBooks);
       entry.addTime = this.latestTileGroupAddTime(groupBooks);
       entry.updateTime = groupBooks.reduce((latest: number, book: Book): number =>
-        Math.max(latest, BookshelfSortHelper.getBookUpdateTime(book)), 0);
+        Math.max(latest, this.shelfUpdateSortTime(book)), 0);
       entry.name = this.normalizeBookName(group.groupName);
+      // 置顶分组和置顶书籍同属最前一档，档内按当前排序方式排。
+      entry.pinned = group.pinned === true;
       entry.originalOrder = bookOffset + index;
       entries.push(entry);
     });
@@ -4231,6 +4769,13 @@ export struct BookshelfPage {
       (mode === 'recentAdd' ? b.addTime - a.addTime : b.readTime - a.readTime);
     if (timeDiff !== 0) {
       return timeDiff;
+    }
+    if (mode === 'recentUpdate') {
+      // 与 sortBooks 一致：都没有未读更新（或同一批查到更新）的按最近阅读、再按加入时间排。
+      const readDiff = b.readTime - a.readTime || b.addTime - a.addTime;
+      if (readDiff !== 0) {
+        return readDiff;
+      }
     }
     const nameDiff = a.name.localeCompare(b.name, 'zh-Hans-CN-u-co-pinyin');
     return nameDiff !== 0 ? nameDiff : a.originalOrder - b.originalOrder;
@@ -4396,7 +4941,8 @@ export struct BookshelfPage {
           .padding({ bottom: this.shelfTileRowGap() - this.shelfTileGridRowGap(this.shelfBooksForPage(pageKey), pageKey) })
         }, (entry: ShelfTileSortEntry) => entry.book ?
           this.shelfBookRenderKey(entry.book, entry.key) :
-          `${entry.key}_stagger_${this.bookshelfCompanionStagger ? '1' : '0'}`)
+          `${entry.key}_stagger_${this.bookshelfCompanionStagger ? '1' : '0'}_` +
+            `shadow_${this.bookshelfCompanionCoverShadow ? '1' : '0'}_pin_${entry.pinned ? '1' : '0'}`)
       } else {
         LazyForEach(this.shelfTileBookDataSource(pageKey), (book: Book) => {
           GridItem() {
@@ -4432,6 +4978,7 @@ export struct BookshelfPage {
           // 分组页的标题栏不收起，只让毛玻璃按滚动显现。
           const reveal = CollapsingHeader.backdropReveal(page.tileOffset);
           if (reveal !== this.tileGroupBackdropReveal) this.tileGroupBackdropReveal = reveal;
+          this.onTileGroupBarScroll(delta, page.tileOffset);
         } else {
           this.onShelfListScroll(delta, page.tileOffset);
         }
@@ -4440,6 +4987,8 @@ export struct BookshelfPage {
     .onScrollStop(() => {
       if (!this.tileGroupAnimating && pageKey === this.shelfPageKey() && !this.isTileGroupPageKey(pageKey)) {
         this.onShelfListScrollStop(this.shelfTileScrollerForPage(pageKey).currentOffset().yOffset);
+      } else if (!this.tileGroupAnimating && pageKey === this.shelfPageKey()) {
+        this.onTileGroupBarScrollStop();
       }
     })
     .onAreaChange((_oldValue: Area, newValue: Area) => {
@@ -4579,7 +5128,7 @@ export struct BookshelfPage {
   shelfTileLatestCard(book: Book, pageKey: string) {
     Row({ space: AppSpacing.LG }) {
       Column() {
-        Text('继续阅读')
+        Text(this.shelfContinueActionText(book))
           .fontSize(AppFontSize.CAPTION)
           .fontColor(this.accentColor())
           .maxLines(1)
@@ -4808,24 +5357,24 @@ export struct BookshelfPage {
       .map((book: Book): string => `${book.bookUrl}:${this.getBookReadTime(book)}`).join('|');
   }
 
-  /** 书页厚度约为封面宽度的十分之一，宽屏放大封面时一起变厚。 */
-  shelfHardcoverThickness(coverWidth: number): number {
-    return Math.max(6, Math.round(coverWidth * 0.1));
-  }
-
-  /** 书页条纹按像素宽度换算成渐变比例，三种纸色交替，重复铺满整个书页侧面。 */
-  shelfHardcoverPageStripes(width: number): Array<[ResourceColor, number]> {
+  /**
+   * 书页条纹按像素宽度换算成渐变比例，三种纸色交替，重复铺满整个书页侧面。
+   * 平放的书正对着书口，等宽的条纹太像栅格，换成一组疏密不匀的。
+   */
+  shelfHardcoverPageStripes(width: number, uneven: boolean = false): Array<[ResourceColor, number]> {
     const unit = 1 / Math.max(1, width);
     const colors = this.appDarkMode ? ['#D2C9B9', '#A99D88', '#C3B8A5'] : ['#F6EFE2', '#D9CDB7', '#EFE6D5'];
+    if (uneven) {
+      return [[colors[0], 0], [colors[0], unit * 1.2], [colors[1], unit * 1.2], [colors[1], unit * 1.6],
+        [colors[2], unit * 1.6], [colors[2], unit * 3], [colors[1], unit * 3], [colors[1], unit * 3.3],
+        [colors[0], unit * 3.3], [colors[0], unit * 4.3], [colors[2], unit * 4.3], [colors[2], unit * 5.2],
+        [colors[1], unit * 5.2], [colors[1], unit * 5.5]];
+    }
     return [[colors[0], 0], [colors[0], unit], [colors[1], unit], [colors[1], unit * 1.6],
       [colors[2], unit * 1.6], [colors[2], unit * 2.4]];
   }
 
-  /** 底板左缘缩进、书脊阴影宽度与压槽宽度都按封面宽度缩放，网格里的小书与继续阅读的大书比例一致。 */
-  shelfHardcoverBoardInset(coverWidth: number): number {
-    return Math.max(3, Math.round(coverWidth * 0.043));
-  }
-
+  /** 书脊阴影宽度与压槽宽度按封面宽度缩放，网格里的小书与继续阅读的大书比例一致。 */
   shelfHardcoverSpineWidth(coverWidth: number): number {
     return Math.max(6, Math.round(coverWidth * 0.11));
   }
@@ -4834,93 +5383,29 @@ export struct BookshelfPage {
     return Math.max(2, Math.round(coverWidth * 0.03));
   }
 
-  shelfHardcoverBoardWidth(coverWidth: number): number {
-    return coverWidth + this.shelfHardcoverThickness(coverWidth) + 3 - this.shelfHardcoverBoardInset(coverWidth);
-  }
-
-  /** 精装书封面以外的部分：两层底板投影、书页侧面与封面压在书页上的窄投影，封面面板叠在它上面。 */
-  @Builder
-  shelfHardcoverBack(coverWidth: number, coverHeight: number) {
-    Stack({ alignContent: Alignment.TopStart }) {
-      // 底板投影分两层：大而淡的落地投影、紧贴书底的接触投影。
-      Column()
-        .width(this.shelfHardcoverBoardWidth(coverWidth))
-        .height(coverHeight + 2)
-        .position({ x: this.shelfHardcoverBoardInset(coverWidth), y: 2 })
-        .borderRadius({ topLeft: 2, bottomLeft: 2, topRight: 5, bottomRight: 5 })
-        .backgroundColor(this.shelfHardcoverBoardColor())
-        .shadow({ radius: Math.round(coverWidth * 0.19), color: this.appDarkMode ? '#99000000' : '#5250341A',
-          offsetX: Math.round(coverWidth * 0.085), offsetY: Math.round(coverWidth * 0.115) })
-      Column()
-        .width(this.shelfHardcoverBoardWidth(coverWidth))
-        .height(coverHeight + 2)
-        .position({ x: this.shelfHardcoverBoardInset(coverWidth), y: 2 })
-        .borderRadius({ topLeft: 2, bottomLeft: 2, topRight: 5, bottomRight: 5 })
-        .backgroundColor(this.shelfHardcoverBoardColor())
-        .border({ width: { right: 1 }, color: '#1FFFFFFF' })
-        .shadow({ radius: 6, color: '#47000000', offsetX: 3, offsetY: 4 })
-
-      // 书页侧面：一层纸纹，再叠左右与上下两层明暗。左端藏在封面下面，只露出靠外的一截。
-      Column()
-        .width(18 + this.shelfHardcoverThickness(coverWidth))
-        .height(coverHeight - 4)
-        .position({ x: coverWidth - 18, y: 5 })
-        .borderRadius({ topRight: 2, bottomRight: 2 })
-        .linearGradient({
-          direction: GradientDirection.Right,
-          repeating: true,
-          colors: this.shelfHardcoverPageStripes(18 + this.shelfHardcoverThickness(coverWidth))
-        })
-      Column()
-        .width(18 + this.shelfHardcoverThickness(coverWidth))
-        .height(coverHeight - 4)
-        .position({ x: coverWidth - 18, y: 5 })
-        .borderRadius({ topRight: 2, bottomRight: 2 })
-        .linearGradient({
-          direction: GradientDirection.Right,
-          colors: [['#6B000000', 0], ['#14000000', 0.45], ['#4DFFFFFF', 0.82], ['#1F000000', 1]]
-        })
-      Column()
-        .width(18 + this.shelfHardcoverThickness(coverWidth))
-        .height(coverHeight - 4)
-        .position({ x: coverWidth - 18, y: 5 })
-        .borderRadius({ topRight: 2, bottomRight: 2 })
-        .linearGradient({
-          direction: GradientDirection.Bottom,
-          colors: [['#38FFFFFF', 0], ['#00FFFFFF', 0.3], ['#00000000', 0.75], ['#38000000', 1]]
-        })
-
-      // 封面压在书页上的一道窄投影。四边各缩进 1vp 藏在封面面板下面，圆角处的抗锯齿不会透出深色细边。
-      Column()
-        .width(coverWidth - 2)
-        .height(coverHeight - 2)
-        .position({ x: 1, y: 1 })
-        .borderRadius({ topLeft: 2, bottomLeft: 2, topRight: 4, bottomRight: 4 })
-        .backgroundColor(this.shelfHardcoverBoardColor())
-        .shadow({ radius: 3, color: '#59000000', offsetX: 2, offsetY: 0 })
-    }
-    .width(coverWidth + this.shelfHardcoverThickness(coverWidth) + 3)
-    .height(coverHeight + 4)
-  }
-
-  /** 封面面板上的打光：斜向明暗、高光带、书脊阴影、压槽与顶边亮线，盖在封面图或分组拼图上面。 */
+  /**
+   * 封面面板上的打光：斜向明暗、高光带、书脊阴影、压槽与顶边亮线，盖在封面图或分组拼图上面。
+   * 关闭“封面阴影”时去掉斜向明暗与高光带，封面颜色接近原图；书脊与压槽保留，仍看得出是精装书。
+   */
   @Builder
   shelfHardcoverCoverLight(coverWidth: number) {
     Stack({ alignContent: Alignment.TopStart }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .linearGradient({
-          angle: 118,
-          colors: [['#3DFFFFFF', 0], ['#00FFFFFF', 0.34], ['#00000000', 0.6], ['#42000000', 1]]
-        })
-      Column()
-        .width('100%')
-        .height('100%')
-        .linearGradient({
-          angle: 104,
-          colors: [['#00FFFFFF', 0.4], ['#1FFFFFFF', 0.47], ['#00FFFFFF', 0.54]]
-        })
+      if (this.bookshelfCompanionCoverShadow) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .linearGradient({
+            angle: 118,
+            colors: [['#3DFFFFFF', 0], ['#00FFFFFF', 0.34], ['#00000000', 0.6], ['#42000000', 1]]
+          })
+        Column()
+          .width('100%')
+          .height('100%')
+          .linearGradient({
+            angle: 104,
+            colors: [['#00FFFFFF', 0.4], ['#1FFFFFFF', 0.47], ['#00FFFFFF', 0.54]]
+          })
+      }
       Column()
         .width(this.shelfHardcoverSpineWidth(coverWidth))
         .height('100%')
@@ -4946,16 +5431,97 @@ export struct BookshelfPage {
     .hitTestBehavior(HitTestMode.None)
   }
 
+  /** 封面面板的落地投影：大而淡，按封面宽度缩放。关闭“封面阴影”时不投影。 */
+  shelfHardcoverCoverShadow(coverWidth: number): ShadowOptions {
+    if (!this.bookshelfCompanionCoverShadow) return { radius: 0, color: Color.Transparent };
+    return {
+      radius: Math.round(coverWidth * 0.19), color: this.appDarkMode ? '#99000000' : '#5250341A',
+      offsetX: Math.round(coverWidth * 0.085), offsetY: Math.round(coverWidth * 0.115)
+    };
+  }
+
+  /** 书口贴着书底的接触投影。关闭“封面阴影”时不投影。 */
+  shelfHardcoverSideShadow(): ShadowOptions {
+    if (!this.bookshelfCompanionCoverShadow) return { radius: 0, color: Color.Transparent };
+    return { radius: 6, color: '#47000000', offsetX: 3, offsetY: 4 };
+  }
+
   /**
-   * 立着的精装书：底板比封面略宽略长、右侧露出带明暗的书页、封面上叠书脊阴影、压槽、斜向打光与高光。
-   * 每层只能挂一个渐变，所以拆成多个叠放的块；封面仍走 coverView，开书动画按原作用域定位。
+   * angle 是侧转角度，depthRatio 是厚度占封面宽度的比例。继续阅读的大书 36°/0.24，网格与分组里的小书默认 24°/0.2。
+   * 关闭错落摆放时所有书都平放：封面正对，右边露出封面宽度 6% 的书页。
+   */
+  shelfBookShape(coverWidth: number, coverHeight: number, angle: number, depthRatio: number): ShelfBookShape {
+    if (!this.bookshelfCompanionStagger) return ShelfBookPerspective.flat(coverWidth, coverHeight, 0.06);
+    return ShelfBookPerspective.shape(coverWidth, coverHeight, angle, depthRatio, this.getUIContext().vp2px(1));
+  }
+
+  /** 书口上的书页：一层纸纹，再叠前后与上下两层明暗。靠封面的一头暗，往外渐亮。 */
+  @Builder
+  shelfHardcoverPagesFace(width: number, uneven: boolean) {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          direction: GradientDirection.Right,
+          repeating: true,
+          colors: this.shelfHardcoverPageStripes(width, uneven)
+        })
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          direction: GradientDirection.Right,
+          colors: [['#6B000000', 0], ['#14000000', 0.45], ['#4DFFFFFF', 0.82], ['#1F000000', 1]]
+        })
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          direction: GradientDirection.Bottom,
+          colors: [['#38FFFFFF', 0], ['#00FFFFFF', 0.3], ['#00000000', 0.75], ['#38000000', 1]]
+        })
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /** 书口：整面先铺硬壳色，书页缩进一圈盖在上面；贴着书底的接触投影挂在这一层。侧转与平放共用，位置都取自 shelfBookShape。 */
+  @Builder
+  shelfHardcoverSide(coverWidth: number, coverHeight: number, angle: number, depthRatio: number) {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Stack() {
+        this.shelfHardcoverPagesFace(this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).pagesWidth,
+          this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).flat)
+      }
+      .width(this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).pagesWidth)
+      .height(coverHeight - this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).pageInset * 2)
+      .position({
+        x: this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).pagesX,
+        y: this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).pageInset
+      })
+    }
+    .width(this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).depth)
+    .height(coverHeight)
+    .position({ x: this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).sideX, y: 0 })
+    .backgroundColor(this.shelfHardcoverBoardColor())
+    .shadow(this.shelfHardcoverSideShadow())
+    .scale({ x: 1, y: 1, centerX: 0, centerY: 0 })
+    .transform(this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).sideMatrix)
+  }
+
+  /**
+   * 立着的精装书，绕竖轴侧转：封面近大远小，右侧书口是一个往里收的面，两头露出硬壳的厚度，中间是带明暗的书页。
+   * 封面和书口各是一个矩形，套上 ShelfBookPerspective 算好的矩阵变成投影后的四边形；矩阵以左上角为原点，
+   * 所以先用 scale 把变换中心挪到左上角。封面仍走 coverView，开书动画按原作用域定位。
    */
   @Builder
   shelfHardcoverBook(book: Book, idScope: string, coverWidth: number, coverHeight: number,
-    animateCovers: boolean = false, selected: boolean = false) {
+    animateCovers: boolean = false, selected: boolean = false, angle: number = 24, depthRatio: number = 0.2) {
     Stack({ alignContent: Alignment.TopStart }) {
-      this.shelfHardcoverBack(coverWidth, coverHeight)
+      this.shelfHardcoverSide(coverWidth, coverHeight, angle, depthRatio)
 
+      // 封面：大而淡的落地投影挂在这一层。
       Stack({ alignContent: Alignment.TopStart }) {
         // 圆角交给外面的封面面板裁，封面图自己不再裁 8vp，否则四角会露出下面的深色底板。
         this.coverView(book, '100%', '100%', ImageFit.Cover, animateCovers, true, idScope, 0,
@@ -4964,12 +5530,19 @@ export struct BookshelfPage {
       }
       .width(coverWidth)
       .height(coverHeight)
-      .borderRadius({ topLeft: 2, bottomLeft: 2, topRight: 4, bottomRight: 4 })
+      .position({ x: this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).coverX, y: 0 })
+      .borderRadius({ topLeft: 2, bottomLeft: 2, topRight: 3, bottomRight: 3 })
       .border({ width: selected ? 2 : 0, color: this.accentColor() })
+      .backgroundColor(this.shelfHardcoverBoardColor())
       .clip(true)
+      .shadow(this.shelfHardcoverCoverShadow(coverWidth))
+      .scale({ x: 1, y: 1, centerX: 0, centerY: 0 })
+      .transform(this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).coverMatrix)
     }
-    .width(coverWidth + this.shelfHardcoverThickness(coverWidth) + 3)
-    .height(coverHeight + 4)
+    // 整本书的舞台自己没有变换，继续阅读卡片里的书按它量位置再算封面四角（见 shelfOpeningCoverQuad）。
+    .id(`${this.shelfCoverElementId(book, idScope)}_stage`)
+    .width(this.shelfBookShape(coverWidth, coverHeight, angle, depthRatio).stageWidth)
+    .height(coverHeight + BookshelfPage.SHELF_HARDCOVER_STAGE_PAD)
   }
 
   /**
@@ -5024,7 +5597,7 @@ export struct BookshelfPage {
   @Builder
   shelfFolderFanBook(book: Book, elementId: string, slot: number) {
     Stack({ alignContent: Alignment.TopStart }) {
-      this.shelfHardcoverBack(this.shelfFolderBookWidth(), this.shelfFolderBookHeight())
+      this.shelfHardcoverSide(this.shelfFolderBookWidth(), this.shelfFolderBookHeight(), 24, 0.2)
 
       Stack({ alignContent: Alignment.TopStart }) {
         this.coverView(book, '100%', '100%', ImageFit.Cover, true, false, '', 0,
@@ -5040,12 +5613,20 @@ export struct BookshelfPage {
       }
       .width(this.shelfFolderBookWidth())
       .height(this.shelfFolderBookHeight())
-      .borderRadius({ topLeft: 2, bottomLeft: 2, topRight: 4, bottomRight: 4 })
+      .position({ x: this.shelfBookShape(this.shelfFolderBookWidth(), this.shelfFolderBookHeight(), 24, 0.2).coverX, y: 0 })
+      .borderRadius({ topLeft: 2, bottomLeft: 2, topRight: 3, bottomRight: 3 })
+      .backgroundColor(this.shelfHardcoverBoardColor())
       .clip(true)
+      .shadow(this.shelfHardcoverCoverShadow(this.shelfFolderBookWidth()))
+      .scale({ x: 1, y: 1, centerX: 0, centerY: 0 })
+      .transform(this.shelfBookShape(this.shelfFolderBookWidth(), this.shelfFolderBookHeight(), 24, 0.2).coverMatrix)
     }
+    .width(this.shelfBookShape(this.shelfFolderBookWidth(), this.shelfFolderBookHeight(), 24, 0.2).stageWidth)
+    .height(this.shelfFolderBookHeight() + 4)
     .position({
-      x: Math.round((this.shelfTileColumnWidth() - this.shelfFolderBookWidth() -
-        this.shelfHardcoverThickness(this.shelfFolderBookWidth()) - 3) / 2) + this.shelfFolderFanShift(slot),
+      x: Math.round((this.shelfTileColumnWidth() -
+        this.shelfBookShape(this.shelfFolderBookWidth(), this.shelfFolderBookHeight(), 24, 0.2).stageWidth) / 2) +
+        this.shelfFolderFanShift(slot),
       y: this.shelfTileHardcoverHeight() - this.shelfFolderBookHeight() - this.shelfFolderFanRise(slot)
     })
     // 以书底中点为轴张开，三本书的书底仍落在同一条线上。
@@ -5061,9 +5642,14 @@ export struct BookshelfPage {
       if (this.shouldUseThemeBookCover() || previewBooks.length === 0) {
         // 主题文件夹图没有单本封面可张开，做成一本以文件夹图为封面的精装书。
         Stack({ alignContent: Alignment.TopStart }) {
-          this.shelfHardcoverBack(this.shelfTileHardcoverWidth(), this.shelfTileHardcoverHeight())
+          this.shelfHardcoverSide(this.shelfTileHardcoverWidth(), this.shelfTileHardcoverHeight(), 24, 0.2)
           Stack({ alignContent: Alignment.TopStart }) {
-            if (this.shouldUseThemeBookCover()) {
+            if (this.shouldUseThemeBookCover() && this.themeImageCrop(ThemeImageSlots.FOLDER, this.activeThemeShelfFolder())) {
+              ThemeCroppedImage({ src: this.activeThemeShelfFolder(),
+                crop: this.themeImageCrop(ThemeImageSlots.FOLDER, this.activeThemeShelfFolder()) as ThemeImageCrop })
+                .width('100%')
+                .height('100%')
+            } else if (this.shouldUseThemeBookCover()) {
               Image(this.activeThemeShelfFolder())
                 .width('100%')
                 .height('100%')
@@ -5078,9 +5664,21 @@ export struct BookshelfPage {
           }
           .width(this.shelfTileHardcoverWidth())
           .height(this.shelfTileHardcoverHeight())
-          .borderRadius({ topLeft: 2, bottomLeft: 2, topRight: 4, bottomRight: 4 })
+          .position({ x: this.shelfBookShape(this.shelfTileHardcoverWidth(), this.shelfTileHardcoverHeight(), 24, 0.2).coverX, y: 0 })
+          .borderRadius({ topLeft: 2, bottomLeft: 2, topRight: 3, bottomRight: 3 })
+          .backgroundColor(this.shelfHardcoverBoardColor())
           .clip(true)
+          .shadow(this.shelfHardcoverCoverShadow(this.shelfTileHardcoverWidth()))
+          .scale({ x: 1, y: 1, centerX: 0, centerY: 0 })
+          .transform(this.shelfBookShape(this.shelfTileHardcoverWidth(), this.shelfTileHardcoverHeight(), 24, 0.2).coverMatrix)
         }
+        .width(this.shelfBookShape(this.shelfTileHardcoverWidth(), this.shelfTileHardcoverHeight(), 24, 0.2).stageWidth)
+        .height(this.shelfTileHardcoverHeight() + 4)
+        .position({
+          x: Math.round((this.shelfTileColumnWidth() -
+            this.shelfBookShape(this.shelfTileHardcoverWidth(), this.shelfTileHardcoverHeight(), 24, 0.2).stageWidth) / 2),
+          y: 0
+        })
       } else {
         ForEach(this.shelfFolderFanSlots(previewBooks), (slot: number) => {
           this.shelfFolderFanBook(previewBooks[slot], elementId, slot)
@@ -5104,25 +5702,44 @@ export struct BookshelfPage {
   /** 按书的地址取一个固定的数，同一本书每次都是同样的高矮和倾斜，刷新书架时不会跳。 */
   shelfBookJitterSeed(book: Book): number {
     const key = book.bookUrl || book.name || '';
+    // 建一本书的格子要取十来次（高矮、侧转、厚度、斜靠各几处），按地址记下来，不必每次逐字算。
+    const cached = this.shelfJitterSeeds.get(key);
+    if (cached !== undefined) return cached;
     let hash = 0;
     for (let index = 0; index < key.length; index++) {
       hash = (hash * 31 + key.charCodeAt(index)) | 0;
     }
+    if (this.shelfJitterSeeds.size > 2048) this.shelfJitterSeeds.clear();
+    this.shelfJitterSeeds.set(key, Math.abs(hash));
     return Math.abs(hash);
   }
 
-  /** 书架上的书不一样高：在单本最大尺寸的 88%–100% 之间取几档。 */
+  /** 书架上的书不一样高：在单本最大尺寸的 82%–100% 之间取几档。 */
   shelfTileBookScale(book: Book): number {
     if (!this.bookshelfCompanionStagger) return 1;
-    const scales = [1, 0.94, 0.9, 0.97, 0.88, 1, 0.92];
+    const scales = [1, 0.92, 0.86, 0.96, 0.82, 1, 0.89];
     return scales[this.shelfBookJitterSeed(book) % scales.length];
   }
 
-  /** 大多数书立正，少数几本以书底为轴微微斜靠。 */
+  /** 一半的书立正，另一半以书底为轴斜靠，最多 5°。 */
   shelfTileBookLean(book: Book): number {
     if (!this.bookshelfCompanionStagger) return 0;
-    const angles = [0, 0, -2, 0, 2.5, 0, -1.5, 0, 3, 0, 0];
+    const angles = [0, -3, 0, 4, 0, -2, 0, 5, -4, 0, 2.5];
     return angles[Math.floor(this.shelfBookJitterSeed(book) / 7) % angles.length];
+  }
+
+  /** 错落摆放时每本书侧转的角度不同：有的几乎正对着，有的转得能看见一大截书口。 */
+  shelfTileBookTurn(book: Book): number {
+    if (!this.bookshelfCompanionStagger) return 24;
+    const turns = [24, 14, 32, 20, 36, 10, 28];
+    return turns[Math.floor(this.shelfBookJitterSeed(book) / 77) % turns.length];
+  }
+
+  /** 错落摆放时书有厚有薄，厚度占封面宽度的 12%–30%。侧转角度与厚度取同一套档位，投影后都不超出一列的宽度。 */
+  shelfTileBookDepth(book: Book): number {
+    if (!this.bookshelfCompanionStagger) return 0.2;
+    const depths = [0.2, 0.14, 0.26, 0.3, 0.12, 0.22, 0.17];
+    return depths[Math.floor(this.shelfBookJitterSeed(book) / 539) % depths.length];
   }
 
   shelfTileBookCoverWidth(book: Book): number {
@@ -5141,7 +5758,7 @@ export struct BookshelfPage {
   shelfCompanionHeroCard(book: Book, pageKey: string) {
     Row({ space: AppSpacing.XXL }) {
       this.shelfHardcoverBook(book, this.shelfCoverScope(pageKey, true), this.shelfCompanionCoverWidth(),
-        this.shelfCompanionCoverHeight())
+        this.shelfCompanionCoverHeight(), false, false, 36, 0.24)
 
       Column() {
         Text(this.shelfTileBookDisplayName(book))
@@ -5183,7 +5800,7 @@ export struct BookshelfPage {
           .margin({ top: AppSpacing.XS })
 
         Row({ space: AppSpacing.XS }) {
-          Text('继续阅读')
+          Text(this.shelfContinueActionText(book))
             .fontSize(AppFontSize.BODY)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.accentColor())
@@ -5235,7 +5852,12 @@ export struct BookshelfPage {
   @Builder
   shelfFolderPreview(previewBooks: Book[], elementId: string) {
       Stack() {
-        if (this.shouldUseThemeBookCover()) {
+        if (this.shouldUseThemeBookCover() && this.themeImageCrop(ThemeImageSlots.FOLDER, this.activeThemeShelfFolder())) {
+          ThemeCroppedImage({ src: this.activeThemeShelfFolder(),
+            crop: this.themeImageCrop(ThemeImageSlots.FOLDER, this.activeThemeShelfFolder()) as ThemeImageCrop })
+            .width('100%')
+            .height('100%')
+        } else if (this.shouldUseThemeBookCover()) {
           Image(this.activeThemeShelfFolder())
             .width('100%')
             .height('100%')
@@ -5302,12 +5924,28 @@ export struct BookshelfPage {
         .textOverflow({ overflow: TextOverflow.Ellipsis })
 
       Row({ space: 5 }) {
-        SymbolGlyph($r('sys.symbol.folder'))
-          .fontSize(13)
-          .fontColor([this.subTextColor()])
-        Text(`共 ${this.getTileGroupBooks(group.groupId, this.shelfBooksForPage(pageKey)).length} 本`)
-          .fontSize(AppFontSize.CAPTION)
-          .fontColor(this.subTextColor())
+        if (this.shelfRefreshActiveInGroup(group.groupId, pageKey) > 0) {
+          LoadingProgress()
+            .width(13)
+            .height(13)
+            .color(this.accentColor())
+          Text(`${this.shelfRefreshActiveInGroup(group.groupId, pageKey)} 本检查中`)
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.accentColor())
+        } else {
+          if (group.pinned) {
+            SymbolGlyph($r('sys.symbol.pin'))
+              .fontSize(12)
+              .fontColor([this.accentColor()])
+              .accessibilityText('已置顶')
+          }
+          SymbolGlyph($r('sys.symbol.folder'))
+            .fontSize(13)
+            .fontColor([this.subTextColor()])
+          Text(`共 ${this.getTileGroupBooks(group.groupId, this.shelfBooksForPage(pageKey)).length} 本`)
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.subTextColor())
+        }
       }
       .width('100%')
       .height(18)
@@ -5315,6 +5953,12 @@ export struct BookshelfPage {
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
+    .opacity(this.isShelfGroupDissolving(group.groupId) ? 0 : 1)
+    .scale({ x: this.isShelfGroupDissolving(group.groupId) ? 0.9 : 1, y: this.isShelfGroupDissolving(group.groupId) ? 0.9 : 1 })
+    .blur(this.isShelfGroupDissolving(group.groupId) ? 16 : 0)
+    // 与单本书的格子一样整格缓存，扇形三本书的节点更多。
+    .renderGroup(this.isCompanionLayout())
+    .hitTestBehavior(this.isShelfGroupDissolving(group.groupId) ? HitTestMode.None : HitTestMode.Default)
     .gesture(
       LongPressGesture({ repeat: false })
         .onAction((event: GestureEvent) => {
@@ -5324,6 +5968,13 @@ export struct BookshelfPage {
         })
     )
     .onClick((event: ClickEvent) => this.openTileGroupPage(group.groupId, pageKey, event.windowX, event.windowY))
+  }
+
+  shelfRefreshActiveInGroup(groupId: number, pageKey: string): number {
+    if (this.shelfRefreshActive.length === 0) return 0;
+    const urls = new Set<string>(this.getTileGroupBooks(groupId, this.shelfBooksForPage(pageKey))
+      .map((book: Book): string => book.bookUrl));
+    return this.shelfRefreshActive.filter((item: ShelfRefreshActiveBook): boolean => urls.has(item.book.bookUrl)).length;
   }
 
   @Builder
@@ -5352,11 +6003,12 @@ export struct BookshelfPage {
           // 书底对齐在同一条线上，高矮与斜靠各不相同，排出来错落一些。
           Stack() {
             this.shelfHardcoverBook(book, this.shelfCoverScope(pageKey, false), this.shelfTileBookCoverWidth(book),
-              this.shelfTileBookCoverHeight(book), true, this.isBookSelected(book.bookUrl))
+              this.shelfTileBookCoverHeight(book), true, this.isBookSelected(book.bookUrl),
+              this.shelfTileBookTurn(book), this.shelfTileBookDepth(book))
           }
           .position({
-            x: Math.round((this.shelfTileColumnWidth() - this.shelfTileBookCoverWidth(book) -
-              this.shelfHardcoverThickness(this.shelfTileBookCoverWidth(book)) - 3) / 2),
+            x: Math.round((this.shelfTileColumnWidth() - this.shelfBookShape(this.shelfTileBookCoverWidth(book),
+              this.shelfTileBookCoverHeight(book), this.shelfTileBookTurn(book), this.shelfTileBookDepth(book)).stageWidth) / 2),
             y: this.shelfTileHardcoverHeight() - this.shelfTileBookCoverHeight(book)
           })
           .rotate({ angle: this.shelfTileBookLean(book), centerX: '50%', centerY: '100%' })
@@ -5364,6 +6016,8 @@ export struct BookshelfPage {
             this.shelfTileSelectMark(book)
           }
         }
+        // 格子没有变换：斜靠的书按它量位置，再按上面的排版参数算封面四角（见 shelfOpeningCoverQuad）。
+        .id(`${this.shelfCoverElementId(book, this.shelfCoverScope(pageKey, false))}_slot`)
         .width('100%')
         .height(this.shelfTileHardcoverHeight() + 4)
         // 书底下要留出底板与落地投影，书名不能压在投影上。
@@ -5433,6 +6087,10 @@ export struct BookshelfPage {
     .opacity(this.isShelfBookDissolving(book.bookUrl) ? 0 : 1)
     .scale({ x: this.shelfDissolveScale(book.bookUrl), y: this.shelfDissolveScale(book.bookUrl) })
     .blur(this.isShelfBookDissolving(book.bookUrl) ? 16 : 0)
+    // 陪伴布局的一格有三十来个渲染节点（书口纸纹、打光渐变、两层投影、角标），展开屏一屏几十格，
+    // 滑动时渲染服务每帧逐个重画，单帧 12ms 左右。整格缓存成一张图后滑动只贴图，真机降到 7ms 左右，
+    // 投影也在缓存里，画面不变。格子内容变了（进度、角标、检查中）渲染服务会自己重建这张图。
+    .renderGroup(this.isCompanionLayout())
     .hitTestBehavior(this.isShelfBookDissolving(book.bookUrl) ? HitTestMode.None : HitTestMode.Default)
     .priorityGesture(
       GestureGroup(GestureMode.Exclusive,
@@ -5512,6 +6170,7 @@ export struct BookshelfPage {
       return;
     }
     this.cloudBookOpenRequest++;
+    this.shelfLastOpenedBookUrl = book.bookUrl;
     if (this.bookshelfBookOpenAnimation) {
       AppStorage.setOrCreate<number>(SHELF_BOOK_MOTION_UNTIL_KEY,
         Date.now() + SHELF_COVER_OPEN_START_CAP + SHELF_COVER_OPEN_DURATION + SHELF_BOOK_MOTION_SETTLE);
@@ -5519,6 +6178,10 @@ export struct BookshelfPage {
       BookshelfSortHelper.holdReadTime(book);
     }
     this.acknowledgeShelfBookUpdate(book, true);
+    if (BookTypeSupport.isAudio(book)) {
+      this.openShelfAudioBook(book);
+      return;
+    }
     // PDFs go straight to their own page (the text reader would first spend a database lookup on the format),
     // with the same cover-open animation parameters as other books.
     const pdf = LocalBookService.isPdfBook(book);
@@ -5580,6 +6243,26 @@ export struct BookshelfPage {
     this.takeShelfOpeningBackdrop().then((backdrop: image.PixelMap | null): void => {
       pageShot.then((shot: ReaderOpenSnapshot | null): void => push(backdrop, shot));
     }).catch((): void => push(null, null));
+  }
+
+  /**
+   * 有声书直接进听书页：听书页按播放器从底部滑上来、收下去，不做封面翻开，也就不要首页截图和整页 0 时长转场。
+   * 还判断不出类型的（书源没声明、第一次打开）仍走阅读页，由它查到是有声书后转过去。
+   * shelfBookOpening 让听书页关闭时通知书架放开按住的阅读时间、按新进度挪位。
+   */
+  private openShelfAudioBook(book: Book): void {
+    this.shelfBookRoutePending = true;
+    AppStorage.setOrCreate<boolean>('shelfReaderDirectTransition', false);
+    this.discardShelfOpeningBackdrop();
+    router.pushUrl({
+      url: 'pages/AudioBook',
+      params: { bookUrl: book.bookUrl, shelfBookOpening: this.bookshelfBookOpenAnimation ? 'true' : 'false' }
+    }).then((): void => {
+      this.shelfBookRoutePending = false;
+    }).catch((error: Error): void => {
+      console.error('打开听书页失败:', error);
+      this.cancelShelfBookOpening();
+    });
   }
 
   /** 手指按下时先截一张首页；正在截或刚截过的沿用。 */
@@ -5670,7 +6353,8 @@ export struct BookshelfPage {
     const opening: ShelfOpeningCover = {
       bookUrl: book.bookUrl, cover: '', frame: '', color: this.getBookColor(book.name),
       initial: book.name ? book.name.substring(0, 1) : '书',
-      boundsX: 0, boundsY: 0, boundsWidth: 0, boundsHeight: 0, windowWidth: 0, windowHeight: 0, cropImage: false
+      boundsX: 0, boundsY: 0, boundsWidth: 0, boundsHeight: 0, windowWidth: 0, windowHeight: 0, cropImage: false,
+      themeCover: false
     };
     this.measureShelfOpeningBounds(book, opening, touchX, touchY);
     if (this.shouldUseThemeBookCover()) {
@@ -5678,6 +6362,7 @@ export struct BookshelfPage {
       opening.cover = covers.length > 0 ? covers[0] : '';
       opening.frame = this.activeThemeShelfFrame();
       opening.color = this.inputColor();
+      opening.themeCover = true;
     } else {
       const covers = this.getShelfCoverList(book);
       opening.cover = covers.length > 0 ? this.imageCover(covers[0]) : '';
@@ -5726,9 +6411,83 @@ export struct BookshelfPage {
       opening.boundsHeight = ui.px2vp(picked.size.height);
       opening.windowWidth = ui.px2vp(windowRect.width);
       opening.windowHeight = ui.px2vp(windowRect.height);
+      this.applyShelfOpeningCoverLanding(ui, book, opening, pageKey, pickedLatest);
     } catch (error) {
       // LazyForEach 已回收源节点等情况：没有位置就由共享转场飞封面。
     }
+  }
+
+  /**
+   * 错落摆放的立体书：封面在窗口里是个侧转（网格里还斜靠）的四边形，按排版参数算出它的四个角（vp，左上起顺时针）。
+   * 按 id 量封面节点得到的是它变换前的那块，比侧转后的封面宽、位置也偏，关书落在那上面再换成书架上的书会跳一下。
+   * 锚点量的是自己没有变换的节点（网格里是书所在的格子，继续阅读卡片里是整本书的舞台），不依赖系统对变换后节点的
+   * 测量口径。平放的书和其他布局返回 undefined，沿用量到的矩形。
+   */
+  shelfOpeningCoverQuad(ui: UIContext, book: Book, pageKey: string, latest: boolean): number[] | undefined {
+    if (!this.isCompanionLayout() || !this.bookshelfCompanionStagger) return undefined;
+    const coverWidth = latest ? this.shelfCompanionCoverWidth() : this.shelfTileBookCoverWidth(book);
+    const coverHeight = latest ? this.shelfCompanionCoverHeight() : this.shelfTileBookCoverHeight(book);
+    const shape = latest ? this.shelfBookShape(coverWidth, coverHeight, 36, 0.24) :
+      this.shelfBookShape(coverWidth, coverHeight, this.shelfTileBookTurn(book), this.shelfTileBookDepth(book));
+    if (shape.flat || shape.coverQuad.length !== 8) return undefined;
+    const coverId = this.shelfCoverElementId(book, this.shelfCoverScope(pageKey, latest));
+    let anchor: componentUtils.ComponentInfo | undefined = undefined;
+    try {
+      anchor = ui.getComponentUtils().getRectangleById(`${coverId}${latest ? '_stage' : '_slot'}`);
+    } catch (error) {
+      return undefined;
+    }
+    if (!anchor || anchor.size.width <= 0 || anchor.size.height <= 0) return undefined;
+    let originX = ui.px2vp(anchor.windowOffset.x);
+    let originY = ui.px2vp(anchor.windowOffset.y);
+    let lean = 0;
+    if (!latest) {
+      // 与 shelfTileBook 里这本书在格子中的位置、斜靠一致。
+      originX += Math.round((this.shelfTileColumnWidth() - shape.stageWidth) / 2);
+      originY += this.shelfTileHardcoverHeight() - coverHeight;
+      lean = this.shelfTileBookLean(book);
+    }
+    return ShelfBookPerspective.coverQuadInWindow(shape, coverHeight + BookshelfPage.SHELF_HARDCOVER_STAGE_PAD,
+      originX, originY, lean);
+  }
+
+  /**
+   * 算得出四角、且四角都在窗口里、与量到的封面是同一处时，把 bounds 换成封面实际占的那块（斜靠的书带上角度），
+   * 并记下封面侧转前的宽高比，封面图的裁切才和书架上一致。
+   */
+  applyShelfOpeningCoverLanding(ui: UIContext, book: Book, opening: ShelfOpeningCover, pageKey: string,
+    latest: boolean): void {
+    const quad = this.shelfOpeningCoverQuad(ui, book, pageKey, latest);
+    if (!quad) return;
+    let minX = quad[0];
+    let maxX = quad[0];
+    let minY = quad[1];
+    let maxY = quad[1];
+    for (let index = 2; index < quad.length; index += 2) {
+      minX = Math.min(minX, quad[index]);
+      maxX = Math.max(maxX, quad[index]);
+      minY = Math.min(minY, quad[index + 1]);
+      maxY = Math.max(maxY, quad[index + 1]);
+    }
+    if (!(minX >= -1 && minY >= -1 && maxX <= opening.windowWidth + 1 && maxY <= opening.windowHeight + 1)) return;
+    // 锚点量错（比如节点还没排好）时四角会落到别处，这时宁可按量到的矩形缩放。
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    if (centerX < opening.boundsX - opening.boundsWidth || centerX > opening.boundsX + opening.boundsWidth * 2 ||
+      centerY < opening.boundsY - opening.boundsHeight || centerY > opening.boundsY + opening.boundsHeight * 2) {
+      return;
+    }
+    const lean = latest ? 0 : this.shelfTileBookLean(book);
+    const landing = ShelfBookPerspective.coverLanding(quad, lean);
+    if (landing[2] <= 0 || landing[3] <= 0) return;
+    opening.boundsX = landing[0];
+    opening.boundsY = landing[1];
+    opening.boundsWidth = landing[2];
+    opening.boundsHeight = landing[3];
+    opening.lean = lean;
+    const coverWidth = latest ? this.shelfCompanionCoverWidth() : this.shelfTileBookCoverWidth(book);
+    const coverHeight = latest ? this.shelfCompanionCoverHeight() : this.shelfTileBookCoverHeight(book);
+    opening.coverAspect = coverWidth / coverHeight;
   }
 
   /**
@@ -5772,6 +6531,11 @@ export struct BookshelfPage {
     return book.getVariable(SHELF_UPDATE_BADGE_VARIABLE) === '1';
   }
 
+  /** “最近更新”排序用的时间：只有还带更新角标的书才算，读过新章节后归 0，回到按最近阅读排的那一段。 */
+  shelfUpdateSortTime(book: Book): number {
+    return this.hasShelfBookUpdate(book) ? Math.max(1, BookshelfSortHelper.getBookUpdateTime(book)) : 0;
+  }
+
   acknowledgeShelfBookUpdate(book: Book, deferVisual: boolean = false): void {
     if (!book.bookUrl) {
       return;
@@ -5779,6 +6543,15 @@ export struct BookshelfPage {
     // Remember the click while a background refresh may still be in flight, so that refresh cannot
     // write the badge back after the user has already entered this book.
     this.shelfUpdateAcknowledgedAt.set(book.bookUrl, Date.now());
+    if (this.hasShelfRefreshError(book)) {
+      const bookUrl = book.bookUrl;
+      if (deferVisual) {
+        // 与更新角标一样等开书动作过去再改状态，免得点开时整个书架重建。
+        setTimeout((): void => this.clearShelfRefreshError(bookUrl), this.shelfBookMotionDelay() + 120);
+      } else {
+        this.clearShelfRefreshError(bookUrl);
+      }
+    }
     if (!this.hasShelfBookUpdate(book)) {
       return;
     }
@@ -5838,6 +6611,14 @@ export struct BookshelfPage {
           AppStorage.setOrCreate<number>('shelfReturnRefreshNonce', Date.now());
           BookshelfSortHelper.releaseReadTimes();
           this.shelfReturnMotionActive = false;
+          if (this.shelfImmersivePendingCollapse) {
+            // 首页盖图在刷新通知后约 120ms 揭开，揭开后再收。
+            setTimeout((): void => {
+              if (this.shelfImmersivePendingCollapse && !this.shelfReturnMotionActive && this.shelfImmersiveActive()) {
+                this.collapseShelfChromeForImmersive(true);
+              }
+            }, BookshelfPage.SHELF_RETURN_QUICK_REFRESH + 80);
+          }
         });
     };
     // This notification arrives after the cover has closed, immediately before router.back().
@@ -5900,6 +6681,10 @@ export struct BookshelfPage {
     if (to && travels) {
       this.tileGroupFlyProgress = 0;
       this.tileGroupFlyers = [this.makeShelfReorderFlyer(current, from, to)];
+    } else {
+      // 位置没变（多半本来就排在最前）就没有飞行封面顶替它：趁截图还盖着先把封面放出来，
+      // 否则截图淡出时露出的是一本没有封面的空书，淡完才补上。
+      this.tileGroupHiddenCovers = [];
     }
     AppStorage.setOrCreate<number>('shelfReturnRefreshNonce', Date.now());
     // 首页盖图在刷新通知后 120ms 揭开，揭开时下面就是这张一模一样的截图，再开始飞。
@@ -6199,7 +6984,20 @@ export struct BookshelfPage {
     idScope: string = '', radius: number = 8, spineInset: number = -1, syncDecode: boolean = false) {
     Stack() {
       if (this.shouldUseThemeBookCover()) {
-        if (this.activeThemeBookCovers(book).length === 1 || !animateCovers) {
+        if ((this.activeThemeBookCovers(book).length === 1 || !animateCovers) &&
+          this.themeImageCrop(ThemeImageSlots.COVER, this.activeThemeBookCovers(book)[0])) {
+          // 主题包动图封面取景时只记了显示区域，按区域画。
+          ThemeCroppedImage({ src: this.activeThemeBookCovers(book)[0],
+            crop: this.themeImageCrop(ThemeImageSlots.COVER, this.activeThemeBookCovers(book)[0]) as ThemeImageCrop,
+            syncLoad: syncDecode || !this.tileGroupAwaitCovers,
+            onLoaded: () => this.tileGroupPendingCovers.delete(book.bookUrl),
+            onFailed: () => this.tileGroupPendingCovers.delete(book.bookUrl) })
+            .width(width)
+            .height(height)
+            .onAppear(() => {
+              if (this.tileGroupAwaitCovers && !syncDecode) this.tileGroupPendingCovers.add(book.bookUrl);
+            })
+        } else if (this.activeThemeBookCovers(book).length === 1 || !animateCovers) {
           Image(this.activeThemeBookCovers(book)[0])
             .width(width)
             .height(height)
@@ -6215,23 +7013,39 @@ export struct BookshelfPage {
         } else {
           Swiper() {
             ForEach(this.activeThemeBookCovers(book), (cover: ResourceStr, index: number) => {
-              Image(cover)
-                .width(width)
-                .height(height)
-                .objectFit(ImageFit.Fill)
-                // 返回书架后进度变了的卡片会整体重建，封面异步加载会先空一帧；本地封面同步解码，让关书动画落地后无缝。
-                // 打开分组时改后台解码，分组页等开头显示的第一张解码完再浮起。
-                .syncLoad(!this.tileGroupAwaitCovers)
-                .onAppear(() => {
-                  if (this.tileGroupAwaitCovers && index === 0) this.tileGroupPendingCovers.add(`${book.bookUrl}#theme`);
-                })
-                .onComplete(() => {
-                  if (index === 0) this.tileGroupPendingCovers.delete(`${book.bookUrl}#theme`);
-                })
-                .onError(() => {
-                  if (index === 0) this.tileGroupPendingCovers.delete(`${book.bookUrl}#theme`);
-                })
-            }, (_cover: ResourceStr, index: number) => `${book.bookUrl}_theme_${index}`)
+              if (this.themeImageCrop(ThemeImageSlots.COVER, cover)) {
+                ThemeCroppedImage({ src: cover, crop: this.themeImageCrop(ThemeImageSlots.COVER, cover) as ThemeImageCrop,
+                  syncLoad: !this.tileGroupAwaitCovers,
+                  onLoaded: () => {
+                    if (index === 0) this.tileGroupPendingCovers.delete(`${book.bookUrl}#theme`);
+                  },
+                  onFailed: () => {
+                    if (index === 0) this.tileGroupPendingCovers.delete(`${book.bookUrl}#theme`);
+                  } })
+                  .width(width)
+                  .height(height)
+                  .onAppear(() => {
+                    if (this.tileGroupAwaitCovers && index === 0) this.tileGroupPendingCovers.add(`${book.bookUrl}#theme`);
+                  })
+              } else {
+                Image(cover)
+                  .width(width)
+                  .height(height)
+                  .objectFit(ImageFit.Fill)
+                  // 返回书架后进度变了的卡片会整体重建，封面异步加载会先空一帧；本地封面同步解码，让关书动画落地后无缝。
+                  // 打开分组时改后台解码，分组页等开头显示的第一张解码完再浮起。
+                  .syncLoad(!this.tileGroupAwaitCovers)
+                  .onAppear(() => {
+                    if (this.tileGroupAwaitCovers && index === 0) this.tileGroupPendingCovers.add(`${book.bookUrl}#theme`);
+                  })
+                  .onComplete(() => {
+                    if (index === 0) this.tileGroupPendingCovers.delete(`${book.bookUrl}#theme`);
+                  })
+                  .onError(() => {
+                    if (index === 0) this.tileGroupPendingCovers.delete(`${book.bookUrl}#theme`);
+                  })
+              }
+            }, (cover: ResourceStr, index: number) => `${book.bookUrl}_theme_${index}_${this.themeCoverKey(cover)}`)
           }
           .width(width)
           .height(height)
@@ -6260,10 +7074,12 @@ export struct BookshelfPage {
           .height(height)
           .objectFit(imageFit)
           // 分组开合时新建的封面同步解码：陪伴布局的书底板和书页先画出来，封面晚一两帧就是一本空书一闪。
-          .syncLoad(this.shelfCoverSyncLoad(this.imageCover(this.getShelfCover(book, animateCovers)), syncDecode))
+          .syncLoad(this.shelfCoverSyncLoad(this.imageCover(this.getShelfCover(book, animateCovers)),
+            syncDecode || book.bookUrl === this.shelfLastOpenedBookUrl))
           // 打开分组时分组页的封面在后台解码，解码完才淡入（见 afterTileGroupCoversReady）。
           .onAppear(() => this.noteTileGroupCoverMounted(book, this.imageCover(this.getShelfCover(book, animateCovers)),
-            this.shelfCoverSyncLoad(this.imageCover(this.getShelfCover(book, animateCovers)), syncDecode)))
+            this.shelfCoverSyncLoad(this.imageCover(this.getShelfCover(book, animateCovers)),
+            syncDecode || book.bookUrl === this.shelfLastOpenedBookUrl)))
           .onComplete(() => this.tileGroupPendingCovers.delete(book.bookUrl))
           .onError(() => this.tileGroupPendingCovers.delete(book.bookUrl))
       } else {
@@ -6283,6 +7099,10 @@ export struct BookshelfPage {
         .interval(3500)
         .indicator(false)
         .loop(true)
+      }
+      // 深色模式调暗封面：盖在图片上、角标和标记之下；主题封面不调暗。
+      if (!this.shouldUseThemeBookCover() && this.shelfCoverDimOpacity() > 0) {
+        this.shelfCoverDimLayer()
       }
       if (CloudAutoSync.isPlaceholder(book)) {
         // 云端占位书显示当前进度或排队位置，其他书仍可继续点选下载。
@@ -6305,6 +7125,12 @@ export struct BookshelfPage {
         .borderRadius(16)
         .backgroundColor('#73000000')
         .accessibilityText(`${book.name}在云端，${this.cloudBookStatus(book)}`)
+      }
+      // 分组卡片里的小封面（measure 为 false）不标，分组卡片的本数行另显示“N 本检查中”。
+      if (measure && this.shelfRefreshActiveStart(book.bookUrl) > 0) {
+        this.shelfRefreshCoverChip(book.bookUrl)
+      } else if (measure && this.hasShelfRefreshError(book)) {
+        this.shelfRefreshCoverError()
       }
       BookshelfCoverBadges({
         configuration: this.bookshelfCoverBadges,
@@ -6344,12 +7170,45 @@ export struct BookshelfPage {
     return '#3978C5';
   }
 
+  /**
+   * 主题封面、书架边框、文件夹插画都从主题包注册表现查，不经过任何状态变量；编辑方案增删图片后注册表已换新，
+   * 不读 themeRevision 的话点“应用主题”回来书架不会重画，要重启才变。读它把这几处挂到主题重新发布上。
+   */
+  private themeAssetsLive(): boolean {
+    return this.themeRevision >= 0;
+  }
+
   activeThemeBookCovers(book: Book): ResourceStr[] {
-    return ThemeBookCoverSettings.covers(book, this.appDarkMode);
+    if (!this.themeAssetsLive()) return [];
+    const covers = ThemeBookCoverSettings.covers(book, this.appDarkMode, this.bookshelfCoverMode);
+    if (this.animatedImageRevision < 0) return covers;
+    const context = getContext(this);
+    return covers.map((cover: ResourceStr): ResourceStr =>
+      typeof cover === 'string' ? AnimatedImagePolicy.display(context, cover) : cover);
+  }
+
+  /** 深色模式调暗封面的遮罩不透明度，0 表示不调暗。 */
+  shelfCoverDimOpacity(): number {
+    return CoverDimSettings.opacity(this.appDarkMode, this.bookshelfDarkCoverDim, this.bookshelfDarkCoverDimLevel);
+  }
+
+  @Builder
+  shelfCoverDimLayer() {
+    Column()
+      .width('100%')
+      .height('100%')
+      .backgroundColor('#000000')
+      .opacity(this.shelfCoverDimOpacity())
+      .hitTestBehavior(HitTestMode.None)
   }
 
   shouldUseThemeBookCover(): boolean {
-    return ThemeBookCoverSettings.enabled(this.appDarkMode, this.themeBookCoverEnabled);
+    return this.themeAssetsLive() && ThemeBookCoverSettings.enabled(this.appDarkMode, this.themeBookCoverEnabled);
+  }
+
+  /** 轮播项 key 里代表封面图本身的那段：深浅色各有一套封面的主题切换模式时，靠它让轮播换图。 */
+  themeCoverKey(cover: ResourceStr): string {
+    return typeof cover === 'string' ? cover : `${(cover as Resource).id}`;
   }
 
   themeBookCoverInterval(book: Book): number {
@@ -6357,16 +7216,27 @@ export struct BookshelfPage {
   }
 
   activeThemeShelfFrame(): ResourceStr {
+    if (!this.themeAssetsLive()) return '';
     return ThemeBookCoverSettings.frame(this.appDarkMode);
   }
 
+  /** 主题包动图封面、文件夹插画取景时记下的显示区域；没有时按原来的方式整张显示。 */
+  themeImageCrop(slot: string, src: ResourceStr): ThemeImageCrop | null {
+    if (!this.themeAssetsLive()) return null;
+    return ThemeAssetRegistry.imageCrop(slot, src, this.appDarkMode);
+  }
+
   activeThemeShelfFolder(): ResourceStr {
-    return ThemeAssetRegistry.themeShelfFolder(ThemeRuntime.bookTokens(this.appDarkMode).shelfFolderAssetId);
+    if (!this.themeAssetsLive()) return '';
+    return ThemeAssetRegistry.themeShelfFolder(ThemeRuntime.bookTokens(this.appDarkMode).shelfFolderAssetId,
+      this.appDarkMode);
   }
 
   /** Image 能直接加载的封面地址；加密的书源封面在解密完成前为空。 */
   imageCover(raw: string): string {
-    return this.sourceCoverRevision >= 0 ? BookCoverCache.displayCover(getContext(this), raw) : raw;
+    if (this.sourceCoverRevision < 0 || this.animatedImageRevision < 0) return raw;
+    const context = getContext(this);
+    return AnimatedImagePolicy.display(context, BookCoverCache.displayCover(context, raw));
   }
 
   /** 只有本地文件和资源能同步解码：网络地址同步加载会在主线程上下载，一屏没缓存的封面就能把界面卡死。 */
@@ -6661,6 +7531,8 @@ export struct BookshelfPage {
       .map(tag => `!${tag}`);
     book.customTag = BookDisplayHelper.joinTags([...customTags, ...hiddenTags]);
     await this.updateShelfBook(book);
+    // 标签和书籍标记共用一套：这部作品有标记时一并改掉。
+    await BookMarkService.syncTagsFromShelf(book);
     this.closeTagDialog();
     HdsFeedback.showToast('标签已保存');
   }
@@ -6801,7 +7673,7 @@ export struct BookshelfPage {
     if (this.shelfFilterKeyList().length > 0) {
       return '没有符合筛选条件的书籍，可在右上角筛选里调整';
     }
-    return '搜索书籍或添加本地书籍吧';
+    return WebParseSettingsStore.enabled() ? '搜索书籍或添加本地书籍吧' : '添加本地书籍吧';
   }
 
   booksForShelfScope(scope: string): Book[] {
@@ -8337,8 +9209,9 @@ export struct BookshelfPage {
     }
     try {
       const agent = await this.createShelfFullTextCacheOpenWantAgent(book);
-      await backgroundTaskManager.startBackgroundRunning(getContext(this), ['dataTransfer'], agent);
+      // 没申请到时登记仍然保留，许可那边会自己重试。
       this.fullTextCacheBackgroundRunning = true;
+      await BackgroundPermit.acquire(getContext(this) as common.UIAbilityContext, 'shelf-cache', 'dataTransfer', agent);
     } catch (error) {
       console.warn('启动书架全文缓存后台任务失败:', error);
     }
@@ -8350,7 +9223,7 @@ export struct BookshelfPage {
     }
     this.fullTextCacheBackgroundRunning = false;
     try {
-      await backgroundTaskManager.stopBackgroundRunning(getContext(this));
+      await BackgroundPermit.release('shelf-cache');
     } catch (error) {
       console.warn('停止书架全文缓存后台任务失败:', error);
     }
@@ -8603,6 +9476,11 @@ export struct BookshelfPage {
     this.shelfRefreshRunning = true;
     this.shelfRefreshTotal = targets.length;
     this.shelfRefreshChecked = 0;
+    this.shelfRefreshActive = [];
+    this.shelfRefreshFailures = [];
+    this.shelfRefreshUpdates = [];
+    this.shelfRefreshFailedUrls = [];
+    this.startShelfRefreshTicker();
     if (!silent) {
       this.showShelfRefreshCapsule();
     }
@@ -8612,40 +9490,65 @@ export struct BookshelfPage {
     try {
       const db = AppDatabase.getInstance();
       await db.initWithContext(getContext(this));
-      const engine = ReadBookEngine.createBackgroundWorker();
-      engine.chapterUpdateBatchTime = refreshStartedAt;
-      for (const shelfBook of targets) {
-        try {
-          const freshBook = await db.getBook(shelfBook.bookUrl) || shelfBook;
-          const beforeUpdateTime = BookshelfSortHelper.getBookUpdateTime(freshBook);
-          const hadPendingUpdate = this.hasShelfBookUpdate(freshBook);
-          await engine.openBook(freshBook);
-          await engine.refreshToc();
-          const refreshedBook = await db.getBook(shelfBook.bookUrl);
-          if (refreshedBook) {
-            refreshedBook.lastCheckTime = Date.now();
-            refreshedBook.lastCheckCount = engine.chapters.length;
-            if (engine.chapters.length > 0) {
-              refreshedBook.totalChapterNum = engine.chapters.length;
-              refreshedBook.latestChapterTitle = engine.chapters[engine.chapters.length - 1].title;
-            }
-            const hasNewUpdate = BookshelfSortHelper.getBookUpdateTime(refreshedBook) > beforeUpdateTime;
-            const acknowledgedAt = this.shelfUpdateAcknowledgedAt.get(refreshedBook.bookUrl) || 0;
-            const keepPendingUpdate = hadPendingUpdate && acknowledgedAt === 0;
-            const keepNewUpdate = hasNewUpdate && acknowledgedAt < refreshStartedAt;
-            refreshedBook.putVariable(SHELF_UPDATE_BADGE_VARIABLE,
-              keepPendingUpdate || keepNewUpdate ? '1' : '');
-            await db.updateBook(refreshedBook);
-            if (hasNewUpdate) {
-              updated++;
-            }
+      const pending: Book[] = [...targets];
+      const sourceActive: Map<string, number> = new Map();
+      let waiters: (() => void)[] = [];
+      const takeNext = (): Book | null => {
+        const index = pending.findIndex((book: Book): boolean =>
+          (sourceActive.get(book.origin) || 0) < SHELF_REFRESH_PER_SOURCE);
+        if (index < 0) return null;
+        const book = pending.splice(index, 1)[0];
+        sourceActive.set(book.origin, (sourceActive.get(book.origin) || 0) + 1);
+        return book;
+      };
+      const release = (origin: string): void => {
+        sourceActive.set(origin, Math.max(0, (sourceActive.get(origin) || 0) - 1));
+        const woken = waiters;
+        waiters = [];
+        woken.forEach((wake: () => void) => wake());
+      };
+      const runWorker = async (): Promise<void> => {
+        // 每路一个引擎：引擎持有当前书的目录与会话，不能在两本书之间共用。
+        let engine = ReadBookEngine.createBackgroundWorker();
+        engine.chapterUpdateBatchTime = refreshStartedAt;
+        while (pending.length > 0) {
+          const shelfBook = takeNext();
+          if (!shelfBook) {
+            // 剩下的书所属书源都已满额，等任意一本刷完再挑。
+            await new Promise<void>((resolve: () => void) => {
+              waiters.push(resolve);
+            });
+            continue;
           }
-        } catch (e) {
-          failed++;
-          console.error('刷新书架目录失败:', shelfBook.name, e);
+          this.beginShelfRefreshBook(shelfBook);
+          try {
+            const result = await this.runShelfRefreshBook(engine, db, shelfBook, refreshStartedAt);
+            if (result.abandoned) {
+              // 旧引擎可能还卡在这本书上，丢给它自己跑完，这一路换新的。
+              engine = ReadBookEngine.createBackgroundWorker();
+              engine.chapterUpdateBatchTime = refreshStartedAt;
+            }
+            if (result.error) {
+              failed++;
+              console.error('刷新书架目录失败:', shelfBook.name, result.error);
+              await this.recordShelfRefreshFailure(db, shelfBook, result.error);
+            } else if (result.update) {
+              updated++;
+              this.shelfRefreshUpdates = [...this.shelfRefreshUpdates, result.update];
+            }
+          } finally {
+            this.shelfRefreshChecked++;
+            this.endShelfRefreshBook(shelfBook.bookUrl);
+            release(shelfBook.origin);
+          }
         }
-        this.shelfRefreshChecked++;
+      };
+      const workers: Promise<void>[] = [];
+      const workerCount = Math.min(SHELF_REFRESH_CONCURRENCY, targets.length);
+      for (let i = 0; i < workerCount; i++) {
+        workers.push(runWorker());
       }
+      await Promise.all(workers);
       await this.loadBooks();
       AppStorage.setOrCreate('shelfUpdateTime', Date.now());
       this.finishShelfRefreshCapsule(updated > 0 ? `${updated} 本有更新` : '没有新章节',
@@ -8659,7 +9562,156 @@ export struct BookshelfPage {
     } finally {
       this.shelfRefreshRunning = false;
       this.shelfRefreshStatus = RefreshStatus.Inactive;
+      this.shelfRefreshActive = [];
+      this.shelfRefreshCancels.clear();
+      this.stopShelfRefreshTicker();
     }
+  }
+
+  /** 刷一本书，带超时与手动跳过；被放弃时 refreshShelfBookToc 仍在后台跑，晚到的结果照常落库。 */
+  async runShelfRefreshBook(engine: ReadBookEngine, db: AppDatabase, shelfBook: Book,
+    refreshStartedAt: number): Promise<ShelfRefreshResult> {
+    let timer: number = -1;
+    const cancelled = new Promise<ShelfRefreshResult>((resolve: (result: ShelfRefreshResult) => void) => {
+      const cancel = (reason: string): void => resolve(new ShelfRefreshResult(null, reason, true));
+      this.shelfRefreshCancels.set(shelfBook.bookUrl, cancel);
+      timer = setTimeout(() => cancel(`${Math.round(SHELF_REFRESH_BOOK_TIMEOUT_MS / 1000)} 秒未返回`),
+        SHELF_REFRESH_BOOK_TIMEOUT_MS);
+    });
+    const work = this.refreshShelfBookToc(engine, db, shelfBook, refreshStartedAt)
+      .then((update: ShelfRefreshUpdate | null): ShelfRefreshResult => new ShelfRefreshResult(update, '', false))
+      .catch((e: Error): ShelfRefreshResult => new ShelfRefreshResult(null, this.shelfRefreshErrorText(e), false));
+    try {
+      return await Promise.race([work, cancelled]);
+    } finally {
+      clearTimeout(timer);
+      this.shelfRefreshCancels.delete(shelfBook.bookUrl);
+    }
+  }
+
+  shelfRefreshErrorText(e: Error): string {
+    const message = (e && e.message ? e.message : `${e}`).replace(/\s+/g, ' ').trim();
+    if (!message || message === 'undefined' || message === '[object Object]') return '书源出错';
+    return message.length > 24 ? `${message.substring(0, 24)}…` : message;
+  }
+
+  /** 记下失败原因：落库给下次打开书架用，同时立刻在封面上标出。 */
+  async recordShelfRefreshFailure(db: AppDatabase, shelfBook: Book, reason: string): Promise<void> {
+    this.shelfRefreshFailures = [...this.shelfRefreshFailures, new ShelfRefreshFailure(shelfBook, reason)];
+    if (!this.shelfRefreshFailedUrls.includes(shelfBook.bookUrl)) {
+      this.shelfRefreshFailedUrls = [...this.shelfRefreshFailedUrls, shelfBook.bookUrl];
+    }
+    try {
+      const current = await db.getBook(shelfBook.bookUrl);
+      if (!current) return;
+      current.putVariable(SHELF_REFRESH_ERROR_VARIABLE, reason);
+      await db.updateBook(current, false, 'shelf_refresh_failed');
+    } catch (e) {
+      console.error('记录书架检查失败原因失败:', shelfBook.name, e);
+    }
+  }
+
+  beginShelfRefreshBook(book: Book): void {
+    this.shelfRefreshActive = [...this.shelfRefreshActive, new ShelfRefreshActiveBook(book, Date.now())];
+  }
+
+  endShelfRefreshBook(bookUrl: string): void {
+    this.shelfRefreshActive = this.shelfRefreshActive.filter((item: ShelfRefreshActiveBook): boolean =>
+      item.book.bookUrl !== bookUrl);
+  }
+
+  /** 清单里的“跳过”：这本算失败，这一路马上去查下一本。 */
+  skipShelfRefreshBook(bookUrl: string): void {
+    const cancel = this.shelfRefreshCancels.get(bookUrl);
+    if (cancel) cancel('已跳过');
+  }
+
+  startShelfRefreshTicker(): void {
+    this.stopShelfRefreshTicker();
+    this.shelfRefreshNow = Date.now();
+    this.shelfRefreshTicker = setInterval(() => {
+      this.shelfRefreshNow = Date.now();
+    }, 1000);
+  }
+
+  stopShelfRefreshTicker(): void {
+    if (this.shelfRefreshTicker >= 0) {
+      clearInterval(this.shelfRefreshTicker);
+      this.shelfRefreshTicker = -1;
+    }
+  }
+
+  /** 正在查时返回开始时间，否则 0。 */
+  shelfRefreshActiveStart(bookUrl: string): number {
+    const item = this.shelfRefreshActive.find((entry: ShelfRefreshActiveBook): boolean => entry.book.bookUrl === bookUrl);
+    return item ? item.startedAt : 0;
+  }
+
+  shelfRefreshElapsed(startedAt: number): number {
+    return startedAt > 0 ? Math.max(0, this.shelfRefreshNow - startedAt) : 0;
+  }
+
+  shelfRefreshElapsedText(startedAt: number): string {
+    return `${Math.floor(this.shelfRefreshElapsed(startedAt) / 1000)}秒`;
+  }
+
+  shelfRefreshErrorReason(book: Book): string {
+    const failure = this.shelfRefreshFailures.find((item: ShelfRefreshFailure): boolean =>
+      item.book.bookUrl === book.bookUrl);
+    if (failure && this.shelfRefreshFailedUrls.includes(book.bookUrl)) return failure.reason;
+    return book.getVariable(SHELF_REFRESH_ERROR_VARIABLE) || '';
+  }
+
+  hasShelfRefreshError(book: Book): boolean {
+    return this.shelfRefreshFailedUrls.includes(book.bookUrl) || !!book.getVariable(SHELF_REFRESH_ERROR_VARIABLE);
+  }
+
+  /** 点开书或换源后清掉失败标记。 */
+  clearShelfRefreshError(bookUrl: string): void {
+    this.shelfRefreshFailedUrls = this.shelfRefreshFailedUrls.filter((url: string): boolean => url !== bookUrl);
+    const book = this.allBooks.find((item: Book): boolean => item.bookUrl === bookUrl);
+    if (book && book.getVariable(SHELF_REFRESH_ERROR_VARIABLE)) {
+      book.putVariable(SHELF_REFRESH_ERROR_VARIABLE, '');
+    }
+    const persist = async (): Promise<void> => {
+      const db = AppDatabase.getInstance();
+      await db.initWithContext(getContext(this));
+      const current = await db.getBook(bookUrl);
+      if (!current || !current.getVariable(SHELF_REFRESH_ERROR_VARIABLE)) return;
+      current.putVariable(SHELF_REFRESH_ERROR_VARIABLE, '');
+      await db.updateBook(current, false, 'shelf_refresh_error_cleared');
+    };
+    persist().catch((e: Error) => console.error('清除书架检查失败标记失败:', bookUrl, e));
+  }
+
+  /** 刷新一本书的目录并记下检查结果与更新角标；这次发现新章节时返回新增章数与最新章名，否则 null。 */
+  async refreshShelfBookToc(engine: ReadBookEngine, db: AppDatabase, shelfBook: Book,
+    refreshStartedAt: number): Promise<ShelfRefreshUpdate | null> {
+    const freshBook = await db.getBook(shelfBook.bookUrl) || shelfBook;
+    const beforeUpdateTime = BookshelfSortHelper.getBookUpdateTime(freshBook);
+    const beforeChapterCount = freshBook.totalChapterNum;
+    const hadPendingUpdate = this.hasShelfBookUpdate(freshBook);
+    await engine.openBook(freshBook);
+    await engine.refreshToc();
+    const refreshedBook = await db.getBook(shelfBook.bookUrl);
+    if (!refreshedBook) return null;
+    refreshedBook.lastCheckTime = Date.now();
+    refreshedBook.lastCheckCount = engine.chapters.length;
+    if (engine.chapters.length > 0) {
+      refreshedBook.totalChapterNum = engine.chapters.length;
+      refreshedBook.latestChapterTitle = engine.chapters[engine.chapters.length - 1].title;
+    }
+    const hasNewUpdate = BookshelfSortHelper.getBookUpdateTime(refreshedBook) > beforeUpdateTime;
+    const acknowledgedAt = this.shelfUpdateAcknowledgedAt.get(refreshedBook.bookUrl) || 0;
+    const keepPendingUpdate = hadPendingUpdate && acknowledgedAt === 0;
+    const keepNewUpdate = hasNewUpdate && acknowledgedAt < refreshStartedAt;
+    refreshedBook.putVariable(SHELF_UPDATE_BADGE_VARIABLE,
+      keepPendingUpdate || keepNewUpdate ? '1' : '');
+    refreshedBook.putVariable(SHELF_REFRESH_ERROR_VARIABLE, '');
+    await db.updateBook(refreshedBook);
+    if (!hasNewUpdate) return null;
+    const newChapters = beforeChapterCount > 0 ? Math.max(0, engine.chapters.length - beforeChapterCount) : 0;
+    return new ShelfRefreshUpdate(refreshedBook, newChapters, refreshedBook.latestChapterTitle || '');
   }
 
   async refreshLocalBooks(): Promise<void> {
@@ -8714,10 +9766,12 @@ export struct BookshelfPage {
     this.shelfRefreshSummaryPending = false;
     this.bumpShelfRefreshCapsule();
     this.clearShelfRefreshCapsuleTimer();
+    // 清单开着时等它关掉再收（见 closeShelfRefreshSheet）；有更新或失败的书多留一会儿，方便点开看是哪几本。
+    if (this.shelfRefreshSheetVisible) return;
     this.shelfRefreshCapsuleTimer = setTimeout(() => {
       this.shelfRefreshCapsuleTimer = -1;
       this.hideShelfRefreshCapsule();
-    }, 2400);
+    }, this.shelfRefreshFailures.length > 0 || this.shelfRefreshUpdates.length > 0 ? 4000 : 2400);
   }
 
   hideShelfRefreshCapsule(): void {
@@ -8985,9 +10039,16 @@ export struct BookshelfPage {
               .fontColor(this.secondaryTextColor())
               .maxLines(1)
           }
+          if (this.shelfRefreshTotal > 0) {
+            SymbolGlyph($r('sys.symbol.chevron_down'))
+              .fontSize(12)
+              .fontColor([this.secondaryTextColor()])
+              .rotate({ angle: this.shelfRefreshSheetVisible ? 180 : 0 })
+              .animation({ duration: 200, curve: Curve.FastOutSlowIn })
+          }
         }
         .height(SHELF_REFRESH_CAPSULE_HEIGHT)
-        .padding({ left: 10, right: 14 })
+        .padding({ left: 10, right: this.shelfRefreshTotal > 0 ? 10 : 14 })
         .alignItems(VerticalAlign.Center)
         .onAreaChange((_oldValue: Area, newValue: Area) => {
           const width = this.areaDimension(newValue.width);
@@ -8997,6 +10058,19 @@ export struct BookshelfPage {
         })
       }
       .scale({ x: this.shelfRefreshCapsuleScale, y: this.shelfRefreshCapsuleScale })
+      // 只有胶囊本身可点（展开清单）；标题行收着、胶囊淡没时不挡住下面的书。
+      .hitTestBehavior(this.shelfRefreshTotal > 0 &&
+        this.shelfRefreshCapsuleCollapse() < CollapsingHeader.DISTANCE / 2 ? HitTestMode.Default : HitTestMode.None)
+      .onClick(() => this.toggleShelfRefreshSheet())
+      .bindPopup(this.shelfRefreshSheetVisible, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel,
+        (): void => {
+          this.shelfRefreshSheet()
+        }, Placement.Bottom, this.appDarkMode, this.accentColor(), () => {
+          if (this.shelfRefreshSheetVisible) this.closeShelfRefreshSheet();
+        }))
+      .accessibilityText(this.shelfRefreshCapsuleLabel() +
+        (this.shelfRefreshCapsuleDone ? this.shelfRefreshCapsuleSubText : ''))
+      .accessibilityDescription(this.shelfRefreshTotal > 0 ? '点按查看正在检查、有更新和失败的书' : '')
     }
     .width('100%')
     .justifyContent(FlexAlign.Center)
@@ -9008,9 +10082,301 @@ export struct BookshelfPage {
       .combine(TransitionEffect.translate({ y: -10 }))
       .combine(TransitionEffect.scale({ x: 0.88, y: 0.88, centerX: '50%', centerY: '0%' })))
     .zIndex(3)
+    // 整行自身不接触摸，只有胶囊接（见上）。
     .hitTestBehavior(HitTestMode.None)
-    .accessibilityText(this.shelfRefreshCapsuleLabel() +
-      (this.shelfRefreshCapsuleDone ? this.shelfRefreshCapsuleSubText : ''))
+  }
+
+  toggleShelfRefreshSheet(): void {
+    if (this.shelfRefreshSheetVisible) {
+      this.closeShelfRefreshSheet();
+      return;
+    }
+    if (this.shelfRefreshTotal <= 0) return;
+    // 清单开着时结果胶囊不自动收起，关掉清单后再收。
+    this.clearShelfRefreshCapsuleTimer();
+    this.shelfRefreshSheetVisible = true;
+  }
+
+  closeShelfRefreshSheet(): void {
+    this.shelfRefreshSheetVisible = false;
+    if (this.shelfRefreshCapsuleDone && !this.shelfRefreshRunning && this.shelfRefreshCapsuleVisible &&
+      !this.shelfRefreshSummaryPending && this.shelfRefreshCapsuleTimer < 0) {
+      this.shelfRefreshCapsuleTimer = setTimeout(() => {
+        this.shelfRefreshCapsuleTimer = -1;
+        this.hideShelfRefreshCapsule();
+      }, 1200);
+    }
+  }
+
+  /** 正在查的书按开始时间排，最久的在上面。 */
+  shelfRefreshActiveSorted(): ShelfRefreshActiveBook[] {
+    return [...this.shelfRefreshActive].sort((a: ShelfRefreshActiveBook, b: ShelfRefreshActiveBook): number =>
+      a.startedAt - b.startedAt);
+  }
+
+  shelfRefreshQueuedCount(): number {
+    return Math.max(0, this.shelfRefreshTotal - this.shelfRefreshChecked - this.shelfRefreshActive.length);
+  }
+
+  shelfRefreshStuckColor(): string {
+    return this.appDarkMode ? '#F0A63A' : '#C77700';
+  }
+
+  /** 封面正中的检查圆钮：转圈，查得久了变橙并显示秒数。bookUrl 只作查找键，状态在这里现读。 */
+  @Builder
+  shelfRefreshCoverChip(bookUrl: string) {
+    Row({ space: 4 }) {
+      LoadingProgress()
+        .width(16)
+        .height(16)
+        .color('#FFFFFF')
+      if (this.shelfRefreshElapsed(this.shelfRefreshActiveStart(bookUrl)) >= SHELF_REFRESH_STUCK_MS) {
+        Text(this.shelfRefreshElapsedText(this.shelfRefreshActiveStart(bookUrl)))
+          .fontSize(AppFontSize.MICRO)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#FFFFFF')
+          .fontFeature('"tnum" on')
+          .maxLines(1)
+      }
+    }
+    .height(28)
+    .constraintSize({ minWidth: 28 })
+    .padding({ left: 6, right: 6 })
+    .borderRadius(14)
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor(this.shelfRefreshElapsed(this.shelfRefreshActiveStart(bookUrl)) >= SHELF_REFRESH_STUCK_MS ?
+      SHELF_REFRESH_STUCK_COLOR : '#73000000')
+    .hitTestBehavior(HitTestMode.None)
+    .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.6, y: 0.6 }))
+      .animation({ duration: 200, curve: Curve.FastOutSlowIn }))
+    .accessibilityText(`正在检查更新，已用${this.shelfRefreshElapsedText(this.shelfRefreshActiveStart(bookUrl))}`)
+  }
+
+  @Builder
+  shelfRefreshCoverError() {
+    Text('!')
+      .width(22)
+      .height(22)
+      .borderRadius(11)
+      .textAlign(TextAlign.Center)
+      .fontSize(14)
+      .fontWeight(FontWeight.Bold)
+      .fontColor('#FFFFFF')
+      .backgroundColor(SHELF_REFRESH_ERROR_COLOR)
+      .hitTestBehavior(HitTestMode.None)
+      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.4, y: 0.4 }))
+        .animation({ duration: 240, curve: curves.springMotion(0.36, 0.7) }))
+      .accessibilityText('上次检查更新失败，长按可换源')
+  }
+
+  @Builder
+  shelfRefreshThumb(book: Book) {
+    Stack() {
+      if (this.getShelfCoverList(book).length === 0) {
+        Text(book.name ? book.name.substring(0, 1) : '书')
+          .fontSize(12)
+          .fontColor('#FFFFFF')
+      } else {
+        Image(this.imageCover(this.getShelfCover(book, false)))
+          .width('100%')
+          .height('100%')
+          .objectFit(ImageFit.Cover)
+        if (this.shelfCoverDimOpacity() > 0) {
+          this.shelfCoverDimLayer()
+        }
+      }
+    }
+    .width(24)
+    .height(32)
+    .borderRadius(3)
+    .clip(true)
+    .backgroundColor(this.getShelfCoverList(book).length === 0 ? this.getBookColor(book.name) : this.inputColor())
+  }
+
+  shelfRefreshSheetHeaderLeft(section: number): string {
+    if (section === SHELF_REFRESH_SECTION_FAILED) return `失败 ${this.shelfRefreshFailures.length}`;
+    if (section === SHELF_REFRESH_SECTION_UPDATED) return `有更新 ${this.shelfRefreshUpdates.length}`;
+    return `正在检查 ${this.shelfRefreshActive.length}`;
+  }
+
+  shelfRefreshSheetHeaderRight(section: number): string {
+    if (section === SHELF_REFRESH_SECTION_FAILED) return '点一行去换源';
+    if (section === SHELF_REFRESH_SECTION_UPDATED) return '点一行去读';
+    return this.shelfRefreshRunning ? `排队 ${this.shelfRefreshQueuedCount()}` : '';
+  }
+
+  /** 上面还有别的段时画一条分隔线：进行中“有更新”排在“正在检查”下面，“失败”排在前两段下面。 */
+  shelfRefreshSheetHeaderDivided(section: number): boolean {
+    if (section === SHELF_REFRESH_SECTION_UPDATED) return this.shelfRefreshRunning;
+    if (section === SHELF_REFRESH_SECTION_FAILED) return this.shelfRefreshRunning || this.shelfRefreshUpdates.length > 0;
+    return false;
+  }
+
+  /** 按值传给 @Builder 的字符串只取首次建出时的值，数字会停住；这里只收固定的段号，计数和分隔线在内部读状态。 */
+  @Builder
+  shelfRefreshSheetHeader(section: number) {
+    Row() {
+      Text(this.shelfRefreshSheetHeaderLeft(section))
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.secondaryTextColor())
+      Blank()
+      Text(this.shelfRefreshSheetHeaderRight(section))
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.secondaryTextColor())
+    }
+    .width('100%')
+    .padding({ top: this.shelfRefreshSheetHeaderDivided(section) ? 8 : 4, bottom: 4 })
+    .margin({ top: this.shelfRefreshSheetHeaderDivided(section) ? 4 : 0 })
+    .border({
+      width: { top: this.shelfRefreshSheetHeaderDivided(section) ? 0.5 : 0 },
+      color: this.glassBorderColor()
+    })
+  }
+
+  /** 清单里点有更新的书：用重载后的书架对象打开，从上次读到的位置接着读。 */
+  openShelfRefreshUpdatedBook(item: ShelfRefreshUpdate): void {
+    const book = this.allBooks.find((entry: Book): boolean => entry.bookUrl === item.book.bookUrl) || item.book;
+    this.closeShelfRefreshSheet();
+    setTimeout(() => this.openShelfBook(book, this.contextViewportWidth / 2, this.contextViewportHeight / 2), 0);
+  }
+
+  /**
+   * 点胶囊展开的清单。进行中：正在查的书（查久了可跳过）、已查到新章节的书、失败的书；
+   * 结束后“正在检查”整段收掉，有更新的书排最前（点一行去读），失败的书在后（点一行去换源）。
+   */
+  @Builder
+  shelfRefreshSheet() {
+    Scroll() {
+      Column() {
+        if (this.shelfRefreshRunning) {
+          this.shelfRefreshSheetHeader(SHELF_REFRESH_SECTION_ACTIVE)
+          if (this.shelfRefreshActive.length === 0) {
+            Text('正在准备…')
+              .width('100%')
+              .fontSize(AppFontSize.CAPTION)
+              .fontColor(this.secondaryTextColor())
+              .padding({ top: 4, bottom: 6 })
+          }
+        } else if (this.shelfRefreshUpdates.length === 0 && this.shelfRefreshFailures.length === 0) {
+          Text('全部查完，没有新章节')
+            .width('100%')
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.secondaryTextColor())
+            .padding({ top: 6, bottom: 6 })
+        }
+        ForEach(this.shelfRefreshActiveSorted(), (item: ShelfRefreshActiveBook) => {
+          Row({ space: AppSpacing.SM }) {
+            this.shelfRefreshThumb(item.book)
+            Column() {
+              Text(item.book.name)
+                .fontSize(AppFontSize.BODY)
+                .fontColor(this.primaryTextColor())
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+              Text((item.book.originName || item.book.origin || '').trim())
+                .fontSize(AppFontSize.MICRO)
+                .fontColor(this.secondaryTextColor())
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+            Text(this.shelfRefreshElapsedText(item.startedAt))
+              .fontSize(AppFontSize.CAPTION)
+              .fontWeight(this.shelfRefreshElapsed(item.startedAt) >= SHELF_REFRESH_STUCK_MS ? FontWeight.Medium :
+                FontWeight.Regular)
+              .fontColor(this.shelfRefreshElapsed(item.startedAt) >= SHELF_REFRESH_STUCK_MS ?
+                this.shelfRefreshStuckColor() : this.secondaryTextColor())
+              .fontFeature('"tnum" on')
+            if (this.shelfRefreshElapsed(item.startedAt) >= SHELF_REFRESH_STUCK_MS) {
+              Text('跳过')
+                .fontSize(AppFontSize.CAPTION)
+                .fontColor(this.accentColor())
+                .padding({ left: 10, right: 10, top: 3, bottom: 3 })
+                .borderRadius(12)
+                .border({ width: 1, color: this.glassBorderColor() })
+                .onClick(() => this.skipShelfRefreshBook(item.book.bookUrl))
+                .accessibilityText(`跳过${item.book.name}`)
+            }
+          }
+          .width('100%')
+          .height(44)
+        }, (item: ShelfRefreshActiveBook) => `active_${item.book.bookUrl}`)
+        if (this.shelfRefreshUpdates.length > 0) {
+          this.shelfRefreshSheetHeader(SHELF_REFRESH_SECTION_UPDATED)
+          ForEach(this.shelfRefreshUpdates, (item: ShelfRefreshUpdate) => {
+            Row({ space: AppSpacing.SM }) {
+              this.shelfRefreshThumb(item.book)
+              Column() {
+                Text(item.book.name)
+                  .fontSize(AppFontSize.BODY)
+                  .fontColor(this.primaryTextColor())
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text(item.latestTitle || (item.book.originName || item.book.origin || '').trim())
+                  .fontSize(AppFontSize.MICRO)
+                  .fontColor(this.secondaryTextColor())
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+              if (item.newChapters > 0) {
+                Text(`+${item.newChapters} 章`)
+                  .fontSize(AppFontSize.MICRO)
+                  .fontColor(this.accentColor())
+                  .fontFeature('"tnum" on')
+                  .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+                  .borderRadius(10)
+                  .backgroundColor(HexColor.withOpacity(this.accentColor(), 0.12))
+              }
+            }
+            .width('100%')
+            .height(44)
+            .onClick(() => this.openShelfRefreshUpdatedBook(item))
+            .accessibilityText(item.newChapters > 0 ? `${item.book.name}，新增${item.newChapters}章，${item.latestTitle}` :
+              `${item.book.name}，有更新，${item.latestTitle}`)
+          }, (item: ShelfRefreshUpdate) => `updated_${item.book.bookUrl}_${item.newChapters}`)
+        }
+        if (this.shelfRefreshFailures.length > 0) {
+          this.shelfRefreshSheetHeader(SHELF_REFRESH_SECTION_FAILED)
+          ForEach(this.shelfRefreshFailures, (item: ShelfRefreshFailure) => {
+            Row({ space: AppSpacing.SM }) {
+              this.shelfRefreshThumb(item.book)
+              Column() {
+                Text(item.book.name)
+                  .fontSize(AppFontSize.BODY)
+                  .fontColor(this.primaryTextColor())
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text(`${(item.book.originName || item.book.origin || '').trim()} · ${item.reason}`)
+                  .fontSize(AppFontSize.MICRO)
+                  .fontColor(SHELF_REFRESH_ERROR_COLOR)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+              SymbolGlyph($r('sys.symbol.arrow_left_arrow_right'))
+                .fontSize(14)
+                .fontColor([this.secondaryTextColor()])
+            }
+            .width('100%')
+            .height(44)
+            .onClick(() => {
+              const book = item.book;
+              this.closeShelfRefreshSheet();
+              setTimeout(() => this.openShelfChangeSource(book), 0);
+            })
+          }, (item: ShelfRefreshFailure) => `failed_${item.book.bookUrl}`)
+        }
+      }
+      .padding({ left: AppSpacing.MD, right: AppSpacing.MD, top: AppSpacing.SM, bottom: AppSpacing.SM })
+    }
+    .width(Math.min(340, this.contextViewportWidth - 32))
+    .constraintSize({ maxHeight: 420 })
+    .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.None)
   }
 
   /** 从筛选菜单的“搜索书架”展开，边输入边筛当前书架；“取消”清空关键词并收起。 */
@@ -9562,9 +10928,154 @@ export struct BookshelfPage {
     this.refreshShelfCoverCache(this.books);
   }
 
-  /** 书架和分组页的标题栏各有一个；只有当前那一层的按钮挂菜单，免得两处同时弹出。 */
+  /**
+   * 书架和分组页的标题栏各有一个；只有当前那一层的按钮挂菜单，免得两处同时弹出。
+   * @Builder 按值传参不随状态刷新，所以只传固定的“属于哪一层”，当前在哪一层在这里现读。
+   */
+  /**
+   * 沉浸书架“只留菜单按钮”：右上角一个圆钮，点开一级菜单（分组、分类栏、筛选、布局、排序）；
+   * 选分组、筛选、布局、排序时收起一级菜单，再在同一个按钮上弹出原来那几个按钮的菜单。有筛选时亮红点。
+   */
   @Builder
-  shelfMoreButton(menuHost: boolean = true) {
+  shelfSoloMenuButton() {
+    Row() {
+      Row() {
+        Row() {
+          Stack({ alignContent: Alignment.TopEnd }) {
+            this.shelfHeaderCircleButton($r('sys.symbol.more'), this.showShelfSoloMenu, this.shelfSoloMenuAccessibilityText(),
+              () => {
+                this.showShelfSoloMenu = !this.showShelfSoloMenu;
+                this.showShelfGroupMenu = false;
+                this.showShelfFilterMenu = false;
+                this.showShelfMoreMenu = false;
+              })
+            if (this.shelfFilterKeyList().length > 0) {
+              Row()
+                .width(9)
+                .height(9)
+                .borderRadius(4.5)
+                .backgroundColor(ThemeRuntime.dangerColor(this.appDarkMode))
+                .border({ width: 1.5, color: this.cardColor() })
+                .margin({ top: 3, right: 3 })
+                .hitTestBehavior(HitTestMode.None)
+            }
+          }
+          .width(BookshelfPage.HEADER_CONTROL_SIZE)
+          .height(BookshelfPage.HEADER_CONTROL_SIZE)
+          .bindPopup(this.showShelfSoloMenu, this.shelfMenuPopupOptions((): void => {
+            this.shelfSoloDropdown()
+          }, Placement.BottomRight, () => {
+            this.showShelfSoloMenu = false;
+          }))
+        }
+        .bindPopup(this.showShelfMoreMenu && this.shelfSoloMenuMode(), this.shelfMenuPopupOptions((): void => {
+          this.shelfMoreDropdown()
+        }, Placement.BottomRight, () => {
+          this.showShelfMoreMenu = false;
+        }))
+      }
+      .bindPopup(this.showShelfFilterMenu && this.shelfSoloMenuMode(), this.shelfMenuPopupOptions((): void => {
+        this.shelfFilterDropdown()
+      }, Placement.BottomRight, () => {
+        this.showShelfFilterMenu = false;
+        this.shelfFilterMenuPage = '';
+      }))
+    }
+    .bindPopup(this.showShelfGroupMenu && this.shelfSoloMenuMode(), this.shelfMenuPopupOptions((): void => {
+      this.shelfGroupDropdown()
+    }, Placement.BottomRight, () => {
+      this.showShelfGroupMenu = false;
+    }))
+  }
+
+  shelfSoloMenuAccessibilityText(): string {
+    const count = this.shelfFilterKeyList().length;
+    return count > 0 ? `书架操作，已筛选 ${count} 项` : '书架操作';
+  }
+
+  @Builder
+  shelfSoloDropdown() {
+    Column({ space: AppSpacing.XXS }) {
+      this.shelfSoloMenuItem('分组', this.shelfBaseGroupId() === 0 ? '全部书籍' : this.shelfGroupTitle(),
+        $r('sys.symbol.folder'), false, true, (): void => this.openShelfMenuFromSolo('group'))
+      if (this.bookshelfTypeCategoryEnabled) {
+        this.shelfSoloMenuItem('分类栏', this.shelfCategoryExpanded ? '已展开' : '已收起',
+          $r('sys.symbol.square_stack_3d'), false, false, (): void => {
+            this.showShelfSoloMenu = false;
+            this.toggleShelfCategory();
+          })
+      }
+      Divider()
+        .strokeWidth(0.5)
+        .color(ThemeRuntime.hairlineColor(this.appDarkMode))
+        .margin({ top: AppSpacing.XXS, bottom: AppSpacing.XXS, left: 12, right: 12 })
+      this.shelfSoloMenuItem('筛选',
+        this.shelfFilterKeyList().length > 0 ? `已筛选 ${this.shelfFilterKeyList().length} 项` : '未筛选',
+        $r('sys.symbol.funnel'), this.shelfFilterKeyList().length > 0, true, (): void => this.openShelfMenuFromSolo('filter'))
+      this.shelfSoloMenuItem('布局', this.shelfLayoutModeLabel(), $r('sys.symbol.square_grid_2x2'), false, true,
+        (): void => this.openShelfMenuFromSolo('layout'))
+      this.shelfSoloMenuItem('排序', this.sortModeLabel(), $r('sys.symbol.text_arrow_up_and_down'), false, true,
+        (): void => this.openShelfMenuFromSolo('sort'))
+    }
+    .width(224)
+    .padding(BookshelfPage.MENU_PADDING)
+  }
+
+  @Builder
+  shelfSoloMenuItem(label: string, value: string, icon: Resource, highlight: boolean, chevron: boolean,
+    action: () => void) {
+    Row({ space: AppSpacing.SM }) {
+      SymbolGlyph(icon)
+        .fontSize(18)
+        .fontColor([this.primaryTextColor()])
+      Text(label)
+        .fontSize(AppFontSize.BODY_LARGE)
+        .fontColor(this.primaryTextColor())
+        .layoutWeight(1)
+      Text(value)
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(highlight ? this.accentColor() : this.subTextColor())
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .constraintSize({ maxWidth: 96 })
+      if (chevron) {
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(12)
+          .fontColor([this.subTextColor()])
+      }
+    }
+    .width('100%')
+    .height(BookshelfPage.MENU_ITEM_HEIGHT)
+    .padding({ left: 12, right: 12 })
+    .borderRadius(this.shelfMenuItemRadius())
+    .accessibilityText(`${label}：${value}`)
+    .onClick(() => action())
+  }
+
+  /** 从一级菜单进分组、筛选、布局、排序：先收一级菜单，稍后在同一个圆钮上弹出对应菜单。 */
+  openShelfMenuFromSolo(page: string): void {
+    this.showShelfSoloMenu = false;
+    setTimeout((): void => {
+      if (!this.shelfComponentActive || !this.shelfSoloMenuMode()) return;
+      if (page === 'group') {
+        this.showShelfGroupMenu = true;
+      } else if (page === 'filter') {
+        this.shelfFilterMenuPage = '';
+        this.showShelfFilterMenu = true;
+      } else {
+        this.shelfMoreMenuPage = page;
+        this.showShelfMoreMenu = true;
+      }
+    }, BookshelfPage.SOLO_MENU_SWAP_DELAY);
+  }
+
+  shelfLayoutModeLabel(): string {
+    return this.isCompanionLayout() ? '陪伴' : (this.bookshelfLayoutMode === 'tile' ? '平铺' :
+      (this.bookshelfLayoutMode === 'loose' ? '宽松' : '紧凑'));
+  }
+
+  @Builder
+  shelfMoreButton(onGroupLayer: boolean) {
     Row() {
       this.shelfHeaderCircleButton($r('sys.symbol.more'), this.showShelfMoreMenu, '更多操作', () => {
         this.shelfMoreMenuPage = '';
@@ -9573,7 +11084,7 @@ export struct BookshelfPage {
         this.showShelfGroupMenu = false;
       })
     }
-    .bindPopup(this.showShelfMoreMenu && menuHost, this.shelfMenuPopupOptions((): void => {
+    .bindPopup(this.showShelfMoreMenu && onGroupLayer === this.isTileGroupPage(),this.shelfMenuPopupOptions((): void => {
       this.shelfMoreDropdown()
     }, Placement.BottomRight, () => {
       this.showShelfMoreMenu = false;
@@ -9611,8 +11122,7 @@ export struct BookshelfPage {
         this.sortDropdownItem('最近更新', 'recentUpdate')
         this.sortDropdownItem('名称', 'name')
       } else {
-        this.shelfMoreMenuItem('布局', this.isCompanionLayout() ? '陪伴' : (this.bookshelfLayoutMode === 'tile' ? '平铺' :
-          (this.bookshelfLayoutMode === 'loose' ? '宽松' : '紧凑')), $r('sys.symbol.square_grid_2x2'), 'layout')
+        this.shelfMoreMenuItem('布局', this.shelfLayoutModeLabel(), $r('sys.symbol.square_grid_2x2'), 'layout')
         this.shelfMoreMenuItem('排序', this.sortModeLabel(), $r('sys.symbol.text_arrow_up_and_down'), 'sort')
       }
     }
@@ -9830,8 +11340,9 @@ export struct BookshelfPage {
         return this.compareBookName(a, b);
       }
       if (mode === 'recentUpdate') {
-        return BookshelfSortHelper.getBookUpdateTime(b) - BookshelfSortHelper.getBookUpdateTime(a) ||
-          this.compareBookName(a, b);
+        // 带更新角标的在前、按查到更新的时间排；其余（以及同一批查到更新的）按最近阅读排。
+        return this.shelfUpdateSortTime(b) - this.shelfUpdateSortTime(a) ||
+          BookshelfSortHelper.compareRecentRead(a, b) || this.compareBookName(a, b);
       }
       return this.getBookAddTime(b) - this.getBookAddTime(a);
     });
@@ -10120,6 +11631,14 @@ export struct BookshelfPage {
     return 'contentPreview';
   }
 
+  /** 继续卡片上的动作文案按书的类型区分：有声书是听、视频是观看、漫画是翻看、其余是读。 */
+  shelfContinueActionText(book: Book): string {
+    if (BookTypeSupport.isAudio(book)) return '继续收听';
+    if (BookTypeSupport.isVideo(book)) return '继续观看';
+    if (this.isShelfComicBook(book)) return '继续翻看';
+    return '继续阅读';
+  }
+
   isShelfComicBook(book: Book): boolean {
     if (book.origin === 'local') {
       return BookTypeSupport.isImage(book);
@@ -10234,7 +11753,12 @@ export struct BookshelfPage {
   }
 
   shelfSurfaceColor(): string {
-    return ThemeRuntime.homeSurfaceColor(this.appDarkMode);
+    return ThemeRuntime.homeSurfaceColor(this.appDarkMode, this.bookshelfLayoutMode);
+  }
+
+  /** 书架页（含分组页）当前有没有主题背景：主题可以按书架布局单独配图，所以要带上当前布局问。 */
+  shelfHasThemeBackdrop(): boolean {
+    return !!ThemeRuntime.homeBackdrop(this.appDarkMode, this.bookshelfLayoutMode);
   }
 
   cardColor(): string {

@@ -17,6 +17,7 @@ import { AdaptiveSwitch } from '../components/AdaptiveSwitch';
 @Entry
 @Component
 struct DataSyncPage {
+  @StorageProp('webParseEnabled') webParseEnabled: boolean = false;
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('accountLoggedIn') accountLoggedIn: boolean = false;
@@ -144,20 +145,23 @@ struct DataSyncPage {
         this.fileSyncRow('自定义字体', '同步导入的自定义字体文件', false)
         SettingSwitchRow({
           title: '阅读数据',
-          description: '在线书架、分组、排序、进度、书签和阅读统计；本地书同步进度与统计',
+          description: this.webParseEnabled ? '在线书架、分组、排序、进度、书签和阅读统计；本地书同步进度与统计' :
+            '书架分组、排序、进度、书签和阅读统计',
           isOn: this.readingDataEnabled,
           onChange: (value: boolean) => {
             this.setScopeEnabled(true, value);
           }
         })
-        SettingSwitchRow({
-          title: '书源',
-          description: '配置、分组、排序、启用和锁定状态；不含登录凭证',
-          isOn: this.bookSourcesEnabled,
-          onChange: (value: boolean) => {
-            this.setBookSourcesEnabled(value);
-          }
-        })
+        if (this.webParseEnabled) {
+          SettingSwitchRow({
+            title: '书源',
+            description: '配置、分组、排序、启用和锁定状态；不含登录凭证。仅作为你的私有数据保存，不公开、不能分享',
+            isOn: this.bookSourcesEnabled,
+            onChange: (value: boolean) => {
+              this.setBookSourcesEnabled(value);
+            }
+          })
+        }
         SettingSwitchRow({
           title: '阅读偏好',
           description: '字体规则、替换规则、主题；排版仅保存在本机',
@@ -187,14 +191,14 @@ struct DataSyncPage {
     Column() {
       this.actionItem('同步设备', '查看和管理当前账号下的设备', true, () => {
         if (!this.accountLoggedIn) {
-          HdsFeedback.showToast('请先登录华为账号');
+          HdsFeedback.showToast('请先登录账号');
           return;
         }
         router.pushUrl({ url: 'pages/SyncDevices' });
       })
       this.actionItem('同步问题', this.issueSummary(), true, () => {
         if (!this.accountLoggedIn) {
-          HdsFeedback.showToast('请先登录华为账号');
+          HdsFeedback.showToast('请先登录账号');
           return;
         }
         router.pushUrl({ url: 'pages/SyncIssues' });
@@ -250,7 +254,7 @@ struct DataSyncPage {
       .width('100%')
 
       if (!this.accountLoggedIn) {
-        Text('登录华为账号后，可跨设备同步书架、阅读进度和阅读设置；终身超级会员还可同步本地书籍和自定义字体。')
+        Text('登录账号后，可跨设备同步书架、阅读进度和阅读设置；终身超级会员还可同步本地书籍和自定义字体。')
           .fontSize(AppFontSize.BODY)
           .fontColor(this.subTextColor())
           .lineHeight(20)
@@ -489,7 +493,7 @@ struct DataSyncPage {
 
   async confirmReloadFromCloud(): Promise<void> {
     if (!this.accountLoggedIn || !this.cloudSyncEnabled) {
-      HdsFeedback.showToast(this.accountLoggedIn ? '请先开启云同步' : '请先登录华为账号');
+      HdsFeedback.showToast(this.accountLoggedIn ? '请先开启云同步' : '请先登录账号');
       return;
     }
     const result = await promptAction.showDialog({

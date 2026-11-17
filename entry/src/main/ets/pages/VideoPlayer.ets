@@ -6,6 +6,7 @@ import { AppDatabase } from '../model/data/AppDatabase';
 import { ReadBookEngine } from '../core/book/ReadBookEngine';
 import { WebBookService } from '../core/book/WebBookService';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { ReaderHaptics } from '../utils/ReaderHaptics';
 import { ReaderTtsFloatingSession } from '../utils/ReaderTtsFloatingSession';
 import { syncSystemBars } from '../utils/SystemBars';
 import { AppFontSize } from '../theme/AppFontSize';
@@ -70,6 +71,13 @@ class EpisodeDataSource implements IDataSource {
 // Video 组件的 currentProgressRate 只接受 0.75、1、1.25、1.75、2 这几档，别的值不生效。
 const SPEEDS: number[] = [0.75, 1, 1.25, 1.75, 2];
 const CONTROLS_HIDE_DELAY_MS: number = 4000;
+// 长按画面临时加速：按住 0.4 秒起效，松手恢复所选速度，不落库。
+// 一般升到 2×；按住往上滑超过 40vp 升到 3×，滑回来回到 2×。原本已选 2× 时直接用 3×。
+// 3× 只有 AVPlayer 支持，系统 Video 组件最高 2×，那条路径上不会升到 3×。
+const BOOST_PRESS_MS: number = 400;
+const BOOST_SPEED: number = 2;
+const BOOST_SPEED_HIGH: number = 3;
+const BOOST_SLIDE_UP_VP: number = 40;
 const DISPLAY_MODES: string[] = ['contain', 'none', 'cover', 'fill'];
 // 网络流还没报过进度时，恢复跳转最多等这么久，再改用关键帧跳转重试。
 const RESUME_WAIT_MS: number = 15000;
@@ -107,10 +115,13 @@ struct VideoPlayerPage {
   @State episodeCount: number = 0;
   @State videoUrl: string = '';
   @State statusText: string = '正在加载...';
-  @State isPlaying: boolean = false;
+  @State @Watch('syncKeepScreenOn') isPlaying: boolean = false;
   @State positionSec: number = 0;
   @State durationSec: number = 0;
   @State speed: number = 1;
+  // 长按临时倍速，0 表示没在加速；播放器实际速度见 effectiveSpeed()。
+  @State boostSpeed: number = 0;
+  @State boostPulse: number = 0;
   @State showControls: boolean = true;
   @State showEpisodes: boolean = false;
   @State showDisplayModes: boolean = false;
@@ -123,12 +134,12 @@ struct VideoPlayerPage {
   @State seeking: boolean = false;
   @State nativeAttempts: VideoNativeAttempt[] = [];
   @State webAttempts: VideoWebAttempt[] = [];
-  @State webMode: boolean = false;
+  @State @Watch('syncKeepScreenOn') webMode: boolean = false;
   @State webFullscreen: boolean = false;
   @State webStatus: string = '';
   @State videoPageUrl: string = '';
-  @State playbackFailed: boolean = false;
-  @State playbackReady: boolean = false;
+  @State @Watch('syncKeepScreenOn') playbackFailed: boolean = false;
+  @State @Watch('syncKeepScreenOn') playbackReady: boolean = false;
   @State resumeNotice: string = '';
   @State resumeSeekPending: boolean = false;
   @State resumeFailedSec: number = -1;
@@ -166,10 +177,14 @@ struct VideoPlayerPage {
   private chapters: BookChapter[] = [];
   private loadSerial: number = 0;
   private hideTimerId: number = -1;
+  private boostPulseTimerId: number = -1;
+  private boostTouchStartY: number = -1;
   private resumeSec: number = 0;
   private retried: boolean = false;
   private lastSavedSec: number = -1;
   private playerPageVisible: boolean = false;
+  private keepScreenOnApplied: boolean = false;
+  private keepScreenOnSerial: number = 0;
   private orientationSerial: number = 0;
   private manualLandscapeRequested: boolean = false;
   // 从书架带开书动画进来时，书架那层“正在打开书籍”要等这里通知才会收起，否则返回后一直转圈。
@@ -184,6 +199,10 @@ struct VideoPlayerPage {
       Number(params.chapterIndex) : -1;
     this.openedWithShelfAnimation = !!params && params.shelfBookOpening === 'true';
     this.openedBookUrl = bookUrl;
+    // 视频出声前先让朗读/听书暂停，离开播放页时再接着播；等视频开播后再停就晚了，见 suspendForOtherAudio。
+    ReaderTtsFloatingSession.suspendForOtherAudio().catch((error: Error) => {
+      console.warn('[VideoPlayer] pause tts failed:', error.message);
+    });
     this.loadBook(bookUrl, requestedIndex);
   }
 
@@ -193,8 +212,11 @@ struct VideoPlayerPage {
     this.loadSerial++;
     this.cancelResolve();
     this.clearHideTimer();
+    this.endBoost();
     this.saveProgress(true);
     this.stopPlayback();
+    ReaderTtsFloatingSession.resumeAfterOtherAudio();
+    this.syncKeepScreenOn();
     this.leaveImmersive();
     this.requestShelfCloseAnimation();
   }
@@ -202,6 +224,7 @@ struct VideoPlayerPage {
   onPageShow(): void {
     this.playerPageVisible = true;
     this.enterImmersive();
+    this.syncKeepScreenOn();
     this.applyPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED);
     for (const attempt of this.webAttempts) {
       if (attempt.attached) {
@@ -217,10 +240,14 @@ struct VideoPlayerPage {
     // 切后台时 Video 不一定回调 onPause，这里也记下暂停时刻，回来久了再播会先重取地址。
     if (this.nativeAttempts.length > 0 && this.pausedAt <= 0) this.pausedAt = Date.now();
     this.playIntent = false;
+    this.endBoost();
     try { this.nativePause(); } catch (_) {}
     this.pauseWeb();
     this.clearHideTimer();
     this.saveProgress(true);
+    // 返回上一页时，上一页的 onPageShow 在这里之后、本页 aboutToDisappear 之前；在这里交还常亮，
+    // 才不会把阅读页按亮屏时间设置刚开启的常亮又关掉。
+    this.syncKeepScreenOn();
   }
 
   onBackPress(): boolean {
@@ -264,7 +291,6 @@ struct VideoPlayerPage {
       if (!this.playerPageVisible) return;
       mainWindow.setWindowLayoutFullScreen(true);
       mainWindow.setWindowSystemBarEnable([]);
-      mainWindow.setWindowKeepScreenOn(true);
     }).catch((error: Error): void => {
       console.warn('[VideoPlayer] enter immersive failed:', error.message);
     });
@@ -274,13 +300,30 @@ struct VideoPlayerPage {
     const dark = this.appDarkMode;
     window.getLastWindow(getContext(this)).then((mainWindow: window.Window): void => {
       if (this.playerPageVisible) return;
-      mainWindow.setWindowKeepScreenOn(false);
       mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED).catch((error: Error): void => {
         console.warn('[VideoPlayer] restore orientation failed:', error.message);
       });
       syncSystemBars(getContext(this), dark, ThemeRuntime.pageColor(dark));
     }).catch((error: Error): void => {
       console.warn('[VideoPlayer] leave immersive failed:', error.message);
+    });
+  }
+
+  /**
+   * 播放中（含首次加载、网页播放）保持屏幕常亮，暂停、播完、出错或页面隐藏时交还系统息屏。
+   * 网页播放拿不到播放状态，页面可见时一直常亮。
+   */
+  private syncKeepScreenOn(): void {
+    const wanted = this.playerPageVisible &&
+      (this.webMode || this.isPlaying || (!this.playbackReady && !this.playbackFailed));
+    if (wanted === this.keepScreenOnApplied) return;
+    this.keepScreenOnApplied = wanted;
+    const serial = ++this.keepScreenOnSerial;
+    window.getLastWindow(getContext(this)).then((mainWindow: window.Window): Promise<void> | undefined => {
+      if (serial !== this.keepScreenOnSerial) return undefined;
+      return mainWindow.setWindowKeepScreenOn(wanted);
+    }).catch((error: Error): void => {
+      console.warn('[VideoPlayer] keep screen on failed:', error.message);
     });
   }
 
@@ -488,8 +531,8 @@ struct VideoPlayerPage {
       } catch (_) {}
       return;
     }
-    // 同一应用内的音频流系统不会互相打断，朗读/听书要自己停下，免得和视频声音叠在一起。
-    ReaderTtsFloatingSession.pause().catch((error: Error) => {
+    // 看视频途中用户又从胶囊继续了朗读/听书：视频再播时重新让它暂停，离开播放页时照样恢复。
+    ReaderTtsFloatingSession.suspendForOtherAudio().catch((error: Error) => {
       console.warn('[VideoPlayer] pause tts failed:', error.message);
     });
     this.isPlaying = true;
@@ -502,6 +545,7 @@ struct VideoPlayerPage {
   private handleNativePause(attempt: VideoNativeAttempt): void {
     if (!this.isCurrentNative(attempt)) return;
     this.isPlaying = false;
+    this.endBoost();
     // 用户暂停、系统因音频焦点暂停都不算卡住。
     this.playIntent = false;
     this.pausedAt = Date.now();
@@ -628,6 +672,7 @@ struct VideoPlayerPage {
     this.playbackReady = false;
     this.activeAttemptId++;
     this.clearHideTimer();
+    this.endBoost();
     this.exitWebFullscreen();
     try { this.controller.stop(); } catch (_) {}
     for (const attempt of this.webAttempts) {
@@ -655,7 +700,7 @@ struct VideoPlayerPage {
     this.statusText = '';
     this.showEpisodes = false;
     this.webAttempts = [new VideoWebAttempt(++this.activeAttemptId, this.videoPageUrl)];
-    ReaderTtsFloatingSession.pause().catch((): void => {});
+    ReaderTtsFloatingSession.suspendForOtherAudio().catch((): void => {});
     if (automatic) HdsFeedback.showToast('原生播放不可用，已切换网页播放');
   }
 
@@ -970,8 +1015,66 @@ struct VideoPlayerPage {
     if (SPEEDS.indexOf(speed) < 0) return;
     this.speed = speed;
     const session = this.currentSession();
-    if (session) session.setSpeed(speed);
+    if (session) session.setSpeed(this.effectiveSpeed());
     this.closeDisplayModes();
+  }
+
+  private effectiveSpeed(): number {
+    return this.boostSpeed > 0 ? this.boostSpeed : this.speed;
+  }
+
+  /** 长按能升到的最高速度：AVPlayer 到 3×，系统 Video 组件到 2×。 */
+  private maxBoostSpeed(): number {
+    return this.currentSession() ? BOOST_SPEED_HIGH : BOOST_SPEED;
+  }
+
+  private beginBoost(): void {
+    if (this.boostSpeed > 0 || this.webMode || !this.isPlaying || !this.playbackReady || this.seeking) return;
+    const target = this.speed >= BOOST_SPEED ? BOOST_SPEED_HIGH : BOOST_SPEED;
+    if (target > this.maxBoostSpeed() || target <= this.speed) return;
+    this.clearHideTimer();
+    this.setBoostSpeed(target);
+    ReaderHaptics.uiTick();
+    this.boostPulse = 0;
+    if (this.boostPulseTimerId < 0) {
+      this.boostPulseTimerId = setInterval((): void => {
+        this.boostPulse = (this.boostPulse + 1) % 3;
+      }, 300);
+    }
+  }
+
+  /** 加速中手指上下移动：越过上滑线升到 3×，滑回来回到 2×；原本就从 2× 起步的不再变。 */
+  private updateBoostBySlide(currentY: number): void {
+    if (this.boostSpeed <= 0 || this.boostTouchStartY < 0 || this.speed >= BOOST_SPEED) return;
+    if (this.maxBoostSpeed() < BOOST_SPEED_HIGH) return;
+    const target = this.boostTouchStartY - currentY > BOOST_SLIDE_UP_VP ? BOOST_SPEED_HIGH : BOOST_SPEED;
+    if (target === this.boostSpeed) return;
+    this.setBoostSpeed(target);
+    ReaderHaptics.uiTick();
+  }
+
+  private endBoost(): void {
+    this.boostTouchStartY = -1;
+    if (this.boostPulseTimerId >= 0) {
+      clearInterval(this.boostPulseTimerId);
+      this.boostPulseTimerId = -1;
+    }
+    if (this.boostSpeed <= 0) return;
+    this.setBoostSpeed(0);
+    if (this.showControls) this.scheduleHideControls();
+  }
+
+  private setBoostSpeed(value: number): void {
+    this.boostSpeed = value;
+    // 系统 Video 组件跟随 currentProgressRate 绑定的状态；AVPlayer 要显式设置。
+    const session = this.currentSession();
+    if (session) session.setSpeed(this.effectiveSpeed());
+  }
+
+  private boostHint(): string {
+    const canSlide = this.boostSpeed === BOOST_SPEED && this.speed < BOOST_SPEED &&
+      this.maxBoostSpeed() >= BOOST_SPEED_HIGH;
+    return `${this.boostSpeed}× 倍速播放中${canSlide ? ' · 上滑 3×' : ''}`;
   }
 
   private openEpisodes(): void {
@@ -1148,11 +1251,17 @@ struct VideoPlayerPage {
         Text(this.formatTime(this.positionSec))
           .fontSize(AppFontSize.CAPTION)
           .fontColor('#FFFFFF')
+        // 点轨道任意位置松手即跳转（Click 模式同样走下面的 seekTo）；拖动时轨道加粗、滑块上方显示时间气泡。
+        // 轨道只有几 vp 粗，高度给到 36vp 作为点按热区。
         Slider({ value: this.positionSec, min: 0, max: Math.max(1, this.durationSec), step: 1 })
-          .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
+          .sliderInteractionMode(SliderInteraction.SLIDE_AND_CLICK_UP)
           .enabled(this.canSeek())
           .accessibilityText('播放进度')
           .layoutWeight(1)
+          .height(36)
+          .trackThickness(this.seeking ? 6 : 3)
+          .blockSize(this.seeking ? { width: 18, height: 18 } : { width: 12, height: 12 })
+          .showTips(this.seeking, this.formatTime(this.positionSec))
           .trackColor('#55FFFFFF')
           .selectedColor('#FFFFFF')
           .blockColor('#FFFFFF')
@@ -1501,7 +1610,7 @@ struct VideoPlayerPage {
             .clip(true)
             .backgroundColor(Color.Black)
           } else {
-            Video({ src: attempt.url, controller: attempt.controller, currentProgressRate: this.speed })
+            Video({ src: attempt.url, controller: attempt.controller, currentProgressRate: this.effectiveSpeed() })
               .width('100%')
               .height('100%')
               .controls(false)
@@ -1533,13 +1642,65 @@ struct VideoPlayerPage {
           }
         }, (attempt: VideoNativeAttempt): string => `${attempt.id}`)
 
-        // 点画面显示或隐藏操作栏，双击暂停或继续。
+        // 点画面显示或隐藏操作栏，双击暂停或继续，长按临时加速（松手恢复）。
+        // 长按手势本身不报移动，上滑升速靠 onTouch 跟踪手指位置；抬起、取消时也在这里收尾。
         Column()
           .width('100%')
           .height('100%')
+          .onTouch((event: TouchEvent) => {
+            const touch = event.touches.length > 0 ? event.touches[0] : null;
+            if (event.type === TouchType.Down) {
+              this.boostTouchStartY = touch ? touch.y : -1;
+            } else if (event.type === TouchType.Move) {
+              if (touch) this.updateBoostBySlide(touch.y);
+            } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+              this.endBoost();
+            }
+          })
           .gesture(GestureGroup(GestureMode.Exclusive,
             TapGesture({ count: 2 }).onAction(() => this.togglePlay()),
-            TapGesture({ count: 1 }).onAction(() => this.toggleControls())))
+            TapGesture({ count: 1 }).onAction(() => this.toggleControls()),
+            LongPressGesture({ duration: BOOST_PRESS_MS })
+              .onAction(() => this.beginBoost())
+              .onActionEnd(() => this.endBoost())
+              .onActionCancel(() => this.endBoost())))
+
+        if (this.seeking && this.durationSec > 0) {
+          Text(`${this.formatTime(this.positionSec)} / ${this.formatTime(this.durationSec)}`)
+            .fontSize(26)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(Color.White)
+            .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.SM, bottom: AppSpacing.SM })
+            .borderRadius(12)
+            .backgroundColor('#73000000')
+            .hitTestBehavior(HitTestMode.None)
+        }
+
+        if (this.boostSpeed > 0) {
+          Column() {
+            Row({ space: AppSpacing.SM }) {
+              Row() {
+                ForEach([0, 1, 2], (index: number) => {
+                  Text('›')
+                    .fontSize(AppFontSize.BODY_LARGE)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor(Color.White)
+                    .opacity(this.boostPulse === index ? 1 : 0.35)
+                }, (index: number): string => `${index}`)
+              }
+              Text(this.boostHint()).fontSize(AppFontSize.BODY).fontColor(Color.White)
+            }
+            .padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.SM, bottom: AppSpacing.SM })
+            .borderRadius(18)
+            .backgroundColor('#99000000')
+            .accessibilityText(this.boostHint())
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Center)
+          .position({ left: 0, top: this.statusBarHeight + AppSpacing.LG })
+          .hitTestBehavior(HitTestMode.None)
+          .transition(TransitionEffect.OPACITY.animation({ duration: 160 }))
+        }
 
         if (this.statusText) {
           Column({ space: AppSpacing.MD }) {
@@ -1562,7 +1723,8 @@ struct VideoPlayerPage {
 
         // 两条操作栏各自贴边放在点按层之上：栏内按钮能收到点击，栏外的画面区域仍由点按层处理。
         // 不能给操作栏设 HitTestMode.Block，它会连栏内的按钮一起挡掉。
-        if (this.showControls) {
+        // 长按加速时先把操作栏让开，松手后照原样回来。
+        if (this.showControls && this.boostSpeed <= 0) {
           this.topBar()
           this.bottomBar()
         }

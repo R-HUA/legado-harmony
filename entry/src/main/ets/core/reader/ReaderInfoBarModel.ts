@@ -113,9 +113,14 @@ export class ReaderInfoBarConfig {
   fontSize?: number;
   headerFontSize: number = ReaderInfoBarConfig.FONT_SIZE_DEFAULT;
   footerFontSize: number = ReaderInfoBarConfig.FONT_SIZE_DEFAULT;
-  /** 文字颜色；空字符串表示沿用当前阅读主题。 */
+  /**
+   * 文字颜色，浅色、深色模式各存一份；空字符串表示沿用当前阅读主题的辅助文字色。
+   * 旧配置只有 headerColor/footerColor，解析时深色沿用同一颜色，保证升级后显示不变。
+   */
   headerColor: string = '';
   footerColor: string = '';
+  headerColorDark: string = '';
+  footerColorDark: string = '';
   /** 仅用于读取旧版共用不透明度。 */
   opacity?: number;
   /** 页眉、页脚文字不透明度，百分比。 */
@@ -127,9 +132,14 @@ export class ReaderInfoBarConfig {
   headerOffset: number = 0;
   /** 页脚相对默认位置的偏移（vp），正数向上，负数向屏幕底端。 */
   footerOffset: number = 0;
-  /** 左右两侧在原有边距基础上的收缩距离（vp），负数向外扩展。 */
-  headerShrink: number = 0;
-  footerShrink: number = 0;
+  /** 仅用于读取旧版左右共用的收缩值；新配置使用下面左右各自的内缩。 */
+  headerShrink?: number;
+  footerShrink?: number;
+  /** 左、右两侧各自在原有边距基础上的内缩距离（vp），负数向外扩展。 */
+  headerInsetLeft: number = 0;
+  headerInsetRight: number = 0;
+  footerInsetLeft: number = 0;
+  footerInsetRight: number = 0;
   headerDivider: boolean = false;
   footerDivider: boolean = false;
   progressBar: string = ReaderInfoProgressBar.NONE;
@@ -183,13 +193,19 @@ export class ReaderInfoBarConfig {
       config.footerFontSize = ReaderInfoBarConfig.clampFontSize(source.footerFontSize ?? source.fontSize);
       config.headerColor = ReaderInfoBarConfig.normalizeColor(source.headerColor);
       config.footerColor = ReaderInfoBarConfig.normalizeColor(source.footerColor);
+      config.headerColorDark = source.headerColorDark === undefined ? config.headerColor :
+        ReaderInfoBarConfig.normalizeColor(source.headerColorDark);
+      config.footerColorDark = source.footerColorDark === undefined ? config.footerColor :
+        ReaderInfoBarConfig.normalizeColor(source.footerColorDark);
       config.headerOpacity = ReaderInfoBarConfig.clampOpacity(source.headerOpacity ?? source.opacity);
       config.footerOpacity = ReaderInfoBarConfig.clampOpacity(source.footerOpacity ?? source.opacity);
       config.followMargin = source.followMargin === true;
       config.headerOffset = ReaderInfoBarConfig.clampOffset(source.headerOffset);
       config.footerOffset = ReaderInfoBarConfig.clampOffset(source.footerOffset);
-      config.headerShrink = ReaderInfoBarConfig.clampShrink(source.headerShrink);
-      config.footerShrink = ReaderInfoBarConfig.clampShrink(source.footerShrink);
+      config.headerInsetLeft = ReaderInfoBarConfig.clampShrink(source.headerInsetLeft ?? source.headerShrink);
+      config.headerInsetRight = ReaderInfoBarConfig.clampShrink(source.headerInsetRight ?? source.headerShrink);
+      config.footerInsetLeft = ReaderInfoBarConfig.clampShrink(source.footerInsetLeft ?? source.footerShrink);
+      config.footerInsetRight = ReaderInfoBarConfig.clampShrink(source.footerInsetRight ?? source.footerShrink);
       config.headerDivider = source.headerDivider === true;
       config.footerDivider = source.footerDivider === true;
       config.progressBar = ReaderInfoProgressBar.VALUES.indexOf(source.progressBar) >= 0 ?
@@ -211,8 +227,23 @@ export class ReaderInfoBarConfig {
     return typeof value === 'string' ? HexColor.parse(value) : '';
   }
 
-  textColor(header: boolean, fallback: string): string {
-    return (header ? this.headerColor : this.footerColor) || fallback;
+  /** 用户在该模式下设置的颜色；空字符串表示跟随主题。 */
+  customColor(header: boolean, dark: boolean): string {
+    if (dark) return header ? this.headerColorDark : this.footerColorDark;
+    return header ? this.headerColor : this.footerColor;
+  }
+
+  setCustomColor(header: boolean, dark: boolean, value: string): void {
+    const color = ReaderInfoBarConfig.normalizeColor(value);
+    if (dark && header) this.headerColorDark = color;
+    else if (dark) this.footerColorDark = color;
+    else if (header) this.headerColor = color;
+    else this.footerColor = color;
+  }
+
+  /** dark 指应用当前是浅色还是深色模式（决定用主题的哪一套阅读配色），不是背景深浅。 */
+  textColor(header: boolean, dark: boolean, fallback: string): string {
+    return this.customColor(header, dark) || fallback;
   }
 
   static clampOffset(value: number): number {
@@ -252,13 +283,25 @@ export class ReaderInfoBarConfig {
     return Math.max(ReaderInfoBarConfig.SHRINK_MIN, Math.min(Math.round(value), ReaderInfoBarConfig.SHRINK_MAX));
   }
 
-  /** 左右对称收缩；向外最多到屏幕边缘，向内仍保留可显示文字的宽度。 */
+  sideInset(header: boolean, left: boolean): number {
+    if (header) return left ? this.headerInsetLeft : this.headerInsetRight;
+    return left ? this.footerInsetLeft : this.footerInsetRight;
+  }
+
+  setSideInset(header: boolean, left: boolean, value: number): void {
+    const inset = ReaderInfoBarConfig.clampShrink(value);
+    if (header && left) this.headerInsetLeft = inset;
+    else if (header) this.headerInsetRight = inset;
+    else if (left) this.footerInsetLeft = inset;
+    else this.footerInsetRight = inset;
+  }
+
+  /** 左右各自内缩；向外最多到屏幕边缘，向内仍保留可显示文字的宽度。 */
   sidePadding(header: boolean, left: boolean, marginLeft: number, marginRight: number, width: number): number {
-    const shrink = header ? this.headerShrink : this.footerShrink;
     const baseLeft = this.followMargin ? marginLeft : ReaderInfoBarConfig.FIXED_SIDE_PADDING;
     const baseRight = this.followMargin ? marginRight : ReaderInfoBarConfig.FIXED_SIDE_PADDING;
-    const insetLeft = Math.max(0, baseLeft + shrink);
-    const insetRight = Math.max(0, baseRight + shrink);
+    const insetLeft = Math.max(0, baseLeft + this.sideInset(header, true));
+    const insetRight = Math.max(0, baseRight + this.sideInset(header, false));
     const total = insetLeft + insetRight;
     // 视口尚未测量时先使用设置值；测量后限制极端收缩，兼容分屏和横屏。
     const allowedTotal = width > 0 ? Math.max(0, width - Math.min(width, 96)) : total;

@@ -6,16 +6,41 @@ import { BuiltinThemeRegistry } from '../theme/BuiltinThemeRegistry';
 import { ThemePackRegistry, ThemePackRecord } from '../theme/ThemePackRegistry';
 import { ThemeIds } from '../theme/ThemeModels';
 import {
+  bookIsEmpty,
+  COMMENT_IMAGE_NONE,
+  commentBubbleIsEmpty,
+  CommentImageBreak,
+  CommentImageRepeat,
+  copyCommentImage,
+  normalizeCommentBubble,
+  ThemePackageCommentBubble,
+  findShelfBackdrop,
   isPackThemeId,
   NAVIGATION_ICON_KEYS,
+  normalizeOrnamentScale,
+  normalizeShelfBackdropLayout,
   packThemeId,
+  SHELF_BACKDROP_LAYOUTS,
+  ThemeImageCrop,
   ThemePackageAssetKinds,
   ThemePackageBook,
   ThemePackageBubble,
+  ThemePackageBubbleSlice,
+  BubbleFrameBreak,
+  BubbleFrameRepeat,
+  normalizeBubbleFrameSlice,
   ThemePackageLimits,
   ThemePackageNavigation,
+  ThemePackageShelfBackdrop,
   ThemePackageTtsPanel,
-  ThemePackageVariantParts
+  ThemePackageVariantParts,
+  tidyImageCrops
+} from '../theme/share/ThemePackageFormat';
+import {
+  chapterHeadFor,
+  chapterHeadIsEmpty,
+  normalizeChapterHead,
+  ThemePackageChapterHead
 } from '../theme/share/ThemePackageFormat';
 import { AppThemeSettings, AppThemeSettingsStore } from './AppThemeSettingsStore';
 import { ReaderCustomFontData, ReaderCustomFontItem } from '../core/reader/ReaderSettingsModels';
@@ -57,19 +82,14 @@ export class SchemeAssetService {
     return result && result.photoUris ? result.photoUris.slice(0, max) : [];
   }
 
-  /** 导航图标与主题标识：SVG 跟主题色着色，PNG / WebP 保持原色。 */
-  static async pickIconFiles(context: Context, max: number): Promise<string[]> {
+  /**
+   * 所有“SVG 或位图”的素材位（导航图标、主题标识、气泡端饰与边框、书架边框、阅读角饰、朗读面板插画）共用的
+   * 文件选择器，后缀与包格式认得的素材一致。SVG 在导航图标上跟主题色着色，位图一律保持原色。
+   */
+  static async pickArtworkFiles(context: Context, max: number): Promise<string[]> {
     const options = new picker.DocumentSelectOptions();
     options.maxSelectNumber = max;
-    options.fileSuffixFilters = ['图标|.svg,.png,.webp'];
-    const result = await new picker.DocumentViewPicker(context).select(options);
-    return result ? result.slice(0, max) : [];
-  }
-
-  static async pickSvgFiles(context: Context, max: number): Promise<string[]> {
-    const options = new picker.DocumentSelectOptions();
-    options.maxSelectNumber = max;
-    options.fileSuffixFilters = ['SVG|.svg'];
+    options.fileSuffixFilters = ['图片|.svg,.png,.webp,.jpg,.jpeg,.gif,.bmp'];
     const result = await new picker.DocumentViewPicker(context).select(options);
     return result ? result.slice(0, max) : [];
   }
@@ -102,37 +122,89 @@ export class SchemeAssetService {
     return scheme.packageId && ThemePackRegistry.getByPackageId(scheme.packageId) ? scheme.packageId : '';
   }
 
-  static async addCovers(context: Context, schemeId: string, uris: string[], baseTheme: string): Promise<SchemeAssetResult> {
+  /**
+   * crops 与 uris 一一对应：动图取景记下的显示区域，没有时为 null。
+   * dark 为 true 时加进深色模式单独的那套封面（没有这套时深色沿用浅色的）。
+   */
+  static async addCovers(context: Context, schemeId: string, uris: string[], baseTheme: string,
+    crops: Array<ThemeImageCrop | null> = [], dark: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
       const book = record.parts.book || new ThemePackageBook();
-      for (const uri of uris) {
-        if (book.covers.length >= ThemePackageLimits.MAX_COVERS) break;
-        const path = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.IMAGE, '封面');
-        if (!book.covers.includes(path)) book.covers.push(path);
+      const covers = SchemeAssetService.coverList(book, dark);
+      for (let index = 0; index < uris.length; index++) {
+        if (covers.length >= ThemePackageLimits.MAX_COVERS) break;
+        const path = await ThemePackStore.importAsset(context, record.packageId, uris[index], SchemeAssetService.IMAGE, '封面');
+        if (!covers.includes(path)) covers.push(path);
+        SchemeAssetService.setCoverCrop(book, path, index < crops.length ? crops[index] : null, dark);
       }
       record.parts.book = book;
     });
   }
 
-  static async setShelfFrame(context: Context, schemeId: string, uri: string, baseTheme: string): Promise<SchemeAssetResult> {
+  /** 浅色（也是默认）或深色那套封面的列表本身；本机旧记录里没有深色字段，补上。 */
+  private static coverList(book: ThemePackageBook, dark: boolean): string[] {
+    if (!dark) return book.covers;
+    if (!Array.isArray(book.coversDark)) book.coversDark = [];
+    return book.coversDark;
+  }
+
+  /** 把显示区域挂到 image 这张素材上；crop 为 null 时返回 null（显示整张图）。 */
+  private static attachCrop(crop: ThemeImageCrop | null, image: string): ThemeImageCrop | null {
+    if (!crop || !image) return null;
+    const attached = new ThemeImageCrop();
+    attached.image = image;
+    attached.x = crop.x;
+    attached.y = crop.y;
+    attached.width = crop.width;
+    attached.height = crop.height;
+    attached.imageWidth = crop.imageWidth;
+    attached.imageHeight = crop.imageHeight;
+    return attached;
+  }
+
+  private static setCoverCrop(book: ThemePackageBook, image: string, crop: ThemeImageCrop | null,
+    dark: boolean = false): void {
+    const crops = ((dark ? book.coverCropsDark : book.coverCrops) || [])
+      .filter((item: ThemeImageCrop): boolean => item.image !== image);
+    const attached = SchemeAssetService.attachCrop(crop, image);
+    if (attached) crops.push(attached);
+    if (dark) book.coverCropsDark = crops;
+    else book.coverCrops = crops;
+  }
+
+  /** dark 为 true 时设的是深色模式单独的那张（没有时深色沿用浅色的）。 */
+  static async setShelfFrame(context: Context, schemeId: string, uri: string, baseTheme: string,
+    dark: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
       const book = record.parts.book || new ThemePackageBook();
-      book.shelfFrame = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.VECTOR, '书架边框');
+      const path = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.ARTWORK, '书架边框');
+      if (dark) book.shelfFrameDark = path;
+      else book.shelfFrame = path;
       record.parts.book = book;
     });
   }
 
-  static async setShelfFolder(context: Context, schemeId: string, uri: string, baseTheme: string): Promise<SchemeAssetResult> {
+  /** dark 为 true 时设的是深色模式单独的那张（没有时深色沿用浅色的）。 */
+  static async setShelfFolder(context: Context, schemeId: string, uri: string, baseTheme: string,
+    crop: ThemeImageCrop | null = null, dark: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
       const book = record.parts.book || new ThemePackageBook();
-      book.shelfFolder = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.IMAGE, '文件夹插画');
+      const path = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.IMAGE, '文件夹插画');
+      if (dark) {
+        book.shelfFolderDark = path;
+        book.shelfFolderCropDark = SchemeAssetService.attachCrop(crop, path);
+      } else {
+        book.shelfFolder = path;
+        book.shelfFolderCrop = SchemeAssetService.attachCrop(crop, path);
+      }
       record.parts.book = book;
     });
   }
 
   /**
-   * 阅读背景角饰：左上或右下一张图（SVG 或位图）。只上传了一张时另一角用同一张旋转 180°，
-   * 记录里也写成两张，导出后能通过格式校验。
+   * 阅读背景角饰：左上、右下各一张图（SVG 或位图），可以只传其中一张，另一角就空着。
+   * 两张记成同一个素材表示右下角用左上角那张旋转 180°（setReaderTrailingMirror）。
+   * 已有整图时角饰叠在整图上面，模式仍记 image。
    */
   static async setReaderOrnament(context: Context, schemeId: string, uri: string, trailing: boolean,
     darkMode: boolean, baseTheme: string): Promise<SchemeAssetResult> {
@@ -140,30 +212,67 @@ export class SchemeAssetService {
       const variant = SchemeAssetService.variantOf(record, darkMode);
       const path = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.ARTWORK,
         trailing ? '右下角饰' : '左上角饰');
+      const mode = variant.reader.backgroundMode;
+      if (mode !== 'ornaments' && mode !== 'image') {
+        variant.reader.leading = '';
+        variant.reader.trailing = '';
+      }
       if (trailing) {
         variant.reader.trailing = path;
-        if (!variant.reader.leading) variant.reader.leading = path;
       } else {
-        // 右下角没单独传过（为空或就是旧的左上角那张）时跟着换。
-        const mirrored = !variant.reader.trailing || variant.reader.trailing === variant.reader.leading;
+        // 右下角原本是左上角那张旋转的，换左上角时跟着换。
+        const mirrored = !!variant.reader.trailing && variant.reader.trailing === variant.reader.leading;
         variant.reader.leading = path;
         if (mirrored) variant.reader.trailing = path;
       }
-      variant.reader.image = '';
-      variant.reader.backgroundMode = 'ornaments';
+      if (mode !== 'image') {
+        variant.reader.image = '';
+        variant.reader.backgroundMode = 'ornaments';
+      }
       SchemeAssetService.storeVariant(record, darkMode, variant);
     });
   }
 
-  /** 阅读背景整图：铺满（cover）。 */
+  /** 右下角改用左上角那张旋转 180°。 */
+  static async setReaderTrailingMirror(context: Context, schemeId: string, darkMode: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const variant = darkMode ? record.parts.dark : record.parts.light;
+      if (!variant || !SchemeAssetService.readerAllowsOrnaments(variant) || !variant.reader.leading) {
+        throw new Error('请先上传左上角饰');
+      }
+      variant.reader.trailing = variant.reader.leading;
+    });
+  }
+
+  /** 左上（trailing 为 false）或右下角饰的显示大小倍数（0.5–2）。 */
+  static async setReaderOrnamentScale(context: Context, schemeId: string, darkMode: boolean, trailing: boolean,
+    scale: number): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const variant = darkMode ? record.parts.dark : record.parts.light;
+      if (!variant || !SchemeAssetService.readerAllowsOrnaments(variant)) throw new Error('请先上传角饰');
+      if (trailing) variant.reader.trailingScale = normalizeOrnamentScale(scale);
+      else variant.reader.leadingScale = normalizeOrnamentScale(scale);
+    });
+  }
+
+  /** 角饰模式和整图模式都可以带角饰（整图模式下角饰叠在整图上）。 */
+  private static readerAllowsOrnaments(variant: ThemePackageVariantParts): boolean {
+    const mode = variant.reader.backgroundMode;
+    return mode === 'ornaments' || mode === 'image';
+  }
+
+  /** 阅读背景整图：铺满（cover）。已有的角饰保留，叠在整图上面。 */
   static async setReaderImage(context: Context, schemeId: string, uri: string, darkMode: boolean,
     baseTheme: string): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
       const variant = SchemeAssetService.variantOf(record, darkMode);
       variant.reader.image = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.IMAGE, '阅读背景');
+      const mode = variant.reader.backgroundMode;
+      if (mode !== 'ornaments' && mode !== 'image') {
+        variant.reader.leading = '';
+        variant.reader.trailing = '';
+      }
       variant.reader.imageFit = 'cover';
-      variant.reader.leading = '';
-      variant.reader.trailing = '';
       variant.reader.backgroundMode = 'image';
       SchemeAssetService.storeVariant(record, darkMode, variant);
     });
@@ -181,11 +290,324 @@ export class SchemeAssetService {
     return new ThemePackageVariantParts();
   }
 
-  /** 编辑器只往变体里写阅读背景，所以清掉背景就等于清掉整个变体。 */
+  /**
+   * 编辑器往变体里写阅读背景、段评气泡素材和章首装饰：清掉背景时变体只留下段评和章首装饰两节
+   * （都没有就整个清掉）。
+   */
   private static storeVariant(record: ThemePackRecord, darkMode: boolean,
     variant: ThemePackageVariantParts | null): void {
-    if (darkMode) record.parts.dark = variant;
-    else record.parts.light = variant;
+    const existing = darkMode ? record.parts.dark : record.parts.light;
+    let value = variant;
+    if (!value && existing) {
+      const keepComment = !!existing.commentBubble && !commentBubbleIsEmpty(existing.commentBubble);
+      const keepHead = !chapterHeadIsEmpty(existing.chapterHead);
+      if (keepComment || keepHead) {
+        value = new ThemePackageVariantParts();
+        if (keepComment) value.commentBubble = existing.commentBubble;
+        if (keepHead) value.chapterHead = existing.chapterHead;
+      }
+    }
+    if (darkMode) record.parts.dark = value;
+    else record.parts.light = value;
+  }
+
+  // ---- 段评气泡图与角标图：写在素材包这个模式的 commentBubble 里，方案覆盖用 pack:<id> 指过来 ----
+
+  /** 上传段评气泡图，连同拉伸页里定好的文字区、拉伸线和换行方式一起存。 */
+  static async setCommentImage(context: Context, schemeId: string, uri: string, baseTheme: string,
+    settings: ThemePackageCommentBubble, dark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
+      const comment = SchemeAssetService.commentOf(record, dark);
+      comment.image = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.ARTWORK,
+        '段评气泡图');
+      SchemeAssetService.copyCommentImageSettings(comment, settings);
+      SchemeAssetService.storeComment(record, dark, comment);
+    });
+  }
+
+  /**
+   * 只改气泡图的拉伸设置、平铺与染色。这个模式没有自己的图（沿用另一模式那张）时，先把那张记到这个模式，
+   * 这样改动只影响这个模式。
+   */
+  static async setCommentImageSettings(context: Context, schemeId: string, settings: ThemePackageCommentBubble,
+    dark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const comment = SchemeAssetService.commentOf(record, dark);
+      if (!comment.image || comment.image === COMMENT_IMAGE_NONE) {
+        const other = SchemeAssetService.commentOf(record, !dark);
+        if (!other.image || other.image === COMMENT_IMAGE_NONE) throw new Error('段评气泡图已不存在');
+        copyCommentImage(comment, other);
+      }
+      SchemeAssetService.copyCommentImageSettings(comment, settings);
+      SchemeAssetService.storeComment(record, dark, comment);
+    });
+  }
+
+  /** 移除这个模式自己的气泡图（另一模式的不动）。 */
+  static async clearCommentImage(context: Context, schemeId: string, dark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const comment = SchemeAssetService.commentOf(record, dark);
+      copyCommentImage(comment, new ThemePackageCommentBubble());
+      SchemeAssetService.storeComment(record, dark, comment);
+    });
+  }
+
+  /** “另一模式也用这张”：气泡图与拉伸设置照抄到另一种模式（同一个素材文件）。 */
+  static async copyCommentImageToOtherMode(context: Context, schemeId: string,
+    fromDark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const source = SchemeAssetService.commentOf(record, fromDark);
+      if (!source.image || source.image === COMMENT_IMAGE_NONE) throw new Error('这个模式还没有气泡图');
+      const target = SchemeAssetService.commentOf(record, !fromDark);
+      copyCommentImage(target, source);
+      SchemeAssetService.storeComment(record, !fromDark, target);
+    });
+  }
+
+  static async setCommentOrnament(context: Context, schemeId: string, uri: string, baseTheme: string,
+    dark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
+      const comment = SchemeAssetService.commentOf(record, dark);
+      comment.ornamentImage = await ThemePackStore.importAsset(context, record.packageId, uri,
+        SchemeAssetService.ARTWORK, '段评角标图');
+      comment.ornament = 'custom';
+      SchemeAssetService.storeComment(record, dark, comment);
+    });
+  }
+
+  static async clearCommentOrnament(context: Context, schemeId: string, dark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const comment = SchemeAssetService.commentOf(record, dark);
+      comment.ornamentImage = '';
+      if (comment.ornament === 'custom') comment.ornament = '';
+      SchemeAssetService.storeComment(record, dark, comment);
+    });
+  }
+
+  static async copyCommentOrnamentToOtherMode(context: Context, schemeId: string,
+    fromDark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const source = SchemeAssetService.commentOf(record, fromDark);
+      if (!source.ornamentImage) throw new Error('这个模式还没有角标图');
+      const target = SchemeAssetService.commentOf(record, !fromDark);
+      target.ornamentImage = source.ornamentImage;
+      target.ornament = 'custom';
+      SchemeAssetService.storeComment(record, !fromDark, target);
+    });
+  }
+
+  /** 这个模式自己的段评设置（不含另一模式沿用过来的）。 */
+  private static commentOf(record: ThemePackRecord, dark: boolean): ThemePackageCommentBubble {
+    const variant = dark ? record.parts.dark : record.parts.light;
+    return normalizeCommentBubble(variant ? variant.commentBubble : null);
+  }
+
+  /** 段评空了而变体里也没有别的东西时整个变体清掉。 */
+  private static storeComment(record: ThemePackRecord, dark: boolean, comment: ThemePackageCommentBubble): void {
+    const existing = dark ? record.parts.dark : record.parts.light;
+    const empty = commentBubbleIsEmpty(comment);
+    if (!existing) {
+      if (empty) return;
+      const variant = new ThemePackageVariantParts();
+      variant.commentBubble = normalizeCommentBubble(comment);
+      if (dark) record.parts.dark = variant;
+      else record.parts.light = variant;
+      return;
+    }
+    existing.commentBubble = empty ? null : normalizeCommentBubble(comment);
+    if (empty && SchemeAssetService.variantHasNothingElse(existing)) {
+      if (dark) record.parts.dark = null;
+      else record.parts.light = null;
+    }
+  }
+
+  private static variantHasNothingElse(variant: ThemePackageVariantParts): boolean {
+    if (!chapterHeadIsEmpty(variant.chapterHead)) return false;
+    const colors = variant.colors;
+    if (colors.pageColor || colors.cardColor || colors.inputColor || colors.primaryTextColor || colors.subTextColor ||
+      colors.dividerColor || colors.accentColor || colors.buttonColor || colors.dangerColor) return false;
+    const reader = variant.reader;
+    if (reader.backgroundMode || reader.backgroundColor || reader.textColor || reader.subTextColor ||
+      reader.contentTone || reader.leading || reader.trailing || reader.image) return false;
+    const emphasis = variant.emphasis;
+    return !(emphasis.mode || emphasis.bubbleStyle || emphasis.color || emphasis.textColor);
+  }
+
+  // ---- 章首装饰：写在素材包这个模式的 chapterHead 里，方案覆盖用 pack:<id> 指过来 ----
+
+  /** 上传标题饰图。这个模式原来沿用另一模式那张时，位置和大小接着用那张的。 */
+  static async setChapterHeadImage(context: Context, schemeId: string, uri: string, baseTheme: string,
+    dark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
+      const head = SchemeAssetService.chapterHeadOf(record, dark);
+      if (!head.image) {
+        const other = SchemeAssetService.chapterHeadOf(record, !dark);
+        if (other.image) {
+          head.placement = other.placement;
+          head.scale = other.scale;
+        }
+      }
+      head.image = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.ARTWORK,
+        '标题饰图');
+      SchemeAssetService.storeChapterHead(record, dark, head);
+    });
+  }
+
+  /**
+   * 改饰图的位置和大小。这个模式没有自己的图（沿用另一模式那张）时，先把那张记到这个模式，
+   * 这样改动只影响这个模式。
+   */
+  static async setChapterHeadLayout(context: Context, schemeId: string, dark: boolean, placement: string,
+    scale: number): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const head = SchemeAssetService.chapterHeadOf(record, dark);
+      if (!head.image) {
+        const other = SchemeAssetService.chapterHeadOf(record, !dark);
+        if (!other.image) throw new Error('标题饰图已不存在');
+        head.image = other.image;
+      }
+      head.placement = placement;
+      head.scale = scale;
+      SchemeAssetService.storeChapterHead(record, dark, head);
+    });
+  }
+
+  /** 序号行颜色；空串改回和标题同色。 */
+  static async setChapterHeadNumberColor(context: Context, schemeId: string, baseTheme: string, dark: boolean,
+    color: string): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
+      const head = SchemeAssetService.chapterHeadOf(record, dark);
+      head.numberColor = color;
+      SchemeAssetService.storeChapterHead(record, dark, head);
+    });
+  }
+
+  /** 移除这个模式自己的标题饰图（另一模式的不动）。 */
+  static async clearChapterHeadImage(context: Context, schemeId: string, dark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const head = SchemeAssetService.chapterHeadOf(record, dark);
+      head.image = '';
+      head.placement = '';
+      head.scale = 1;
+      SchemeAssetService.storeChapterHead(record, dark, head);
+    });
+  }
+
+  /**
+   * 首字装饰占几行（0 不处理）、颜色和字占比。这个模式原来沿用另一模式的首字时，先把那套（印章图、字占比、
+   * 颜色）记到这个模式，这样改动只影响这个模式；改成不处理时这个模式的印章图一并去掉。
+   */
+  static async setChapterHeadDropCap(context: Context, schemeId: string, baseTheme: string, dark: boolean,
+    lines: number, color: string, ratio: number): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
+      const head = SchemeAssetService.chapterHeadOf(record, dark);
+      if (lines <= 0) {
+        head.dropCapLines = 0;
+        head.dropCapImage = '';
+        head.dropCapColor = '';
+      } else {
+        if (head.dropCapLines === 0) {
+          const other = SchemeAssetService.chapterHeadOf(record, !dark);
+          if (other.dropCapLines > 0) head.dropCapImage = other.dropCapImage;
+        }
+        head.dropCapLines = lines === 3 ? 3 : 2;
+        head.dropCapColor = color;
+        head.dropCapRatio = ratio;
+      }
+      SchemeAssetService.storeChapterHead(record, dark, head);
+    });
+  }
+
+  /** 上传首字印章图；还没开首字时按占 2 行打开。 */
+  static async setChapterHeadDropCapImage(context: Context, schemeId: string, uri: string, baseTheme: string,
+    dark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
+      const head = SchemeAssetService.chapterHeadOf(record, dark);
+      if (head.dropCapLines === 0) {
+        const other = SchemeAssetService.chapterHeadOf(record, !dark);
+        head.dropCapLines = other.dropCapLines > 0 ? other.dropCapLines : 2;
+        if (other.dropCapLines > 0) {
+          head.dropCapRatio = other.dropCapRatio;
+          if (!head.dropCapColor) head.dropCapColor = other.dropCapColor;
+        }
+      }
+      head.dropCapImage = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.ARTWORK,
+        '首字印章图');
+      SchemeAssetService.storeChapterHead(record, dark, head);
+    });
+  }
+
+  /** 移除这个模式的首字印章图，首字改成只放大。 */
+  static async clearChapterHeadDropCapImage(context: Context, schemeId: string, dark: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const head = SchemeAssetService.chapterHeadOf(record, dark);
+      if (head.dropCapLines === 0) {
+        // 沿用另一模式那套时，先把行数记到这个模式，不然去掉图之后又沿用回那张。
+        const other = SchemeAssetService.chapterHeadOf(record, !dark);
+        head.dropCapLines = other.dropCapLines;
+        head.dropCapColor = other.dropCapColor;
+      }
+      head.dropCapImage = '';
+      SchemeAssetService.storeChapterHead(record, dark, head);
+    });
+  }
+
+  /** 素材包这个模式实际用的章首装饰（饰图沿用另一模式的也算），素材是包内相对路径；没有时为 null。 */
+  static chapterHead(packageId: string, dark: boolean): ThemePackageChapterHead | null {
+    const pack = packageId ? ThemePackRegistry.getByPackageId(packageId) : null;
+    return pack ? chapterHeadFor(pack.record.parts, dark) : null;
+  }
+
+  /** 这个模式自己有没有传标题饰图。 */
+  static hasOwnChapterHeadImage(packageId: string, dark: boolean): boolean {
+    const pack = packageId ? ThemePackRegistry.getByPackageId(packageId) : null;
+    if (!pack) return false;
+    return !!SchemeAssetService.chapterHeadOf(pack.record, dark).image;
+  }
+
+  /** 这个模式自己有没有传首字印章图。 */
+  static hasOwnDropCapImage(packageId: string, dark: boolean): boolean {
+    const pack = packageId ? ThemePackRegistry.getByPackageId(packageId) : null;
+    if (!pack) return false;
+    return !!SchemeAssetService.chapterHeadOf(pack.record, dark).dropCapImage;
+  }
+
+  /** 这个模式自己的章首装饰（不含另一模式沿用过来的）。 */
+  private static chapterHeadOf(record: ThemePackRecord, dark: boolean): ThemePackageChapterHead {
+    const variant = dark ? record.parts.dark : record.parts.light;
+    return normalizeChapterHead(variant ? variant.chapterHead : null);
+  }
+
+  /** 章首装饰空了而变体里也没有别的东西时整个变体清掉。 */
+  private static storeChapterHead(record: ThemePackRecord, dark: boolean, head: ThemePackageChapterHead): void {
+    const existing = dark ? record.parts.dark : record.parts.light;
+    const normalized = normalizeChapterHead(head);
+    const empty = chapterHeadIsEmpty(normalized);
+    if (!existing) {
+      if (empty) return;
+      const variant = new ThemePackageVariantParts();
+      variant.chapterHead = normalized;
+      if (dark) record.parts.dark = variant;
+      else record.parts.light = variant;
+      return;
+    }
+    existing.chapterHead = empty ? null : normalized;
+    if (empty && SchemeAssetService.variantHasNothingElse(existing) &&
+      (!existing.commentBubble || commentBubbleIsEmpty(existing.commentBubble))) {
+      if (dark) record.parts.dark = null;
+      else record.parts.light = null;
+    }
+  }
+
+  private static copyCommentImageSettings(target: ThemePackageCommentBubble,
+    settings: ThemePackageCommentBubble): void {
+    target.imageSlice = settings.imageSlice ? JSON.parse(JSON.stringify(settings.imageSlice)) as ThemePackageBubbleSlice :
+      null;
+    target.imageText = settings.imageText ? JSON.parse(JSON.stringify(settings.imageText)) as ThemePackageBubbleSlice :
+      null;
+    target.imageRepeat = settings.imageRepeat === CommentImageRepeat.ROUND ? CommentImageRepeat.ROUND : '';
+    target.imageBreak = settings.imageBreak === CommentImageBreak.FULL ? CommentImageBreak.FULL : '';
+    target.imageTint = settings.imageTint === true;
   }
 
   static readerMode(packageId: string, darkMode: boolean): string {
@@ -281,95 +703,272 @@ export class SchemeAssetService {
     });
   }
 
-  /** 首页背景：浅色、深色各一张，互不借用。 */
+  /**
+   * 首页背景：浅色、深色各一张，互不借用。shelfLayout 给了书架布局（companion / tile / loose / compact）时，
+   * 设的是那种布局专属的那张，只在书架页用这种布局时显示；不给就是各页签通用的那张。
+   */
   static async setHomeBackdrop(context: Context, schemeId: string, uri: string, darkMode: boolean,
-    baseTheme: string): Promise<SchemeAssetResult> {
+    baseTheme: string, crop: ThemeImageCrop | null = null, shelfLayout: string = ''): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
-      const path = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.IMAGE, '首页背景');
-      if (darkMode) record.parts.homeBackdropDark = path;
-      else record.parts.homeBackdropLight = path;
+      const layout = normalizeShelfBackdropLayout(shelfLayout);
+      const path = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.IMAGE,
+        layout ? '书架背景' : '首页背景');
+      SchemeAssetService.rememberHomeBackdropFallback(record, baseTheme, darkMode);
+      if (layout) {
+        const item = SchemeAssetService.shelfBackdropEntry(record, layout);
+        if (darkMode) {
+          item.dark = path;
+          item.darkCrop = SchemeAssetService.attachCrop(crop, path);
+        } else {
+          item.light = path;
+          item.lightCrop = SchemeAssetService.attachCrop(crop, path);
+        }
+      } else if (darkMode) {
+        record.parts.homeBackdropDark = path;
+        record.parts.homeBackdropDarkCrop = SchemeAssetService.attachCrop(crop, path);
+      } else {
+        record.parts.homeBackdropLight = path;
+        record.parts.homeBackdropLightCrop = SchemeAssetService.attachCrop(crop, path);
+      }
     });
   }
 
-  static async clearHomeBackdrop(context: Context, schemeId: string, darkMode: boolean): Promise<SchemeAssetResult> {
+  /** 移除通用首页背景，或（给了 shelfLayout 时）某种书架布局专属的那张，后者移除后回到沿用通用背景。 */
+  static async clearHomeBackdrop(context: Context, schemeId: string, darkMode: boolean,
+    shelfLayout: string = ''): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
-      if (darkMode) record.parts.homeBackdropDark = '';
-      else record.parts.homeBackdropLight = '';
+      const layout = normalizeShelfBackdropLayout(shelfLayout);
+      if (layout) {
+        // 两种模式都空了的条目由 tidyImageCrops 清掉。
+        const item = findShelfBackdrop(record.parts.shelfBackdrops, layout);
+        if (item && darkMode) {
+          item.dark = '';
+          item.darkCrop = null;
+        } else if (item) {
+          item.light = '';
+          item.lightCrop = null;
+        }
+      } else if (darkMode) {
+        record.parts.homeBackdropDark = '';
+        record.parts.homeBackdropDarkCrop = null;
+      } else {
+        record.parts.homeBackdropLight = '';
+        record.parts.homeBackdropLightCrop = null;
+      }
     });
   }
 
-  static async setBubbleCap(context: Context, schemeId: string, uri: string, baseTheme: string): Promise<SchemeAssetResult> {
+  /** 把某种书架布局这个模式的专属背景（连同显示区域）也给其余三种布局用。 */
+  static async copyShelfBackdropToOtherLayouts(context: Context, schemeId: string, shelfLayout: string,
+    darkMode: boolean): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const source = findShelfBackdrop(record.parts.shelfBackdrops, normalizeShelfBackdropLayout(shelfLayout));
+      const image = source ? (darkMode ? source.dark : source.light) : '';
+      if (!source || !image) throw new Error('这种布局还没有单独的背景');
+      const crop = darkMode ? source.darkCrop : source.lightCrop;
+      for (const layout of SHELF_BACKDROP_LAYOUTS) {
+        if (layout === source.layout) continue;
+        const item = SchemeAssetService.shelfBackdropEntry(record, layout);
+        if (darkMode) {
+          item.dark = image;
+          item.darkCrop = SchemeAssetService.attachCrop(crop, image);
+        } else {
+          item.light = image;
+          item.lightCrop = SchemeAssetService.attachCrop(crop, image);
+        }
+      }
+    });
+  }
+
+  private static shelfBackdropEntry(record: ThemePackRecord, layout: string): ThemePackageShelfBackdrop {
+    if (!Array.isArray(record.parts.shelfBackdrops)) record.parts.shelfBackdrops = [];
+    let item = findShelfBackdrop(record.parts.shelfBackdrops, layout);
+    if (!item) {
+      item = new ThemePackageShelfBackdrop();
+      item.layout = layout;
+      record.parts.shelfBackdrops.push(item);
+    }
+    return item;
+  }
+
+  /**
+   * 上传背景时“首页背景”来源还是内置主题的话记下它：上传后来源改指方案自己的素材包，
+   * 包里没有通用那张（只传了某种布局的）或以后把它移除时，通用背景接着用这套主题的，而不是突然没了。
+   */
+  private static rememberHomeBackdropFallback(record: ThemePackRecord, sourceThemeId: string, darkMode: boolean): void {
+    if (!sourceThemeId || isPackThemeId(sourceThemeId)) return;
+    const themeId = BuiltinThemeRegistry.normalizeBuiltinId(sourceThemeId);
+    if (darkMode) record.homeBackdropFallbackDark = themeId;
+    else record.homeBackdropFallbackLight = themeId;
+  }
+
+  /** dark 为 true 时写进深色模式单独的那套（parts.bubbleDark），没传的那一项深色沿用浅色的。 */
+  static async setBubbleCap(context: Context, schemeId: string, uri: string, baseTheme: string,
+    dark: boolean = false, title: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
-      const bubble = record.parts.bubble || new ThemePackageBubble();
-      bubble.cap = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.VECTOR, '气泡端饰');
-      record.parts.bubble = bubble;
+      const bubble = SchemeAssetService.bubbleOf(record, dark, title) || new ThemePackageBubble();
+      bubble.cap = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.ARTWORK, '气泡端饰');
+      SchemeAssetService.storeBubble(record, dark, bubble, title);
     });
   }
 
-  static async setBubbleFrame(context: Context, schemeId: string, uri: string, baseTheme: string): Promise<SchemeAssetResult> {
+  /** 上传边框并一起存下拉伸区域页里定好的拉伸设置。 */
+  static async setBubbleFrame(context: Context, schemeId: string, uri: string, baseTheme: string,
+    settings: ThemePackageBubble, dark: boolean = false, title: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, baseTheme, async (record: ThemePackRecord): Promise<void> => {
-      const bubble = record.parts.bubble || new ThemePackageBubble();
-      bubble.frame = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.VECTOR, '气泡边框');
-      record.parts.bubble = bubble;
+      const bubble = SchemeAssetService.bubbleOf(record, dark, title) || new ThemePackageBubble();
+      bubble.frame = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.ARTWORK, '气泡边框');
+      SchemeAssetService.copyFrameSettings(bubble, settings);
+      SchemeAssetService.storeBubble(record, dark, bubble, title);
     });
   }
 
+  /** 只改拉伸设置，边框素材不变。 */
+  static async setBubbleFrameSettings(context: Context, schemeId: string,
+    settings: ThemePackageBubble, dark: boolean = false, title: boolean = false): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const bubble = SchemeAssetService.bubbleOf(record, dark, title);
+      if (!bubble || !bubble.frame) throw new Error('气泡边框已不存在');
+      SchemeAssetService.copyFrameSettings(bubble, settings);
+    });
+  }
+
+  /** title 为 true 时是标题气泡（parts.titleBubble / titleBubbleDark）。 */
+  private static bubbleOf(record: ThemePackRecord, dark: boolean, title: boolean = false): ThemePackageBubble | null {
+    if (title) return (dark ? record.parts.titleBubbleDark : record.parts.titleBubble) || null;
+    return (dark ? record.parts.bubbleDark : record.parts.bubble) || null;
+  }
+
+  /** 端饰、边框都没有时整节记成 null。 */
+  private static storeBubble(record: ThemePackRecord, dark: boolean, bubble: ThemePackageBubble | null,
+    title: boolean = false): void {
+    const value = bubble && (bubble.cap || bubble.frame) ? bubble : null;
+    if (title) {
+      if (dark) record.parts.titleBubbleDark = value;
+      else record.parts.titleBubble = value;
+      return;
+    }
+    if (dark) record.parts.bubbleDark = value;
+    else record.parts.bubble = value;
+  }
+
+  /** 浅色、深色两套标题气泡一起清掉。 */
+  static async clearTitleBubble(context: Context, schemeId: string): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      record.parts.titleBubble = null;
+      record.parts.titleBubbleDark = null;
+    });
+  }
+
+  static hasTitleBubble(packageId: string): boolean {
+    const pack = ThemePackRegistry.getByPackageId(packageId);
+    return !!pack && !!(pack.record.parts.titleBubble || pack.record.parts.titleBubbleDark);
+  }
+
+  private static copyFrameSettings(target: ThemePackageBubble, settings: ThemePackageBubble): void {
+    target.frameSlice = normalizeBubbleFrameSlice(settings.frameSlice);
+    target.frameRepeat = settings.frameRepeat === BubbleFrameRepeat.ROUND ? BubbleFrameRepeat.ROUND : '';
+    target.frameBreak = settings.frameBreak === BubbleFrameBreak.CUT ? BubbleFrameBreak.CUT : '';
+    target.frameTint = settings.frameTint === true;
+  }
+
+  /** 浅色、深色两套气泡素材一起清掉。 */
   static async clearBubble(context: Context, schemeId: string): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
       record.parts.bubble = null;
+      record.parts.bubbleDark = null;
+    });
+  }
+
+  /** 移除端饰；边框还在时保留边框，否则整节清掉。dark 为 true 时只动深色那套，深色回到沿用浅色的端饰。 */
+  static async clearBubbleCap(context: Context, schemeId: string, dark: boolean = false,
+    title: boolean = false): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const bubble = SchemeAssetService.bubbleOf(record, dark, title);
+      if (!bubble) return;
+      bubble.cap = '';
+      SchemeAssetService.storeBubble(record, dark, bubble, title);
     });
   }
 
   // ---- 逐个管理的素材 ----
 
-  /** 替换第 index 张封面。 */
-  static async replaceCover(context: Context, schemeId: string, index: number, uri: string): Promise<SchemeAssetResult> {
+  /** 替换第 index 张封面；dark 指深色那套。 */
+  static async replaceCover(context: Context, schemeId: string, index: number, uri: string,
+    crop: ThemeImageCrop | null = null, dark: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
       const book = record.parts.book;
-      if (!book || index < 0 || index >= book.covers.length) throw new Error('这张封面已不存在');
+      const covers = book ? SchemeAssetService.coverList(book, dark) : [];
+      if (!book || index < 0 || index >= covers.length) throw new Error('这张封面已不存在');
       const path = await ThemePackStore.importAsset(context, record.packageId, uri, SchemeAssetService.IMAGE, '封面');
-      if (book.covers.includes(path)) throw new Error('这张图已经在封面里了');
-      book.covers[index] = path;
+      if (covers.includes(path)) throw new Error('这张图已经在封面里了');
+      covers[index] = path;
+      SchemeAssetService.setCoverCrop(book, path, crop, dark);
     });
   }
 
   /** 删掉第 index 张封面；封面、边框、文件夹都没了时整节清掉。 */
-  static async removeCover(context: Context, schemeId: string, index: number): Promise<SchemeAssetResult> {
+  static async removeCover(context: Context, schemeId: string, index: number,
+    dark: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
       const book = record.parts.book;
-      if (!book || index < 0 || index >= book.covers.length) return;
-      book.covers.splice(index, 1);
+      const covers = book ? SchemeAssetService.coverList(book, dark) : [];
+      if (!book || index < 0 || index >= covers.length) return;
+      covers.splice(index, 1);
       SchemeAssetService.tidyBook(record);
     });
   }
 
   /** 调整轮播顺序：把 from 位置的封面挪到 to。 */
-  static async moveCover(context: Context, schemeId: string, from: number, to: number): Promise<SchemeAssetResult> {
+  static async moveCover(context: Context, schemeId: string, from: number, to: number,
+    dark: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
       const book = record.parts.book;
-      if (!book || from === to || from < 0 || to < 0 || from >= book.covers.length || to >= book.covers.length) return;
-      const moved = book.covers.splice(from, 1)[0];
-      book.covers.splice(to, 0, moved);
+      const covers = book ? SchemeAssetService.coverList(book, dark) : [];
+      if (!book || from === to || from < 0 || to < 0 || from >= covers.length || to >= covers.length) return;
+      const moved = covers.splice(from, 1)[0];
+      covers.splice(to, 0, moved);
     });
   }
 
-  static async clearShelfFrame(context: Context, schemeId: string): Promise<SchemeAssetResult> {
+  /** 去掉深色那套封面，深色模式回到沿用浅色封面。 */
+  static async clearDarkCovers(context: Context, schemeId: string): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
-      if (record.parts.book) record.parts.book.shelfFrame = '';
+      const book = record.parts.book;
+      if (!book) return;
+      book.coversDark = [];
+      book.coverCropsDark = [];
       SchemeAssetService.tidyBook(record);
     });
   }
 
-  static async clearShelfFolder(context: Context, schemeId: string): Promise<SchemeAssetResult> {
+  /** dark 为 true 时只去掉深色那张，深色回到沿用浅色的。 */
+  static async clearShelfFrame(context: Context, schemeId: string, dark: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
-      if (record.parts.book) record.parts.book.shelfFolder = '';
+      if (record.parts.book && dark) record.parts.book.shelfFrameDark = '';
+      else if (record.parts.book) record.parts.book.shelfFrame = '';
+      SchemeAssetService.tidyBook(record);
+    });
+  }
+
+  /** 移除文件夹插画；dark 为 true 时只去掉深色那张，深色回到沿用浅色的。 */
+  static async clearShelfFolder(context: Context, schemeId: string, dark: boolean = false): Promise<SchemeAssetResult> {
+    return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
+      const book = record.parts.book;
+      if (book && dark) {
+        book.shelfFolderDark = '';
+        book.shelfFolderCropDark = null;
+      } else if (book) {
+        book.shelfFolder = '';
+        book.shelfFolderCrop = null;
+      }
       SchemeAssetService.tidyBook(record);
     });
   }
 
   private static tidyBook(record: ThemePackRecord): void {
     const book = record.parts.book;
-    if (book && book.covers.length === 0 && !book.shelfFrame && !book.shelfFolder) record.parts.book = null;
+    if (book && bookIsEmpty(book)) record.parts.book = null;
   }
 
   /**
@@ -425,15 +1024,39 @@ export class SchemeAssetService {
     return `${name}${key.endsWith('Selected') ? '选中' : ''}图标`;
   }
 
-  /** 移除右下角饰：恢复成左上角那张旋转 180°；移除左上角饰或整图：这个模式的背景素材全部清掉。 */
+  /**
+   * 移除一角的角饰：另一角还有自己的图就只清这一角；左上角被移除时，跟着它旋转的右下角一起清掉。
+   * 整图模式下移除角饰只清角饰、整图保留；移除整图时还有角饰就退回角饰模式。
+   * 什么都不剩时，这个模式的背景素材全部清掉。
+   */
   static async clearReaderSlot(context: Context, schemeId: string, darkMode: boolean,
     slot: string): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
       const variant = darkMode ? record.parts.dark : record.parts.light;
       if (!variant) return;
-      if (slot === 'trailing' && variant.reader.leading) {
-        variant.reader.trailing = variant.reader.leading;
-        return;
+      const reader = variant.reader;
+      if (reader.backgroundMode === 'image') {
+        if (slot === 'image') {
+          if (reader.leading || reader.trailing) {
+            reader.image = '';
+            reader.imageFit = 'cover';
+            reader.backgroundMode = 'ornaments';
+            return;
+          }
+        } else {
+          if (slot === 'trailing' || reader.trailing === reader.leading) reader.trailing = '';
+          if (slot === 'leading') reader.leading = '';
+          return;
+        }
+      } else if (reader.backgroundMode === 'ornaments') {
+        if (slot === 'trailing' && reader.leading) {
+          reader.trailing = '';
+          return;
+        }
+        if (slot === 'leading' && reader.trailing && reader.trailing !== reader.leading) {
+          reader.leading = '';
+          return;
+        }
       }
       SchemeAssetService.storeVariant(record, darkMode, null);
     });
@@ -467,9 +1090,18 @@ export class SchemeAssetService {
     });
   }
 
-  static async clearBubbleFrame(context: Context, schemeId: string): Promise<SchemeAssetResult> {
+  /** 移除边框和它的拉伸设置；端饰也没有时整节清掉。dark 为 true 时只动深色那套。 */
+  static async clearBubbleFrame(context: Context, schemeId: string, dark: boolean = false,
+    title: boolean = false): Promise<SchemeAssetResult> {
     return SchemeAssetService.update(context, schemeId, '', async (record: ThemePackRecord): Promise<void> => {
-      if (record.parts.bubble) record.parts.bubble.frame = '';
+      const bubble = SchemeAssetService.bubbleOf(record, dark, title);
+      if (!bubble) return;
+      bubble.frame = '';
+      bubble.frameSlice = null;
+      bubble.frameRepeat = '';
+      bubble.frameBreak = '';
+      bubble.frameTint = false;
+      SchemeAssetService.storeBubble(record, dark, bubble, title);
     });
   }
 
@@ -499,6 +1131,9 @@ export class SchemeAssetService {
         const source = fromDark ? parts.dark : parts.light;
         if (!source) throw new Error('这个模式还没有阅读背景素材');
         const copy = JSON.parse(JSON.stringify(source)) as ThemePackageVariantParts;
+        // 段评气泡是浅深各自设置的，复制阅读背景时保留目标模式原有的那份。
+        const target = fromDark ? parts.light : parts.dark;
+        copy.commentBubble = target ? (target.commentBubble || null) : null;
         if (fromDark) parts.light = copy;
         else parts.dark = copy;
       } else if (kind === 'ttsPanel') {
@@ -510,8 +1145,15 @@ export class SchemeAssetService {
       } else {
         const source = fromDark ? parts.homeBackdropDark : parts.homeBackdropLight;
         if (!source) throw new Error('这个模式还没有首页背景');
-        if (fromDark) parts.homeBackdropLight = source;
-        else parts.homeBackdropDark = source;
+        const crop = SchemeAssetService.attachCrop(
+          (fromDark ? parts.homeBackdropDarkCrop : parts.homeBackdropLightCrop) || null, source);
+        if (fromDark) {
+          parts.homeBackdropLight = source;
+          parts.homeBackdropLightCrop = crop;
+        } else {
+          parts.homeBackdropDark = source;
+          parts.homeBackdropDarkCrop = crop;
+        }
       }
     });
   }
@@ -600,6 +1242,8 @@ export class SchemeAssetService {
     }
     try {
       await mutate(record);
+      // 换图、删封面后留下的旧区域清掉。
+      tidyImageCrops(record.parts);
     } catch (e) {
       // 新建的包还没登记到方案上，失败就整个清掉；已有的包只清掉这次写进去的多余文件。
       if (created) ThemePackStore.uninstall(context, record.packageId);
@@ -625,8 +1269,9 @@ export class SchemeAssetService {
   static hasAnyPart(record: ThemePackRecord): boolean {
     const parts = record.parts;
     return !!(parts.light || parts.dark || parts.ttsPanelLight || parts.ttsPanelDark || parts.navigation ||
-      parts.book || parts.startupLight || parts.startupDark || parts.bubble || parts.homeBackdropLight ||
-      parts.homeBackdropDark || parts.logo || parts.preview ||
+      parts.book || parts.startupLight || parts.startupDark || parts.bubble || parts.bubbleDark || parts.titleBubble ||
+      parts.titleBubbleDark || parts.homeBackdropLight ||
+      parts.homeBackdropDark || (parts.shelfBackdrops || []).length > 0 || parts.logo || parts.preview ||
       parts.radius || parts.appFont || parts.appFontFamily);
   }
 
@@ -668,7 +1313,7 @@ export class SchemeAssetService {
 
   static hasBubble(packageId: string): boolean {
     const pack = ThemePackRegistry.getByPackageId(packageId);
-    return !!pack && !!pack.record.parts.bubble;
+    return !!pack && !!(pack.record.parts.bubble || pack.record.parts.bubbleDark);
   }
 
   static hasHomeBackdrop(packageId: string, darkMode: boolean): boolean {
@@ -676,9 +1321,25 @@ export class SchemeAssetService {
     return !!pack && !!pack.homeBackdrop(darkMode);
   }
 
-  static coverCount(packageId: string): number {
+  /** 方案自己给这种书架布局、这个模式单独传了背景。 */
+  static hasShelfBackdrop(packageId: string, shelfLayout: string, darkMode: boolean): boolean {
     const pack = ThemePackRegistry.getByPackageId(packageId);
-    return pack && pack.record.parts.book ? pack.record.parts.book.covers.length : 0;
+    return !!pack && !!pack.shelfBackdrop(shelfLayout, darkMode);
+  }
+
+  /** 上传背景前“首页背景”来源所选的内置主题；移除全部背景后来源退回它。没记时为空串。 */
+  static homeBackdropFallbackOf(packageId: string, darkMode: boolean): string {
+    const pack = ThemePackRegistry.getByPackageId(packageId);
+    if (!pack) return '';
+    return (darkMode ? pack.record.homeBackdropFallbackDark : pack.record.homeBackdropFallbackLight) || '';
+  }
+
+  /** 方案自己上传的封面张数；dark 数深色那套（0 表示深色沿用浅色的）。 */
+  static coverCount(packageId: string, dark: boolean = false): number {
+    const pack = ThemePackRegistry.getByPackageId(packageId);
+    const book = pack ? pack.record.parts.book : null;
+    if (!book) return 0;
+    return dark ? (book.coversDark || []).length : book.covers.length;
   }
 
   static baseThemeOf(packageId: string): string {

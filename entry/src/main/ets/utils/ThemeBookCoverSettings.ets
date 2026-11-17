@@ -1,28 +1,46 @@
 import { Book } from '@legado/sourceengine';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
 import { ThemeAssetRegistry } from '../theme/ThemeAssetRegistry';
+import { CoverGallerySettings } from './CoverGallerySettings';
+import { ShelfCoverSlots } from './ShelfCoverSlots';
 
 /** 各页面共用主题封面的顺序和轮播间隔。 */
 export class ThemeBookCoverSettings {
   static enabled(darkMode: boolean, enabled: boolean): boolean {
-    return enabled && ThemeAssetRegistry.themeBookCovers(ThemeRuntime.bookTokens(darkMode).coverAssetId).length > 0;
+    return enabled &&
+      ThemeAssetRegistry.themeBookCovers(ThemeRuntime.bookTokens(darkMode).coverAssetId, darkMode).length > 0;
   }
 
-  static covers(book: Book, darkMode: boolean): ResourceStr[] {
-    return ThemeBookCoverSettings.coversForAsset(book, ThemeRuntime.bookTokens(darkMode).coverAssetId);
+  /** coverMode 传组件里的状态变量才会随设置刷新；不传时读当前存储。 */
+  static covers(book: Book, darkMode: boolean, coverMode: string = ThemeBookCoverSettings.storedMode()): ResourceStr[] {
+    return ThemeBookCoverSettings.coversForAsset(book, ThemeRuntime.bookTokens(darkMode).coverAssetId, darkMode,
+      coverMode);
   }
 
-  static coversForAsset(book: Book, assetId: string): ResourceStr[] {
-    const covers = ThemeAssetRegistry.themeBookCovers(assetId);
+  /**
+   * “固定”模式每本书只留一张：书架上的书按加入先后的序号轮流分（见 ShelfCoverSlots），其余取轮播首张。
+   * 起始序号只由书决定，浅深两套封面张数相同时同一本书在两种模式下落在同一序号上。
+   */
+  static coversForAsset(book: Book, assetId: string, darkMode: boolean,
+    coverMode: string = ThemeBookCoverSettings.storedMode()): ResourceStr[] {
+    const covers = ThemeAssetRegistry.themeBookCovers(assetId, darkMode);
     if (covers.length <= 1) return covers;
-    const result: ResourceStr[] = [];
     const seed = ThemeBookCoverSettings.seed(book);
     const start = seed % covers.length;
+    if (CoverGallerySettings.isFixedMode(coverMode)) {
+      const slot = ShelfCoverSlots.slotOf(book);
+      return [covers[slot >= 0 ? slot % covers.length : start]];
+    }
+    const result: ResourceStr[] = [];
     const direction = seed % 2 === 0 ? 1 : covers.length - 1;
     for (let index = 0; index < covers.length; index++) {
       result.push(covers[(start + index * direction) % covers.length]);
     }
     return result;
+  }
+
+  static storedMode(): string {
+    return AppStorage.get<string>('bookshelfCoverMode') || 'sequence';
   }
 
   static seed(book: Book): number {
@@ -37,6 +55,6 @@ export class ThemeBookCoverSettings {
   }
 
   static frame(darkMode: boolean): ResourceStr {
-    return ThemeAssetRegistry.themeShelfFrame(ThemeRuntime.bookTokens(darkMode).shelfFrameAssetId);
+    return ThemeAssetRegistry.themeShelfFrame(ThemeRuntime.bookTokens(darkMode).shelfFrameAssetId, darkMode);
   }
 }

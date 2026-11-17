@@ -1,4 +1,9 @@
 import { FrameCallback } from '@kit.ArkUI';
+import { CoverDimSettings } from '../../utils/CoverDimSettings';
+import { ThemeAssetRegistry } from '../../theme/ThemeAssetRegistry';
+import { ThemeImageSlots } from '../../theme/ThemePackRegistry';
+import { ThemeImageCrop } from '../../theme/share/ThemePackageFormat';
+import { ThemeCroppedImage } from '../theme/ThemeCroppedImage';
 
 /** 书架点开书时交给阅读页的封面外观与位置，只在进程内经 AppStorage 传递。 */
 export interface ShelfOpeningCover {
@@ -18,12 +23,32 @@ export interface ShelfOpeningCover {
   windowHeight: number;
   /** 书架上这枚封面按 ImageFit.Cover 裁切显示（否则是拉伸铺满）。 */
   cropImage: boolean;
+  /** 主题自带的书籍封面（不一定有书框）：深色模式调暗封面时不调暗，和书架一致。 */
+  themeCover: boolean;
+  /**
+   * 书架上这本书是侧转、斜靠的立体书时：bounds 是封面投影后实际占的那块（宽是侧转后变窄的宽度），斜靠的书这块还绕
+   * 自己的左上角转了 lean 度（顺时针为正），boundsX/boundsY 是转过之后左上角的位置。整页缩到这块并转同样的角度。
+   */
+  lean?: number;
+  /** 立体书封面侧转前的宽高比：封面图按它裁切后再随 bounds 压窄，与书架上一致。没有时按 bounds 的比例。 */
+  coverAspect?: number;
+}
+
+/** 整页缩到封面时要转的角度：立着或平放的书为 0。 */
+export function shelfCoverLean(cover: ShelfOpeningCover | null): number {
+  return cover && cover.lean ? cover.lean : 0;
+}
+
+/** 封面图排版用的宽高比：立体书用侧转前的比例，其余用量到的 bounds。 */
+export function shelfCoverBoxAspect(cover: ShelfOpeningCover | null): number {
+  if (!cover) return 0;
+  if (cover.coverAspect && cover.coverAspect > 0) return cover.coverAspect;
+  return cover.boundsWidth > 0 && cover.boundsHeight > 0 ? cover.boundsWidth / cover.boundsHeight : 0;
 }
 
 /** 整页缩到这枚封面时封面图要还原的裁切比例：书架裁切显示时为封面宽高比，拉伸铺满时为 0。 */
 export function shelfCoverCropAspect(cover: ShelfOpeningCover | null): number {
-  return cover && cover.cropImage && cover.boundsWidth > 0 && cover.boundsHeight > 0 ?
-    cover.boundsWidth / cover.boundsHeight : 0;
+  return cover && cover.cropImage ? shelfCoverBoxAspect(cover) : 0;
 }
 
 export const SHELF_OPENING_COVER_KEY: string = 'shelfOpeningCover';
@@ -127,9 +152,16 @@ export struct ReaderShelfCoverOpening {
    */
   @Prop cropAspect: number = 0;
   @State imageAspect: number = 0;
+  /** 这一层自己的尺寸（vp），量到之前用书架交来的窗口尺寸。 */
+  @State layerWidth: number = 0;
+  @State layerHeight: number = 0;
+  @StorageProp('appDarkMode') appDarkMode: boolean = false;
+  @StorageProp('bookshelfDarkCoverDim') darkCoverDim: boolean = false;
+  @StorageProp('bookshelfDarkCoverDimLevel') darkCoverDimLevel: number = 20;
   cover: ShelfOpeningCover = {
     bookUrl: '', cover: '', frame: '', color: '#007DFF', initial: '书',
-    boundsX: 0, boundsY: 0, boundsWidth: 0, boundsHeight: 0, windowWidth: 0, windowHeight: 0, cropImage: false
+    boundsX: 0, boundsY: 0, boundsWidth: 0, boundsHeight: 0, windowWidth: 0, windowHeight: 0, cropImage: false,
+    themeCover: false
   };
 
   /** 图宽高比与封面宽高比之比，大于 1 时图比封面宽、左右裁掉，小于 1 时上下裁掉；不需要裁切时为 1。 */
@@ -138,9 +170,69 @@ export struct ReaderShelfCoverOpening {
     return this.imageAspect / this.cropAspect;
   }
 
+  dimOpacity(): number {
+    return CoverDimSettings.opacity(this.appDarkMode, this.darkCoverDim, this.darkCoverDimLevel);
+  }
+
+  /** 主题包动图封面取景时记下的显示区域。 */
+  themeCrop(): ThemeImageCrop | null {
+    return this.cover.themeCover ?
+      ThemeAssetRegistry.imageCrop(ThemeImageSlots.COVER, this.cover.cover, this.appDarkMode) : null;
+  }
+
+  /** 书架上这枚封面的宽高比：整页非等比缩成封面时，区域按它排才和书架上一致。 */
+  shelfCoverAspect(): number {
+    return shelfCoverBoxAspect(this.cover);
+  }
+
+  /**
+   * 书框按书架封面的比例排的那块高度（宽同这一层）。内置书框是不带 preserveAspectRatio 的 SVG，ImageFit.Fill
+   * 拉不动它：直接铺满整屏时按自身比例居中，上下留空，整页再非等比缩成封面后书框又扁又偏。所以先按封面比例画，
+   * 再纵向拉到整层，缩成封面时正好是书架上的样子。量不到时返回 0，退回铺满。
+   */
+  frameBoxHeight(): number {
+    const width = this.layerWidth > 0 ? this.layerWidth : this.cover.windowWidth;
+    const aspect = this.shelfCoverAspect();
+    return width > 0 && aspect > 0 ? width / aspect : 0;
+  }
+
+  frameScaleY(): number {
+    const height = this.layerHeight > 0 ? this.layerHeight : this.cover.windowHeight;
+    const boxHeight = this.frameBoxHeight();
+    return boxHeight > 0 && height > 0 ? height / boxHeight : 1;
+  }
+
+  @Builder
+  frameLayer() {
+    if (this.frameBoxHeight() > 0) {
+      Image(this.cover.frame)
+        .width('100%')
+        .height(this.frameBoxHeight())
+        .position({ x: 0, y: 0 })
+        .scale({ x: 1, y: this.frameScaleY(), centerX: 0, centerY: 0 })
+        .objectFit(ImageFit.Fill)
+        .syncLoad(true)
+        .draggable(false)
+        .visibility(this.showFrame ? Visibility.Visible : Visibility.Hidden)
+    } else {
+      Image(this.cover.frame)
+        .width('100%')
+        .height('100%')
+        .objectFit(ImageFit.Fill)
+        .syncLoad(true)
+        .draggable(false)
+        .visibility(this.showFrame ? Visibility.Visible : Visibility.Hidden)
+    }
+  }
+
   build() {
     Stack() {
-      if (this.cover.cover) {
+      if (this.cover.cover && this.themeCrop()) {
+        ThemeCroppedImage({ src: this.cover.cover, crop: this.themeCrop() as ThemeImageCrop, syncLoad: true,
+          boxAspect: this.shelfCoverAspect() })
+          .width('100%')
+          .height('100%')
+      } else if (this.cover.cover) {
         Image(this.cover.cover)
           .width('100%')
           .height('100%')
@@ -163,14 +255,16 @@ export struct ReaderShelfCoverOpening {
         .justifyContent(FlexAlign.Center)
         .backgroundColor(this.cover.color)
       }
-      if (this.cover.frame) {
-        Image(this.cover.frame)
+      // 和书架上一样调暗，翻开与缩回时封面亮度不跳；主题封面不调暗。
+      if (!this.cover.themeCover && this.dimOpacity() > 0) {
+        Column()
           .width('100%')
           .height('100%')
-          .objectFit(ImageFit.Fill)
-          .syncLoad(true)
-          .draggable(false)
-          .visibility(this.showFrame ? Visibility.Visible : Visibility.Hidden)
+          .backgroundColor('#000000')
+          .opacity(this.dimOpacity())
+      }
+      if (this.cover.frame) {
+        this.frameLayer()
       }
       // 书脊的折痕阴影。
       Column()
@@ -188,6 +282,10 @@ export struct ReaderShelfCoverOpening {
     .width('100%')
     .height('100%')
     .clip(true)
+    .onAreaChange((_old: Area, area: Area) => {
+      this.layerWidth = Number(area.width);
+      this.layerHeight = Number(area.height);
+    })
     .backgroundColor(this.cover.color)
     // 用系统默认视距：真机上自定义视距几乎看不出透视，默认值下外边缘转向眼前时明显变高。
     .rotate({ x: 0, y: 1, z: 0, angle: this.angle, centerX: 0, centerY: '50%' })

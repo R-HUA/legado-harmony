@@ -26,7 +26,7 @@ import { VirtualListScrollbar } from '../utils/VirtualListScrollbar';
 import { common, WantAgent, wantAgent } from '@kit.AbilityKit';
 import { request } from '@kit.BasicServicesKit';
 import { webview } from '@kit.ArkWeb';
-import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
+import { BackgroundPermit } from '../utils/BackgroundPermit';
 import { notificationManager } from '@kit.NotificationKit';
 import commonEventManager from '@ohos.commonEventManager';
 import { BookSourceLoginWebRuntime, LoginCookieOperation, LoginRuntimeStep } from '../core/book/BookSourceLoginWebRuntime';
@@ -678,6 +678,7 @@ struct BookSourcePage {
               }
             }, (spacerKey: string) => `${spacerKey}_bottom`)
             }
+            .scrollBar(BarState.Off)
             .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
             .width('100%')
             .height('100%')
@@ -969,6 +970,11 @@ struct BookSourcePage {
           this.showAddDialog = false;
           this.importFromFile();
         })
+        Text('书源由你自行提供，请确认你有权访问对应的网页')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.subTextColor())
+          .width('100%')
+          .padding({ left: 12, right: 12, top: AppSpacing.SM, bottom: AppSpacing.SM })
 
       }
       .width('100%')
@@ -1046,10 +1052,16 @@ struct BookSourcePage {
         .fontColor(this.primaryTextColor())
         .placeholderColor(this.placeholderTextColor())
         .padding({ left: AppSpacing.LG, right: AppSpacing.LG })
-        .margin({ bottom: AppSpacing.XL })
+        .margin({ bottom: AppSpacing.MD })
         .onChange((value: string) => {
           this.importUrl = value;
         })
+
+      Text('地址由你自行提供，请确认你有权使用其中的书源并访问对应的网页')
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.subTextColor())
+        .width('100%')
+        .margin({ bottom: AppSpacing.XL })
 
       Row() {
         Button('取消')
@@ -1176,7 +1188,7 @@ struct BookSourcePage {
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .width('100%')
         .constraintSize({ maxHeight: 240 })
-        .scrollBar(BarState.Auto)
+        .scrollBar(BarState.Off)
       }
 
       Row() {
@@ -1297,7 +1309,7 @@ struct BookSourcePage {
           .backgroundColor(this.inputColor())
           .borderRadius(ThemeRuntime.mediumRadius())
           .margin({ bottom: AppSpacing.XL })
-          .scrollBar(BarState.Auto)
+          .scrollBar(BarState.Off)
         }
 
         if (this.checkTlsTrustHosts.length > 0) {
@@ -1796,6 +1808,7 @@ struct BookSourcePage {
         }
         .width('100%')
       }
+      .scrollBar(BarState.Off)
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       .width('100%')
       // 系统对话框超高会直接裁掉底部，且自适应高度的 Column 里 flexShrink 不生效，
@@ -2391,7 +2404,7 @@ struct BookSourcePage {
       }
       .width('100%')
       .constraintSize({ maxHeight: 360 })
-      .scrollBar(BarState.Auto)
+      .scrollBar(BarState.Off)
 
       if (this.importSourceGroupNames(this.pendingImportSources).length > 0) {
         Row() {
@@ -2958,14 +2971,6 @@ struct BookSourcePage {
         .maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
-      Text('了解区别')
-        .fontSize(AppFontSize.CAPTION)
-        .fontColor(this.accentColor())
-        .height(40)
-        .textAlign(TextAlign.Center)
-        .onClick(() => {
-          router.pushUrl({ url: 'pages/HelpTopic', params: { anchor: 'sourcekinds' } });
-        })
       SymbolGlyph($r('sys.symbol.xmark'))
         .fontSize(16)
         .fontColor([this.subTextColor()])
@@ -3000,6 +3005,7 @@ struct BookSourcePage {
         }
         .width('100%')
       }
+      .scrollBar(BarState.Off)
       .width('100%')
       .constraintSize({ maxHeight: Math.max(88,
         Math.min(264, ImmersiveMaterialRuntime.popupMenuMaxHeight() - 148)) })
@@ -3725,13 +3731,15 @@ struct BookSourcePage {
         source.bookSourceGroup = '';
         await db.updateBookSourceGroupMembership(source.bookSourceUrl, '');
       }
-      this.sourceGroups = await BookSourceGroupStore.remove(getContext(this), groupName, this.sourceGroups);
+      // 分组列表留到重读完再换：分组管理里被删的那行要等进度框退场后才消散（见 SourceGroupSortList）。
+      const groups = await BookSourceGroupStore.remove(getContext(this), groupName, this.sourceGroups);
       if (this.activeSourceGroup === groupName) {
         this.activeSourceGroup = '__ungrouped__';
       }
       this.showDeleteSourceGroupDialog = false;
       this.pendingSourceGroup = '';
       await this.loadSources();
+      if (this.sourceGroups.includes(groupName)) this.sourceGroups = groups;
       HdsFeedback.showToast('分组已删除，书源已移到未分组');
     } catch (e) {
       console.error('删除书源分组失败:', e);
@@ -6236,8 +6244,9 @@ struct BookSourcePage {
     }
     try {
       const agent = await this.getBookSourceCheckOpenWantAgent();
-      await backgroundTaskManager.startBackgroundRunning(getContext(this), ['dataTransfer'], agent);
+      // 没申请到时登记仍然保留，许可那边会自己重试。
       this.checkBackgroundRunning = true;
+      await BackgroundPermit.acquire(getContext(this) as common.UIAbilityContext, 'source-check', 'dataTransfer', agent);
     } catch (e) {
       console.warn('启动书源校验后台任务失败:', e);
     }
@@ -6249,7 +6258,7 @@ struct BookSourcePage {
     }
     this.checkBackgroundRunning = false;
     try {
-      await backgroundTaskManager.stopBackgroundRunning(getContext(this));
+      await BackgroundPermit.release('source-check');
     } catch (e) {
       console.warn('停止书源校验后台任务失败:', e);
     }

@@ -1,5 +1,7 @@
 import { EpubOriginalInjection } from './EpubOriginalDocument';
 import { ReaderNightImage } from '../reader/ReaderNightImage';
+import { EpubDuokanExtensions } from './EpubDuokanExtensions';
+import { EpubOriginalFont } from './EpubOriginalFont';
 
 /** 原版排版的页边距（CSS 像素，已含状态栏、导航条）。 */
 export class EpubOriginalMargins {
@@ -7,6 +9,16 @@ export class EpubOriginalMargins {
   right: number = 20;
   bottom: number = 24;
   left: number = 20;
+
+  /** 四边都不留（多看全屏页）。 */
+  static none(): EpubOriginalMargins {
+    const margins = new EpubOriginalMargins();
+    margins.top = 0;
+    margins.right = 0;
+    margins.bottom = 0;
+    margins.left = 0;
+    return margins;
+  }
 }
 
 /** 章节载入后要停在哪里：开头、末尾、一段文字（EpubOriginalSpot）或一个锚点。 */
@@ -25,14 +37,27 @@ export class EpubOriginalLayoutOptions {
   /** 深色时插图怎么处理（ReaderNightImage 的值）；只在 forceDark 时有意义。 */
   nightImage: string = ReaderNightImage.ORIGINAL;
   /**
-   * 用应用的阅读字体代替书里的字体：空串不改；'system' 用系统字体；其余是字体文件在虚拟站点里的地址。
-   * 只换字体，字号、行距等仍按书的样式。
+   * 代替书里字体的字体：空串不改；'sans' / 'serif' 用系统黑体 / 宋体（旧值 'system' 同 'sans'）；
+   * 其余是字体文件在虚拟站点里的地址。只换字体，字号、行距等仍按书的样式。见 EpubOriginalFont。
    */
   readerFont: string = '';
+  /**
+   * 只换正文：脚本按字数找出正文用的字体，只给用这款字体（或网页默认字体）、字号不比正文大一截、
+   * 不在标题/注音/代码里的元素标上 data-legado-font；书里单独设了字体的文字保持原样。false 则全部文字都换。
+   */
+  readerFontBodyOnly: boolean = true;
   /** 双翻页开关（与应用排版共用）；翻页模式下屏幕够宽时一屏并排两栏，见 SPREAD_MEDIA。 */
   spread: boolean = false;
   margins: EpubOriginalMargins = new EpubOriginalMargins();
   target: EpubOriginalTarget = new EpubOriginalTarget();
+  /** 多看全屏页（duokan-page-fullscreen）：页面传进来的页边距为零；只有一张图时脚本让它铺满屏幕。 */
+  fullscreen: boolean = false;
+  /** 多看“~slim”图的虚拟地址对照（下标一一对应），全屏页在瘦长屏幕上换用 slimTo。 */
+  slimFrom: string[] = [];
+  slimTo: string[] = [];
+  /** 书里的音频由原生播放器放（见 EpubAudioPlayer）：载入时它正在放哪个（虚拟地址）、playing / paused，空串表示没有。 */
+  mediaSrc: string = '';
+  mediaState: string = '';
 }
 
 /** 自动模式在网页里逐张判断插图用的参数，与 ReaderNightImage.shouldInvert 相同。 */
@@ -45,13 +70,23 @@ class EpubOriginalNightConfig {
 
 class EpubOriginalScriptConfig {
   paged: boolean = true;
+  /** 夜间整体反色（forceDark）：划线的字体色要按反色滤镜反算。 */
+  dark: boolean = false;
   nativeTurn: boolean = false;
+  /** 只换正文的字体（见 EpubOriginalLayoutOptions.readerFontBodyOnly）。 */
+  fontBody: boolean = false;
   night: EpubOriginalNightConfig = new EpubOriginalNightConfig();
   top: number = 0;
   bottom: number = 0;
   /** 双翻页生效的媒体查询；空串表示不并排。 */
   spreadQuery: string = '';
   target: EpubOriginalTarget = new EpubOriginalTarget();
+  fullscreen: boolean = false;
+  slimFrom: string[] = [];
+  slimTo: string[] = [];
+  slimRatio: number = EpubDuokanExtensions.SLIM_MIN_RATIO;
+  mediaSrc: string = '';
+  mediaState: string = '';
 }
 
 /**
@@ -67,7 +102,8 @@ export class EpubOriginalScript {
    * （书本式折叠屏展开时略高于宽）。写成媒体查询，折叠/旋转时网页自己切换，不用重载章节。
    */
   static readonly SPREAD_MEDIA: string = '(min-aspect-ratio: 1001/1000), (min-width: 600px) and (min-aspect-ratio: 4/5)';
-  static readonly HOST_METHODS: string[] = ['ready', 'position', 'tap', 'link', 'edge', 'stepped'];
+  static readonly HOST_METHODS: string[] = ['ready', 'position', 'tap', 'link', 'edge', 'stepped', 'gallery',
+    'media', 'annotation'];
   /** 朗读高亮的底色：浅色页面正片叠底、深色页面滤色，字的颜色不受影响。 */
   static ttsMarkColor(accent: string, dark: boolean): string {
     const match = /^#(?:([0-9a-fA-F]{2}))?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(accent || '');
@@ -81,12 +117,19 @@ export class EpubOriginalScript {
     injection.style = EpubOriginalScript.style(options);
     const config = new EpubOriginalScriptConfig();
     config.paged = options.paged;
+    config.dark = options.forceDark;
     config.nativeTurn = options.paged && options.nativeTurn;
+    config.fontBody = !!options.readerFont && options.readerFontBodyOnly;
     config.night.auto = options.forceDark && ReaderNightImage.normalize(options.nightImage) === ReaderNightImage.AUTO;
     config.top = options.margins.top;
     config.bottom = options.margins.bottom;
     config.spreadQuery = options.paged && options.spread ? EpubOriginalScript.SPREAD_MEDIA : '';
     config.target = options.target;
+    config.fullscreen = options.fullscreen;
+    config.slimFrom = options.slimFrom;
+    config.slimTo = options.slimTo;
+    config.mediaSrc = options.mediaSrc;
+    config.mediaState = options.mediaState;
     // 文字片段可能含有 "</script>"，按 JSON 转义尖括号。
     const json = JSON.stringify(config).replace(/</g, '\\u003c');
     // 用函数替换：文字片段里的 "$&" 之类不能被当成替换模式。
@@ -95,7 +138,7 @@ export class EpubOriginalScript {
   }
 
   /**
-   * 双页中缝的书脊阴影，与应用排版 ReadBook.readerDoublePageSpine 同一组色标。挂在 html 上固定在屏幕中间，
+   * 双页中缝的书脊阴影，与应用排版 ReaderSpreadSpine 同一组色标。挂在 html 上固定在屏幕中间，
    * 不随横向翻页移动，也在 body 之外，夜间整页反色不会把它变成亮条。
    */
   static spineStyle(dark: boolean): string {
@@ -106,6 +149,76 @@ export class EpubOriginalScript {
       shade(0.015, 0.76), shade(0, 1)].join(',');
     return 'html::after{content:"";position:fixed;top:0;bottom:0;left:calc(50% - 22px);width:44px;' +
       `pointer-events:none;z-index:2147483647;background:linear-gradient(to right,${stops});}`;
+  }
+
+  /**
+   * 多看画廊（div.duokan-image-gallery 里的若干 div.duokan-image-gallery-cell）：脚本把各格叠成一摞卡片
+   * （网格里同占一格），当前一张在最前，前后两张缩小藏在后面、从两侧露边，左右滑动换卡，下面一排小点标出第几张。
+   * 只有两格以上的画廊会被改造（加 legado-gallery 类）。翻页模式下整个画廊不跨栏，图片再让出说明文字与小点的高度。
+   * 卡片甩出去时可以越过画廊、盖住页边距，但裁在页边之内，不会画到相邻的栏、也不会撑出横向滚动。
+   */
+  static galleryStyle(options: EpubOriginalLayoutOptions): string {
+    const m = options.margins;
+    const side = Math.max(0, Math.round(Math.max(m.left, m.right))) + 12;
+    const height = options.paged ? '.legado-gallery-track img,.legado-gallery-track svg,.legado-gallery-track video{' +
+      `max-height:calc(100vh - ${Math.max(0, Math.round(m.top + m.bottom))}px - 7em)!important;}` : '';
+    return '.legado-gallery{position:relative;break-inside:avoid;-webkit-column-break-inside:avoid;touch-action:pan-y;' +
+      `overflow:clip!important;overflow-clip-margin:${side}px;}` +
+      '.legado-gallery-track{display:grid!important;grid-template-columns:100%;align-items:center;width:100%;' +
+      'position:relative;}' +
+      '.legado-gallery-track>*{grid-area:1/1!important;min-width:0!important;max-width:100%!important;' +
+      'box-sizing:border-box!important;margin-left:0!important;margin-right:0!important;float:none!important;' +
+      'transform-origin:50% 50%;will-change:transform,opacity;backface-visibility:hidden;}' +
+      // 后面的卡片只露出图，说明文字随换卡淡入淡出（脚本按进度设 --legado-gallery-caption）。
+      '.legado-gallery-track>*>:not(img):not(svg):not(video):not(picture){' +
+      'opacity:var(--legado-gallery-caption,1);}' +
+      height +
+      '.legado-gallery-dots{display:flex;justify-content:center;align-items:center;gap:6px;margin:.4em 0 .2em;' +
+      'height:6px;line-height:0;text-indent:0;}' +
+      // 小点用中灰：书里的字色可能和画廊背后的底图一样深（黑字压在暗色背景图上），跟字色会看不见。
+      '.legado-gallery-dots>span{display:block;width:6px;height:6px;border-radius:3px;background:#8C8C8C;' +
+      'opacity:.45;transition:opacity .2s,width .2s;}' +
+      '.legado-gallery-dots>span.on{width:14px;opacity:.95;}';
+  }
+
+  /**
+   * 多看出血与全屏页用的样式。出血属性在交给网页前已改写成 --legado-bleed（EpubDuokanExtensions），
+   * 登记成不继承，脚本读到的就是元素自己写的值。全屏页只有一张图时，脚本换成 .legado-fullscreen 铺满一屏。
+   */
+  static duokanStyle(): string {
+    return `@property ${EpubDuokanExtensions.BLEED_PROPERTY}{syntax:"*";inherits:false;}` +
+      '.legado-fullscreen{display:block;width:100vw;height:100vh;margin:0;padding:0;' +
+      'background-position:center;background-repeat:no-repeat;background-size:contain;}';
+  }
+
+  /**
+   * 书里的音频（多看写法 <audio class="duokan-audio" placeholder="封面图" activestate="播放时的图" title="曲名">）：
+   * <audio> 本身没有 controls 时网页什么都不画，脚本在它前面放一块可点的卡片——有封面图就是整张图，没有就是一条带曲名的横条；
+   * 右上角的小圆标表示状态（♪ 未播放、暂停竖线 = 正在放、三角 = 已暂停），播放时底边一条进度线。
+   * 曲名、圆标都用伪元素画，不进正文文字，位置换算与朗读取字不受影响。
+   */
+  static mediaStyle(): string {
+    return 'audio{display:none!important;}' +
+      '.legado-audio{position:relative;display:block;margin:.6em 0;text-indent:0;line-height:0;cursor:pointer;' +
+      'break-inside:avoid;-webkit-column-break-inside:avoid;-webkit-user-select:none;user-select:none;}' +
+      '.legado-audio>img.legado-audio-cover{display:block;width:100%;height:auto;margin:0;}' +
+      '.legado-audio.legado-audio-pill{display:flex;align-items:center;min-height:44px;padding:0 48px 0 14px;' +
+      'border-radius:12px;background:rgba(128,128,128,.14);overflow:hidden;}' +
+      '.legado-audio.legado-audio-pill::before{content:"\\266A  " attr(data-title);font-size:.95em;line-height:1.4;' +
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+      '.legado-audio-badge{position:absolute;top:8px;right:8px;width:28px;height:28px;border-radius:14px;' +
+      'background:rgba(0,0,0,.5);color:#FFF;font-size:15px;line-height:28px;text-align:center;pointer-events:none;}' +
+      '.legado-audio-pill>.legado-audio-badge{top:50%;margin-top:-14px;}' +
+      '.legado-audio-badge::before{content:"\\266A";}' +
+      // 正在放：两条竖线；暂停：向右的三角（边框画的）。
+      '.legado-audio[data-state="playing"]>.legado-audio-badge::before{content:"";position:absolute;left:9px;top:8px;' +
+      'width:3px;height:12px;background:#FFF;box-shadow:7px 0 0 #FFF;}' +
+      '.legado-audio[data-state="paused"]>.legado-audio-badge::before{content:"";position:absolute;left:11px;top:8px;' +
+      'border-style:solid;border-width:6px 0 6px 10px;border-color:transparent transparent transparent #FFF;}' +
+      '.legado-audio-progress{position:absolute;left:0;bottom:0;height:3px;width:0;background:rgba(255,255,255,.9);' +
+      'box-shadow:0 0 2px rgba(0,0,0,.5);pointer-events:none;}' +
+      '.legado-audio[data-state="idle"]>.legado-audio-progress{display:none;}' +
+      'video{background:#000;}';
   }
 
   static style(options: EpubOriginalLayoutOptions): string {
@@ -127,13 +240,16 @@ export class EpubOriginalScript {
       'html{margin:0!important;padding:0!important;}' +
         `body{box-sizing:border-box!important;margin:0!important;padding:${padding}!important;max-width:none!important;}` +
         'img,svg,video{max-width:100%!important;box-sizing:border-box;}img,video{object-fit:contain;}';
+    css += EpubOriginalScript.galleryStyle(options);
+    css += EpubOriginalScript.duokanStyle();
+    css += EpubOriginalScript.mediaStyle();
     if (options.readerFont) {
-      const family = options.readerFont === 'system' ? 'sans-serif' :
-        '"LegadoReaderFont",sans-serif';
-      if (options.readerFont !== 'system') {
+      const family = EpubOriginalFont.cssFamily(options.readerFont);
+      if (EpubOriginalFont.isFileFont(options.readerFont)) {
         css += `@font-face{font-family:"LegadoReaderFont";src:url("${options.readerFont.replace(/"/g, '%22')}");}`;
       }
-      css += `body,body *{font-family:${family}!important;}`;
+      css += options.readerFontBodyOnly ? `[data-legado-font]{font-family:${family}!important;}` :
+        `body,body *{font-family:${family}!important;}`;
     }
     // 不能写 text-size-adjust:none：它会连网页组件的文字缩放（textZoomRatio）一起关掉，字号缩放就失效了。
     css += 'html{-webkit-tap-highlight-color:transparent;}';
@@ -215,6 +331,9 @@ export class EpubOriginalScript {
   }
   function rectAt(c, index) {
     var node = c.nodes[c.nodeOf[index]], off = c.offOf[index];
+    // 画廊里没露出来的格子被轨道移到了画廊左右两侧，按字本身的位置会算到别的页上；画廊里的字一律按画廊算。
+    var g = galleryOf(node);
+    if (g) return g.el.getBoundingClientRect();
     var range = document.createRange();
     range.setStart(node, off);
     range.setEnd(node, Math.min(node.nodeValue.length, off + 1));
@@ -242,6 +361,197 @@ export class EpubOriginalScript {
   }
   function pageOfRect(r) {
     return Math.max(0, Math.min(count - 1, Math.floor((r.left + window.scrollX + 1) / width)));
+  }
+  // ---- 多看画廊：各格叠成一摞卡片，当前一张在最前，前后两张缩小一点藏在它后面、从左右两边露出一条边；
+  // 拖动时当前这张跟着手指甩出去再缩到后面，相邻那张从后面放大到最前。首尾相接循环（样式见 galleryStyle）。
+  // 翻页模式下拖动由原生翻页层接管，所以把当前屏上画廊的位置经 gallery() 报给原生层：从画廊上起手横滑时
+  // 原生层不翻页，由这里切换；要翻页就从画廊外面滑。
+  var galleries = [], galleryDrag = null, galleryCandidate = null, galleryDecided = false;
+  var galleryJson = '', galleryAnim = null;
+  // 两侧露出的卡片相对当前卡片的偏移、甩出去时最远的距离（都按画廊宽度的比例），以及后面卡片的缩放。
+  var PEEK = 0.11, SWING = 0.6, BACK_SCALE = 0.9;
+  function setupGalleries() {
+    var list = document.querySelectorAll('.duokan-image-gallery');
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (el.__legadoGallery || galleryOf(el)) continue;
+      var cells = [];
+      for (var c = el.firstElementChild; c; c = c.nextElementSibling) {
+        if (/(?:^|\s)duokan-image-gallery-cell(?:\s|$)/.test(c.getAttribute('class') || '')) cells.push(c);
+      }
+      if (cells.length < 2) continue;
+      var track = document.createElement('div');
+      track.className = 'legado-gallery-track';
+      el.insertBefore(track, cells[0]);
+      for (var j = 0; j < cells.length; j++) track.appendChild(cells[j]);
+      var dots = document.createElement('div');
+      dots.className = 'legado-gallery-dots';
+      dots.setAttribute('aria-hidden', 'true');
+      for (var k = 0; k < cells.length; k++) dots.appendChild(document.createElement('span'));
+      el.insertBefore(dots, track.nextSibling);
+      el.classList.add('legado-gallery');
+      var state = { el: el, track: track, dots: dots, cells: cells, index: 0 };
+      el.__legadoGallery = state;
+      galleries.push(state);
+      galleryShow(state, 0);
+    }
+  }
+  function galleryOf(node) {
+    if (!galleries.length) return null;
+    for (var p = node; p && p !== document.body; p = p.parentNode) {
+      if (p.__legadoGallery) return p.__legadoGallery;
+    }
+    return null;
+  }
+  function galleryCellOf(g, node) {
+    for (var p = node; p && p !== g.el; p = p.parentNode) {
+      var i = g.cells.indexOf(p);
+      if (i >= 0) return i;
+    }
+    return -1;
+  }
+  // 第 i 张相对当前这张隔几张（循环，取较近的一边）。
+  function galleryDelta(g, i) {
+    var n = g.cells.length, d = ((i - g.index) % n + n) % n;
+    return d > n / 2 ? d - n : d;
+  }
+  // 按拖动进度画出这一摞：p > 0 往下一张、p < 0 往上一张，±1 是换完。
+  function galleryPaint(g, p) {
+    var n = g.cells.length, w = Math.max(1, g.el.clientWidth);
+    var a = Math.min(1, Math.abs(p)), dir = p > 0 ? 1 : (p < 0 ? -1 : 0);
+    for (var i = 0; i < n; i++) {
+      var d = galleryDelta(g, i);
+      // 只有两张时另一张同时是上一张和下一张，放到拖动的那一侧。
+      if (n === 2 && d !== 0) d = dir || 1;
+      var x = 0, s = BACK_SCALE, z = 1, o = 1, cap = 0, dim = 1;
+      if (d === 0) {
+        // 当前这张：先甩到一边，过半后缩到后面，落在对面那一侧露边的位置。
+        x = -dir * w * (PEEK * a + SWING * Math.sin(Math.PI * a));
+        s = 1 - (1 - BACK_SCALE) * a;
+        z = a < 0.5 ? 4 : 2;
+        cap = Math.max(0, 1 - 2 * a);
+        dim = a;
+      } else if (dir && d === dir) {
+        // 接上来的那张：从露边处移到正中、放大到原大。
+        x = dir * PEEK * w * (1 - a);
+        s = BACK_SCALE + (1 - BACK_SCALE) * a;
+        z = 3;
+        cap = Math.max(0, 2 * a - 1);
+        dim = 1 - a;
+      } else if (Math.abs(d) === 1) {
+        // 另一侧露边的那张：三张时它换完正好到对面，从后面横穿过去；更多张时淡出。
+        x = d * PEEK * w;
+        if (dir && n === 3) x = d * PEEK * w * (1 - 2 * a);
+        else if (dir) o = 1 - a;
+        z = 1;
+      } else if (dir && d === 2 * dir) {
+        // 下一轮要露边的那张在拖动那一侧淡入。
+        x = dir * PEEK * w;
+        o = a;
+        z = 0;
+      } else {
+        o = 0;
+        z = 0;
+      }
+      var cell = g.cells[i], st = cell.style;
+      st.transform = 'translate3d(' + x.toFixed(1) + 'px,0,0) scale(' + s.toFixed(4) + ')';
+      st.zIndex = String(z);
+      st.opacity = String(o);
+      st.visibility = o > 0 ? 'visible' : 'hidden';
+      st.pointerEvents = d === 0 ? 'auto' : 'none';
+      st.filter = dim > 0 ? 'brightness(' + (1 - 0.22 * dim).toFixed(3) + ')' : 'none';
+      st.setProperty('--legado-gallery-caption', cap.toFixed(3));
+    }
+  }
+  function galleryDots(g) {
+    var dots = g.dots.children;
+    for (var i = 0; i < dots.length; i++) dots[i].className = i === g.index ? 'on' : '';
+  }
+  function galleryShow(g, index) {
+    galleryFinish();
+    var n = g.cells.length;
+    g.index = ((index % n) + n) % n;
+    galleryPaint(g, 0);
+    galleryDots(g);
+  }
+  function galleryFinish() {
+    var a = galleryAnim;
+    if (!a) return;
+    galleryAnim = null;
+    if (a.frame) cancelAnimationFrame(a.frame);
+    if (a.timer) clearTimeout(a.timer);
+    a.done();
+  }
+  // 从 from 动到 to 后执行 done。没有帧可画时 rAF 会停，定时器保证一定落定。
+  function galleryAnimate(g, from, to, done) {
+    galleryFinish();
+    var a = { frame: 0, timer: 0, done: done }, begin = 0, duration = 300;
+    var step = function (time) {
+      if (galleryAnim !== a) return;
+      if (!begin) begin = time;
+      var k = Math.min(1, (time - begin) / duration), e = 1 - Math.pow(1 - k, 3);
+      galleryPaint(g, from + (to - from) * e);
+      if (k < 1) a.frame = requestAnimationFrame(step); else galleryFinish();
+    };
+    galleryAnim = a;
+    a.frame = requestAnimationFrame(step);
+    a.timer = setTimeout(galleryFinish, duration + 150);
+  }
+  function galleryProgress(g, dx) {
+    return Math.max(-1, Math.min(1, -dx / Math.max(1, g.el.clientWidth)));
+  }
+  function galleryMove(g, dx) {
+    galleryPaint(g, galleryProgress(g, dx));
+  }
+  function galleryRelease(g, dx, elapsed, cancel) {
+    var w = Math.max(1, g.el.clientWidth), p = galleryProgress(g, dx);
+    var flick = !cancel && (Math.abs(dx) > w * 0.18 || (Math.abs(dx) > 24 && elapsed < 250));
+    var target = flick ? (dx < 0 ? 1 : -1) : 0;
+    galleryReport(true);
+    galleryAnimate(g, p, target, function () {
+      if (target) g.index = ((g.index + target) % g.cells.length + g.cells.length) % g.cells.length;
+      galleryPaint(g, 0);
+      galleryDots(g);
+      // 落定后再报一次，原生层这时才预截当前页。
+      galleryReport(false);
+    });
+  }
+  // 当前屏上的画廊（视口坐标、CSS 像素）以及各自停在第几格；只在翻页模式下报，滚动模式不经原生层拖动。
+  function galleryReport(moving) {
+    if (!paged || !started || (!galleries.length && !videos.length) || !host || !host.gallery) return;
+    var zones = [], w = window.innerWidth, h = window.innerHeight;
+    // 正在放的视频也报上去（v=1）：在它上面拖动是拖进度条，原生层不翻页；停下来以后照常翻页。
+    for (var k = 0; k < videos.length; k++) {
+      var vr = videos[k].getBoundingClientRect();
+      if (videos[k].paused || vr.width < 1 || vr.right <= 0 || vr.left >= w || vr.bottom <= 0 || vr.top >= h) continue;
+      zones.push({ l: Math.round(vr.left), t: Math.round(vr.top), r: Math.round(vr.right), b: Math.round(vr.bottom),
+        i: 0, n: 1, v: 1 });
+    }
+    for (var i = 0; i < galleries.length; i++) {
+      var g = galleries[i], r = g.el.getBoundingClientRect();
+      if (r.width < 1 || r.right <= 0 || r.left >= w || r.bottom <= 0 || r.top >= h) continue;
+      zones.push({ l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom),
+        i: g.index, n: g.cells.length });
+    }
+    var json = JSON.stringify({ moving: moving ? 1 : 0, zones: zones });
+    if (json === galleryJson) return;
+    galleryJson = json;
+    host.gallery(json);
+  }
+  // 触摸起手在画廊上、横向拖动时这次拖动归画廊，返回 true 表示本次 touchmove 已处理。
+  // 方向判定与原生翻页层一致：横向位移大于竖向的 0.8 倍。
+  function galleryTouchMove(e) {
+    if (e.touches.length !== 1) return false;
+    var dx = e.touches[0].clientX - sx, dy = e.touches[0].clientY - sy;
+    if (galleryDrag) { galleryMove(galleryDrag, dx); return true; }
+    if (!galleryCandidate || galleryDecided) return false;
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return false;
+    galleryDecided = true;
+    if (Math.abs(dx) <= Math.abs(dy) * 0.8) return false;
+    galleryDrag = galleryCandidate;
+    moved = true; dragging = false; pull = 0;
+    galleryMove(galleryDrag, dx);
+    return true;
   }
   var anim = 0, animTimer = 0;
   function stopAnimation() {
@@ -286,7 +596,9 @@ export class EpubOriginalScript {
     }
     page = Math.max(0, Math.min(count - 1, n));
     slideTo(page * width, 0, smooth);
+    pauseVideos(true);
     report();
+    galleryReport(false);
   }
   function goSpot(snippet, fraction) {
     var c = compact(), index = c.text.length ? find(c.text, norm(snippet || ''), fraction || 0) : -1;
@@ -485,6 +797,12 @@ export class EpubOriginalScript {
     var a = Math.max(0, Math.min(total - 1, start)), b = Math.max(a, Math.min(total - 1, end - 1));
     while (a < b && /\s/.test(s.text.charAt(a))) a++;
     while (b > a && /\s/.test(s.text.charAt(b))) b--;
+    // 念到画廊里某一格的说明文字时，先把画廊切到那一格，高亮才落在看得见的地方。
+    var startNode = s.nodes[s.nodeOf[a]], g = galleryOf(startNode);
+    if (g) {
+      var cell = galleryCellOf(g, startNode);
+      if (cell >= 0 && cell !== g.index) { galleryShow(g, cell); galleryReport(false); }
+    }
     var range = document.createRange();
     var endNode = s.nodes[s.nodeOf[b]];
     range.setStart(s.nodes[s.nodeOf[a]], s.offOf[a]);
@@ -570,9 +888,271 @@ export class EpubOriginalScript {
       nightWhenLoaded(node, probe);
     }
   }
+  // 只换正文的字体：按字数找出正文的字体与字号，给正文元素标 data-legado-font（样式只认这个标记）。
+  // 网页默认字体（html 上的字体，书没设字体的段落用它）也算正文；标题（h1-h6 或字号比正文大 25% 以上）、
+  // 代码（注音跟着所在段落走），以及书里单独设了别的字体的文字（花体、符号字体等）都保持原样。
+  function markBodyFont() {
+    if (!cfg.fontBody || !document.body) return;
+    var KEEP = 'h1,h2,h3,h4,h5,h6,rt,rp,code,pre,kbd,samp,tt,var,math,svg';
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    var els = [], families = {}, sizes = {}, n, el, info, len;
+    while ((n = walker.nextNode())) {
+      len = n.nodeValue.replace(/\s+/g, '').length;
+      el = n.parentElement;
+      if (!len || !el || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)) continue;
+      info = el.__legadoFont;
+      if (!info) {
+        var cs = getComputedStyle(el);
+        info = el.__legadoFont = { family: cs.fontFamily, size: parseFloat(cs.fontSize) || 0 };
+        els.push(el);
+      }
+      families[info.family] = (families[info.family] || 0) + len;
+      sizes[info.size] = (sizes[info.size] || 0) + len;
+    }
+    var pick = function (tally) {
+      var best = null, most = -1;
+      for (var k in tally) if (tally[k] > most) { most = tally[k]; best = k; }
+      return best;
+    };
+    var bodyFamily = pick(families), bodySize = parseFloat(pick(sizes)) || 0;
+    var rootFamily = getComputedStyle(document.documentElement).fontFamily;
+    for (var i = 0; i < els.length; i++) {
+      el = els[i];
+      info = el.__legadoFont;
+      delete el.__legadoFont;
+      if (info.family !== bodyFamily && info.family !== rootFamily) continue;
+      if (bodySize > 0 && info.size > bodySize * 1.25) continue;
+      if (el.closest(KEEP)) continue;
+      el.setAttribute('data-legado-font', '');
+    }
+  }
+  // ---- 多看出血（duokan-bleed，已改写成 --legado-bleed）：把元素朝写明的几边撑到这一页的边缘 ----
+  // 左右：按元素所在的页（并排两栏时是半屏）算出它离页边还差多少，用负外边距加宽度补上；
+  // 上：只有元素正好在一栏顶端时才往上顶到屏幕边；下：在一栏底部时把高度补到屏幕边。
+  var bleedItems = [];
+  function bleedTargets() {
+    var found = [];
+    var add = function (el) { if (found.indexOf(el) < 0) found.push(el); };
+    var walk = function (rules) {
+      for (var i = 0; i < rules.length; i++) {
+        var rule = rules[i];
+        if (rule.cssRules && !rule.selectorText) { walk(rule.cssRules); continue; }
+        if (!rule.style || !rule.selectorText || !rule.style.getPropertyValue('--legado-bleed')) continue;
+        try {
+          var list = document.querySelectorAll(rule.selectorText);
+          for (var j = 0; j < list.length; j++) add(list[j]);
+        } catch (e) {}
+      }
+    };
+    for (var s = 0; s < document.styleSheets.length; s++) {
+      var rules = null;
+      try { rules = document.styleSheets[s].cssRules; } catch (e) { rules = null; }
+      if (rules) walk(rules);
+    }
+    var inline = document.querySelectorAll('[style*="--legado-bleed"]');
+    for (var k = 0; k < inline.length; k++) add(inline[k]);
+    return found;
+  }
+  function bleedReset() {
+    for (var i = 0; i < bleedItems.length; i++) {
+      var item = bleedItems[i];
+      if (item.style === null) item.el.removeAttribute('style'); else item.el.setAttribute('style', item.style);
+    }
+    bleedItems = [];
+  }
+  function applyBleed() {
+    bleedReset();
+    var targets = bleedTargets();
+    if (!targets.length) return;
+    var spread = paged && !!cfg.spreadQuery && window.matchMedia && window.matchMedia(cfg.spreadQuery).matches;
+    var w = window.innerWidth || 1, h = window.innerHeight || 1;
+    var plans = [];
+    // 先全部量完再改，免得改了前一个影响后一个的位置。
+    for (var i = 0; i < targets.length; i++) {
+      var el = targets[i], cs = getComputedStyle(el);
+      var value = (cs.getPropertyValue('--legado-bleed') || '').toLowerCase();
+      if (!value) continue;
+      var all = /\ball\b/.test(value);
+      var r = el.getBoundingClientRect();
+      if (r.width < 1) continue;
+      var absLeft = r.left + window.scrollX, x = paged ? absLeft - Math.floor((absLeft + 1) / w) * w : r.left;
+      var pageStart = spread && x >= w / 2 ? w / 2 : 0, pageEnd = spread && x < w / 2 ? w / 2 : w;
+      var plan = { el: el, ml: parseFloat(cs.marginLeft) || 0, mr: parseFloat(cs.marginRight) || 0,
+        mt: parseFloat(cs.marginTop) || 0, width: r.width, height: r.height, left: 0, right: 0, top: 0, bottom: 0 };
+      if (all || value.indexOf('left') >= 0) plan.left = Math.max(0, x - pageStart);
+      if (all || value.indexOf('right') >= 0) plan.right = Math.max(0, pageEnd - (x + r.width));
+      var topGap = paged ? r.top : r.top + window.scrollY;
+      if ((all || value.indexOf('top') >= 0) && topGap <= cfg.top + 2) plan.top = Math.max(0, topGap);
+      if ((all || value.indexOf('bottom') >= 0) && paged && r.bottom >= h - cfg.bottom - 2) plan.bottom = Math.max(0, h - r.bottom);
+      if (plan.left || plan.right || plan.top || plan.bottom) plans.push(plan);
+    }
+    for (var p = 0; p < plans.length; p++) {
+      var q = plans[p], st = q.el.style;
+      bleedItems.push({ el: q.el, style: q.el.getAttribute('style') });
+      if (q.left || q.right) {
+        st.setProperty('box-sizing', 'border-box', 'important');
+        st.setProperty('max-width', 'none', 'important');
+        st.setProperty('width', (q.width + q.left + q.right) + 'px', 'important');
+        st.setProperty('margin-left', (q.ml - q.left) + 'px', 'important');
+        st.setProperty('margin-right', (q.mr - q.right) + 'px', 'important');
+      }
+      if (q.top) st.setProperty('margin-top', (q.mt - q.top) + 'px', 'important');
+      if (q.bottom) st.setProperty('min-height', (q.height + q.bottom) + 'px', 'important');
+    }
+  }
+  // ---- 多看全屏页（duokan-page-fullscreen）：页面传来的页边距已是零；整页只有一张图时换成铺满一屏的背景图，
+  // 图与屏幕比例相近（裁掉不到 12%）就铺满裁边，否则完整显示。瘦长屏幕有“~slim”图时换用它 ----
+  function slimFor(url) {
+    var from = cfg.slimFrom || [], to = cfg.slimTo || [];
+    if (!from.length || window.innerHeight / Math.max(1, window.innerWidth) < cfg.slimRatio) return url;
+    var key = '';
+    try { key = new URL(url, document.baseURI).href; } catch (e) { return url; }
+    for (var i = 0; i < from.length; i++) {
+      var candidate = '';
+      try { candidate = new URL(from[i], document.baseURI).href; } catch (e) { continue; }
+      if (candidate === key) return to[i];
+    }
+    return url;
+  }
+  function applyFullscreen() {
+    if (!cfg.fullscreen) return;
+    if (compact().text.length > 40) return;
+    var media = document.querySelectorAll('img, svg image');
+    if (media.length !== 1) return;
+    var node = media[0], url = '';
+    if (node.nodeName.toLowerCase() === 'img') url = node.currentSrc || node.src;
+    else url = node.getAttribute('href') || node.getAttribute('xlink:href') ||
+      node.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+    if (!url) return;
+    url = slimFor(new URL(url, document.baseURI).href);
+    var box = document.createElement('div');
+    box.className = 'legado-fullscreen';
+    box.setAttribute('role', 'img');
+    box.setAttribute('aria-label', node.getAttribute('alt') || '');
+    box.style.backgroundImage = 'url("' + url.replace(/"/g, '%22') + '")';
+    for (var c = document.body.firstElementChild; c; c = c.nextElementSibling) {
+      if (c.nodeName.toLowerCase() !== 'script') c.style.display = 'none';
+    }
+    document.body.insertBefore(box, document.body.firstChild);
+    cache = null;
+    var probe = new Image();
+    probe.onload = function () {
+      var iw = probe.naturalWidth, ih = probe.naturalHeight;
+      if (!iw || !ih) return;
+      var sw = window.innerWidth || 1, sh = window.innerHeight || 1;
+      var scale = Math.max(sw / iw, sh / ih), crop = 1 - Math.min(sw / (iw * scale), sh / (ih * scale));
+      box.style.backgroundSize = crop <= 0.12 ? 'cover' : 'contain';
+    };
+    probe.src = url;
+  }
+  // ---- 书里的音频与视频 ----
+  // 音频：<audio> 前放一块卡片（样式见 mediaStyle），点它经 host.media(地址, 曲名) 交给原生播放器，换章、翻页都接着放；
+  // 原生层把播放状态经 __legado.media 推回来，卡片据此换圆标、画进度线（有 activestate 图的播放时换图）。
+  // 视频：加上浏览器自带的播放控件，就在网页里放；翻到别的页或换章时暂停。
+  var mediaWidgets = [], videos = [];
+  var mediaNow = { src: cfg.mediaSrc || '', state: cfg.mediaState || '', pos: 0, dur: 0 };
+  function mediaSrcOf(el) {
+    var value = el.getAttribute('src') || '';
+    if (!value) {
+      var sources = el.getElementsByTagName('source');
+      for (var i = 0; i < sources.length && !value; i++) value = sources[i].getAttribute('src') || '';
+    }
+    if (!value) return '';
+    try { return new URL(value, document.baseURI).href.replace(/#.*$/, ''); } catch (e) { return value; }
+  }
+  function setupMedia() {
+    var list = document.getElementsByTagName('audio');
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i], src = mediaSrcOf(a);
+      if (!src || !a.parentNode) continue;
+      var box = document.createElement('div');
+      box.className = 'legado-audio';
+      box.setAttribute('role', 'button');
+      box.setAttribute('data-legado-media', src);
+      box.setAttribute('data-title', (a.getAttribute('title') || '').trim());
+      var cover = a.getAttribute('placeholder') || '';
+      if (cover) {
+        var img = document.createElement('img');
+        img.className = 'legado-audio-cover';
+        img.alt = '';
+        img.src = cover;
+        box.appendChild(img);
+        box.__legadoCover = img;
+        box.__legadoIdle = cover;
+        box.__legadoActive = a.getAttribute('activestate') || '';
+      } else {
+        box.className += ' legado-audio-pill';
+      }
+      var badge = document.createElement('span');
+      badge.className = 'legado-audio-badge';
+      box.appendChild(badge);
+      var bar = document.createElement('span');
+      bar.className = 'legado-audio-progress';
+      box.appendChild(bar);
+      box.__legadoBar = bar;
+      a.parentNode.insertBefore(box, a);
+      mediaWidgets.push(box);
+    }
+    var vs = document.getElementsByTagName('video');
+    for (var j = 0; j < vs.length; j++) {
+      var v = vs[j];
+      v.setAttribute('controls', '');
+      v.setAttribute('playsinline', '');
+      v.setAttribute('controlslist', 'nodownload');
+      v.removeAttribute('autoplay');
+      v.addEventListener('play', videoChanged);
+      v.addEventListener('pause', videoChanged);
+      v.addEventListener('ended', videoChanged);
+      videos.push(v);
+    }
+    mediaPaint();
+  }
+  function videoChanged() { galleryReport(false); }
+  function mediaPaint() {
+    for (var i = 0; i < mediaWidgets.length; i++) {
+      var box = mediaWidgets[i];
+      var mine = box.getAttribute('data-legado-media') === mediaNow.src;
+      // 正在准备（loading）也按“在放”画，点下去马上有反馈。
+      var state = !mine ? 'idle' : (mediaNow.state === 'paused' ? 'paused' :
+        (mediaNow.state === 'playing' || mediaNow.state === 'loading' ? 'playing' : 'idle'));
+      if (box.getAttribute('data-state') !== state) box.setAttribute('data-state', state);
+      var img = box.__legadoCover;
+      if (img && box.__legadoActive && box.__legadoActive !== box.__legadoIdle) {
+        var want = state === 'playing' ? box.__legadoActive : box.__legadoIdle;
+        if (img.getAttribute('src') !== want) {
+          // 换图不能改变版面：锁住当前的高度，新图按比例放进去。
+          if (img.offsetHeight > 0) { img.style.height = img.offsetHeight + 'px'; img.style.objectFit = 'contain'; }
+          img.setAttribute('src', want);
+        }
+      }
+      var ratio = state !== 'idle' && mediaNow.dur > 0 ? Math.max(0, Math.min(1, mediaNow.pos / mediaNow.dur)) : 0;
+      box.__legadoBar.style.width = (ratio * 100).toFixed(2) + '%';
+    }
+  }
+  function media(src, state, pos, dur) {
+    mediaNow = { src: src || '', state: state || '', pos: Number(pos) || 0, dur: Number(dur) || 0 };
+    mediaPaint();
+  }
+  // 暂停视频；onlyHidden 时只停已经不在当前屏上的。
+  function pauseVideos(onlyHidden) {
+    var w = window.innerWidth, h = window.innerHeight;
+    for (var i = 0; i < videos.length; i++) {
+      var v = videos[i];
+      if (v.paused) continue;
+      if (onlyHidden) {
+        var r = v.getBoundingClientRect();
+        if (r.right > 0 && r.left < w && r.bottom > 0 && r.top < h) continue;
+      }
+      try { v.pause(); } catch (e) {}
+    }
+  }
   function start() {
     if (started) return;
     started = true;
+    applyFullscreen();
+    setupMedia();
+    setupGalleries();
+    applyBleed();
     nightClassify();
     layout();
     var t = cfg.target || {};
@@ -594,14 +1174,22 @@ export class EpubOriginalScript {
     };
     requestAnimationFrame(function () { requestAnimationFrame(announce); });
     setTimeout(announce, 150);
+    annoDraw();
   }
   var sx = 0, sy = 0, st = 0, base = 0, dragging = false, moved = false;
   // 滚动模式：已经在章末继续上拉、在章首继续下拉超过这个距离，就接着读下一章、上一章。
   var PULL = 72, pull = 0, atTop = false, atBottom = false;
   document.addEventListener('touchstart', function (e) {
+    if (galleryDrag) { galleryRelease(galleryDrag, 0, 0, true); galleryDrag = null; }
+    // 上一次换卡的动画还没完就又按下：直接落定，免得新拖动从半路的画面开始。
+    galleryFinish();
+    galleryDecided = false;
+    galleryCandidate = null;
     if (e.touches.length !== 1) { dragging = false; pull = 0; return; }
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
     pull = 0;
+    var hit = galleries.length && e.target && e.target.closest ? e.target.closest('.legado-gallery') : null;
+    galleryCandidate = hit ? hit.__legadoGallery || null : null;
     if (!paged) {
       atTop = window.scrollY <= 1;
       atBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2;
@@ -610,6 +1198,7 @@ export class EpubOriginalScript {
     base = page * width; dragging = paged; moved = false;
   }, { passive: true });
   document.addEventListener('touchmove', function (e) {
+    if (galleryTouchMove(e)) return;
     if (!paged && e.touches.length === 1) {
       var dyPull = e.touches[0].clientY - sy;
       if (atBottom && dyPull < -PULL) pull = 1;
@@ -625,7 +1214,18 @@ export class EpubOriginalScript {
     // 原生翻页层跟手时网页不动，只记下“拖过”，免得松手后的 click 被当成点按。
     if (!nativeTurn) window.scrollTo(base - dx, 0);
   }, { passive: true });
+  document.addEventListener('touchcancel', function () {
+    if (!galleryDrag) return;
+    galleryRelease(galleryDrag, 0, 0, true);
+    galleryDrag = null;
+  }, { passive: true });
   document.addEventListener('touchend', function (e) {
+    if (galleryDrag) {
+      galleryRelease(galleryDrag, e.changedTouches[0].clientX - sx, Date.now() - st, false);
+      galleryDrag = null;
+      pull = 0;
+      return;
+    }
     if (!paged) {
       // 手指离开时内容仍在章末（或章首）才翻章，避免一次正常的快速滑动被当成翻章。
       var stillBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2;
@@ -645,14 +1245,29 @@ export class EpubOriginalScript {
   }, { passive: true });
   document.addEventListener('click', function (e) {
     if (moved) { moved = false; e.preventDefault(); return; }
+    var audio = e.target && e.target.closest ? e.target.closest('.legado-audio') : null;
+    if (audio) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (host && host.media) host.media(audio.getAttribute('data-legado-media') || '', audio.getAttribute('data-title') || '');
+      return;
+    }
+    // 点视频交给它自己的播放控件，不当成翻页或呼出菜单的点按。
+    if (e.target && e.target.closest && e.target.closest('video')) return;
     var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
     if (a) {
       e.preventDefault();
       if (host) host.link(a.href, isNote(a) ? 1 : 0, e.clientX, e.clientY);
       return;
     }
-    var selection = window.getSelection ? window.getSelection() : null;
-    if (selection && !selection.isCollapsed) return;
+    var current = window.getSelection ? window.getSelection() : null;
+    if (current && !current.isCollapsed) return;
+    var marked = annoAt(e.clientX, e.clientY);
+    if (marked && host && host.annotation) {
+      e.preventDefault();
+      host.annotation(marked.id, annoBounds(marked));
+      return;
+    }
     if (host) host.tap(e.clientX / Math.max(1, window.innerWidth), e.clientY / Math.max(1, window.innerHeight));
   }, true);
   window.addEventListener('scroll', function () { if (!paged) report(); }, { passive: true });
@@ -662,13 +1277,209 @@ export class EpubOriginalScript {
     cache = null;
     speechCache = null;
     ttsClear();
+    for (var mi = 0; mi < mediaWidgets.length; mi++) {
+      if (mediaWidgets[mi].__legadoCover) mediaWidgets[mi].__legadoCover.style.height = '';
+    }
+    applyBleed();
     layout();
     goSpot(s.snippet, s.fraction);
+    annoDraw();
   });
+  // ---- 划线：与应用排版同一份数据，页面经 __legado.marks 传入本章要画的划线（紧凑文字 q 及前后文 p / s、章内比例 f）。
+  // 线、背景和笔记圆点画在 body 外面的一层（不受夜间整体反色影响，截图翻页也带着）；字体色只能改字本身，
+  // 用 CSS 自定义高亮，夜间先按 body 的反色滤镜反算颜色。点按命中划线时经 host.annotation 回报，不再当成翻页点按。
+  var annoList = [], annoLayer = null, annoHits = [], annoStyle = null, annoNames = [];
+  function annoLocate(c, a) {
+    var q = a.q || '', p = a.p || '', s = a.s || '';
+    if (!q) return -1;
+    var expected = (a.f || 0) * c.text.length, best = -1, bestScore = -1, i = c.text.indexOf(q), guard = 0;
+    while (i >= 0 && guard++ < 256) {
+      var score = 0, k;
+      for (k = 1; k <= p.length && i - k >= 0 && c.text.charAt(i - k) === p.charAt(p.length - k); k++) score++;
+      for (k = 0; k < s.length && i + q.length + k < c.text.length && c.text.charAt(i + q.length + k) === s.charAt(k); k++) score++;
+      if (score > bestScore || (score === bestScore && Math.abs(i - expected) < Math.abs(best - expected))) {
+        best = i;
+        bestScore = score;
+      }
+      i = c.text.indexOf(q, i + 1);
+    }
+    return best;
+  }
+  function annoRange(c, from, len) {
+    var a = c.nodes[c.nodeOf[from]], b = c.nodes[c.nodeOf[from + len - 1]];
+    var r = document.createRange();
+    r.setStart(a, c.offOf[from]);
+    r.setEnd(b, Math.min(b.nodeValue.length, c.offOf[from + len - 1] + 1));
+    return r;
+  }
+  // body 的夜间滤镜：invert(.92) 再 hue-rotate(180deg)。求出经过它之后正好是 hex 的颜色。
+  function annoBodyColor(hex) {
+    var v = parseInt(String(hex).replace('#', ''), 16) || 0;
+    var t = [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
+    if (!cfg.dark) return 'rgb(' + Math.round(t[0] * 255) + ',' + Math.round(t[1] * 255) + ',' + Math.round(t[2] * 255) + ')';
+    var m = [[-0.574, 1.430, 0.144], [0.426, 0.430, 0.144], [0.426, 1.430, -0.856]];
+    var det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+      m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    var inv = [
+      [(m[1][1] * m[2][2] - m[1][2] * m[2][1]) / det, (m[0][2] * m[2][1] - m[0][1] * m[2][2]) / det, (m[0][1] * m[1][2] - m[0][2] * m[1][1]) / det],
+      [(m[1][2] * m[2][0] - m[1][0] * m[2][2]) / det, (m[0][0] * m[2][2] - m[0][2] * m[2][0]) / det, (m[0][2] * m[1][0] - m[0][0] * m[1][2]) / det],
+      [(m[1][0] * m[2][1] - m[1][1] * m[2][0]) / det, (m[0][1] * m[2][0] - m[0][0] * m[2][1]) / det, (m[0][0] * m[1][1] - m[0][1] * m[1][0]) / det]];
+    var out = [];
+    for (var r = 0; r < 3; r++) {
+      var u = inv[r][0] * t[0] + inv[r][1] * t[1] + inv[r][2] * t[2];
+      out.push(Math.round(Math.max(0, Math.min(1, (0.92 - u) / 0.84)) * 255));
+    }
+    return 'rgb(' + out.join(',') + ')';
+  }
+  function annoWave(color) {
+    var svg = "<svg xmlns='http://www.w3.org/2000/svg' width='8' height='4'><path d='M0 2 Q2 0 4 2 T8 2' fill='none' stroke='" +
+      color + "' stroke-width='1.2'/></svg>";
+    return 'url("data:image/svg+xml,' + encodeURIComponent(svg) + '") 0 0 / 8px 4px repeat-x';
+  }
+  function annoClear() {
+    if (annoLayer && annoLayer.parentNode) annoLayer.parentNode.removeChild(annoLayer);
+    annoLayer = null;
+    annoHits = [];
+    if (window.CSS && CSS.highlights) {
+      for (var i = 0; i < annoNames.length; i++) CSS.highlights.delete(annoNames[i]);
+    }
+    annoNames = [];
+    if (annoStyle) annoStyle.textContent = '';
+  }
+  function annoDraw() {
+    annoClear();
+    if (!started || !annoList.length) return;
+    var c = compact();
+    if (!c.text.length) return;
+    var layer = document.createElement('div');
+    layer.setAttribute('aria-hidden', 'true');
+    layer.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483646;';
+    var sx = window.scrollX, sy = window.scrollY, rules = '';
+    for (var n = 0; n < annoList.length; n++) {
+      var a = annoList[n], at = annoLocate(c, a);
+      if (at < 0) continue;
+      var range = annoRange(c, at, a.q.length), rects = range.getClientRects(), boxes = [];
+      for (var i = 0; i < rects.length; i++) {
+        var rc = rects[i];
+        if (rc.width < 1 || rc.height < 1) continue;
+        boxes.push({ l: rc.left + sx, t: rc.top + sy, r: rc.right + sx, b: rc.bottom + sy });
+      }
+      if (!boxes.length) continue;
+      for (var j = 0; j < boxes.length; j++) {
+        var x = boxes[j], h = x.b - x.t;
+        if (a.style === 'text') continue;
+        var css = 'position:absolute;left:' + x.l + 'px;width:' + (x.r - x.l) + 'px;';
+        if (a.style === 'bg') {
+          css += 'top:' + x.t + 'px;height:' + h + 'px;border-radius:3px;background:' + a.color + ';opacity:.34;' +
+            'mix-blend-mode:' + (cfg.dark ? 'screen' : 'multiply') + ';';
+        } else if (a.style === 'wavy') {
+          css += 'top:' + (x.b + 1) + 'px;height:4px;background:' + annoWave(a.color) + ';';
+        } else {
+          css += 'top:' + (x.b + Math.max(1, h * 0.06)) + 'px;height:0;border-bottom:' +
+            Math.max(1.2, h * 0.055).toFixed(1) + 'px ' + (a.style === 'dashed' ? 'dashed ' : 'solid ') + a.color + ';';
+        }
+        var line = document.createElement('div');
+        line.style.cssText = css;
+        layer.appendChild(line);
+      }
+      if (a.style === 'text' && window.CSS && CSS.highlights && window.Highlight) {
+        var name = 'legado-anno-' + a.id;
+        CSS.highlights.set(name, new Highlight(range));
+        annoNames.push(name);
+        rules += '::highlight(' + name + '){color:' + annoBodyColor(a.color) + ';}';
+      }
+      var last = boxes[boxes.length - 1], dot = null;
+      if (a.dot) {
+        var lh = last.b - last.t, rad = Math.max(7, lh * 0.3);
+        var cy = a.style === 'bg' || a.style === 'text' ? last.b : last.b + Math.max(1, lh * 0.06);
+        dot = { x: last.r, y: cy, r: rad };
+        var d = document.createElement('div');
+        d.textContent = '…';
+        d.style.cssText = 'position:absolute;left:' + (last.r - rad) + 'px;top:' + (cy - rad) + 'px;width:' + (2 * rad) +
+          'px;height:' + (2 * rad) + 'px;border-radius:50%;background:' + a.color + ';color:#fff;text-align:center;' +
+          'text-indent:0;letter-spacing:0;font:bold ' + Math.round(rad * 1.2) + 'px/' + Math.round(rad * 1.5) + 'px sans-serif;';
+        layer.appendChild(d);
+      }
+      annoHits.push({ id: a.id, boxes: boxes, dot: dot });
+    }
+    if (rules) {
+      if (!annoStyle) {
+        annoStyle = document.createElement('style');
+        (document.head || document.documentElement).appendChild(annoStyle);
+      }
+      annoStyle.textContent = rules;
+    }
+    document.documentElement.appendChild(layer);
+    annoLayer = layer;
+  }
+  function annoAt(clientX, clientY) {
+    var x = clientX + window.scrollX, y = clientY + window.scrollY, i, j;
+    for (i = annoHits.length - 1; i >= 0; i--) {
+      var d = annoHits[i].dot;
+      if (d && Math.abs(x - d.x) <= d.r + 8 && Math.abs(y - d.y) <= d.r + 8) return annoHits[i];
+    }
+    for (i = annoHits.length - 1; i >= 0; i--) {
+      var bs = annoHits[i].boxes;
+      for (j = 0; j < bs.length; j++) {
+        if (x >= bs[j].l - 2 && x <= bs[j].r + 2 && y >= bs[j].t - 2 && y <= bs[j].b + 8) return annoHits[i];
+      }
+    }
+    return null;
+  }
+  // 弹层定位用：划线首行顶、末行底与箭头横坐标，按屏幕比例。只取当前屏上的几行。
+  function annoBounds(hit) {
+    var sx = window.scrollX, sy = window.scrollY, w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight);
+    var shown = [];
+    for (var i = 0; i < hit.boxes.length; i++) {
+      var b = hit.boxes[i];
+      if (b.r - sx > 0 && b.l - sx < w && b.b - sy > 0 && b.t - sy < h) shown.push(b);
+    }
+    if (!shown.length) shown = hit.boxes;
+    var f = shown[0], l = shown[shown.length - 1];
+    return JSON.stringify({ top: (f.t - sy) / h, bottom: (l.b - sy) / h, x: ((f.l + Math.min(f.r, f.l + 160)) / 2 - sx) / w });
+  }
+  function marks(json) {
+    try { annoList = JSON.parse(json) || []; } catch (e) { annoList = []; }
+    annoDraw();
+  }
+  function annoRect(id) {
+    for (var i = 0; i < annoHits.length; i++) if (annoHits[i].id === id) return annoBounds(annoHits[i]);
+    return '';
+  }
+  // 当前选区：紧凑文字下标范围内的字、前后各 16 字与章内比例，取完就收起选区。
+  function selection() {
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
+    var range = sel.getRangeAt(0), c = compact(), n = c.text.length;
+    if (!n) return '';
+    var at = function (i, after) {
+      var node = c.nodes[c.nodeOf[i]];
+      try { return range.comparePoint(node, Math.min(node.nodeValue.length, c.offOf[i] + (after ? 1 : 0))); } catch (e) { return 1; }
+    };
+    var lo = 0, hi = n, mid;
+    while (lo < hi) { mid = (lo + hi) >> 1; if (at(mid, false) < 0) lo = mid + 1; else hi = mid; }
+    var start = lo;
+    hi = n;
+    while (lo < hi) { mid = (lo + hi) >> 1; if (at(mid, true) <= 0) lo = mid + 1; else hi = mid; }
+    var end = lo;
+    if (end <= start) return '';
+    var text = sel.toString();
+    sel.removeAllRanges();
+    return JSON.stringify({ text: text, q: c.text.substring(start, end), p: c.text.substring(Math.max(0, start - 16), start),
+      s: c.text.substring(end, end + 16), f: start / n });
+  }
   window.__legado = { next: next, prev: prev, goSpot: goSpot, goAnchor: goAnchor, goPage: goPage, screen: screen,
-    preview: preview, step: step, show: show, speechInfo: speechInfo, ttsMark: ttsMark, ttsClear: ttsClear };
+    preview: preview, step: step, show: show, speechInfo: speechInfo, ttsMark: ttsMark, ttsClear: ttsClear,
+    media: media, pauseVideos: pauseVideos, marks: marks, annoRect: annoRect, selection: selection };
   var begin = function () {
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(start, start); else start();
+    var wait = function () {
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(start, start); else start();
+    };
+    if (!cfg.fontBody) { wait(); return; }
+    // 标记完正文才用上替换字体，得先让它载入，不然按书的字体分完页又换字形，页数就不对了。
+    try { markBodyFont(); } catch (e) {}
+    if (document.fonts && document.fonts.load) document.fonts.load('1em "LegadoReaderFont"').then(wait, wait);
+    else wait();
   };
   if (document.readyState === 'complete') begin(); else window.addEventListener('load', begin);
   setTimeout(start, 4000);

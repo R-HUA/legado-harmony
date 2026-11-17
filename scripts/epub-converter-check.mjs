@@ -8,7 +8,8 @@ import { loadReaderModules } from './lib/load-reader-modules.mjs';
 
 const { EpubHtmlConverter, EpubImageRef, EpubChapterPlanner, EpubChapterSegment, EpubTocEntry, ReaderImageMarker,
   ReaderActionMarker, EpubNoteLink, EpubTextOffsetMap, EpubOriginalDocument, EpubOriginalPiece, EpubOriginalPosition,
-  EpubOriginalSpot, EpubOriginalScript, EpubOriginalLayoutOptions, ReaderNightImage, cleanup } = await loadReaderModules();
+  EpubOriginalSpot, EpubOriginalScript, EpubOriginalLayoutOptions, ReaderNightImage, EpubDuokanExtensions, cleanup } =
+  await loadReaderModules();
 
 let failures = 0;
 const check = (condition, message, detail = '') => {
@@ -357,6 +358,20 @@ try {
       console.error(error);
     }
     check(scriptOk, '注入脚本语法正确');
+    // 字体：只换正文时样式只认脚本标的 data-legado-font；全部文字时覆盖 body 里所有元素；系统宋体没有字体文件时退到通用 serif。
+    const bodyFont = new EpubOriginalLayoutOptions();
+    bodyFont.readerFont = 'serif';
+    const bodyFontStyle = EpubOriginalScript.style(bodyFont);
+    const allFont = new EpubOriginalLayoutOptions();
+    allFont.readerFont = 'https://epub.legado.local/__legado_reader_font/a.ttf';
+    allFont.readerFontBodyOnly = false;
+    const allFontStyle = EpubOriginalScript.style(allFont);
+    check(bodyFontStyle.includes('[data-legado-font]{font-family:serif!important;}') && !bodyFontStyle.includes('body,body *{font-family') &&
+      !bodyFontStyle.includes('@font-face') && /"fontBody":true/.test(EpubOriginalScript.injection(bodyFont).script),
+      '字体：只换正文时样式只认标记、脚本开启正文标记');
+    check(allFontStyle.includes('@font-face{font-family:"LegadoReaderFont"') &&
+      allFontStyle.includes('body,body *{font-family:"LegadoReaderFont",sans-serif!important;}') &&
+      /"fontBody":false/.test(EpubOriginalScript.injection(allFont).script), '字体：全部文字时覆盖所有元素、不做正文标记');
     const tricky = new EpubOriginalLayoutOptions();
     tricky.target.kind = 'spot';
     tricky.target.snippet = '$&</script>';
@@ -364,6 +379,87 @@ try {
     check(!trickyScript.includes('</script>') && trickyScript.includes('$&'), '定位文字里的 </script> 与 $& 不破坏脚本');
     const baseScript = EpubOriginalScript.injection(new EpubOriginalLayoutOptions()).script;
     check(/speechInfo: speechInfo, ttsMark: ttsMark, ttsClear: ttsClear/.test(baseScript), '朗读取字、高亮与清除接口挂在 __legado 上');
+    // 多看画廊：脚本识别 duokan-image-gallery 并向原生层报 gallery()；翻页模式下格子里的图让出说明与小点的高度。
+    check(EpubOriginalScript.HOST_METHODS.includes('gallery') && /host\.gallery\(json\)/.test(baseScript) &&
+      baseScript.includes("'.duokan-image-gallery'"), '多看画廊：脚本改造画廊并经 gallery() 回报');
+    const pagedStyle = EpubOriginalScript.style(new EpubOriginalLayoutOptions());
+    const scrollOptions = new EpubOriginalLayoutOptions();
+    scrollOptions.paged = false;
+    const scrollStyle = EpubOriginalScript.style(scrollOptions);
+    check(pagedStyle.includes('overflow:clip!important;overflow-clip-margin:32px') &&
+      pagedStyle.includes('grid-area:1/1!important') &&
+      pagedStyle.includes('.legado-gallery-track img,.legado-gallery-track svg,.legado-gallery-track video{max-height:calc(100vh - 48px - 7em)'),
+      '多看画廊：翻页模式各卡叠在同一格、裁在页边内并限制图高');
+    check(scrollStyle.includes('.legado-gallery-track{display:grid') && !scrollStyle.includes('- 7em'),
+      '多看画廊：滚动模式同样叠放、不限高');
+
+    // 多看全屏页、“~slim”图、内置字体名与出血。
+    equal(EpubDuokanExtensions.opfPath('<container><rootfiles><rootfile full-path="OEBPS/content.opf" ' +
+      'media-type="application/oebps-package+xml"/></rootfiles></container>'), 'OEBPS/content.opf', '多看：container 找到 OPF');
+    const duokanPackage = EpubDuokanExtensions.parsePackage('<package><manifest>' +
+      '<item id="cover.xhtml" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>' +
+      '<item id="c1" href="Text/c%201.xhtml" media-type="application/xhtml+xml"/>' +
+      '<item id="img" href="Images/cover.jpg" media-type="image/jpeg"/>' +
+      '<item id="slim" href="Images/cover~slim.jpg" media-type="image/jpeg"/>' +
+      '<item id="lone" href="Images/lone~slim.jpg" media-type="image/jpeg"/>' +
+      '</manifest><spine><itemref idref="cover.xhtml" properties="duokan-page-fullscreen"/>' +
+      '<itemref idref="c1"/></spine></package>', 'OEBPS/content.opf');
+    equal(duokanPackage.fullscreen.join('|'), 'OEBPS/Text/cover.xhtml', '多看：spine 全屏页按 OPF 目录解析');
+    equal(`${duokanPackage.slimFrom.join('|')}>${duokanPackage.slimTo.join('|')}`,
+      'OEBPS/Images/cover.jpg>OEBPS/Images/cover~slim.jpg', '多看：~slim 图只认有原图的');
+    const dkCss = EpubDuokanExtensions.rewriteCss('body{font-family:"DK-SONGTI","st",sans-serif;}' +
+      'h1{font-family:DK-HEITI;}@font-face{font-family:"zw";src:local("DK-SONGTI"),url(../Fonts/zw.ttf);}' +
+      '.k{font-family:\'DK-KAITI\';}.x{font-family:"DK-UNKNOWN";}.f{src:url(../Fonts/DK-SONGTI.ttf);}' +
+      'div.logo{margin:0;duokan-bleed: lefttopright;}');
+    check(dkCss.includes('font-family:"Noto Serif CJK SC","Noto Serif SC","Source Han Serif SC","st",sans-serif'),
+      '多看：DK-SONGTI 换成系统宋体，书里后面的字体仍作后备');
+    check(dkCss.includes('h1{font-family:"HarmonyOS Sans SC"'), '多看：不带引号的 DK-HEITI 换成黑体');
+    check(dkCss.includes('src:local("Noto Serif CJK SC"),local("Noto Serif SC"),local("Source Han Serif SC"),url('),
+      '多看：@font-face 里的 local("DK-SONGTI") 也换');
+    check(dkCss.includes('.k{font-family:"Noto Serif CJK SC"'), '多看：楷体没有系统字体，退用宋体');
+    check(dkCss.includes('"DK-UNKNOWN"') && dkCss.includes('url(../Fonts/DK-SONGTI.ttf)'), '多看：不认识的名字与文件路径不动');
+    check(dkCss.includes('div.logo{margin:0;--legado-bleed: lefttopright;}'), '多看：duokan-bleed 改写成 --legado-bleed');
+    const ownFace = EpubDuokanExtensions.rewriteCss('@font-face{font-family:"DK-SONGTI";src:url(a.ttf);}p{font-family:"DK-SONGTI";}');
+    check(!ownFace.includes('Noto'), '多看：书自己定义了同名字体就不换');
+    check(EpubOriginalDocument.build([piece], [segment], EpubOriginalScript.injection(new EpubOriginalLayoutOptions()), 'x')
+      .includes('@property --legado-bleed{syntax:"*";inherits:false;}'), '多看：出血自定义属性登记为不继承');
+    const fullscreenOptions = new EpubOriginalLayoutOptions();
+    fullscreenOptions.fullscreen = true;
+    fullscreenOptions.slimFrom = ['https://epub.legado.local/OEBPS/Images/cover.jpg'];
+    fullscreenOptions.slimTo = ['https://epub.legado.local/OEBPS/Images/cover~slim.jpg'];
+    const fullscreenScript = EpubOriginalScript.injection(fullscreenOptions).script;
+    check(fullscreenScript.includes('"fullscreen":true') && fullscreenScript.includes('cover~slim.jpg'),
+      '多看：全屏页与 ~slim 对照传进脚本');
+    // 书里的音频、视频：多看音频的封面图地址改写，不自动播放、不预取；脚本把卡片点按交给原生层。
+    const mediaPiece = new EpubOriginalPiece();
+    mediaPiece.path = 'OEBPS/Text/m.xhtml';
+    mediaPiece.html = '<html><body><input placeholder="写点什么"/>' +
+      '<audio placeholder="../Images/ZJ.webp" activestate="../Images/ZJ2.webp" class="duokan-audio" title="少年无恙" ' +
+      'autoplay="autoplay" preload="auto"><source src="../Audio/SN.mp3" type="audio/mpeg"/></audio>' +
+      '<video class="duokan-video" poster="../Images/FM.webp" autoplay><source src="../Video/v.mp4" type="video/mp4"/></video>' +
+      '</body></html>';
+    const mediaSegment = new EpubChapterSegment();
+    mediaSegment.path = mediaPiece.path;
+    const mediaOptions = new EpubOriginalLayoutOptions();
+    mediaOptions.mediaSrc = `${origin}/OEBPS/Audio/SN.mp3`;
+    mediaOptions.mediaState = 'paused';
+    const mediaHtml = EpubOriginalDocument.build([mediaPiece], [mediaSegment], EpubOriginalScript.injection(mediaOptions), 'm');
+    check(mediaHtml.includes(`placeholder="${origin}/OEBPS/Images/ZJ.webp"`) &&
+      mediaHtml.includes(`activestate="${origin}/OEBPS/Images/ZJ2.webp"`) && mediaHtml.includes('placeholder="写点什么"'),
+      '音频：placeholder / activestate 只在 <audio> 上按地址改写');
+    check(mediaHtml.includes('<audio preload="none" placeholder=') &&
+      mediaHtml.includes('<video preload="none" class="duokan-video"') && !/<(?:audio|video)\b[^>]*(?:autoplay|preload="auto")/.test(mediaHtml),
+      '音频视频：去掉自动播放，不预取');
+    check(mediaHtml.includes(`<source src="${origin}/OEBPS/Audio/SN.mp3"`) && mediaHtml.includes(`poster="${origin}/OEBPS/Images/FM.webp"`),
+      '音频视频：source 与海报地址改写');
+    check(mediaHtml.includes('"mediaState":"paused"') && mediaHtml.includes('host.media(') &&
+      mediaHtml.includes('audio{display:none!important;}') && mediaHtml.includes('content:"\\266A"'),
+      '音频：脚本放卡片、点按交给原生层，载入时带上播放状态');
+    check(EpubOriginalScript.HOST_METHODS.includes('media'), '音频：宿主方法登记 media');
+    equal(convert('<div><img src="cover.jpg"/></div><audio placeholder="cover.jpg" title="曲"><source src="a.mp3"/></audio>' +
+      '<p>词</p><video poster="cover.jpg"><source src="v.mp4"/></video><audio><source src="b.mp3"/></audio>').content,
+    `${marker('cover.jpg')}\n\n${marker('cover.jpg')}\n\n词\n\n${marker('cover.jpg')}`,
+    '应用排版：音频封面图与视频海报当插图，没有封面的音频不留东西');
     equal(EpubOriginalScript.ttsMarkColor('#0A59F7', false), 'rgba(10,89,247,0.3)', '朗读高亮色：#RRGGBB 浅色');
     equal(EpubOriginalScript.ttsMarkColor('#FF3D7BFF', true), 'rgba(61,123,255,0.42)', '朗读高亮色：#AARRGGBB 去掉透明度');
     check(EpubOriginalScript.ttsMarkColor('bogus', false).startsWith('rgba('), '朗读高亮色：无法解析时用默认色');

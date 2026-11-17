@@ -185,8 +185,8 @@ for (const themeName of ttsPanelThemeNames) {
 }
 assert(read('entry/src/main/ets/components/ReaderTtsPlayerPanel.ets').includes('TtsPanelThemeBackground('),
   'TTS player panel must draw the themed panel background');
-assert(themePage.includes('this.detailListenCard(entry)') &&
-  themePage.includes('TtsPanelThemeBackground({'),
+assert(themePage.includes("this.detailSceneCard(entry, 'listen')") &&
+  read('entry/src/main/ets/components/theme/ThemeDetailScene.ets').includes('TtsPanelThemeBackground({'),
   'Theme previews must include the TTS panel card');
 
 const themedIconFiles = fs.readdirSync(mediaRoot).filter(fileName => /^ic_theme_.*\.svg$/.test(fileName));
@@ -337,14 +337,17 @@ assert(readerBackgroundComponent.includes('.objectFit(ImageFit.Contain)') &&
   !readerBackgroundComponent.includes('.border('),
   'Builtin reader backgrounds must preserve ornament proportions and draw no frame border');
 assert(indexPage.includes('ThemeRuntime.iconPackId()'), 'Floating tab bar does not resolve the active icon pack');
-// Both tab bar builders take the tab id and resolve its icon through navigationIcon(tabId, index).
-assert(indexPage.includes('BottomTabBarStyle.of(this.navigationIcon(tabId, index)') &&
-  indexPage.includes('Image(this.navigationIcon(tabId, index))'),
-  'Tab bar builders do not resolve themed navigation icons');
-for (const tabId of ['bookshelf', 'explore', 'mine']) {
-  assert(indexPage.includes(`this.bottomTabBar('${tabId}'`) && indexPage.includes(`this.compatTabBar('${tabId}'`),
-    `Floating tab icon is not themed: ${tabId}`);
+// Both tab layouts render the same list and forward each tab id to the theme icon resolver.
+for (const [layout, builder] of [['immersiveTabs', 'bottomTabBar'], ['compatTabs', 'compatTabBar']]) {
+  const layoutSource = indexPage.match(new RegExp(`^  ${layout}\\(\\) \\{([\\s\\S]*?)^  \\}`, 'm'))?.[1];
+  assert(layoutSource?.includes('ForEach(this.homeTabIds(), (tabId: string, index: number) =>') &&
+    layoutSource.includes(`.tabBar(this.${builder}(tabId, this.homeTabTitle(tabId), index))`),
+  `${layout} must use themed icons for every home tab`);
 }
+assert(indexPage.includes('BottomTabBarStyle.of(this.navigationIcon(tabId, index)') &&
+  indexPage.includes('Image(this.navigationIcon(tabId, index))') &&
+  indexPage.includes('ThemeAssetRegistry.navigationIcon(iconPackId, tabId, selected, dark)'),
+  'Tab bar builders do not resolve themed navigation icons');
 // 可选的第四个页签（听 / 足迹）：每个内置图标包都有自己的一套，主题包缺图标时回退到基底主题。
 for (const fileName of fs.readdirSync(mediaRoot).filter(name => /^ic_theme_[a-z_]+_mine\.(svg|png)$/.test(name))) {
   for (const tab of ['listen', 'footprint']) {
@@ -359,10 +362,14 @@ assert(fs.existsSync(path.join(mediaRoot, 'ic_theme_celestial_vault_listen_selec
   'Celestial vault needs selected icons for the extra tabs');
 assert(!indexPage.includes("$r('app.media.ic_tab_listen')"),
   'The extra tab icon must come from the active icon pack, not a fixed resource');
-// 搜索并进发现页签：底栏只有三个页签，搜索是盖在发现内容上的一层。
-assert(!indexPage.includes("this.bottomTabBar('search'") && !indexPage.includes("this.compatTabBar('search'") &&
+// 搜索是发现页上的一层；发现页签只在网页解析开启时出现，可选页签插在“我的”前面。
+const homeTabIds = indexPage.match(/^  homeTabIds\(\): string\[\] \{([\s\S]*?)^  \}/m)?.[1];
+assert(homeTabIds?.includes('const extra = this.extraTabId()') &&
+  homeTabIds.includes("const ids: string[] = ['bookshelf']") &&
+  homeTabIds.includes("if (this.webParseEnabled) ids.push('explore')") &&
+  homeTabIds.includes('if (extra) ids.push(extra)') && homeTabIds.includes("ids.push('mine')") &&
   indexPage.includes('exploreTabContent()') && indexPage.includes('homeSearchLayerActive()'),
-  'Search must live inside the discovery tab instead of a fourth bottom tab');
+  'Search must live inside the discovery tab');
 assert(indexPage.includes('this.shelfMoreButton(') &&
   indexPage.includes('shelfMoreDropdown()') &&
   indexPage.includes("this.sortDropdownItem('新阅读', 'recentRead')") &&
@@ -403,7 +410,8 @@ assert(!settingsPageSource.includes(".backgroundColor(this.appDarkMode ? '#10111
 assert(settingsPageSource.includes('ThemeRuntime.primaryTextColor') &&
   settingsPageSource.includes('ThemeRuntime.subTextColor'),
   'Mine page semantic text colors are not connected to ThemeRuntime');
-assert(settingsPageSource.includes('menuItem(icon: Resource, title: string, showDivider: boolean, onClick: () => void)') &&
+// menuItem may grow optional trailing parameters (e.g. a right-side value text); only pin the leading ones.
+assert(settingsPageSource.includes('menuItem(icon: Resource, title: string, showDivider: boolean, onClick: () => void') &&
   settingsPageSource.includes('SymbolGlyph(icon)') &&
   settingsPageSource.includes("SymbolGlyph($r('sys.symbol.chevron_right'))") &&
   settingsPageSource.includes('Divider()') &&
@@ -531,8 +539,8 @@ assert(reader.includes('input.bodyFontFamily = this.getBodyReaderFontFamily()') 
   readerPaginator.includes('fontFamilies: [heading ? snapshot.titleFontFamily : snapshot.bodyFontFamily]'),
   'Reader pagination measurement must use the same body font as rendering');
 assert(reader.includes('this.readerTypographySettingsPanel()') &&
-  reader.includes('readerTypographyCombinedSettings()') &&
-  reader.includes('ReaderTypographyStepper({') &&
+  reader.includes('ReaderTypographyFieldControl({') &&
+  reader.includes('onReaderTypographyFieldChange') &&
   readerLayoutSettings.includes("'左边距', '右边距', '上边距', '下边距'") &&
   readerLayoutSettings.includes('static clamp(field: number, value: number)') &&
   reader.includes('onReaderTypographyDraftChange') &&
@@ -549,10 +557,10 @@ assert(indexPage.includes('Book.hasStartedReading(book)') &&
   recentReadCardData.includes('!Book.hasStartedReading(book)'),
   'Bookshelf and recent-read surfaces must treat unopened first pages as unread');
 assert(readerSettingsPage.includes("this.selectItem('翻页方式'") &&
-  reader.includes("this.readerSelectSettingItem('翻页方式'") &&
+  reader.includes("ReaderSettingSegmentRow({\n        title: '翻页方式'".replace(/\n/g, reader.includes('\r\n') ? '\r\n' : '\n')) &&
   !readerSettingsPage.includes('this.pageTurnOptions()') &&
   !reader.includes('pageTurnModeButton('),
-  'Page-turn mode must use dropdown selectors in both settings entries');
+  'Page-turn mode must use a dropdown on the settings page and the shared segmented row in the reader panel');
 assert(readerSettingsPage.includes('if (this.readerPageTurnMode === 2)') &&
   readerSettingsPage.includes('this.tapZoneSettingItem()') &&
   readerSettingsPage.includes('ReaderSettingsStore.saveTapZoneActions') &&

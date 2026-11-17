@@ -39,6 +39,11 @@ export class ReaderV2InlineAction {
   bubbleStart: number = 0;
   /** EPUB 注释编号：显示原来的编号文字（不画气泡），点开弹出注释正文。 */
   note: boolean = false;
+  /** 热评原文与点赞数；有原文时可画成热评卡。本章说入口的原文是卡面文字（如“76条评论”）。 */
+  preview: string = '';
+  likes: string = '';
+  /** 章末的本章说/章评入口：单独成段时画成本章说卡片，不会挂在段落后面。 */
+  chapter: boolean = false;
 
   constructor(id: string, marker: string, label: string, data: ReaderActionData,
     displayStart: number, displayEnd: number, sourceStart: number, sourceEnd: number) {
@@ -50,6 +55,11 @@ export class ReaderV2InlineAction {
     this.title = data.title || '';
     this.url = data.url || '';
     this.note = EpubNoteLink.isNote(this.url);
+    this.preview = this.note ? '' : (data.preview || '');
+    this.likes = this.preview ? (data.likes || '') : '';
+    const rawLabel = data.label || '';
+    this.chapter = !this.note && (/本章说|章评|章末/.test(rawLabel) ||
+      (/^(?:本章说|章评)/.test(data.title || '') && !/(?:99\+|\d+)\s*$/.test(rawLabel)));
     this.displayStart = displayStart;
     this.displayEnd = displayEnd;
     this.sourceStart = sourceStart;
@@ -88,9 +98,18 @@ export class ReaderV2Block {
   title: boolean = false;
   /** 0 is the original/first title segment, 1 is the enlarged second segment. */
   titleSegment: number = 0;
+  /** 分段标题的第一段（“第十二章”那一行）。 */
+  titleLead: boolean = false;
   /** 1-6 表示章内小标题，0 表示普通段落。 */
   headingLevel: number = 0;
   image: ReaderV2ImageRef | null = null;
+  /**
+   * 整段只有一个带热评原文的入口（书源自带的热评卡），或只有一个本章说入口：开启热评卡片时整段画成卡片，
+   * 关闭时照旧显示气泡。段落文字仍是气泡标签，显示偏移与关闭时完全一致。本章说卡片另有自己的开关。
+   */
+  card: ReaderV2InlineAction | null = null;
+  /** 段末入口带热评原文：开启热评卡片时在本段下方追加一张卡片；段评气泡没关时气泡保留。 */
+  trailingCard: ReaderV2InlineAction | null = null;
 
   constructor(id: string, text: string, displayStart: number, displayEnd: number,
     sourceStart: number, sourceEnd: number, title: boolean) {
@@ -127,6 +146,34 @@ export class ReaderV2Document {
   offsets: ReaderV2OffsetSegment[] = [];
   regexRanges: ReaderV2RegexRange[] = [];
   identity: string = '';
+
+  private dropCapBlock: number = -2;
+
+  /**
+   * 首字装饰所在的块：紧跟章节标题的第一个普通文字段；标题后面是图片、小标题、热评卡，或这份文档没有
+   * 标题（滚动阅读里一章的后几截）时为 -1。
+   */
+  dropCapBlockIndex(): number {
+    if (this.dropCapBlock !== -2) return this.dropCapBlock;
+    let index = -1;
+    for (let cursor = 0; cursor < this.blocks.length; cursor++) {
+      if (this.blocks[cursor].title) index = cursor + 1;
+      else if (index >= 0) break;
+    }
+    const block = index >= 0 && index < this.blocks.length ? this.blocks[index] : null;
+    this.dropCapBlock = block && !block.image && !block.card && block.headingLevel === 0 && !block.title ? index : -1;
+    return this.dropCapBlock;
+  }
+
+  /** 章节标题占几块（不分段 1 块，分段 2 块，没有标题 0）。 */
+  titleBlockCount(): number {
+    let count = 0;
+    for (const block of this.blocks) {
+      if (block.title) count++;
+      else if (count > 0) break;
+    }
+    return count;
+  }
 
   sourceOffsetForDisplay(displayOffset: number): number {
     const target = Math.max(0, Math.min(this.displayText.length, displayOffset));
@@ -271,15 +318,33 @@ export class ReaderV2SpeechText {
   }
 }
 
+/** 段评、热评、本章说各自显示与否。隐藏的入口在解析时就不进显示文字，不占宽度也不留空行。 */
+export class ReaderV2CommentDisplay {
+  /** 段评气泡。关闭后带热评原文的入口只剩卡片（hotCards 开着时），其余段评入口整个去掉。 */
+  bubbles: boolean = true;
+  /** 是否会画热评卡片。 */
+  hotCards: boolean = true;
+  /** 本章说入口是否显示（气泡还是卡片由排版决定）。 */
+  chapter: boolean = true;
+}
+
 export class ReaderV2DocumentParser {
   private static readonly MAX_ACTIONS_PER_CHAPTER: number = 320;
+  private static readonly COMMENT_KEEP: number = 0;
+  /** 去掉气泡文字，入口留着给热评卡片用。 */
+  private static readonly COMMENT_CARD_ONLY: number = 1;
+  private static readonly COMMENT_DROP: number = 2;
+  private static readonly HIDDEN_ENTRY: string = String.fromCharCode(0x200B);
 
   /** Occupies one display character for an image block so display/source offsets stay monotonic. */
   static readonly IMAGE_PLACEHOLDER: string = '\uFFFC';
 
   static parse(source: string, chapterIndex: number, chapterTitle: string,
-    headings: ReaderV2HeadingHint[] = [], titleSplit: ReaderTitleSplitSettings | null = null): ReaderV2Document {
+    headings: ReaderV2HeadingHint[] = [], titleSplit: ReaderTitleSplitSettings | null = null,
+    comments: ReaderV2CommentDisplay | null = null): ReaderV2Document {
     const document = new ReaderV2Document();
+    // Display offsets where a hidden comment entry used to be, to drop the paragraphs it leaves empty.
+    const hiddenAt: number[] = [];
     document.chapterIndex = chapterIndex;
     document.chapterTitle = (chapterTitle || '').trim();
     document.sourceText = ReaderV2DocumentParser.normalizeSource(source || '');
@@ -364,17 +429,44 @@ export class ReaderV2DocumentParser {
       }
       const label = ReaderV2DocumentParser.actionLabel(actionMatch);
       const labelStart = displayCursor;
+      const action = new ReaderV2InlineAction(`action_${chapterIndex}_${actionIndex++}`,
+        actionMatch.marker, label, actionMatch.data, labelStart, labelStart + label.length, absoluteStart, absoluteEnd);
+      const hidden = comments ? ReaderV2DocumentParser.commentHidden(action, actionMatch.data, comments) :
+        ReaderV2DocumentParser.COMMENT_KEEP;
+      if (hidden !== ReaderV2DocumentParser.COMMENT_KEEP) {
+        hiddenAt.push(labelStart);
+        if (hidden === ReaderV2DocumentParser.COMMENT_CARD_ONLY) {
+          // The entry itself takes no room. A zero-width space stands in for it so a paragraph that is only a
+          // source hot card still exists as a block; it is plain text, never styled or painted as a bubble.
+          action.label = '';
+          action.displayEnd = labelStart;
+          action.bubbleStart = labelStart;
+          document.actions.push(action);
+          display += ReaderV2DocumentParser.HIDDEN_ENTRY;
+          displayCursor += ReaderV2DocumentParser.HIDDEN_ENTRY.length;
+        }
+        // Like a dropped marker: progress and TTS offsets continue past it.
+        document.offsets.push(new ReaderV2OffsetSegment(absoluteStart, absoluteEnd, labelStart, displayCursor));
+        sourceCursor = absoluteEnd;
+        continue;
+      }
       display += label;
       displayCursor += label.length;
       document.offsets.push(new ReaderV2OffsetSegment(absoluteStart, absoluteEnd, labelStart, displayCursor));
-      document.actions.push(new ReaderV2InlineAction(`action_${chapterIndex}_${actionIndex++}`,
-        actionMatch.marker, label, actionMatch.data, labelStart, displayCursor, absoluteStart, absoluteEnd));
+      document.actions.push(action);
       sourceCursor = absoluteEnd;
     }
 
     document.displayText = display;
     ReaderV2DocumentParser.buildBlocks(document, headings);
     if (titleSplit) ReaderV2DocumentParser.splitTitleBlocks(document, titleSplit);
+    ReaderV2DocumentParser.assignCommentCards(document);
+    if (hiddenAt.length > 0) {
+      // A paragraph that held nothing but hidden entries would otherwise remain as an empty line.
+      document.blocks = document.blocks.filter((block: ReaderV2Block): boolean =>
+        !!block.image || block.title || !!block.card || !ReaderV2DocumentParser.CARD_FILLER.test(block.text) ||
+          !hiddenAt.some((offset: number): boolean => offset >= block.displayStart && offset <= block.displayEnd));
+    }
     document.identity = ReaderV2DocumentParser.hashIdentity(document.sourceText, chapterIndex);
     return document;
   }
@@ -395,9 +487,66 @@ export class ReaderV2DocumentParser {
       const second = new ReaderV2Block(`${block.id}_title_second`, block.text.substring(cut),
         boundary, block.displayEnd, sourceBoundary, block.sourceEnd, true);
       second.titleSegment = 1;
+      first.titleLead = true;
       blocks.push(first, second);
     }
     document.blocks = blocks;
+  }
+
+  private static commentHidden(action: ReaderV2InlineAction, data: ReaderActionData,
+    comments: ReaderV2CommentDisplay): number {
+    if (action.note) return ReaderV2DocumentParser.COMMENT_KEEP;
+    if (action.chapter) {
+      return comments.chapter ? ReaderV2DocumentParser.COMMENT_KEEP : ReaderV2DocumentParser.COMMENT_DROP;
+    }
+    // Other source actions (buttons, links) are not comments and always stay.
+    const comment = !!action.preview || /(?:99\+|\d+)\s*$/.test((data.label || '').trim()) ||
+      /段评|评论|神评|热评/.test(`${data.label || ''}${data.title || ''}`);
+    if (!comment || comments.bubbles) return ReaderV2DocumentParser.COMMENT_KEEP;
+    return !!action.preview && comments.hotCards ? ReaderV2DocumentParser.COMMENT_CARD_ONLY :
+      ReaderV2DocumentParser.COMMENT_DROP;
+  }
+
+  /** Characters a card-only paragraph may contain besides its bubble: indentation and the bubble's own padding. */
+  private static readonly CARD_FILLER: RegExp = /^[\s　 ⁠​]*$/;
+
+  /**
+   * Marks the paragraphs that can show a hot-comment card. Only the semantics are recorded here; whether a card is
+   * drawn is a layout setting, so turning cards off needs no re-parse and leaves every offset unchanged.
+   */
+  private static assignCommentCards(document: ReaderV2Document): void {
+    if (document.actions.length === 0) return;
+    let actionIndex = 0;
+    for (const block of document.blocks) {
+      if (block.image || block.title) continue;
+      // An entry never spans a paragraph break, and one whose bubble is hidden has zero width and may sit exactly
+      // on a paragraph edge, so both bounds are inclusive.
+      while (actionIndex < document.actions.length && document.actions[actionIndex].displayEnd < block.displayStart) {
+        actionIndex++;
+      }
+      let inBlock = 0;
+      let withPreview: ReaderV2InlineAction | null = null;
+      let chapterEntry: ReaderV2InlineAction | null = null;
+      let rest = '';
+      let cursor = block.displayStart;
+      for (let index = actionIndex; index < document.actions.length; index++) {
+        const action = document.actions[index];
+        if (action.displayStart > block.displayEnd) break;
+        inBlock++;
+        if (action.chapter) chapterEntry = action;
+        else if (action.preview) withPreview = action;
+        rest += document.displayText.substring(cursor, Math.max(cursor, action.displayStart));
+        cursor = Math.max(cursor, action.displayEnd);
+      }
+      if (!withPreview && !chapterEntry) continue;
+      rest += document.displayText.substring(cursor, Math.max(cursor, block.displayEnd));
+      if (inBlock === 1 && ReaderV2DocumentParser.CARD_FILLER.test(rest)) {
+        block.card = chapterEntry || withPreview;
+      } else if (withPreview) {
+        // A 本章说 entry inside a paragraph stays a bubble; only paragraph hot comments trail a paragraph.
+        block.trailingCard = withPreview;
+      }
+    }
   }
 
   private static normalizeSource(source: string): string {

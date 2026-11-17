@@ -4,6 +4,7 @@ import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { Book, BookChapter, Bookmark } from '@legado/sourceengine';
 import { AppDatabase } from '../../model/data/AppDatabase';
 import { HdsFeedback } from '../../utils/HdsFeedback';
+import { bookmarkPreviewText } from '../../utils/BookmarkPreviewText';
 import { ListDissolve, ListDissolveParticles } from '../../utils/ListDissolve';
 import { DeleteParticleBurst, DeleteParticleLayer } from '../common/DeleteParticles';
 import { BookCover } from '../book/BookCover';
@@ -13,6 +14,8 @@ import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { AppSpacing } from '../../theme/AppSpacing';
 import { ReaderMaterialPanel } from './ReaderFloatingMaterialBar';
+import { BookAnnotation, BookAnnotationStyles } from '../../model/reader/BookAnnotation';
+import { TocVolumeFold } from '../../core/reader/TocVolumeFold';
 
 const TOC_WINDOW_PAGE_SIZE = 72;
 const TOC_SCROLLBAR_DRAG_UPDATE_INTERVAL_MS = 90;
@@ -39,6 +42,9 @@ export class ReaderTocPanelController {
  * 目录只挂载一个 72 章的窗口，滚动到两端时再续上相邻的一段，长篇目录因此不会一次创建上千个列表项；
  * 右侧的滚动条按全书章节数换算，可以直接拖到任意位置。搜索、倒序、章节序号跳转、
  * 书签多选这些状态都属于面板自己，面板每次打开重新创建，从当前章节开始。
+ *
+ * 分卷的书点卷名收起或展开这一卷，长按卷名全部收起或全部展开（见 TocVolumeFold）。有卷收起时，
+ * 窗口和滚动条按收起后的列表（displayOrder）换算；搜索结果不受收起影响。
  */
 @Component
 export struct ReaderTocPanel {
@@ -91,6 +97,14 @@ export struct ReaderTocPanel {
   onShowBookmarkActions: (bookmark: Bookmark, globalX: number, globalY: number) => void =
     (_bookmark: Bookmark, _globalX: number, _globalY: number): void => {
     };
+  /** 本书的划线（阅读页内存里的那份）；每次切到“笔记”页签时重新取。 */
+  annotationsProvider: () => BookAnnotation[] = (): BookAnnotation[] => [];
+  /** 这条划线在已载入的章节文本里找不到原文时返回 true；章节没载入时不判断。 */
+  annotationMissing: (annotation: BookAnnotation) => boolean = (_annotation: BookAnnotation): boolean => false;
+  onJumpToAnnotation: (annotation: BookAnnotation) => void = (_annotation: BookAnnotation): void => {
+  };
+  onDeleteAnnotation: (annotation: BookAnnotation) => Promise<boolean> =
+    (_annotation: BookAnnotation): Promise<boolean> => Promise.resolve(false);
 
   @State private tab: number = 0;
   @State private visibleChapters: BookChapter[] = [];
@@ -107,6 +121,13 @@ export struct ReaderTocPanel {
   @State private databaseChapterCount: number = 0;
   @State private listViewportHeight: number = 0;
   @State private firstVisibleGlobalIndex: number = 0;
+  /** 第一行在当前列表（收起后的列表或搜索结果）里的下标，“去顶部/去底部”按它判断方向。 */
+  @State private firstVisibleListIndex: number = 0;
+  /**
+   * 按钮方向：1 去底部、-1 去顶部、0 还没手动滑过（按位置判断）。手指上滑变去底部、下滑变去顶部；
+   * 只认手指拖动，程序定位和松手后的惯性、回弹不改方向。
+   */
+  @State private edgeJumpDirection: number = 0;
   @State private visibleItemCount: number = 1;
   @State private scrollbarDragging: boolean = false;
   @State private scrollbarDragOffset: number = 0;
@@ -115,6 +136,16 @@ export struct ReaderTocPanel {
   /** 正在消散的书签 id（字符串），见 ListDissolve。 */
   @State private dissolvingBookmarkKeys: string[] = [];
   @State private deleteParticleBursts: DeleteParticleBurst[] = [];
+  @State private noteItems: BookAnnotation[] = [];
+  @State private dissolvingNoteKeys: string[] = [];
+  /** 收起的卷（卷首章在 chapters 里的位置）。 */
+  @State private collapsedVolumes: number[] = [];
+  private volumeStarts: number[] = [];
+  /** 有卷收起时按列表顺序排好的章节位置；没有收起时为 null，列表就是全部章节。 */
+  private displayOrder: number[] | null = null;
+  private displayOrderSignature: string = '';
+  private volumeStartsSignature: string = '';
+  private noteScroller: ListScroller = new ListScroller();
   private searchRequestSerial: number = 0;
   private scrollbarPointerAnchor: number = 0;
   private scrollbarPendingIndex: number = -1;
@@ -138,6 +169,7 @@ export struct ReaderTocPanel {
     }
     this.databaseChapterCount = this.chapters.length;
     this.firstVisibleGlobalIndex = this.currentChapterIndex;
+    this.restoreCollapsedVolumes();
     this.setWindowAround(this.currentChapterIndex, ScrollAlign.CENTER);
     this.scrollToCurrentChapter(false);
     this.onLoadBookmarks();
@@ -173,13 +205,149 @@ export struct ReaderTocPanel {
     if (this.isSearchActive()) {
       return this.searchChapterIndexes[localIndex] ?? 0;
     }
-    const displayIndex = this.windowStart + localIndex;
+    return this.canonicalAtDisplayIndex(this.windowStart + localIndex);
+  }
+
+  // ---------------------------------------------------------------- 分卷收起
+
+  /** 章节在 chapters 里的位置；章节对象的 index 通常就是位置。 */
+  private positionOf(chapter: BookChapter): number {
+    const index = chapter.index;
+    if (index >= 0 && index < this.chapters.length && this.chapters[index] === chapter) return index;
+    const found = this.chapters.indexOf(chapter);
+    return found >= 0 ? found : index;
+  }
+
+  /** 章节、倒序或收起的卷变了才重排；有卷收起时 displayOrder 是收起后的列表。 */
+  private ensureDisplayOrder(): void {
+    const total = this.chapters.length;
+    const first = total > 0 ? this.chapters[0] : undefined;
+    const last = total > 0 ? this.chapters[total - 1] : undefined;
+    const chapterSignature = `${total}|${first?.url || first?.title || ''}|${last?.url || last?.title || ''}`;
+    if (chapterSignature !== this.volumeStartsSignature) {
+      const starts: number[] = [];
+      for (let i = 0; i < total; i++) {
+        if (BookChapter.volumeTitleOf(this.chapters[i])) starts.push(i);
+      }
+      this.volumeStarts = starts;
+      this.volumeStartsSignature = chapterSignature;
+      const kept = TocVolumeFold.sanitize(starts, this.collapsedVolumes);
+      if (kept.length !== this.collapsedVolumes.length) this.collapsedVolumes = kept;
+    }
+    const signature = `${chapterSignature}|${this.reverseOrder ? 1 : 0}|${this.collapsedVolumes.join(',')}`;
+    if (signature === this.displayOrderSignature) return;
+    this.displayOrder = this.collapsedVolumes.length > 0 ?
+      TocVolumeFold.visiblePositions(this.volumeStarts, this.collapsedVolumes, total, this.reverseOrder) : null;
+    this.displayOrderSignature = signature;
+  }
+
+  private displayCount(): number {
+    this.ensureDisplayOrder();
+    return this.displayOrder ? this.displayOrder.length : this.chapters.length;
+  }
+
+  private canonicalAtDisplayIndex(displayIndex: number): number {
+    this.ensureDisplayOrder();
+    const order = this.displayOrder;
+    if (order) return order[Math.max(0, Math.min(displayIndex, order.length - 1))] ?? 0;
     return this.reverseOrder ? this.chapters.length - 1 - displayIndex : displayIndex;
   }
 
+  /** 章节在列表里的下标；被收起的章节落到所在卷的卷头行。 */
+  private displayIndexOf(canonicalIndex: number): number {
+    this.ensureDisplayOrder();
+    const order = this.displayOrder;
+    if (order) {
+      return TocVolumeFold.displayIndexOf(order, this.volumeStarts, this.collapsedVolumes, canonicalIndex,
+        this.chapters.length, this.reverseOrder);
+    }
+    return this.reverseOrder ? this.chapters.length - 1 - canonicalIndex : canonicalIndex;
+  }
+
+  private foldMemoryKey(): string {
+    const bookUrl = this.book?.bookUrl || '';
+    return bookUrl ? `${bookUrl}|${this.chapters.length}` : '';
+  }
+
+  private restoreCollapsedVolumes(): void {
+    this.collapsedVolumes = TocVolumeFold.recall(this.foldMemoryKey());
+    this.ensureDisplayOrder();
+    // 打开目录时总能看到当前章节。
+    this.expandVolumeOf(this.currentChapterIndex);
+  }
+
+  /** 章节所在的卷收起着就展开它；返回是否改了收起状态。 */
+  private expandVolumeOf(canonicalIndex: number): boolean {
+    this.ensureDisplayOrder();
+    const start = TocVolumeFold.volumeOf(this.volumeStarts, canonicalIndex);
+    if (start < 0 || this.collapsedVolumes.indexOf(start) < 0) return false;
+    this.setCollapsedVolumes(this.collapsedVolumes.filter((item: number) => item !== start));
+    return true;
+  }
+
+  private setCollapsedVolumes(collapsed: number[]): void {
+    this.collapsedVolumes = collapsed;
+    this.ensureDisplayOrder();
+    TocVolumeFold.remember(this.foldMemoryKey(), this.collapsedVolumes);
+  }
+
+  /** 这一行上方要画卷头时返回卷首位置，否则 -1。 */
+  private volumeHeadOf(chapter: BookChapter): number {
+    this.ensureDisplayOrder();
+    if (this.volumeStarts.length === 0) return -1;
+    return TocVolumeFold.headVolumeAt(this.volumeStarts, this.positionOf(chapter), this.chapters.length,
+      this.reverseOrder);
+  }
+
+  private isVolumeCollapsed(start: number): boolean {
+    return start >= 0 && !this.isSearchActive() && this.collapsedVolumes.indexOf(start) >= 0;
+  }
+
+  private volumeChapterCount(start: number): number {
+    return TocVolumeFold.volumeEnd(this.volumeStarts, start, this.chapters.length) - start;
+  }
+
+  private volumeContainsCurrent(start: number): boolean {
+    return TocVolumeFold.volumeOf(this.volumeStarts, this.currentChapterIndex) === start;
+  }
+
+  /**
+   * 收起或展开一卷。变化都在卷头下方，窗口从原来的起点按新列表重新取，
+   * 卷头上方的列表项不变，滚动位置因此保持。
+   */
+  private toggleVolume(start: number): void {
+    if (start < 0 || this.isSearchActive()) return;
+    const collapsed = this.collapsedVolumes.indexOf(start) >= 0 ?
+      this.collapsedVolumes.filter((item: number) => item !== start) : this.collapsedVolumes.concat([start]);
+    this.setCollapsedVolumes(collapsed);
+    this.refillWindow();
+  }
+
+  /** 长按卷名：有展开的卷就全部收起，否则全部展开；之后把长按的那一卷移到顶部。 */
+  private toggleAllVolumes(start: number): void {
+    if (start < 0 || this.isSearchActive()) return;
+    this.ensureDisplayOrder();
+    const collapseAll = this.collapsedVolumes.length < this.volumeStarts.length;
+    this.setCollapsedVolumes(collapseAll ? this.volumeStarts.slice() : []);
+    HdsFeedback.showToast(collapseAll ? '已收起全部分卷' : '已展开全部分卷');
+    this.scrollToChapter(TocVolumeFold.headPosition(this.volumeStarts, start, this.chapters.length,
+      this.reverseOrder), ScrollAlign.START, false);
+  }
+
+  private refillWindow(): void {
+    const count = this.displayCount();
+    const start = Math.max(0, Math.min(this.windowStart, Math.max(0, count - 1)));
+    const end = Math.min(count, start + Math.max(this.visibleChapters.length, TOC_WINDOW_PAGE_SIZE));
+    const visibleChapters: BookChapter[] = [];
+    for (let displayIndex = start; displayIndex < end; displayIndex++) {
+      visibleChapters.push(this.chapterAtDisplayIndex(displayIndex));
+    }
+    this.windowStart = start;
+    this.visibleChapters = visibleChapters;
+  }
+
   private chapterAtDisplayIndex(displayIndex: number): BookChapter {
-    const canonicalIndex = this.reverseOrder ? this.chapters.length - 1 - displayIndex : displayIndex;
-    return this.chapters[canonicalIndex];
+    return this.chapters[this.canonicalAtDisplayIndex(displayIndex)];
   }
 
   private setWindowAround(index: number, align: ScrollAlign): number {
@@ -191,15 +359,16 @@ export struct ReaderTocPanel {
       return 0;
     }
     const canonicalTarget = Math.max(0, Math.min(index, this.chapters.length - 1));
-    const target = this.reverseOrder ? this.chapters.length - 1 - canonicalTarget : canonicalTarget;
+    const count = this.displayCount();
+    const target = this.displayIndexOf(canonicalTarget);
     let start = target - Math.floor(TOC_WINDOW_PAGE_SIZE / 2);
     if (align === ScrollAlign.START) {
       start = target;
     } else if (align === ScrollAlign.END) {
       start = target - TOC_WINDOW_PAGE_SIZE + 1;
     }
-    start = Math.max(0, Math.min(start, Math.max(0, this.chapters.length - TOC_WINDOW_PAGE_SIZE)));
-    const end = Math.min(this.chapters.length, start + TOC_WINDOW_PAGE_SIZE);
+    start = Math.max(0, Math.min(start, Math.max(0, count - TOC_WINDOW_PAGE_SIZE)));
+    const end = Math.min(count, start + TOC_WINDOW_PAGE_SIZE);
     const visibleChapters: BookChapter[] = [];
     for (let displayIndex = start; displayIndex < end; displayIndex++) {
       visibleChapters.push(this.chapterAtDisplayIndex(displayIndex));
@@ -212,9 +381,10 @@ export struct ReaderTocPanel {
   private loadNextPage(): void {
     if (this.isSearchActive() || this.positioning || this.loadingNextPage) return;
     const loadedEnd = this.windowStart + this.visibleChapters.length;
-    if (loadedEnd >= this.chapters.length) return;
+    const count = this.displayCount();
+    if (loadedEnd >= count) return;
     this.loadingNextPage = true;
-    const nextEnd = Math.min(this.chapters.length, loadedEnd + TOC_WINDOW_PAGE_SIZE);
+    const nextEnd = Math.min(count, loadedEnd + TOC_WINDOW_PAGE_SIZE);
     const nextChapters: BookChapter[] = [];
     for (let displayIndex = loadedEnd; displayIndex < nextEnd; displayIndex++) {
       nextChapters.push(this.chapterAtDisplayIndex(displayIndex));
@@ -424,6 +594,7 @@ export struct ReaderTocPanel {
       }, 50);
       return;
     }
+    this.expandVolumeOf(this.currentChapterIndex);
     this.scrollToCurrentChapter();
     this.quickJumpArmed = true;
   }
@@ -444,6 +615,7 @@ export struct ReaderTocPanel {
     this.quickJumpInputVisible = false;
     this.quickJumpDraft = '';
     this.quickJumpArmed = false;
+    this.expandVolumeOf(chapterNumber - 1);
     this.scrollToChapter(chapterNumber - 1, ScrollAlign.CENTER);
   }
 
@@ -452,24 +624,37 @@ export struct ReaderTocPanel {
   private updateScrollbarPosition(start: number, end: number): void {
     const localStart = Math.max(0, start);
     this.firstVisibleGlobalIndex = this.globalIndex(localStart);
+    this.firstVisibleListIndex = this.isSearchActive() ? localStart : this.windowStart + localStart;
     this.visibleItemCount = Math.max(1, end - start + 1);
   }
 
+  /** 有卷收起且不在搜索时，滚动条按收起后的列表换算。 */
+  private scrollbarFolded(): boolean {
+    this.ensureDisplayOrder();
+    return this.displayOrder !== null && !this.isSearchActive();
+  }
+
+  private scrollbarTotal(): number {
+    return this.scrollbarFolded() ? this.displayCount() : this.databaseChapterCount;
+  }
+
   private shouldShowScrollbar(): boolean {
-    return this.listViewportHeight > 0 && this.databaseChapterCount > this.visibleItemCount;
+    return this.listViewportHeight > 0 && this.scrollbarTotal() > this.visibleItemCount;
   }
 
   private scrollbarThumbLength(): number {
-    return VirtualListScrollbar.thumbLength(this.listViewportHeight, this.databaseChapterCount,
+    return VirtualListScrollbar.thumbLength(this.listViewportHeight, this.scrollbarTotal(),
       this.visibleItemCount);
   }
 
   private scrollbarThumbOffset(): number {
     const thumbLength = this.scrollbarThumbLength();
-    const firstVisibleIndex = this.reverseOrder ?
-      this.databaseChapterCount - 1 - this.firstVisibleGlobalIndex : this.firstVisibleGlobalIndex;
+    const total = this.scrollbarTotal();
+    let firstVisibleIndex = this.reverseOrder ?
+      total - 1 - this.firstVisibleGlobalIndex : this.firstVisibleGlobalIndex;
+    if (this.scrollbarFolded()) firstVisibleIndex = this.displayIndexOf(this.firstVisibleGlobalIndex);
     return VirtualListScrollbar.thumbOffset(this.listViewportHeight, thumbLength,
-      this.databaseChapterCount, firstVisibleIndex, this.visibleItemCount);
+      total, firstVisibleIndex, this.visibleItemCount);
   }
 
   private displayedScrollbarThumbOffset(): number {
@@ -526,9 +711,11 @@ export struct ReaderTocPanel {
     const offset = VirtualListScrollbar.clampThumbOffset(this.listViewportHeight, thumbLength,
       pointerY - this.scrollbarPointerAnchor);
     this.scrollbarDragOffset = offset;
+    const total = this.scrollbarTotal();
     const targetIndex = VirtualListScrollbar.firstVisibleIndex(this.listViewportHeight, thumbLength,
-      this.databaseChapterCount, this.visibleItemCount, offset);
-    const targetChapterIndex = this.reverseOrder ? this.databaseChapterCount - 1 - targetIndex : targetIndex;
+      total, this.visibleItemCount, offset);
+    const targetChapterIndex = this.scrollbarFolded() ? this.canonicalAtDisplayIndex(targetIndex) :
+      (this.reverseOrder ? total - 1 - targetIndex : targetIndex);
     this.firstVisibleGlobalIndex = targetChapterIndex;
     if (this.scrollbarDragging) {
       this.queueScrollbarTarget(targetChapterIndex, TOC_SCROLLBAR_DRAG_UPDATE_INTERVAL_MS);
@@ -586,6 +773,55 @@ export struct ReaderTocPanel {
         if (requestSerial === this.positionRequestSerial) this.positioning = false;
       }
     }, 0);
+  }
+
+  // ---------------------------------------------------------------- 去顶部 / 去底部
+
+  /** 当前列表的行数：搜索时是结果数，否则是收起后的列表。 */
+  private edgeJumpTotal(): number {
+    return this.isSearchActive() ? this.searchChapterIndexes.length : this.displayCount();
+  }
+
+  /** 列表超过约 3 屏才显示；拖滚动条、搜索框还没出结果时不显示。 */
+  private shouldShowEdgeJump(): boolean {
+    if (this.listViewportHeight <= 0 || this.scrollbarDragging) return false;
+    if (this.searchVisible && !this.searchResultActive) return false;
+    return this.edgeJumpTotal() > Math.max(1, this.visibleItemCount) * 3;
+  }
+
+  /**
+   * 手指上滑过就去底部、下滑过就去顶部；还没滑过时第一屏中点在前半段去底部，否则去顶部。
+   * 顶部、底部指列表在屏幕上的两端，倒序时顶部是最新章。
+   */
+  private edgeJumpGoesDown(): boolean {
+    if (this.edgeJumpDirection !== 0) return this.edgeJumpDirection > 0;
+    return this.firstVisibleListIndex + this.visibleItemCount / 2 < this.edgeJumpTotal() / 2;
+  }
+
+  private trackEdgeJumpDirection(delta: number, state: ScrollState): void {
+    if (state !== ScrollState.Scroll || Math.abs(delta) < 1) return;
+    const direction = delta > 0 ? 1 : -1;
+    if (direction !== this.edgeJumpDirection) this.edgeJumpDirection = direction;
+  }
+
+  private jumpToListEdge(toBottom: boolean): void {
+    // 到了一端，按钮换成回另一端。
+    this.edgeJumpDirection = toBottom ? -1 : 1;
+    if (this.isSearchActive()) {
+      const count = this.searchChapterIndexes.length;
+      if (count === 0) return;
+      try {
+        this.tocScroller.scrollToIndex(toBottom ? count - 1 : 0, false, toBottom ? ScrollAlign.END : ScrollAlign.START);
+      } catch (e) {
+        console.warn('目录搜索结果去顶部/底部失败:', e);
+      }
+      return;
+    }
+    const count = this.displayCount();
+    if (count === 0) return;
+    // 和拖滚动条一样直接换窗口再定位，不经过中间的章节。
+    const target = this.canonicalAtDisplayIndex(toBottom ? count - 1 : 0);
+    this.scrollToChapter(target, toBottom ? ScrollAlign.END : ScrollAlign.START, false);
   }
 
   private nearestSearchResultIndex(targetIndex: number): number {
@@ -751,6 +987,80 @@ export struct ReaderTocPanel {
     };
   }
 
+  // ---------------------------------------------------------------- 笔记（划线）
+
+  private selectNoteTab(): void {
+    this.cancelBookmarkMultiSelect();
+    this.tab = 2;
+    this.reloadNoteItems();
+  }
+
+  private reloadNoteItems(): void {
+    this.noteItems = this.annotationsProvider().slice().sort((left: BookAnnotation, right: BookAnnotation): number =>
+      left.chapterIndex - right.chapterIndex || left.start - right.start || left.createTime - right.createTime);
+  }
+
+  private noteKey(annotation: BookAnnotation): string {
+    return `n${annotation.id}`;
+  }
+
+  private isNoteDissolving(annotation: BookAnnotation): boolean {
+    return this.dissolvingNoteKeys.length > 0 && this.dissolvingNoteKeys.indexOf(this.noteKey(annotation)) >= 0;
+  }
+
+  private noteDeleteParticles(): ListDissolveParticles {
+    const particles = new ListDissolveParticles();
+    particles.rootId = 'reader_note_list_root';
+    particles.colors = [this.accentColor, this.textColor, this.subTextColor];
+    particles.elementIdOf = (key: string): string => `reader_note_card_${key}`;
+    particles.show = (bursts: DeleteParticleBurst[]): void => {
+      this.deleteParticleBursts = [...this.deleteParticleBursts, ...bursts];
+    };
+    particles.hide = (ids: number[]): void => {
+      this.deleteParticleBursts = this.deleteParticleBursts.filter((burst: DeleteParticleBurst) => ids.indexOf(burst.id) < 0);
+    };
+    return particles;
+  }
+
+  private async deleteNote(annotation: BookAnnotation): Promise<void> {
+    const keys = [this.noteKey(annotation)];
+    const fade = ListDissolve.fadeOut(this.getUIContext(), keys, (key: string) => {
+      this.dissolvingNoteKeys = [...this.dissolvingNoteKeys, key];
+    }, this.noteDeleteParticles());
+    const deleted = await this.onDeleteAnnotation(annotation);
+    if (!deleted) {
+      this.dissolvingNoteKeys = ListDissolve.without(this.dissolvingNoteKeys, keys);
+      HdsFeedback.showToast('删除划线失败');
+      return;
+    }
+    await fade;
+    ListDissolve.commit(this.getUIContext(), () => {
+      this.noteItems = this.noteItems.filter((item: BookAnnotation) => item.id !== annotation.id);
+    }, () => {
+      this.dissolvingNoteKeys = ListDissolve.without(this.dissolvingNoteKeys, keys);
+    });
+    HdsFeedback.showToast('划线已删除');
+  }
+
+  private noteSwipeActions(annotation: BookAnnotation): HdsSwipeActionOptions {
+    return {
+      icons: [
+        {
+          icon: new SymbolGlyphModifier($r('sys.symbol.trash')),
+          backgroundColor: ThemeRuntime.dangerColor(this.appDarkMode),
+          iconOptions: { accessibilityText: '删除划线' },
+          onAction: () => {
+            this.deleteNote(annotation);
+          }
+        }
+      ]
+    };
+  }
+
+  private withAlpha(color: string, alphaHex: string): string {
+    return `#${alphaHex}${BookAnnotationStyles.normalizeColor(color).substring(1)}`;
+  }
+
   // ---------------------------------------------------------------- 界面
 
   build() {
@@ -825,6 +1135,7 @@ export struct ReaderTocPanel {
           this.tab = 1;
           this.onLoadBookmarks();
         })
+        this.tabButton('笔记', 2, () => this.selectNoteTab())
       }
       .width('calc(100% - 40vp)')
       .height(44)
@@ -836,9 +1147,12 @@ export struct ReaderTocPanel {
       if (this.tab === 0) {
         this.tocSummary()
         this.chapterList()
-      } else {
+      } else if (this.tab === 1) {
         this.bookmarkSummary()
         this.bookmarkList()
+      } else {
+        this.noteSummary()
+        this.noteList()
       }
     }
     .width('100%')
@@ -1083,16 +1397,40 @@ export struct ReaderTocPanel {
         ForEach(this.visibleChapters, (chapter: BookChapter) => {
           ListItem() {
             Column() {
-            if (BookChapter.volumeTitleOf(chapter)) {
-              Text(BookChapter.volumeTitleOf(chapter))
-                .fontSize(AppFontSize.BODY)
-                .fontWeight(FontWeight.Medium)
-                .fontColor(this.subTextColor)
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-                .width('100%')
-                .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.SM })
+            if (this.volumeHeadOf(chapter) >= 0) {
+              Row({ space: AppSpacing.SM }) {
+                Text(BookChapter.volumeTitleOf(this.chapters[this.volumeHeadOf(chapter)]))
+                  .fontSize(AppFontSize.BODY)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(this.isVolumeCollapsed(this.volumeHeadOf(chapter)) &&
+                    this.volumeContainsCurrent(this.volumeHeadOf(chapter)) ? this.accentColor : this.subTextColor)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .layoutWeight(1)
+                if (!this.isSearchActive()) {
+                  if (this.isVolumeCollapsed(this.volumeHeadOf(chapter))) {
+                    Text(`${this.volumeChapterCount(this.volumeHeadOf(chapter))} 章`)
+                      .fontSize(AppFontSize.CAPTION)
+                      .fontColor(this.subTextColor)
+                  }
+                  SymbolGlyph($r('sys.symbol.chevron_down'))
+                    .fontSize(14)
+                    .fontColor([this.subTextColor])
+                    .rotate({ angle: this.isVolumeCollapsed(this.volumeHeadOf(chapter)) ? -90 : 0 })
+                    .animation({ duration: 200, curve: Curve.FastOutSlowIn })
+                }
+              }
+              .width('100%')
+              .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG,
+                bottom: this.isVolumeCollapsed(this.volumeHeadOf(chapter)) ? AppSpacing.LG : AppSpacing.SM })
+              .border({ width: { bottom: this.isVolumeCollapsed(this.volumeHeadOf(chapter)) ? 0.5 : 0 },
+                color: ThemeRuntime.softFillColor(this.dark) })
+              .accessibilityText(this.isVolumeCollapsed(this.volumeHeadOf(chapter)) ? '展开本卷' : '收起本卷')
+              .onClick(() => this.toggleVolume(this.volumeHeadOf(chapter)))
+              .gesture(LongPressGesture({ repeat: false })
+                .onAction(() => this.toggleAllVolumes(this.volumeHeadOf(chapter))))
             }
+            if (!this.isVolumeCollapsed(this.volumeHeadOf(chapter))) {
             Row({ space: AppSpacing.MD }) {
               Text(chapter.index === this.currentChapterIndex ? '•' : '·')
                 .fontSize(chapter.index === this.currentChapterIndex ? 22 : 18)
@@ -1126,6 +1464,7 @@ export struct ReaderTocPanel {
             .border({ width: { bottom: 0.5 }, color: ThemeRuntime.softFillColor(this.dark) })
             .onClick(() => this.onJumpToChapter(chapter.index))
             }
+            }
           }
         }, (chapter: BookChapter) =>
           `${this.orderRevision}_${chapter.index}_${chapter.url || chapter.title}`)
@@ -1135,16 +1474,43 @@ export struct ReaderTocPanel {
       .height('100%')
       .scrollBar(BarState.Off)
       .onScrollIndex((start: number, end: number) => this.updateScrollbarPosition(start, end))
+      .onDidScroll((delta: number, state: ScrollState) => this.trackEdgeJumpDirection(delta, state))
       .onReachStart(() => this.loadPreviousPage())
       .onReachEnd(() => this.loadNextPage())
 
       this.virtualScrollbar()
+      this.edgeJumpButton()
     }
     .layoutWeight(1)
     .width('100%')
     .onAreaChange((_oldValue: Area, newValue: Area) => {
       this.listViewportHeight = Number(newValue.height);
     })
+  }
+
+  @Builder
+  edgeJumpButton() {
+    if (this.shouldShowEdgeJump()) {
+      ImmersiveBackButton({
+        icon: this.edgeJumpGoesDown() ? $r('sys.symbol.arrow_down_to_line') : $r('sys.symbol.arrow_up_to_line'),
+        iconOffsetX: 0,
+        iconSize: 20,
+        iconColor: this.accentColor,
+        darkMode: this.dark,
+        buttonSize: 40,
+        containerWidth: 40,
+        containerHeight: 40,
+        startInset: 0,
+        materialScale: 0.83,
+        compactLayout: true,
+        accessibilityLabel: this.edgeJumpGoesDown() ? '去底部' : '去顶部',
+        onBack: () => this.jumpToListEdge(this.edgeJumpGoesDown())
+      })
+        // 让出右侧 24vp 宽的滚动条触控区。
+        .position({ right: 28, bottom: AppSpacing.LG })
+        .zIndex(11)
+        .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.FastOutSlowIn }))
+    }
   }
 
   @Builder
@@ -1314,7 +1680,7 @@ export struct ReaderTocPanel {
           .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor)
       }
-      Text(bookmark.content || '已保存阅读位置')
+      Text(bookmarkPreviewText(bookmark.content) || '已保存阅读位置')
         .fontSize(AppFontSize.CAPTION)
         .fontColor(this.subTextColor)
         .maxLines(2)
@@ -1373,5 +1739,156 @@ export struct ReaderTocPanel {
     .alignItems(HorizontalAlign.Center)
     .backgroundColor(color)
     .onClick(action)
+  }
+
+  @Builder
+  noteSummary() {
+    Row() {
+      Text(`${this.noteItems.length} 条划线`)
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.subTextColor)
+        .layoutWeight(1)
+    }
+    .width('100%')
+    .padding({ left: AppSpacing.XXL, right: AppSpacing.XXL, top: AppSpacing.XL, bottom: AppSpacing.MD })
+  }
+
+  @Builder
+  noteList() {
+    // 粒子层与空状态、列表放在同一层：删掉最后一条划线切到空状态时，颗粒还要飘完。
+    Stack() {
+      if (this.noteItems.length === 0) {
+        Column({ space: AppSpacing.LG }) {
+          SymbolGlyph($r('sys.symbol.square_and_pencil'))
+            .fontSize(34)
+            .fontColor([this.subTextColor])
+          Text('暂无划线')
+            .fontSize(AppFontSize.BODY_LARGE)
+            .fontColor(this.subTextColor)
+          Text('长按正文选中文字，点“划线”或“笔记”')
+            .fontSize(AppFontSize.CAPTION)
+            .fontColor(this.subTextColor)
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+      } else {
+        List({ space: 0, scroller: this.noteScroller }) {
+          ForEach(this.noteItems, (annotation: BookAnnotation) => {
+            if (deviceInfo.sdkApiVersion >= 26) {
+              HdsListItem({
+                customItemBuilder: () => {
+                  this.noteCard(annotation)
+                },
+                swipeActionOptions: this.noteSwipeActions(annotation)
+              })
+            } else {
+              ListItem() {
+                this.noteCard(annotation)
+              }
+              .width('100%')
+              .clip(true)
+              .swipeAction({
+                end: {
+                  builder: () => {
+                    this.noteFallbackSwipeActions(annotation)
+                  },
+                  actionAreaDistance: 64,
+                  onAction: () => {
+                    this.deleteNote(annotation);
+                  }
+                },
+                edgeEffect: SwipeEdgeEffect.Spring
+              })
+            }
+          }, (annotation: BookAnnotation) => `${annotation.id}_${annotation.updateTime}`)
+        }
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .width('100%')
+        .height('100%')
+        .clip(true)
+        .scrollBar(BarState.Auto)
+        .scrollBarColor(this.dark ? '#668A8F98' : '#667A6F63')
+      }
+
+      if (this.deleteParticleBursts.length > 0) {
+        DeleteParticleLayer({ bursts: this.deleteParticleBursts })
+      }
+    }
+    .id('reader_note_list_root')
+    .layoutWeight(1)
+    .width('100%')
+  }
+
+  @Builder
+  noteCard(annotation: BookAnnotation) {
+    Column({ space: AppSpacing.XS }) {
+      Text(annotation.quote)
+        .fontSize(AppFontSize.BODY)
+        .lineHeight(24)
+        .fontColor(annotation.style === BookAnnotationStyles.TEXT ? annotation.color : this.textColor)
+        .backgroundColor(annotation.style === BookAnnotationStyles.BACKGROUND ?
+          this.withAlpha(annotation.color, '40') : Color.Transparent)
+        .decoration({
+          type: annotation.style === BookAnnotationStyles.SOLID || annotation.style === BookAnnotationStyles.WAVY ||
+            annotation.style === BookAnnotationStyles.DASHED ? TextDecorationType.Underline : TextDecorationType.None,
+          color: annotation.color,
+          style: annotation.style === BookAnnotationStyles.WAVY ? TextDecorationStyle.WAVY :
+            (annotation.style === BookAnnotationStyles.DASHED ? TextDecorationStyle.DASHED : TextDecorationStyle.SOLID)
+        })
+        .maxLines(4)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+      if (annotation.note.trim()) {
+        Text(annotation.note.trim())
+          .fontSize(AppFontSize.CAPTION)
+          .lineHeight(20)
+          .fontColor(this.subTextColor)
+          .maxLines(3)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .padding({ left: AppSpacing.MD })
+          .border({ width: { left: 2 }, color: annotation.color })
+          .margin({ top: AppSpacing.XS })
+      }
+      Row({ space: AppSpacing.MD }) {
+        Text(annotation.chapterName || `第 ${annotation.chapterIndex + 1} 章`)
+          .fontSize(AppFontSize.MICRO)
+          .fontColor(this.subTextColor)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        if (this.annotationMissing(annotation)) {
+          Text('原文已变化')
+            .fontSize(AppFontSize.MICRO)
+            .fontColor(ThemeRuntime.dangerColor(this.appDarkMode))
+        }
+        Text(this.formatBookmarkTime(annotation.updateTime || annotation.createTime))
+          .fontSize(AppFontSize.MICRO)
+          .fontColor(this.subTextColor)
+      }
+      .width('100%')
+      .margin({ top: AppSpacing.XS })
+    }
+    .width('100%')
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
+    .border({ width: { bottom: 0.5 }, color: ThemeRuntime.softFillColor(this.dark) })
+    .opacity(ListDissolve.opacity(this.isNoteDissolving(annotation)))
+    .scale(ListDissolve.scale(this.isNoteDissolving(annotation)))
+    .blur(ListDissolve.blur(this.isNoteDissolving(annotation)))
+    .hitTestBehavior(this.isNoteDissolving(annotation) ? HitTestMode.None : HitTestMode.Default)
+    .id(`reader_note_card_${this.noteKey(annotation)}`)
+    .onClick(() => this.onJumpToAnnotation(annotation))
+  }
+
+  @Builder
+  noteFallbackSwipeActions(annotation: BookAnnotation) {
+    Row() {
+      this.swipeActionButton($r('sys.symbol.trash'), '删除', ThemeRuntime.dangerColor(this.appDarkMode), () => {
+        this.deleteNote(annotation);
+      })
+    }
+    .height('100%')
   }
 }

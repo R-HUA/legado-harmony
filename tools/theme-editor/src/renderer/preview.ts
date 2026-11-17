@@ -2,10 +2,15 @@
 // 阅读角饰尺寸取 ReaderThemeDecorationLayout（短边 × 0.36，夹在 112–260），朗读面板的分层取 TtsPanelThemeBackground。
 import { assetFontFamily, assetUrl, h, project, S, type Mode } from './state.ts';
 import { baseTheme, bubbleLabel, effective, GENERIC_BUBBLES, type Effective } from './tokens.ts';
-import { cssColor, luminance } from './colors.ts';
+import { cssColor, luminance, withAlpha } from './colors.ts';
 import { NAV_TABS, EXTRA_NAV_TABS } from './sections.ts';
+import { frameAspect, frameSettingsOf, frameSpanStyle, tintedUrl } from './frameStretch.ts';
+import { commentImageSettingsOf, imageBubble } from './commentStretch.ts';
+import { bookShelfFrameFor, commentBubbleHasImage } from '../../../../entry/src/main/ets/theme/share/ThemePackageFormat.ts';
 
 export const PHONE_W = 360;
+/** 预览正文的行高倍数，同 styles.css 的 .reader .content。 */
+const READER_LINE_HEIGHT = 1.8;
 export const PHONE_H = 780;
 const ORNAMENT = Math.max(112, Math.min(260, PHONE_W * 0.36));
 const ORNAMENT_INSET = Math.max(8, Math.min(22, PHONE_W * 0.025));
@@ -58,15 +63,49 @@ function statusBar(darkContent: boolean): HTMLElement {
     h('span', {}, '9:41'), h('span', { class: 'sb-icons' }, h('i'), h('i'), h('b')));
 }
 
+/**
+ * 动图取景记下的显示区域（book.coverCrops、book.shelfFolderCrop、homeBackdrop.lightCrop / darkCrop）换成 CSS，
+ * 效果同应用的 ThemeCroppedImage：区域等比盖满、居中、裁掉多余。区域不属于这张图时返回空串。
+ */
+function cropStyle(crop: any, ref: string): string {
+  if (!crop || !ref || crop.image !== ref) return '';
+  const { x, y, width, height, imageWidth, imageHeight } = crop;
+  if (!(imageWidth > 0 && imageHeight > 0 && width > 0 && height > 0)) return '';
+  const pct = (value: number, total: number): string => `${Math.max(0, value / total * 100).toFixed(4)}%`;
+  return `object-fit:cover;object-view-box:inset(${pct(y, imageHeight)} ${pct(imageWidth - x - width, imageWidth)} ` +
+    `${pct(imageHeight - y - height, imageHeight)} ${pct(x, imageWidth)});`;
+}
+
+function coverCropStyle(crops: any, ref: string): string {
+  const list: any[] = Array.isArray(crops) ? crops : [];
+  return cropStyle(list.find((crop) => crop && crop.image === ref), ref);
+}
+
+/** 正在画的那块屏幕是浅色还是深色：renderScreen 一进来就设好，书架上的封面按它选浅色或深色那套。 */
+let screenMode: Mode = 'light';
+
+/**
+ * 某个模式下显示的封面和对应的显示区域，同应用的 bookCoversFor：深色优先用 coversDark，没有就用 covers；
+ * 只填了深色那套时浅色也用它。
+ */
+function coversFor(book: any, mode: Mode): { covers: string[]; crops: any } {
+  const usable = (list: any): string[] => (Array.isArray(list) ? list : []).filter((ref: string) => assetUrl(ref));
+  const light = usable(book.covers);
+  const dark = usable(book.coversDark);
+  const useDark = mode === 'dark' ? dark.length > 0 : light.length === 0;
+  return useDark ? { covers: dark, crops: book.coverCropsDark } : { covers: light, crops: book.coverCrops };
+}
+
 const BOOKS: [string, string][] = [['山海拾遗', '读到 12%'], ['夜航船', '读到 58%'], ['长安客', '未读'], ['北窗', '读到 3%'], ['雾港来信', '更新 2 章']];
 
 function coverTile(index: number, title: string): HTMLElement {
   const book = project().parts.book || {};
-  const covers: string[] = (book.covers || []).filter((ref: string) => assetUrl(ref));
-  const frame = assetUrl(book.shelfFrame);
+  const { covers, crops } = coversFor(book, screenMode);
+  const frame = assetUrl(bookShelfFrameFor(book, screenMode === 'dark'));
   const tile = h('div', { class: 'bk', 'data-sec': 'book' });
   if (covers.length) {
-    tile.append(h('img', { class: 'cv', src: assetUrl(covers[index % covers.length]), alt: '' }), h('div', { class: 'ttl' }, title));
+    const ref = covers[index % covers.length];
+    tile.append(h('img', { class: 'cv', src: assetUrl(ref), alt: '', style: coverCropStyle(crops, ref) }), h('div', { class: 'ttl' }, title));
   } else if (usesBaseArt()) {
     tile.append(placeholder(`沿用「${baseTheme().name}」封面`, 'fill'));
   } else {
@@ -79,7 +118,17 @@ function coverTile(index: number, title: string): HTMLElement {
 /** 底栏一个页签的图标：SVG 用遮罩按文字色着色，位图原样显示，和应用一致。 */
 function navIcon(key: string, selected: boolean): HTMLElement {
   const nav = project().parts.navigation || {};
-  const ref = (selected && nav[`${key}Selected`]) || nav[key] || '';
+  let normal = nav[key] || '';
+  let active = nav[`${key}Selected`] || '';
+  // 深色那套优先；给了深色普通图标却没给深色选中态时，选中也用深色普通图标（同应用 navigationIcon）。
+  const dark = screenMode === 'dark' && nav.bookshelf ? project().parts.navigationDark || {} : {};
+  if (dark[key]) {
+    normal = dark[key];
+    active = dark[`${key}Selected`] || '';
+  } else if (dark[`${key}Selected`]) {
+    active = dark[`${key}Selected`];
+  }
+  const ref = (selected && active) || normal || '';
   const url = assetUrl(ref);
   if (url && project().assets.get(ref)?.kind === 'image') return h('img', { class: 'ico', src: url, alt: '' });
   return h('i', { class: 'ico', style: `--m:url("${url || svgUrl(DEFAULT_NAV[key])}")` });
@@ -89,13 +138,17 @@ function navIcon(key: string, selected: boolean): HTMLElement {
  * 首页背景（HomeThemeBackdrop）：贴顶、4:5 铺满宽度，向下淡成页面底色。书架整张显示；发现、我的只衬标题区，
  * 高度和不透明度取各页传给组件的值，渐变停点照搬组件。浅深色不互相借用。
  */
-function homeBackdrop(mode: Mode, e: Effective, visibleHeight: number, strength: number): HTMLElement | null {
-  const url = assetUrl((project().parts.homeBackdrop || {})[mode]);
+function homeBackdrop(mode: Mode, e: Effective, visibleHeight: number, strength: number, shelfLayout = ''): HTMLElement | null {
+  // 书架画面传当前布局：这种布局单独配了图就用它，否则和其他页签一样用通用那张（同应用的 homeBackdrop）。
+  const shelf = shelfLayout ? (project().parts.shelfBackdrop || {})[shelfLayout] || {} : {};
+  const parts = assetUrl(shelf[mode]) ? shelf : project().parts.homeBackdrop || {};
+  const url = assetUrl(parts[mode]);
   if (!url) return null;
+  const crop = cropStyle(parts[`${mode}Crop`], parts[mode]);
   const stops = mode === 'dark' ? [[0.25, 0], [0.55, 38], [0.9, 70], [1, 100]] : [[0.1, 0], [0.3, 38], [0.85, 72], [1, 100]];
   const gradient = stops.map(([a, at]) => `color-mix(in srgb, ${e.c.pageColor} ${Math.round(a * 100)}%, transparent) ${at}%`).join(', ');
   return h('div', { class: 'hbg', 'data-sec': 'homeBackdrop', style: visibleHeight ? `height:${visibleHeight}px` : 'aspect-ratio:4 / 5' },
-    h('img', { src: url, alt: '', style: `opacity:${strength}` }), h('i', { style: `background:linear-gradient(${gradient})` }));
+    h('img', { src: url, alt: '', style: `opacity:${strength};${crop}` }), h('i', { style: `background:linear-gradient(${gradient})` }));
 }
 
 /** 首页三个页签共用的骨架：背景、状态栏、内容、底栏（当前页签用选中态图标）。 */
@@ -119,8 +172,16 @@ function homeScreen(mode: Mode, e: Effective, tab: number, cls: string, backdrop
 }
 
 function folderArt(): HTMLElement {
-  const folder = assetUrl((project().parts.book || {}).shelfFolder);
-  if (folder) return h('img', { class: 'cv', src: folder, alt: '' });
+  const book = project().parts.book || {};
+  // 同应用的 bookFolderFor：深色优先用深色那张，没有就用默认的；只填了深色那张时浅色也用它。
+  const light = assetUrl(book.shelfFolder) ? book.shelfFolder : '';
+  const dark = assetUrl(book.shelfFolderDark) ? book.shelfFolderDark : '';
+  const useDark = screenMode === 'dark' ? !!dark : !light;
+  const ref = useDark ? dark : light;
+  if (ref) {
+    return h('img', { class: 'cv', src: assetUrl(ref), alt: '',
+      style: cropStyle(useDark ? book.shelfFolderCropDark : book.shelfFolderCrop, ref) });
+  }
   return usesBaseArt() ? placeholder(`沿用「${baseTheme().name}」文件夹`, 'fill') : h('div', { class: 'plain folder' }, h('b', {}, '分组'));
 }
 
@@ -173,15 +234,24 @@ function hardcover(index: number, title: string, scale = 1, lean = 0, art?: HTML
   return book;
 }
 
-/** 陪伴：问候、继续阅读大卡（立体书）、阅读小记，下面是错落的精装书网格；分组是文件夹插画做封面的精装书。 */
+/**
+ * 陪伴：问候、继续阅读大卡（立体书）、阅读小记，下面是错落的精装书网格；分组是文件夹插画做封面的精装书。
+ * 配色跟应用 BookshelfPage 的 shelfCompanionGreeting / shelfCompanionHeroCard 与 ShelfReadingNoteCard 一致：
+ * 问候大字、书名、“继续阅读”、小记标题与今日分钟数用强调色，“继续阅读”是强调色 10% 底的胶囊（不用按钮色）。
+ */
 function shelfCompanion(): HTMLElement[] {
   const hero = h('div', { class: 'cp-hero', 'data-sec': 'colors' }, hardcover(1, '夜航船'),
-    h('div', { class: 'cp-info' }, h('small', {}, '继续阅读'), h('b', {}, '夜航船'), h('span', {}, '第十七章 · 灯下'),
-      h('div', { class: 'bar' }, h('i')), h('span', { class: 'go' }, '继续阅读')));
+    h('div', { class: 'cp-info' }, h('b', {}, '夜航船'), h('small', {}, '张岱 著'), h('i', { class: 'gap' }),
+      h('small', {}, '上次读到 · 今天 20:50'), h('span', { class: 'ch' }, '68/524 · 第十七章 灯下'),
+      h('span', { class: 'go' }, '继续阅读 →')));
   const days = [22, 40, 15, 0, 55, 30, 46];
   const note = h('div', { class: 'cp-note', 'data-sec': 'colors' },
-    h('div', {}, h('small', {}, '阅读小记'), h('b', {}, '46 分钟'), h('span', {}, '今日 · 已连续 5 天')),
-    h('div', { class: 'cp-bars' }, ...days.map((m, i) => h('i', { class: i === days.length - 1 ? 'today' : '', style: `height:${Math.max(3, m)}%` }))));
+    h('div', { class: 'cp-note-hd' }, h('b', {}, '阅读小记'), h('span', {}, '阅读统计 ›')),
+    h('div', { class: 'cp-note-bd' },
+      h('div', { class: 'cp-today' }, h('small', {}, '今日阅读'), h('div', {}, h('b', {}, '46'), h('span', {}, '分钟'))),
+      h('div', { class: 'cp-trend' },
+        h('div', { class: 'cp-bars' }, ...days.map((m, i) => h('i', { class: i === days.length - 1 ? 'today' : '', style: `height:${Math.max(8, m * 1.6)}%` }))),
+        h('span', {}, '近 7 天 3小时28分 · 已连续读了 5 天'))));
   const scales = [1, 0.94, 0.9, 0.97, 0.88];
   const leans = [0, -2, 0, 2.5, 0];
   const grid = h('div', { class: 'grid cp-grid' });
@@ -190,16 +260,16 @@ function shelfCompanion(): HTMLElement[] {
   grid.append(h('div', { class: 'cell' }, hardcover(0, '收藏夹', 1, 0, folderArt()), h('div', { class: 'gname' }, '收藏夹'), h('div', { class: 'gsub' }, '8 本')));
   return [
     h('div', { class: 'hd cp-top' }, h('span'), h('span', { class: 'hd-acts' }, h('i', { class: 'folder-ico' }), h('i', { class: 'dots' }))),
-    h('div', { class: 'cp-greet', 'data-sec': 'colors' }, h('b', {}, '晚上好，慢慢读。'), h('span', {}, '夜里读书，最是安静。')),
+    h('div', { class: 'cp-greet', 'data-sec': 'colors' }, h('b', {}, '晚上好，慢慢读。'), h('span', {}, '泡杯茶，故事还在原处等你。')),
     hero, note,
-    h('div', { class: 'sec-title', 'data-sec': 'colors' }, '书架里，还有故事'),
+    h('div', { class: 'sec-title cp-sec', 'data-sec': 'colors' }, '书架里，还有故事', h('span', {}, `共 ${BOOKS.length} 本`)),
     grid];
 }
 
 function screenShelf(mode: Mode, e: Effective): HTMLElement {
   const layout = S.ui.shelfLayout;
   const content = layout === 'companion' ? shelfCompanion() : layout === 'tile' ? shelfTile() : shelfList(layout === 'loose');
-  return homeScreen(mode, e, 0, `shelf shelf-${layout}`, homeBackdrop(mode, e, 0, 1), ...content);
+  return homeScreen(mode, e, 0, `shelf shelf-${layout}`, homeBackdrop(mode, e, 0, 1, layout), ...content);
 }
 
 function screenExplore(mode: Mode, e: Effective): HTMLElement {
@@ -226,15 +296,24 @@ function screenMine(mode: Mode, e: Effective): HTMLElement {
     group(['书源管理', '同步与备份', '帮助']));
 }
 
-function emphasis(text: string, e: Effective): HTMLElement | string {
+function emphasis(text: string, e: Effective, fontPx: number = 19): HTMLElement | string {
   if (e.e.mode === 'none') return text;
   if (e.e.mode === 'bubble') {
-    const bubble = project().parts.bubble || {};
+    const bubble = e.b || {};
     const span = h('span', { class: 'em-bubble', 'data-sec': 'emphasis' });
     if (e.e.bubble === 'pack') {
       const cap = assetUrl(bubble.cap);
-      const frame = assetUrl(bubble.frame);
-      if (frame) span.style.cssText = `background-image:url("${frame}");background-size:100% 100%`;
+      const frameStyle = bubble.frame ?
+        frameSpanStyle(bubble.frame, frameSettingsOf(bubble, frameAspect(bubble.frame)), fontPx, e.e.color) : '';
+      if (frameStyle) {
+        // 同应用：边框按行画在文字外面，端饰在边框外侧。
+        const framed = h('span', { class: 'em-frame', style: frameStyle }, text);
+        const wrap = h('span', { class: 'em-framed', 'data-sec': 'emphasis', style: `color:${cssColor(e.e.textColor)}` });
+        if (cap) wrap.append(h('img', { class: 'bcap', src: cap, alt: '' }));
+        wrap.append(framed);
+        if (cap) wrap.append(h('img', { class: 'bcap r', src: cap, alt: '' }));
+        return wrap;
+      }
       if (cap) span.append(h('img', { class: 'bcap', src: cap, alt: '' }));
       span.append(text);
       if (cap) span.append(h('img', { class: 'bcap r', src: cap, alt: '' }));
@@ -247,6 +326,152 @@ function emphasis(text: string, e: Effective): HTMLElement | string {
   return h('span', { class: e.e.mode === 'highlight' ? 'em-highlight' : 'em-text', 'data-sec': 'emphasis' }, text);
 }
 
+/**
+ * 章节标题按主题的标题强调画（相当于读者选了“跟随主题”）：颜色写进 --p-em / --p-em-text 盖住正文强调的；
+ * 气泡样式自动时有标题气泡就用它，否则和正文强调同一套。
+ */
+function titleEmphasis(text: string, e: Effective, fontPx: number): HTMLElement | string {
+  const t = e.title;
+  if (!t.mode || t.mode === 'none') return text;
+  const color = t.color || e.e.color;
+  const textColor = t.textColor || e.e.textColor;
+  let bubble = e.e.bubble;
+  let art = e.b;
+  if (t.mode === 'bubble') {
+    const style = t.bubbleStyle;
+    if ((!style && e.tb) || (style && style.endsWith(':title'))) {
+      bubble = 'pack';
+      art = e.tb;
+    } else if (style && style !== 'emphasis') {
+      bubble = style;
+      art = null;
+    }
+  }
+  const view = { ...e, e: { ...e.e, mode: t.mode, bubble, color, textColor }, b: art } as Effective;
+  return h('span', { class: 'title-em', 'data-sec': 'title', style: `--p-em:${cssColor(color)};--p-em-text:${cssColor(textColor)}` },
+    emphasis(text, view, fontPx));
+}
+
+/** 两色按比例混合（#RRGGBB / #AARRGGBB，忽略透明度），同应用 ReaderRegexBubbleStyleResolver.mix。 */
+function mixColor(base: string, over: string, ratio: number): string {
+  const rgb = (hex: string): number[] => {
+    const v = (hex || '').replace('#', '').slice(-6);
+    return [0, 2, 4].map((i) => parseInt(v.substring(i, i + 2), 16) || 0);
+  };
+  const a = rgb(base);
+  const b = rgb(over);
+  return '#' + a.map((x, i) => Math.round(x + (b[i] - x) * ratio).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+const COMMENT_ORNAMENT_GLYPH: Record<string, string> = {
+  star: '✦', sparkle: '✧', dot: '●', moon: '☾', leaf: '❦', sprig: '❧', rose: '✿', paw: '❁', seal: '■',
+  diamond: '◆', pendant: '◇', scroll: '❍', cord: '—', signal: '▮', frame: '▢', sketch: '✎', postcard: '✉', folio: '❖'
+};
+
+/**
+ * 段评气泡的近似样子：包里写了的颜色、形状、角标照写；没写时包内气泡按强调底色推导（同应用），
+ * 内置气泡样式的配色表不在编辑器里，用中性灰示意，应用内按样式显示。
+ */
+function commentBubble(count: string, e: Effective, fontSize = 19): HTMLElement {
+  const t = e.comment;
+  const dark = e.mode === 'dark';
+  const paper = e.reader.backgroundColor;
+  let fill = '#8A9099';
+  let stroke = '#6F757E';
+  let text = '#FFFFFF';
+  let radius = '0.5em';
+  let title = '段评气泡：跟随气泡样式（应用内按样式显示）';
+  if (e.e.bubble === 'pack') {
+    fill = mixColor(paper, e.e.color, dark ? 0.3 : 0.18);
+    stroke = e.e.color;
+    text = e.e.textColor;
+    radius = '0.3em';
+    title = '段评气泡：跟随包内气泡的强调配色';
+  } else if (e.e.bubble === 'capsule' && !t.shape) {
+    fill = 'transparent';
+    stroke = withAlpha(e.reader.textColor, dark ? 140 : 115);
+    text = stroke;
+    radius = '0.4em';
+  }
+  if (t.shape === 'outline') {
+    fill = 'transparent';
+    stroke = t.stroke || withAlpha(e.reader.textColor, dark ? 140 : 115);
+    text = t.text || stroke;
+    radius = '0.4em';
+  } else {
+    if (t.shape === 'pill') radius = '0.66em';
+    else if (t.shape === 'rounded') radius = `${(t.radius >= 0 ? t.radius : 0.2) * 1.32}em`;
+    else if (t.shape === 'cut') radius = '0';
+    if (t.fill) fill = t.fill;
+    if (t.stroke) stroke = t.stroke;
+    if (t.text) text = t.text;
+  }
+  if (t.shape || t.fill || t.stroke || t.text || t.ornament) title = '段评气泡（包里的设置）';
+  const customOrnament = t.ornament === 'custom' && t.ornamentImage ?
+    { ref: t.ornamentImage, corner: t.ornamentCorner, size: t.ornamentSize, tint: t.ornamentColor } : null;
+  if (commentBubbleHasImage(t)) {
+    // 同应用：段评字号比正文小 5，气泡大小默认 80%。
+    const bubbleFont = Math.max(10, fontSize - 5) * 0.8;
+    const imageFill = t.fill || (e.e.bubble === 'capsule' ? e.e.color : fill);
+    return imageBubble(t.image, commentImageSettingsOf(t, frameAspect(t.image)), count, bubbleFont, text, imageFill, true,
+      customOrnament);
+  }
+  const span = h('span', {
+    class: `cmt${t.shape === 'cut' ? ' cut' : ''}`, 'data-sec': 'emphasis', title,
+    style: `background:${cssColor(fill)};border-color:${cssColor(stroke)};color:${cssColor(text)};border-radius:${radius}`
+  }, count);
+  const glyph = t.ornament && t.ornament !== 'none' ? COMMENT_ORNAMENT_GLYPH[t.ornament] : '';
+  if (glyph) span.append(h('i', { class: 'cmt-orn', style: `color:${cssColor(t.ornamentColor || stroke)}` }, glyph));
+  if (customOrnament && assetUrl(customOrnament.ref)) {
+    span.append(h('img', { class: 'cmt-orn-img', alt: '',
+      src: customOrnament.tint ? tintedUrl(assetUrl(customOrnament.ref), customOrnament.tint) : assetUrl(customOrnament.ref),
+      style: `width:${0.62 * (customOrnament.size > 0 ? customOrnament.size : 1) * 1.32}em;height:auto;` +
+        `${customOrnament.corner === 'topLeft' ? 'left:-.3em' : 'right:-.3em'};` +
+        `${customOrnament.corner === 'bottomRight' ? 'bottom:-.3em' : 'top:-.45em'}` }));
+  }
+  return span;
+}
+
+/**
+ * 章节标题连同章首饰图，尺寸同应用 ReaderV2ChapterHeadLayout：左侧时高 = 一行标题的行框（字号 × 1.25）× 倍数、
+ * 最宽占版心 30%；上方、下方时高 = 字号 × 0.9 × 倍数。序号行颜色要读者开了标题分段才生效，预览里染在“第十七章”上示意。
+ */
+function chapterTitle(e: Effective, fontPx: number, columnWidth: number): HTMLElement {
+  const head = e.head;
+  // 标题强调会给整个标题换文字色，这时序号行颜色不单独示意。
+  const plain = !e.title.mode || e.title.mode === 'none';
+  const title = h('h2', {}, head && head.numberColor && plain ?
+    h('span', {}, h('span', { style: `color:${cssColor(head.numberColor)}` }, '第十七章'), ' 灯下') :
+    titleEmphasis('第十七章 灯下', e, fontPx));
+  const url = head ? assetUrl(head.image) : '';
+  if (!head || !url) return title;
+  const scale = head.scale > 0 ? head.scale : 1;
+  const wrap = h('div', { class: `chapter-head ${head.placement || 'side'}`, 'data-sec': 'chapterHead' });
+  if (head.placement === 'top' || head.placement === 'bottom') {
+    const img = h('img', { src: url, alt: '', style: `height:${fontPx * 0.9 * scale}px;max-width:100%` });
+    if (head.placement === 'top') wrap.append(img, title);
+    else wrap.append(title, img);
+    return wrap;
+  }
+  wrap.append(h('img', { src: url, alt: '', style: `height:${fontPx * 1.25 * scale}px;max-width:${columnWidth * 0.3}px` }), title);
+  return wrap;
+}
+
+/**
+ * 首字装饰：方框高 = (行数 − 1) × 行距 + 1.04 个字号（同应用 ReaderV2Paginator.resolveDropCap），浮在段落左上角；
+ * 垫印章图时字高按字占比，只放大时字撑满方框。没设首字时返回 null。
+ */
+function dropCap(char: string, e: Effective, fontPx: number): HTMLElement | null {
+  const head = e.head;
+  if (!head || head.dropCapLines < 2) return null;
+  const box = (head.dropCapLines - 1) * fontPx * READER_LINE_HEIGHT + fontPx * 1.04;
+  const url = assetUrl(head.dropCapImage);
+  const size = url ? box * (head.dropCapRatio > 0 ? head.dropCapRatio : 0.62) : box / 1.04;
+  const style = `width:${box}px;height:${box}px;font-size:${size}px;margin-top:${fontPx * (READER_LINE_HEIGHT - 1.04) / 2}px;` +
+    (head.dropCapColor ? `color:${cssColor(head.dropCapColor)};` : '') + (url ? `background-image:url("${url}")` : '');
+  return h('span', { class: 'drop-cap', 'data-sec': 'chapterHead', style }, char);
+}
+
 function readerBody(e: Effective): HTMLElement {
   const r = e.reader;
   const p = project();
@@ -254,11 +479,19 @@ function readerBody(e: Effective): HTMLElement {
   if (r.source === 'pack' && r.mode === 'image') {
     const url = assetUrl(r.image);
     if (url) s.append(h('img', { class: 'bgimg', src: url, style: `object-fit:${r.imageFit === 'fill' ? 'fill' : r.imageFit}`, alt: '' }));
-  } else if (r.source === 'pack' && r.mode === 'ornaments') {
-    const style = `width:${ORNAMENT}px;height:${ORNAMENT}px`;
-    if (assetUrl(r.leading)) s.append(h('img', { class: 'orn l', src: assetUrl(r.leading), style: `${style};left:${ORNAMENT_INSET}px;top:${ORNAMENT_INSET}px`, alt: '' }));
-    if (assetUrl(r.trailing)) s.append(h('img', { class: 'orn t', src: assetUrl(r.trailing), style: `${style};right:${ORNAMENT_INSET}px;bottom:${ORNAMENT_INSET}px`, alt: '' }));
-  } else if (r.source === 'base-art') {
+  }
+  // 整图模式也可以带角饰，叠在整图上面。
+  if (r.source === 'pack' && (r.mode === 'ornaments' || r.mode === 'image')) {
+    // 同 ReaderThemeDecorationLayout.size：倍数乘在默认尺寸上，最大到短边 0.8；两角同一张图时右下角旋转 180°。
+    const sized = (scale: number): string => {
+      const size = scale === 1 ? ORNAMENT : Math.min(ORNAMENT * scale, PHONE_W * 0.8);
+      return `width:${size}px;height:${size}px`;
+    };
+    const mirrored = !!r.leading && r.trailing === r.leading;
+    if (assetUrl(r.leading)) s.append(h('img', { class: 'orn l', src: assetUrl(r.leading), style: `${sized(r.leadingScale)};left:${ORNAMENT_INSET}px;top:${ORNAMENT_INSET}px`, alt: '' }));
+    if (assetUrl(r.trailing)) s.append(h('img', { class: 'orn t', src: assetUrl(r.trailing), style: `${sized(r.trailingScale)};right:${ORNAMENT_INSET}px;bottom:${ORNAMENT_INSET}px${mirrored ? ';transform:rotate(180deg)' : ''}`, alt: '' }));
+  }
+  if (r.source === 'base-art') {
     const style = `width:${ORNAMENT}px;height:${ORNAMENT}px`;
     s.append(h('div', { class: 'orn-ph', style: `${style};left:${ORNAMENT_INSET}px;top:${ORNAMENT_INSET}px` }, `「${baseTheme().name}」角饰`));
     s.append(h('div', { class: 'orn-ph', style: `${style};right:${ORNAMENT_INSET}px;bottom:${ORNAMENT_INSET}px` }, '应用内显示'));
@@ -268,12 +501,17 @@ function readerBody(e: Effective): HTMLElement {
   const layout = p.layout || {};
   const fontSize = typeof layout.fontSize === 'number' && layout.fontSize >= 12 && layout.fontSize <= 40 ? layout.fontSize : 19;
   const margin = typeof layout.marginLeft === 'number' ? Math.max(8, Math.min(48, layout.marginLeft)) : 20;
-  const content = h('div', { class: 'content', style: `font-size:${fontSize}px;padding:6px ${margin}px` }, h('h2', {}, '第十七章 灯下'));
-  const p1 = h('p', {}, '船过石桥时，舱里的灯忽然暗了一下。老周把书合上，抬头看了看窗外的水色，');
-  p1.append(emphasis('“今晚风大，怕是要靠岸了。”', e));
+  const content = h('div', { class: 'content', style: `font-size:${fontSize}px;padding:6px ${margin}px` },
+    chapterTitle(e, Math.round(fontSize * 1.3), PHONE_W - margin * 2));
+  const p1 = h('p', {});
+  const cap = dropCap('船', e, fontSize);
+  if (cap) p1.append(cap);
+  p1.append(`${cap ? '' : '船'}过石桥时，舱里的灯忽然暗了一下。老周把书合上，抬头看了看窗外的水色，`);
+  p1.append(emphasis('“今晚风大，怕是要靠岸了。”', e, fontSize), commentBubble('23', e, fontSize));
   const p2 = h('p', {}, '阿遥没有应声，只把那页折了个角。她记得母亲说过，');
-  p2.append(emphasis('“夜里读书，读到哪儿就算到哪儿。”', e), '水声一阵紧过一阵，像是有人在船底翻书。');
-  const p3 = h('p', {}, '岸上的灯笼一盏一盏亮起来，映在河面上，碎成许多小小的金色鳞片。她伸手去碰，只碰到了凉。');
+  p2.append(emphasis('“夜里读书，读到哪儿就算到哪儿。”', e, fontSize), '水声一阵紧过一阵，像是有人在船底翻书。');
+  const p3 = h('p', {}, '岸上的灯笼一盏一盏亮起来，映在河面上，碎成许多小小的金色鳞片。她伸手去碰，只碰到了凉。',
+    commentBubble('6', e, fontSize));
   const p4 = h('p', {}, '老周又把书翻开，从折角的那一页读起。');
   content.append(p1, p2, p3, p4);
   s.append(content);
@@ -347,9 +585,10 @@ export function describe(): string[] {
   if (has(p.light && p.light.emphasis) || has(p.dark && p.dark.emphasis) || (p.bubble && p.bubble.cap)) out.push('正文强调');
   if (p.ttsPanel && (has(p.ttsPanel.light) || has(p.ttsPanel.dark))) out.push('朗读面板');
   if (p.navigation && has(p.navigation)) out.push('导航图标');
-  if (p.book && ((p.book.covers || []).length || p.book.shelfFrame || p.book.shelfFolder)) out.push('书籍素材');
+  if (p.book && ((p.book.covers || []).length || (p.book.coversDark || []).length || p.book.shelfFrame || p.book.shelfFrameDark || p.book.shelfFolder || p.book.shelfFolderDark)) out.push('书籍素材');
   if (p.startup && ((p.startup.light && p.startup.light.image) || (p.startup.dark && p.startup.dark.image))) out.push('启动封面');
   if (p.homeBackdrop && (p.homeBackdrop.light || p.homeBackdrop.dark)) out.push('首页背景');
+  if (Object.values(p.shelfBackdrop || {}).some((entry: any) => entry && (entry.light || entry.dark))) out.push('书架背景');
   if (p.logo) out.push('主题标识');
   if (p.typography && (p.typography.appFont || p.typography.appFontFamily)) out.push('界面字体');
   if (p.radius && Object.keys(p.radius).some((k) => typeof p.radius[k] === 'number')) out.push('圆角');
@@ -357,6 +596,7 @@ export function describe(): string[] {
 }
 
 export function renderScreen(mode: Mode): HTMLElement {
+  screenMode = mode;
   const e = effective(mode);
   const screen = S.ui.screen;
   const content = screen === 'reader' ? readerBody(e) : screen === 'tts' ? screenTts(e)

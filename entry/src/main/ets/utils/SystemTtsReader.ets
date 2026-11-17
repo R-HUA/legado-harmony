@@ -12,6 +12,7 @@ import { PlaybackLoudnessGain } from './PlaybackLoudnessGain';
 import { LocalTtsModel } from './localtts/LocalTtsModels';
 import { LocalTtsSelection } from './localtts/LocalTtsSelection';
 import { LocalTtsEngine } from './localtts/LocalTtsEngine';
+import { PcmTimeStretch } from './PcmTimeStretch';
 
 export interface TtsChunk {
   text: string;
@@ -816,7 +817,8 @@ export class SystemTtsReader {
     }
     const extraParams: Record<string, Object> = {};
     extraParams['queueMode'] = 0 as Object;
-    extraParams['speed'] = this.getTtsSpeed() as Object;
+    // 系统引擎语速只接受 0.5–2；更快的倍数在 completeSystemPcmChunk 里本地变速补上。
+    extraParams['speed'] = Math.min(2, this.getTtsSpeed()) as Object;
     extraParams['volume'] = 2 as Object;
     extraParams['pitch'] = 1 as Object;
     extraParams['languageContext'] = this.getTtsLanguage() as Object;
@@ -884,6 +886,9 @@ export class SystemTtsReader {
       this.schedulePcmOutputRelease();
     } else {
       this.pcmPlayer.stop();
+      // 自定义音色播放期间 httpReader 一直开着一条空转的输出流（见 TtsPcmAudioPlayer.keepOutputRunning），
+      // 不再接着读就要一起关掉。
+      this.httpReader.stop();
     }
     this.releaseSystemAudioSession();
     this.audioStarted = false;
@@ -1630,8 +1635,16 @@ export class SystemTtsReader {
         pcm, this.currentAudioSampleBit, this.currentAudioChannel, this.currentAudioType);
       const trimmedPcm = this.trimSystemPcmSilence(
         normalizedPcm, this.currentAudioSampleRate, this.currentFocusChunk.text);
-      playbackPcm = this.fadeSystemPcmEdges(trimmedPcm, this.currentAudioSampleRate);
+      const fadedPcm = this.fadeSystemPcmEdges(trimmedPcm, this.currentAudioSampleRate);
+      const speed = this.getTtsSpeed();
+      playbackPcm = speed > 2 ?
+        PcmTimeStretch.stretch16BitMono(fadedPcm, this.currentAudioSampleRate, speed / 2) : fadedPcm;
       if (playbackPcm.byteLength === 0) {
+        this.completionPending = false;
+        this.currentFocusAudioReceived = false;
+        if (this.retryWithoutPcmData(generation)) {
+          return;
+        }
         throw new Error('系统音色返回的PCM音频为空');
       }
     } catch (error) {
@@ -2154,7 +2167,8 @@ export class SystemTtsReader {
    * the requested range has nothing following it, so only that one still drops the comma.
    */
   private normalizeChunkForSpeech(text: string, protectTailPause: boolean = true): string {
-    const normalized = this.normalizeMathNotationForSpeech(this.replaceUnsafeSpeechCharacters(text || ''))
+    const normalized = this.stripDecorativeSpeechSymbols(
+      this.normalizeMathNotationForSpeech(this.replaceUnsafeSpeechCharacters(text || '')))
       .replace(/\r\n/g, '\n')
       .replace(/\s*\n+\s*/g, '。')
       .replace(/[ \t]{2,}/g, ' ')
@@ -2268,7 +2282,7 @@ export class SystemTtsReader {
             (denominator.length > 1 && denominator.charAt(0) === '0') ? match :
             `${numerator} over ${denominator}`;
         });
-      result = result.replace(/(\d+)\s*[×*]\s*(\d+)/g,
+      result = result.replace(/(\d+)\s*[×*＊]\s*(\d+)/g,
         (_match: string, left: string, right: string): string => `${left} times ${right}`);
       result = result.replace(/(\d+)\s*[÷]\s*(\d+)/g,
         (_match: string, left: string, right: string): string => `${left} divided by ${right}`);
@@ -2294,13 +2308,24 @@ export class SystemTtsReader {
         }
         return `${denominator}分之${numerator}`;
       });
-    result = result.replace(/(\d+)\s*[×*]\s*(\d+)/g,
+    result = result.replace(/(\d+)\s*[×*＊]\s*(\d+)/g,
       (_match: string, left: string, right: string): string => `${left}乘以${right}`);
     result = result.replace(/(\d+)\s*[÷]\s*(\d+)/g,
       (_match: string, left: string, right: string): string => `${left}除以${right}`);
     result = result.replace(/(\d+)\s*=\s*(\d+)/g,
       (_match: string, left: string, right: string): string => `${left}等于${right}`);
     return result;
+  }
+
+  /**
+   * Drop marker symbols that have no spoken meaning in prose: a "*" before a paragraph (scene
+   * break), "**强调**", "※注" or "★" bullets. The system engine skips them silently, but custom
+   * online/offline voices read them out as "星号". Runs after math normalization so "3*4" has
+   * already become "3乘以4". Only applied to the synthesizer text; chunk offsets are untouched.
+   */
+  private stripDecorativeSpeechSymbols(text: string): string {
+    if (!text) return '';
+    return text.replace(/[*＊※★☆◆◇■□●◎▲△▼▽♦♢❖✦✧]+/g, '');
   }
 
   /**
@@ -2358,7 +2383,7 @@ export class SystemTtsReader {
   private getTtsSpeed(): number {
     const value = AppStorage.get<number>('ttsSpeed');
     const optionValue = this.optionSpeed;
-    return Math.max(0.5, Math.min(2, optionValue === null ? (value === undefined ? 1 : value) : optionValue));
+    return Math.max(0.5, Math.min(3, optionValue === null ? (value === undefined ? 1 : value) : optionValue));
   }
 
   private getTtsOnline(): number {
@@ -2844,7 +2869,7 @@ export class SystemTtsReader {
 
   private findLastCloudBreak(text: string, from: number, to: number, strong: boolean): number {
     for (let index = Math.min(text.length, to) - 1; index >= from; index--) {
-      if (this.isCloudBreak(text.charAt(index), strong) && !this.isNumericDecimalPoint(text, index)) {
+      if (this.isCloudBreakAt(text, index, strong)) {
         return index + 1;
       }
     }
@@ -2853,11 +2878,39 @@ export class SystemTtsReader {
 
   private findFirstCloudBreak(text: string, from: number, to: number, strong: boolean): number {
     for (let index = Math.max(0, from); index < Math.min(text.length, to); index++) {
-      if (this.isCloudBreak(text.charAt(index), strong) && !this.isNumericDecimalPoint(text, index)) {
+      if (this.isCloudBreakAt(text, index, strong)) {
         return index + 1;
       }
     }
     return -1;
+  }
+
+  /**
+   * An ellipsis followed directly by more words ("“小神……明白。”") is a hesitation inside one
+   * sentence, not its end. Breaking there sent "“小神……" and "明白。”" as two utterances: the
+   * first closed with falling pitch, the second started cold, which listeners hear as a stutter
+   * or a swallowed word. Such an ellipsis only counts as a weak break.
+   */
+  private isCloudBreakAt(text: string, index: number, strong: boolean): boolean {
+    const value = text.charAt(index);
+    if (this.isNumericDecimalPoint(text, index)) return false;
+    if (this.isEllipsisInsideSentence(text, index)) return !strong;
+    return this.isCloudBreak(value, strong);
+  }
+
+  private isEllipsisInsideSentence(text: string, index: number): boolean {
+    const value = text.charAt(index);
+    if (value !== '…' && value !== '.') return false;
+    let runStart = index;
+    while (runStart > 0 && (text.charAt(runStart - 1) === '…' || text.charAt(runStart - 1) === '.')) runStart--;
+    let runEnd = index + 1;
+    while (runEnd < text.length && (text.charAt(runEnd) === '…' || text.charAt(runEnd) === '.')) runEnd++;
+    // A single "." is an ordinary full stop; only "…" or ".." and longer runs are ellipses.
+    if (value === '.' && runEnd - runStart < 2) return false;
+    if (runEnd >= text.length) return false;
+    const next = text.charAt(runEnd);
+    return !this.isTrimChar(next) && !this.isClosingPunctuationAt(text, runEnd) && !this.isSentenceEnd(next) &&
+      next !== '—' && next !== '–';
   }
 
   private isCloudBreak(value: string, strong: boolean): boolean {
@@ -2946,6 +2999,10 @@ export class SystemTtsReader {
         return i + 1;
       }
       if (this.isNumericDecimalPoint(text, i)) {
+        continue;
+      }
+      if (this.isEllipsisInsideSentence(text, i)) {
+        if (weakCandidate < 0) weakCandidate = i + 1;
         continue;
       }
       if (this.isStrongSentenceEnd(value)) {

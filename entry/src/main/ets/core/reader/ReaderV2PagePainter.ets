@@ -3,6 +3,10 @@ import common2D from '@ohos.graphics.common2D';
 import graphicsText from '@ohos.graphics.text';
 import { ReaderFontStroke } from './ReaderFontStroke';
 import { ReaderCommentBubblePainter } from './ReaderCommentBubble';
+import { ReaderV2AnnotationPainter } from './ReaderV2AnnotationPainter';
+import { ReaderV2CommentCardPainter } from './ReaderV2CommentCard';
+import { ReaderV2RulingPainter } from './ReaderV2RulingPainter';
+import { ReaderRasterAssets } from './ReaderRasterAssets';
 import {
   ReaderV2PageFragment,
   ReaderV2PageLayout,
@@ -22,6 +26,7 @@ export class ReaderV2PagePainter {
     // keyed independently from this FrameNode, so a forward/back turn could update the glyph page first while
     // leaving the old page's bubble rectangles mounted. Painting both layers here also removes dozens of
     // Row/Image nodes from simulation snapshots on dialogue-heavy chapters.
+    ReaderV2PagePainter.drawDecorations(canvas, page);
     for (const fragment of page.fragments) {
       for (const segment of fragment.regexBubbleSegments) {
         ReaderV2PagePainter.drawRegexBubble(canvas, segment);
@@ -34,7 +39,11 @@ export class ReaderV2PagePainter {
           (bubble.rect.bottom - bubble.rect.top) / bubble.scale, bubble.style, bubble.tail);
         canvas.restore();
       }
+      if (fragment.card) ReaderV2CommentCardPainter.paint(canvas, fragment.card, fragment.paragraphX, fragment.paragraphY);
     }
+    // 文字划线在气泡底色之上、字形之下；划线笔记的线最后画，盖在它上面。
+    if (page.ruling) ReaderV2RulingPainter.paint(canvas, page);
+    const hasAnnotations = page.annotationMarks.length > 0;
     for (const fragment of page.fragments) {
       if (!fragment.paragraph) continue;
       canvas.save();
@@ -44,11 +53,36 @@ export class ReaderV2PagePainter {
         right: fragment.clipRect.right,
         bottom: fragment.clipRect.bottom
       }, drawing.ClipOp.INTERSECT, true);
+      if (hasAnnotations) ReaderV2AnnotationPainter.paintBackgrounds(canvas, fragment, page.annotationMarks);
       ReaderV2PagePainter.drawRange(canvas, fragment, selectionStart, selectionEnd, selectionColor);
       ReaderV2PagePainter.drawRange(canvas, fragment, highlightStart, highlightEnd, highlightColor);
       fragment.paragraph.paint(canvas, fragment.paragraphX, fragment.paragraphY);
       ReaderFontStroke.paint(canvas, fragment.fontStrokes, fragment.paragraphX, fragment.paragraphY);
+      if (hasAnnotations) ReaderV2AnnotationPainter.paintTextColors(canvas, fragment, page.annotationMarks);
       canvas.restore();
+    }
+    if (hasAnnotations) ReaderV2AnnotationPainter.paintLines(canvas, page);
+  }
+
+  /** Theme artwork under the text (chapter-head ornament). An image that cannot be decoded is skipped. */
+  private static drawDecorations(canvas: drawing.Canvas, page: ReaderV2PageLayout): void {
+    for (const decoration of page.decorations) {
+      const rect = decoration.rect;
+      const width = rect.right - rect.left;
+      const height = rect.bottom - rect.top;
+      if (width <= 0.5 || height <= 0.5) continue;
+      const bitmap = decoration.image ? ReaderRasterAssets.fileImage(decoration.image, width, height) : null;
+      if (bitmap) {
+        const brush = new drawing.Brush();
+        brush.setAntiAlias(true);
+        canvas.attachBrush(brush);
+        canvas.drawImageRectWithSrc(bitmap,
+          { left: 0, top: 0, right: Math.max(1, Math.round(width)), bottom: Math.max(1, Math.round(height)) },
+          { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+          new drawing.SamplingOptions(drawing.FilterMode.FILTER_MODE_LINEAR), drawing.SrcRectConstraint.STRICT);
+        canvas.detachBrush();
+      }
+      if (decoration.glyph) decoration.glyph.paint(canvas, decoration.glyphX, decoration.glyphY);
     }
   }
 
@@ -64,6 +98,7 @@ export class ReaderV2PagePainter {
   }
 
   private static drawRegexBubble(canvas: drawing.Canvas, segment: ReaderV2RegexBubbleSegment): void {
+    if (segment.frameAsset && ReaderV2PagePainter.drawBubbleFrame(canvas, segment)) return;
     const left = segment.rect.left;
     const top = segment.rect.top;
     const right = segment.rect.right;
@@ -92,6 +127,71 @@ export class ReaderV2PagePainter {
     canvas.attachBrush(brush);
     canvas.drawRoundRect(roundRect);
     canvas.detachBrush();
+  }
+
+  /**
+   * Theme-pack frame for one line piece: the image is scaled so its text band (between the top/bottom slice lines)
+   * fills frameRect's height; the end pieces keep their proportions and the middle stretches or tiles. Returns
+   * false when the image cannot be decoded, so the caller falls back to the rounded background.
+   */
+  private static drawBubbleFrame(canvas: drawing.Canvas, segment: ReaderV2RegexBubbleSegment): boolean {
+    const rect = segment.frameRect;
+    const width = rect.right - rect.left;
+    const band = rect.bottom - rect.top;
+    if (width <= 0.5 || band <= 0.5) return true;
+    const fullHeight = band / Math.max(0.02, 1 - segment.frameSliceTop - segment.frameSliceBottom);
+    const fullWidth = fullHeight * Math.max(0.05, segment.frameAspect);
+    const bitmap = ReaderRasterAssets.fileImage(segment.frameAsset, fullWidth, fullHeight);
+    if (!bitmap) return false;
+    const sourceWidth = Math.max(1, Math.round(fullWidth));
+    const sourceHeight = Math.max(1, Math.round(fullHeight));
+    const top = rect.top - segment.frameSliceTop * fullHeight;
+    const bottom = top + fullHeight;
+    let leadWidth = segment.frameLeadEnd ? segment.frameSliceLeft * fullWidth : 0;
+    let trailWidth = segment.frameTrailEnd ? segment.frameSliceRight * fullWidth : 0;
+    if (leadWidth + trailWidth > width) {
+      const shrink = width / (leadWidth + trailWidth);
+      leadWidth *= shrink;
+      trailWidth *= shrink;
+    }
+    const leadSource = segment.frameSliceLeft * sourceWidth;
+    const trailSource = segment.frameSliceRight * sourceWidth;
+    const middleSource = Math.max(0, sourceWidth - leadSource - trailSource);
+    const sampling = new drawing.SamplingOptions(drawing.FilterMode.FILTER_MODE_LINEAR);
+    const brush = new drawing.Brush();
+    brush.setAntiAlias(true);
+    if (segment.frameTint) {
+      brush.setColorFilter(drawing.ColorFilter.createBlendModeColorFilter(
+        ReaderV2PagePainter.brushColor(segment.backgroundColor), drawing.BlendMode.SRC_IN));
+    }
+    canvas.attachBrush(brush);
+    const piece = (srcLeft: number, srcRight: number, dstLeft: number, dstRight: number): void => {
+      if (srcRight - srcLeft <= 0.01 || dstRight - dstLeft <= 0.01) return;
+      canvas.drawImageRectWithSrc(bitmap, { left: srcLeft, top: 0, right: srcRight, bottom: sourceHeight },
+        { left: dstLeft, top: top, right: dstRight, bottom: bottom }, sampling, drawing.SrcRectConstraint.STRICT);
+    };
+    // Half a pixel of overlap hides the seams between pieces.
+    if (leadWidth > 0) piece(0, leadSource, rect.left, rect.left + leadWidth + 0.5);
+    if (trailWidth > 0) piece(sourceWidth - trailSource, sourceWidth, rect.right - trailWidth - 0.5, rect.right);
+    const middleLeft = rect.left + leadWidth;
+    const middleWidth = width - leadWidth - trailWidth;
+    if (middleWidth > 0.5 && middleSource > 0.01) {
+      if (!segment.frameRound) {
+        piece(leadSource, leadSource + middleSource, middleLeft, middleLeft + middleWidth);
+      } else {
+        // Whole tiles, slightly squeezed or widened, so a repeating pattern never ends on a cut tile.
+        const tileWidth = middleSource * fullWidth / sourceWidth;
+        const count = Math.max(1, Math.round(middleWidth / Math.max(1, tileWidth)));
+        const step = middleWidth / count;
+        for (let index = 0; index < count; index++) {
+          const tileLeft = middleLeft + index * step;
+          piece(leadSource, leadSource + middleSource, tileLeft,
+            index === count - 1 ? middleLeft + middleWidth : tileLeft + step + 0.5);
+        }
+      }
+    }
+    canvas.detachBrush();
+    return true;
   }
 
   private static drawRange(canvas: drawing.Canvas, fragment: ReaderV2PageFragment,

@@ -26,6 +26,8 @@ export class BookshelfDisplaySettings {
   showAllTypeTab: boolean = true;
   // 陪伴布局网格里的书高矮不一、少数斜靠；关闭后一样大、全部立正。
   companionStagger: boolean = true;
+  // 陪伴布局书本的投影与封面斜向打光；关闭后书本不再投下阴影，书脊与压槽保留。
+  companionCoverShadow: boolean = true;
   // 陪伴布局问候与书架之间的“阅读小记”卡片。
   companionReadingNote: boolean = true;
   // 陪伴布局左上角问候语：time 按时段的内置文案，custom 用下面两行（可含占位符），off 不显示。
@@ -34,6 +36,14 @@ export class BookshelfDisplaySettings {
   greetingSubtitle: string = '';
   // 陪伴布局书架网格上方的标题；空串显示默认文案。
   companionSectionTitle: string = '';
+  // 打开应用后在后台检查书架上连载书的新章节；关闭后只在下拉书架时检查。属于网页解析的设置项。
+  autoRefresh: boolean = true;
+  // 沉浸书架：进入书架时收起顶部按钮行和底栏，手指往下滑才出现。
+  immersive: boolean = false;
+  // 沉浸时的顶部按钮：pull 只在顶部下拉时出现、几秒后收起；menu 右上角只留一个菜单按钮。
+  immersiveButtons: string = 'pull';
+  // 冷启动时回到上次所在的分组和书籍分类；关闭后每次都从书架首页开始。
+  rememberGroup: boolean = false;
 }
 
 export class BookshelfDisplaySettingsStore {
@@ -55,11 +65,16 @@ export class BookshelfDisplaySettingsStore {
   private static readonly KEY_TYPE_CATEGORY_ENABLED: string = 'bookshelfTypeCategoryEnabled';
   private static readonly KEY_SHOW_ALL_TYPE_TAB: string = 'bookshelfShowAllTypeTab';
   private static readonly KEY_COMPANION_STAGGER: string = 'bookshelfCompanionStagger';
+  private static readonly KEY_COMPANION_COVER_SHADOW: string = 'bookshelfCompanionCoverShadow';
   private static readonly KEY_COMPANION_READING_NOTE: string = 'bookshelfCompanionReadingNote';
   private static readonly KEY_GREETING_MODE: string = 'bookshelfGreetingMode';
   private static readonly KEY_GREETING_TITLE: string = 'bookshelfGreetingTitle';
   private static readonly KEY_GREETING_SUBTITLE: string = 'bookshelfGreetingSubtitle';
   private static readonly KEY_COMPANION_SECTION_TITLE: string = 'bookshelfCompanionSectionTitle';
+  private static readonly KEY_AUTO_REFRESH: string = 'bookshelfAutoRefresh';
+  private static readonly KEY_IMMERSIVE: string = 'bookshelfImmersive';
+  private static readonly KEY_IMMERSIVE_BUTTONS: string = 'bookshelfImmersiveButtons';
+  private static readonly KEY_REMEMBER_GROUP: string = 'bookshelfRememberGroup';
   static readonly DEFAULT_COMPANION_SECTION_TITLE: string = '书架里，还有故事';
   static readonly COMPANION_SECTION_TITLE_MAX_LENGTH: number = 20;
   // 4.4.956 起书架默认使用“陪伴”布局：升级后把已有设置统一改一次，之后用户自己改的布局不再动。
@@ -109,6 +124,8 @@ export class BookshelfDisplaySettingsStore {
       store, BookshelfDisplaySettingsStore.KEY_SHOW_ALL_TYPE_TAB, true);
     settings.companionStagger = await BookshelfDisplaySettingsStore.getBoolean(
       store, BookshelfDisplaySettingsStore.KEY_COMPANION_STAGGER, true);
+    settings.companionCoverShadow = await BookshelfDisplaySettingsStore.getBoolean(
+      store, BookshelfDisplaySettingsStore.KEY_COMPANION_COVER_SHADOW, true);
     settings.companionReadingNote = await BookshelfDisplaySettingsStore.getBoolean(
       store, BookshelfDisplaySettingsStore.KEY_COMPANION_READING_NOTE, true);
     settings.greetingMode = BookshelfDisplaySettingsStore.normalizeGreetingMode(
@@ -119,6 +136,14 @@ export class BookshelfDisplaySettingsStore {
       store, BookshelfDisplaySettingsStore.KEY_GREETING_SUBTITLE, '');
     settings.companionSectionTitle = await BookshelfDisplaySettingsStore.getString(
       store, BookshelfDisplaySettingsStore.KEY_COMPANION_SECTION_TITLE, '');
+    settings.autoRefresh = await BookshelfDisplaySettingsStore.getBoolean(
+      store, BookshelfDisplaySettingsStore.KEY_AUTO_REFRESH, true);
+    settings.immersive = await BookshelfDisplaySettingsStore.getBoolean(
+      store, BookshelfDisplaySettingsStore.KEY_IMMERSIVE, false);
+    settings.immersiveButtons = BookshelfDisplaySettingsStore.normalizeImmersiveButtons(
+      await BookshelfDisplaySettingsStore.getString(store, BookshelfDisplaySettingsStore.KEY_IMMERSIVE_BUTTONS, 'pull'));
+    settings.rememberGroup = await BookshelfDisplaySettingsStore.getBoolean(
+      store, BookshelfDisplaySettingsStore.KEY_REMEMBER_GROUP, false);
     if (!(await BookshelfDisplaySettingsStore.getBoolean(
       store, BookshelfDisplaySettingsStore.KEY_COMPANION_LAYOUT_MIGRATED, false))) {
       settings.layoutMode = 'companion';
@@ -155,11 +180,17 @@ export class BookshelfDisplaySettingsStore {
     await store.put(BookshelfDisplaySettingsStore.KEY_TYPE_CATEGORY_ENABLED, settings.typeCategoryEnabled !== false);
     await store.put(BookshelfDisplaySettingsStore.KEY_SHOW_ALL_TYPE_TAB, settings.showAllTypeTab !== false);
     await store.put(BookshelfDisplaySettingsStore.KEY_COMPANION_STAGGER, settings.companionStagger !== false);
+    await store.put(BookshelfDisplaySettingsStore.KEY_COMPANION_COVER_SHADOW, settings.companionCoverShadow !== false);
     await store.put(BookshelfDisplaySettingsStore.KEY_COMPANION_READING_NOTE, settings.companionReadingNote !== false);
     await store.put(BookshelfDisplaySettingsStore.KEY_GREETING_MODE, settings.greetingMode);
     await store.put(BookshelfDisplaySettingsStore.KEY_GREETING_TITLE, settings.greetingTitle);
     await store.put(BookshelfDisplaySettingsStore.KEY_GREETING_SUBTITLE, settings.greetingSubtitle);
     await store.put(BookshelfDisplaySettingsStore.KEY_COMPANION_SECTION_TITLE, settings.companionSectionTitle);
+    await store.put(BookshelfDisplaySettingsStore.KEY_AUTO_REFRESH, settings.autoRefresh !== false);
+    await store.put(BookshelfDisplaySettingsStore.KEY_IMMERSIVE, settings.immersive === true);
+    await store.put(BookshelfDisplaySettingsStore.KEY_IMMERSIVE_BUTTONS,
+      BookshelfDisplaySettingsStore.normalizeImmersiveButtons(settings.immersiveButtons));
+    await store.put(BookshelfDisplaySettingsStore.KEY_REMEMBER_GROUP, settings.rememberGroup === true);
     await store.flush();
     BookshelfDisplaySettingsStore.cachedSettings = BookshelfDisplaySettingsStore.clone(settings);
     CloudSyncChangeTracker.markApplicationPreferenceChanged();
@@ -213,12 +244,19 @@ export class BookshelfDisplaySettingsStore {
       settings.typeCategoryEnabled !== false);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_SHOW_ALL_TYPE_TAB, settings.showAllTypeTab !== false);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_COMPANION_STAGGER, settings.companionStagger !== false);
+    AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_COMPANION_COVER_SHADOW,
+      settings.companionCoverShadow !== false);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_COMPANION_READING_NOTE,
       settings.companionReadingNote !== false);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_GREETING_MODE, settings.greetingMode);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_GREETING_TITLE, settings.greetingTitle);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_GREETING_SUBTITLE, settings.greetingSubtitle);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_COMPANION_SECTION_TITLE, settings.companionSectionTitle);
+    AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_AUTO_REFRESH, settings.autoRefresh !== false);
+    AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_IMMERSIVE, settings.immersive === true);
+    AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_IMMERSIVE_BUTTONS,
+      BookshelfDisplaySettingsStore.normalizeImmersiveButtons(settings.immersiveButtons));
+    AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_REMEMBER_GROUP, settings.rememberGroup === true);
   }
 
   static fromStorage(): BookshelfDisplaySettings {
@@ -247,6 +285,8 @@ export class BookshelfDisplaySettingsStore {
     settings.showAllTypeTab = AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_SHOW_ALL_TYPE_TAB) ?? true;
     settings.companionStagger =
       AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_COMPANION_STAGGER) ?? true;
+    settings.companionCoverShadow =
+      AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_COMPANION_COVER_SHADOW) ?? true;
     settings.companionReadingNote =
       AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_COMPANION_READING_NOTE) ?? true;
     settings.greetingMode = BookshelfDisplaySettingsStore.normalizeGreetingMode(
@@ -255,6 +295,11 @@ export class BookshelfDisplaySettingsStore {
     settings.greetingSubtitle = AppStorage.get<string>(BookshelfDisplaySettingsStore.KEY_GREETING_SUBTITLE) ?? '';
     settings.companionSectionTitle =
       AppStorage.get<string>(BookshelfDisplaySettingsStore.KEY_COMPANION_SECTION_TITLE) ?? '';
+    settings.autoRefresh = AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_AUTO_REFRESH) ?? true;
+    settings.immersive = AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_IMMERSIVE) ?? false;
+    settings.immersiveButtons = BookshelfDisplaySettingsStore.normalizeImmersiveButtons(
+      AppStorage.get<string>(BookshelfDisplaySettingsStore.KEY_IMMERSIVE_BUTTONS) ?? 'pull');
+    settings.rememberGroup = AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_REMEMBER_GROUP) ?? false;
     return settings;
   }
 
@@ -281,6 +326,10 @@ export class BookshelfDisplaySettingsStore {
       return value;
     }
     return 'tile';
+  }
+
+  static normalizeImmersiveButtons(value: string): string {
+    return value === 'menu' ? 'menu' : 'pull';
   }
 
   static normalizeGreetingMode(value: string): string {
@@ -325,11 +374,16 @@ export class BookshelfDisplaySettingsStore {
     settings.typeCategoryEnabled = source.typeCategoryEnabled !== false;
     settings.showAllTypeTab = source.showAllTypeTab !== false;
     settings.companionStagger = source.companionStagger !== false;
+    settings.companionCoverShadow = source.companionCoverShadow !== false;
     settings.companionReadingNote = source.companionReadingNote !== false;
     settings.greetingMode = BookshelfDisplaySettingsStore.normalizeGreetingMode(source.greetingMode);
     settings.greetingTitle = source.greetingTitle || '';
     settings.greetingSubtitle = source.greetingSubtitle || '';
     settings.companionSectionTitle = source.companionSectionTitle || '';
+    settings.autoRefresh = source.autoRefresh !== false;
+    settings.immersive = source.immersive === true;
+    settings.immersiveButtons = BookshelfDisplaySettingsStore.normalizeImmersiveButtons(source.immersiveButtons);
+    settings.rememberGroup = source.rememberGroup === true;
     return settings;
   }
 }

@@ -143,10 +143,24 @@ export struct SearchBookResultList {
   /** 分类翻页的顶栏只响应真实纵向滚动，忽略新页布局、回顶等产生的空闲滚动回调。 */
   @Prop userScrollOnly: boolean = false;
   @Prop @Watch('onGridPageActiveChanged') gridPageActive: boolean = true;
-  /** 只在分类进入时对齐滚动位置，不参与列表尺寸计算或逐帧布局。 */
-  @Prop gridHeaderCollapse: number = 0;
+  /**
+   * 顶栏当前收起量，只在分类进入时对齐滚动位置时现取，不参与列表尺寸计算或逐帧布局。
+   * 传取值函数而不是 @Prop：顶栏收起的每一帧都改这个数，作 @Prop 时父组件每帧都要把整份参数（含 books 等数组）重新求值、
+   * 深拷贝一遍，滑动中主线程每次多花 4–8ms。
+   */
+  gridHeaderCollapse: () => number = (): number => 0;
   private gridAlignTimer: number = -1;
   private gridUserScrolled: boolean = false;
+  /**
+   * 列表正在滚动（拖动或惯性）。这时新建的格子封面改后台解码（见 BookCover.syncDecode），不在滑动的帧里同步解图；
+   * 只在建格子时读一次，不是状态变量，滚动开始和停止不引起重建。
+   */
+  private listScrolling: boolean = false;
+  /**
+   * 分类翻页里，换页时新页的对齐滚动会唤出滚动条、旧页的滚动条也还没淡出，两条都会跟着页面横滑。
+   * 所以只在当前页被手动滚动过之后才显示，离开当前页立即隐藏。
+   */
+  @State pagerScrollBarShown: boolean = false;
   scroller: ListScroller = new ListScroller();
   private dataSource: SearchBookResultDataSource = new SearchBookResultDataSource();
   private tagCache: Map<string, string[]> = new Map<string, string[]>();
@@ -200,7 +214,10 @@ export struct SearchBookResultList {
     if (this.gridPageActive) this.drainCoverQueue();
     if (this.gridAlignTimer >= 0) clearTimeout(this.gridAlignTimer);
     this.gridAlignTimer = -1;
-    if (!this.gridPageActive) return;
+    if (!this.gridPageActive) {
+      this.pagerScrollBarShown = false;
+      return;
+    }
     // 首次挂载需等 List 绑定 Scroller；重新进入已有分类时保留更深的阅读位置。
     this.gridAlignTimer = setTimeout(() => {
       this.gridAlignTimer = -1;
@@ -208,10 +225,21 @@ export struct SearchBookResultList {
     }, 0);
   }
 
+  resultScrollBarState(): BarState {
+    if (!this.userScrollOnly) return BarState.Auto;
+    return this.gridPageActive && this.pagerScrollBarShown ? BarState.Auto : BarState.Off;
+  }
+
+  /** 真实纵向滚动才放出滚动条，见 pagerScrollBarShown。 */
+  markUserScrolled(): void {
+    this.gridUserScrolled = true;
+    if (this.userScrollOnly && this.gridPageActive && !this.pagerScrollBarShown) this.pagerScrollBarShown = true;
+  }
+
   alignGridToHeader(): void {
     if (!this.gridPageActive) return;
     const offset = this.scroller.currentOffset().yOffset;
-    const target = Math.max(this.userScrollOnly ? this.gridHeaderCollapse : 0,
+    const target = Math.max(this.userScrollOnly ? this.gridHeaderCollapse() : 0,
       this.restoredScroll ? 0 : this.initialScrollOffset);
     this.restoredScroll = true;
     if (offset < target) {
@@ -480,13 +508,15 @@ export struct SearchBookResultList {
       }
     }
     .lanes(BookTileLayout.columnCount(this.gridViewportWidth), BookTileLayout.columnGap(this.gridViewportWidth))
+    // 多列时按行预建：上下各多建三行，封面在滑进屏幕前就解码好。
+    .cachedCount(3)
     .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
     .width('100%')
     .layoutWeight(1)
     .padding({ left: BookTileLayout.SIDE_PADDING, right: BookTileLayout.SIDE_PADDING })
     .height('100%')
     .backgroundColor(this.pageColor)
-    .scrollBar(BarState.Auto)
+    .scrollBar(this.resultScrollBarState())
     .onAppear(() => this.onGridPageActiveChanged())
     .onReachEnd(() => {
       if (this.preparingCoverCount === 0) this.onReachEnd();
@@ -499,10 +529,14 @@ export struct SearchBookResultList {
     .onDidScroll((delta: number, state: ScrollState) => {
       if (this.userScrollOnly && (state === ScrollState.Idle || delta === 0)) return;
       if (this.isEndOverscrollRebound(delta)) return;
-      this.gridUserScrolled = true;
+      this.markUserScrolled();
       this.onListScroll(delta, this.scroller.currentOffset().yOffset);
     })
+    .onScrollStart(() => {
+      this.listScrolling = true;
+    })
     .onScrollStop(() => {
+      this.listScrolling = false;
       if (this.userScrollOnly && !this.gridUserScrolled) return;
       this.gridUserScrolled = false;
       this.onListScrollStop(this.scroller.currentOffset().yOffset);
@@ -598,6 +632,10 @@ export struct SearchBookResultList {
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
+    // 展开屏一屏三四十格、上下还各预建三行，滑动时渲染服务每帧逐个重画封面、圆角裁切、投影与文字，
+    // 单帧 12ms 左右，悬浮底栏取模糊底图前还得先把这些全部提交一遍。整格缓存成一张图后真机降到 7ms 左右，
+    // 投影也在缓存里；封面解码完淡入、角标变化时渲染服务会自己重建。
+    .renderGroup(true)
     .onClick(() => {
       this.onOpenBook(this.resultBook(key));
     })
@@ -648,7 +686,7 @@ export struct SearchBookResultList {
     .padding({ left: this.isCompactRank() ? AppSpacing.XS : AppSpacing.XL, right: AppSpacing.XL })
     .height('100%')
     .backgroundColor(this.pageColor)
-    .scrollBar(BarState.Auto)
+    .scrollBar(this.resultScrollBarState())
     .onReachEnd(() => {
       if (this.preparingCoverCount === 0) this.onReachEnd();
     })
@@ -662,10 +700,14 @@ export struct SearchBookResultList {
     .onDidScroll((delta: number, state: ScrollState) => {
       if (this.userScrollOnly && (state === ScrollState.Idle || delta === 0)) return;
       if (this.isEndOverscrollRebound(delta)) return;
-      this.gridUserScrolled = true;
+      this.markUserScrolled();
       this.onListScroll(delta, this.scroller.currentOffset().yOffset);
     })
+    .onScrollStart(() => {
+      this.listScrolling = true;
+    })
     .onScrollStop(() => {
+      this.listScrolling = false;
       if (this.userScrollOnly && !this.gridUserScrolled) return;
       this.gridUserScrolled = false;
       this.onListScrollStop(this.scroller.currentOffset().yOffset);
@@ -1175,6 +1217,7 @@ export struct SearchBookResultList {
       coverUrl: this.resultBook(key).coverUrl, name: this.resultBook(key).name, author: this.resultBook(key).author,
       useBookshelfCover: this.useBookshelfCoverGallery,
       placeholderColor: this.cardColor, cornerRadius: radius, decodeWidth, decodeHeight,
+      syncDecode: !this.listScrolling,
       onReadyCover: (url: ResourceStr): void => {
         if (this.readyCoverUrls.get(key) !== url) this.readyCoverUrls.set(key, url);
       }

@@ -1,6 +1,10 @@
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { ThemeAssetRegistry } from '../../theme/ThemeAssetRegistry';
 import { HexColor } from '../../utils/HexColor';
+import { AnimatedImagePolicy } from '../../utils/AnimatedImagePolicy';
+import { ThemeImageSlots } from '../../theme/ThemePackRegistry';
+import { ThemeImageCrop } from '../../theme/share/ThemePackageFormat';
+import { ThemeCroppedImage } from '../theme/ThemeCroppedImage';
 
 /**
  * 首页页签顶部的主题背景图：放在页面根部最底层，不随列表滚动，向下淡成页面底色。
@@ -10,10 +14,19 @@ import { HexColor } from '../../utils/HexColor';
 export struct HomeThemeBackdrop {
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
+  @StorageProp('animatedImageRevision') animatedImageRevision: number = 0;
   /** 显示高度；0 表示按图片宽高比整张显示（书架用），其他页签只衬在标题区。 */
   @Prop visibleHeight: number = 0;
   /** 图片不透明度：书架最强，搜索、发现弱一些，免得和结果列表抢。 */
   @Prop strength: number = 1;
+  /** 书架页传当前书架布局：主题按布局单独配了背景时用那一张；其他页签不传，用通用背景。 */
+  @Prop shelfLayout: string = '';
+
+  /** 读 themeRevision：自定义方案之间切换时主题 ID 都是 custom，只有它会变，背景图才跟着换。 */
+  themeBackdrop(): ResourceStr | null {
+    if (this.themeRevision < 0) return null;
+    return ThemeRuntime.homeBackdrop(this.appDarkMode, this.shelfLayout);
+  }
 
   // 浅色只轻压一层底色；深色图里的金线更亮，压得重一些才不刺眼。
   gradientColors(): Array<[ResourceColor, number]> {
@@ -24,8 +37,21 @@ export struct HomeThemeBackdrop {
     return stops.map((stop: number[]): [ResourceColor, number] => [HexColor.withOpacity(page, stop[0]), stop[1]]);
   }
 
+  /** 背景是动图时由 AnimatedImagePolicy 决定播放还是只显示第一帧。 */
+  backdropImage(): ResourceStr {
+    const image = this.themeBackdrop() as ResourceStr;
+    if (typeof image !== 'string' || this.animatedImageRevision < 0) return image;
+    return AnimatedImagePolicy.display(getContext(this), image);
+  }
+
+  /** 主题包动图背景取景时记下的显示区域。 */
+  backdropCrop(): ThemeImageCrop | null {
+    return ThemeAssetRegistry.imageCrop(ThemeImageSlots.BACKDROP, this.themeBackdrop(), this.appDarkMode,
+      this.shelfLayout);
+  }
+
   build() {
-    if (ThemeRuntime.homeBackdrop(this.appDarkMode)) {
+    if (this.themeBackdrop()) {
       if (this.visibleHeight > 0) {
         Stack({ alignContent: Alignment.Top }) {
           this.layers()
@@ -50,13 +76,20 @@ export struct HomeThemeBackdrop {
 
   @Builder
   layers() {
-    Image(ThemeRuntime.homeBackdrop(this.appDarkMode) as ResourceStr)
-      .width('100%')
-      .aspectRatio(ThemeAssetRegistry.HOME_BACKDROP_ASPECT)
-      .objectFit(ImageFit.Cover)
-      // 书架开合、分组展开的截图都要带上背景，异步加载会截到空白。
-      .syncLoad(true)
-      .opacity(this.strength)
+    if (this.backdropCrop()) {
+      ThemeCroppedImage({ src: this.backdropImage(), crop: this.backdropCrop() as ThemeImageCrop, syncLoad: true })
+        .width('100%')
+        .aspectRatio(ThemeAssetRegistry.HOME_BACKDROP_ASPECT)
+        .opacity(this.strength)
+    } else {
+      Image(this.backdropImage())
+        .width('100%')
+        .aspectRatio(ThemeAssetRegistry.HOME_BACKDROP_ASPECT)
+        .objectFit(ImageFit.Cover)
+        // 书架开合、分组展开的截图都要带上背景，异步加载会截到空白。
+        .syncLoad(true)
+        .opacity(this.strength)
+    }
     Column()
       .width('100%')
       .height('100%')

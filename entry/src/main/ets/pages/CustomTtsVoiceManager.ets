@@ -717,7 +717,7 @@ struct CustomTtsVoiceManagerPage {
             ListItem() { this.speakerRow(sid) }
           }, (sid: number): string => `${sid}:${this.speakerSheetBase()?.importedSids.includes(sid)}:` +
             `${this.speakerPreviewSid === sid}:${this.speakerPreviewPlaying}`)
-        }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+        }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
           .padding({ bottom: this.navBarHeight })
       } else {
         Text('这个模型已删除').fontSize(AppFontSize.BODY).fontColor(this.subTextColor())
@@ -882,7 +882,7 @@ struct CustomTtsVoiceManagerPage {
     if (!this.nativeEnabled(entry)) { HdsFeedback.showToast('请先左滑启用该音色'); return; }
     if (this.downloadingVoiceKey) { HdsFeedback.showToast('正在下载音色，请稍候'); return; }
     if (entry.cloud) {
-      if (!AccountSessionStore.isLoggedIn()) { HdsFeedback.showToast('请先登录华为账号后使用云端音色'); return; }
+      if (!AccountSessionStore.isLoggedIn()) { HdsFeedback.showToast('请先登录账号后使用云端音色'); return; }
       this.ttsCloudVoiceId = entry.cloudVoice.id;
       this.ttsCustomVoiceId = '';
     } else {
@@ -2333,6 +2333,7 @@ struct CustomTtsVoiceManagerPage {
         }
         .width('100%')
       }
+      .scrollBar(BarState.Off)
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       .width('100%')
       .height(420)

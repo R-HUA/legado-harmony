@@ -7,6 +7,8 @@ import { Book, BookChapter, BookSource, BookGroup, Bookmark, SearchKeyword, Expl
 import { Context } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { CloudSyncChangeTracker } from '../../account/CloudSyncChangeTracker';
+import { BookAnnotation, BookAnnotationStyles } from '../reader/BookAnnotation';
+import { BookMark, BookMarkRules } from '../book/BookMark';
 import { BookIdentity } from '../../utils/BookIdentity';
 import { ReadStatsPendingUpload, ReadStatsSyncPayload, ReadStatsSyncChange,
   ReadStatsSyncAck } from '../../core/stats/ReadStatsSyncModels';
@@ -155,7 +157,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
   cacheDatabaseName(): string { return this.openedDatabaseName; }
   cacheDatabaseDirectory(): string { return this.databaseDirectory; }
   private readonly DATABASE_NAME = 'legado.db';
-  private readonly SCHEMA_VERSION = 26;
+  private readonly SCHEMA_VERSION = 28;
 
   private constructor() {}
 
@@ -347,7 +349,8 @@ export class AppDatabase implements BookSourceRuntimePersistence {
         groupName TEXT DEFAULT '',
         groupOrder INTEGER DEFAULT 0,
         show INTEGER DEFAULT 1,
-        enableRefresh INTEGER DEFAULT 1
+        enableRefresh INTEGER DEFAULT 1,
+        pinned INTEGER DEFAULT 0
       )
     `);
 
@@ -385,6 +388,47 @@ export class AppDatabase implements BookSourceRuntimePersistence {
         content TEXT DEFAULT '',
         createTime INTEGER DEFAULT 0,
         UNIQUE(bookUrl, chapterIndex, pageIndex)
+      )
+    `);
+
+    await this.store.executeSql(`
+      CREATE TABLE IF NOT EXISTS book_annotations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bookUrl TEXT DEFAULT '',
+        bookName TEXT DEFAULT '',
+        chapterIndex INTEGER DEFAULT 0,
+        chapterName TEXT DEFAULT '',
+        startPos INTEGER DEFAULT 0,
+        endPos INTEGER DEFAULT 0,
+        quote TEXT DEFAULT '',
+        prefix TEXT DEFAULT '',
+        suffix TEXT DEFAULT '',
+        color TEXT DEFAULT '',
+        style TEXT DEFAULT '',
+        note TEXT DEFAULT '',
+        createTime INTEGER DEFAULT 0,
+        updateTime INTEGER DEFAULT 0
+      )
+    `);
+
+    // 书籍标记按作品存（见 BookMark）；建表语句每次启动都会跑，所以新表不需要升库版本。
+    await this.store.executeSql(`
+      CREATE TABLE IF NOT EXISTS book_marks (
+        workKey TEXT PRIMARY KEY,
+        bookName TEXT DEFAULT '',
+        author TEXT DEFAULT '',
+        bookUrl TEXT DEFAULT '',
+        origin TEXT DEFAULT '',
+        originName TEXT DEFAULT '',
+        coverUrl TEXT DEFAULT '',
+        bookType INTEGER DEFAULT 0,
+        rating INTEGER DEFAULT 0,
+        status INTEGER DEFAULT 0,
+        categories TEXT DEFAULT '[]',
+        review TEXT DEFAULT '',
+        createTime INTEGER DEFAULT 0,
+        updateTime INTEGER DEFAULT 0,
+        finishTime INTEGER DEFAULT 0
       )
     `);
 
@@ -442,6 +486,8 @@ export class AppDatabase implements BookSourceRuntimePersistence {
       await this.setSchemaVersion(this.SCHEMA_VERSION);
     }
     await this.createIndexes();
+    // 不等：首次建要扫全表，用到这些索引的查询自己会等。
+    this.ensureContentIndexes();
   }
 
   private async createIndexes(): Promise<void> {
@@ -450,6 +496,8 @@ export class AppDatabase implements BookSourceRuntimePersistence {
       'CREATE INDEX IF NOT EXISTS idx_book_chapters_book_order ON book_chapters(bookUrl, chapterIndex)');
     await this.store.executeSql(
       'CREATE INDEX IF NOT EXISTS idx_bookmarks_book_time ON bookmarks(bookUrl, createTime DESC)');
+    await this.store.executeSql(
+      'CREATE INDEX IF NOT EXISTS idx_book_annotations_book ON book_annotations(bookUrl, chapterIndex)');
     await this.store.executeSql(
       'CREATE INDEX IF NOT EXISTS idx_books_read_time ON books(durChapterTime DESC)');
     await this.store.executeSql(
@@ -610,7 +658,9 @@ export class AppDatabase implements BookSourceRuntimePersistence {
       { table: 'book_contents', column: 'contentBytes', definition: 'contentBytes INTEGER DEFAULT -1' },
       { table: 'book_contents', column: 'accessDate', definition: 'accessDate INTEGER DEFAULT 0' },
       { table: 'book_contents', column: 'cacheRevision', definition: 'cacheRevision INTEGER DEFAULT 0' },
-      { table: 'book_contents', column: 'imagesIndexed', definition: 'imagesIndexed INTEGER DEFAULT 0' }
+      { table: 'book_contents', column: 'imagesIndexed', definition: 'imagesIndexed INTEGER DEFAULT 0' },
+      { table: 'book_annotations', column: 'excerpt', definition: 'excerpt INTEGER DEFAULT 0' },
+      { table: 'book_groups', column: 'pinned', definition: 'pinned INTEGER DEFAULT 0' }
     ];
 
     for (const migration of migrations) {
@@ -987,6 +1037,11 @@ export class AppDatabase implements BookSourceRuntimePersistence {
           bookAuthor: book.author
         }, sourceBookmarks);
 
+        // 划线随书迁移；目标书原有的划线保留（同一本书换回来时不丢）。
+        const sourceAnnotations = new relationalStore.RdbPredicates('book_annotations');
+        sourceAnnotations.equalTo('bookUrl', oldBookUrl);
+        await transaction.update({ bookUrl: book.bookUrl, bookName: book.name }, sourceAnnotations);
+
         for (const table of ['book_chapters', 'book_contents', 'books']) {
           const oldPredicates = new relationalStore.RdbPredicates(table);
           oldPredicates.equalTo('bookUrl', oldBookUrl);
@@ -1105,6 +1160,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
       console.warn('删除书籍的离线音频失败:', e);
     }
     await this.deleteBookBookmarks(bookUrl);
+    await this.deleteBookAnnotations(bookUrl);
     if (existing?.origin && existing.origin !== 'local') {
       CloudSyncChangeTracker.markDataChanged();
     }
@@ -1245,6 +1301,255 @@ export class AppDatabase implements BookSourceRuntimePersistence {
     const predicates = new relationalStore.RdbPredicates('bookmarks');
     predicates.equalTo('bookUrl', bookUrl);
     await this.store.delete(predicates);
+  }
+
+  async getBookAnnotations(bookUrl: string): Promise<BookAnnotation[]> {
+    const annotations: BookAnnotation[] = [];
+    if (!this.store || !bookUrl) return annotations;
+    const predicates = new relationalStore.RdbPredicates('book_annotations');
+    predicates.equalTo('bookUrl', bookUrl);
+    predicates.orderByAsc('chapterIndex');
+    predicates.orderByAsc('startPos');
+    const resultSet = await this.store.query(predicates, []);
+    try {
+      while (resultSet.goToNextRow()) {
+        annotations.push(this.resultSetToBookAnnotation(resultSet));
+      }
+    } finally {
+      resultSet.close();
+    }
+    return annotations;
+  }
+
+  async getAllBookAnnotations(): Promise<BookAnnotation[]> {
+    const annotations: BookAnnotation[] = [];
+    if (!this.store) return annotations;
+    const predicates = new relationalStore.RdbPredicates('book_annotations');
+    predicates.orderByAsc('bookUrl');
+    predicates.orderByAsc('chapterIndex');
+    predicates.orderByAsc('startPos');
+    const resultSet = await this.store.query(predicates, []);
+    try {
+      while (resultSet.goToNextRow()) {
+        annotations.push(this.resultSetToBookAnnotation(resultSet));
+      }
+    } finally {
+      resultSet.close();
+    }
+    return annotations;
+  }
+
+  /**
+   * 备份恢复、云同步写入：同一本书同一创建时间视为同一条划线，先删再插，重复恢复不会多出副本。
+   * 传入的可能是 JSON 解析出的普通对象，字段逐个规整。返回新行 id。
+   */
+  async restoreBookAnnotation(source: BookAnnotation): Promise<number> {
+    if (!this.store || !source || !source.bookUrl) return 0;
+    const annotation = new BookAnnotation();
+    annotation.bookUrl = String(source.bookUrl);
+    annotation.bookName = String(source.bookName || '');
+    annotation.chapterIndex = Math.max(0, Math.floor(Number(source.chapterIndex) || 0));
+    annotation.chapterName = String(source.chapterName || '');
+    annotation.start = Math.max(0, Math.floor(Number(source.start) || 0));
+    annotation.end = Math.max(annotation.start, Math.floor(Number(source.end) || 0));
+    annotation.quote = String(source.quote || '');
+    annotation.prefix = String(source.prefix || '');
+    annotation.suffix = String(source.suffix || '');
+    annotation.color = BookAnnotationStyles.normalizeColor(String(source.color || ''));
+    annotation.style = BookAnnotationStyles.normalizeStyle(String(source.style || ''));
+    annotation.note = String(source.note || '');
+    annotation.excerpt = source.excerpt === true || Number(source.excerpt) === 1;
+    annotation.createTime = Math.max(0, Math.floor(Number(source.createTime) || 0));
+    annotation.updateTime = Math.max(annotation.createTime, Math.floor(Number(source.updateTime) || 0));
+    const predicates = new relationalStore.RdbPredicates('book_annotations');
+    predicates.equalTo('bookUrl', annotation.bookUrl);
+    predicates.equalTo('createTime', annotation.createTime);
+    await this.store.delete(predicates);
+    const id = await this.store.insert('book_annotations', this.bookAnnotationBucket(annotation));
+    CloudSyncChangeTracker.markDataChanged();
+    return id;
+  }
+
+  async insertBookAnnotation(annotation: BookAnnotation): Promise<number> {
+    if (!this.store || !annotation.bookUrl) return 0;
+    const id = await this.store.insert('book_annotations', this.bookAnnotationBucket(annotation));
+    CloudSyncChangeTracker.markDataChanged();
+    return id;
+  }
+
+  async updateBookAnnotation(annotation: BookAnnotation): Promise<void> {
+    if (!this.store || annotation.id <= 0) return;
+    const predicates = new relationalStore.RdbPredicates('book_annotations');
+    predicates.equalTo('id', annotation.id);
+    await this.store.update(this.bookAnnotationBucket(annotation), predicates);
+    CloudSyncChangeTracker.markDataChanged();
+  }
+
+  async deleteBookAnnotationsById(ids: number[]): Promise<void> {
+    const validIds = ids.filter((id: number) => id > 0);
+    if (!this.store || validIds.length === 0) return;
+    const predicates = new relationalStore.RdbPredicates('book_annotations');
+    predicates.in('id', validIds);
+    await this.store.delete(predicates);
+    CloudSyncChangeTracker.markDataChanged();
+  }
+
+  /** 删书时调用：摘录留着（我的摘录里还能看、复制），其余划线随书删掉。 */
+  async deleteBookAnnotations(bookUrl: string): Promise<void> {
+    if (!this.store || !bookUrl) return;
+    const predicates = new relationalStore.RdbPredicates('book_annotations');
+    predicates.equalTo('bookUrl', bookUrl);
+    predicates.notEqualTo('excerpt', 1);
+    await this.store.delete(predicates);
+  }
+
+  /** 我的摘录：最近收的在前。 */
+  async getExcerptAnnotations(limit: number = 0): Promise<BookAnnotation[]> {
+    const annotations: BookAnnotation[] = [];
+    if (!this.store) return annotations;
+    const predicates = new relationalStore.RdbPredicates('book_annotations');
+    predicates.equalTo('excerpt', 1);
+    predicates.orderByDesc('updateTime');
+    if (limit > 0) predicates.limitAs(limit);
+    const resultSet = await this.store.query(predicates, []);
+    try {
+      while (resultSet.goToNextRow()) {
+        annotations.push(this.resultSetToBookAnnotation(resultSet));
+      }
+    } finally {
+      resultSet.close();
+    }
+    return annotations;
+  }
+
+  private bookAnnotationBucket(annotation: BookAnnotation): relationalStore.ValuesBucket {
+    return {
+      bookUrl: annotation.bookUrl,
+      bookName: annotation.bookName,
+      chapterIndex: annotation.chapterIndex,
+      chapterName: annotation.chapterName,
+      startPos: annotation.start,
+      endPos: annotation.end,
+      quote: annotation.quote,
+      prefix: annotation.prefix,
+      suffix: annotation.suffix,
+      color: annotation.color,
+      style: annotation.style,
+      note: annotation.note,
+      excerpt: annotation.excerpt ? 1 : 0,
+      createTime: annotation.createTime,
+      updateTime: annotation.updateTime
+    };
+  }
+
+  private resultSetToBookAnnotation(resultSet: relationalStore.ResultSet): BookAnnotation {
+    const annotation = new BookAnnotation();
+    annotation.id = resultSet.getLong(resultSet.getColumnIndex('id'));
+    annotation.bookUrl = resultSet.getString(resultSet.getColumnIndex('bookUrl'));
+    annotation.bookName = resultSet.getString(resultSet.getColumnIndex('bookName'));
+    annotation.chapterIndex = resultSet.getLong(resultSet.getColumnIndex('chapterIndex'));
+    annotation.chapterName = resultSet.getString(resultSet.getColumnIndex('chapterName'));
+    annotation.start = resultSet.getLong(resultSet.getColumnIndex('startPos'));
+    annotation.end = resultSet.getLong(resultSet.getColumnIndex('endPos'));
+    annotation.quote = resultSet.getString(resultSet.getColumnIndex('quote'));
+    annotation.prefix = resultSet.getString(resultSet.getColumnIndex('prefix'));
+    annotation.suffix = resultSet.getString(resultSet.getColumnIndex('suffix'));
+    annotation.color = BookAnnotationStyles.normalizeColor(resultSet.getString(resultSet.getColumnIndex('color')));
+    annotation.style = BookAnnotationStyles.normalizeStyle(resultSet.getString(resultSet.getColumnIndex('style')));
+    annotation.note = resultSet.getString(resultSet.getColumnIndex('note'));
+    // 列由 migrateTables 补上；万一没补上（版本号没升）也别让整个划线列表读不出来。
+    const excerptIndex = resultSet.getColumnIndex('excerpt');
+    annotation.excerpt = excerptIndex >= 0 && resultSet.getLong(excerptIndex) === 1;
+    annotation.createTime = resultSet.getLong(resultSet.getColumnIndex('createTime'));
+    annotation.updateTime = resultSet.getLong(resultSet.getColumnIndex('updateTime'));
+    return annotation;
+  }
+
+  async getBookMark(workKey: string): Promise<BookMark | null> {
+    if (!this.store || !workKey) return null;
+    const predicates = new relationalStore.RdbPredicates('book_marks');
+    predicates.equalTo('workKey', workKey);
+    const resultSet = await this.store.query(predicates, []);
+    try {
+      return resultSet.goToNextRow() ? this.resultSetToBookMark(resultSet) : null;
+    } finally {
+      resultSet.close();
+    }
+  }
+
+  /** 最近改动的在前；limit 为 0 时全部。 */
+  async getAllBookMarks(limit: number = 0): Promise<BookMark[]> {
+    const marks: BookMark[] = [];
+    if (!this.store) return marks;
+    const predicates = new relationalStore.RdbPredicates('book_marks');
+    predicates.orderByDesc('updateTime');
+    if (limit > 0) predicates.limitAs(limit);
+    const resultSet = await this.store.query(predicates, []);
+    try {
+      while (resultSet.goToNextRow()) {
+        marks.push(this.resultSetToBookMark(resultSet));
+      }
+    } finally {
+      resultSet.close();
+    }
+    return marks;
+  }
+
+  /** 新增或整条替换；备份恢复、云同步也走这里，传入的可能是普通对象，先规整。 */
+  async saveBookMark(source: BookMark): Promise<void> {
+    const mark = BookMarkRules.fromPlain(source);
+    if (!this.store || !mark) return;
+    await this.store.insert('book_marks', this.bookMarkBucket(mark),
+      relationalStore.ConflictResolution.ON_CONFLICT_REPLACE);
+    CloudSyncChangeTracker.markDataChanged();
+  }
+
+  async deleteBookMark(workKey: string): Promise<void> {
+    if (!this.store || !workKey) return;
+    const predicates = new relationalStore.RdbPredicates('book_marks');
+    predicates.equalTo('workKey', workKey);
+    await this.store.delete(predicates);
+    CloudSyncChangeTracker.markDataChanged();
+  }
+
+  private bookMarkBucket(mark: BookMark): relationalStore.ValuesBucket {
+    return {
+      workKey: mark.workKey,
+      bookName: mark.bookName,
+      author: mark.author,
+      bookUrl: mark.bookUrl,
+      origin: mark.origin,
+      originName: mark.originName,
+      coverUrl: mark.coverUrl,
+      bookType: mark.bookType,
+      rating: mark.rating,
+      status: mark.status,
+      categories: JSON.stringify(mark.categories),
+      review: mark.review,
+      createTime: mark.createTime,
+      updateTime: mark.updateTime,
+      finishTime: mark.finishTime
+    };
+  }
+
+  private resultSetToBookMark(resultSet: relationalStore.ResultSet): BookMark {
+    const mark = new BookMark();
+    mark.workKey = resultSet.getString(resultSet.getColumnIndex('workKey'));
+    mark.bookName = resultSet.getString(resultSet.getColumnIndex('bookName'));
+    mark.author = resultSet.getString(resultSet.getColumnIndex('author'));
+    mark.bookUrl = resultSet.getString(resultSet.getColumnIndex('bookUrl'));
+    mark.origin = resultSet.getString(resultSet.getColumnIndex('origin'));
+    mark.originName = resultSet.getString(resultSet.getColumnIndex('originName'));
+    mark.coverUrl = resultSet.getString(resultSet.getColumnIndex('coverUrl'));
+    mark.bookType = resultSet.getLong(resultSet.getColumnIndex('bookType'));
+    mark.rating = BookMarkRules.normalizeRating(resultSet.getLong(resultSet.getColumnIndex('rating')));
+    mark.status = resultSet.getLong(resultSet.getColumnIndex('status'));
+    mark.categories = BookMarkRules.parseCategories(resultSet.getString(resultSet.getColumnIndex('categories')));
+    mark.review = resultSet.getString(resultSet.getColumnIndex('review'));
+    mark.createTime = resultSet.getLong(resultSet.getColumnIndex('createTime'));
+    mark.updateTime = resultSet.getLong(resultSet.getColumnIndex('updateTime'));
+    mark.finishTime = resultSet.getLong(resultSet.getColumnIndex('finishTime'));
+    return mark;
   }
 
   async moveBookBookmarks(fromBookUrl: string, toBookUrl: string, bookName: string, bookAuthor: string): Promise<void> {
@@ -1439,7 +1744,8 @@ export class AppDatabase implements BookSourceRuntimePersistence {
     const groups: BookGroup[] = [];
     if (!this.store) return groups;
     const resultSet = await this.store.querySql(
-      'SELECT groupId, groupName, groupOrder, show, enableRefresh FROM book_groups WHERE groupId > 0 ORDER BY groupOrder, groupId'
+      'SELECT groupId, groupName, groupOrder, show, enableRefresh, pinned FROM book_groups WHERE groupId > 0 ' +
+        'ORDER BY groupOrder, groupId'
     );
     try {
       while (resultSet.goToNextRow()) {
@@ -1449,6 +1755,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
         group.order = resultSet.getLong(resultSet.getColumnIndex('groupOrder'));
         group.show = resultSet.getLong(resultSet.getColumnIndex('show')) === 1;
         group.enableRefresh = resultSet.getLong(resultSet.getColumnIndex('enableRefresh')) === 1;
+        group.pinned = resultSet.getLong(resultSet.getColumnIndex('pinned')) === 1;
         groups.push(group);
       }
     } finally {
@@ -1469,6 +1776,10 @@ export class AppDatabase implements BookSourceRuntimePersistence {
       show: group.show ? 1 : 0,
       enableRefresh: group.enableRefresh ? 1 : 0
     };
+    // 旧备份里的分组没有 pinned，缺省时不覆盖本机的置顶状态（新插入的行按列默认值不置顶）。
+    if (typeof group.pinned === 'boolean') {
+      bucket['pinned'] = group.pinned ? 1 : 0;
+    }
     const exists = resultSet.rowCount > 0;
     resultSet.close();
     if (exists) {
@@ -1520,6 +1831,17 @@ export class AppDatabase implements BookSourceRuntimePersistence {
     await this.store.update({ groupName: name }, predicates);
     CloudSyncChangeTracker.markDataChanged();
     return true;
+  }
+
+  async setBookGroupPinned(groupId: number, pinned: boolean): Promise<void> {
+    if (!this.store || groupId <= 0) return;
+    const predicates = new relationalStore.RdbPredicates('book_groups');
+    predicates.equalTo('groupId', groupId);
+    const changed = await this.store.update({ pinned: pinned ? 1 : 0 }, predicates);
+    if (changed <= 0) {
+      throw new Error(`置顶分组未命中数据库记录: ${groupId}`);
+    }
+    CloudSyncChangeTracker.markDataChanged();
   }
 
   async updateBooksGroup(bookUrls: string[], groupId: number): Promise<void> {
@@ -1773,6 +2095,17 @@ export class AppDatabase implements BookSourceRuntimePersistence {
     try {
       if (!resultSet.goToFirstRow()) return null;
       return this.resultSetToBookSource(resultSet);
+    } finally {
+      resultSet.close();
+    }
+  }
+
+  /** 只数条数，不读规则内容。 */
+  async countBookSources(): Promise<number> {
+    if (!this.store) return 0;
+    const resultSet = await this.store.querySql('SELECT COUNT(*) as count FROM book_sources');
+    try {
+      return resultSet.goToFirstRow() ? resultSet.getLong(resultSet.getColumnIndex('count')) : 0;
     } finally {
       resultSet.close();
     }
@@ -2544,6 +2877,42 @@ export class AppDatabase implements BookSourceRuntimePersistence {
   private static readonly ONLINE_CONTENT_WHERE: string =
     "bookUrl NOT LIKE 'local://%' AND bookUrl NOT IN (SELECT bookUrl FROM books WHERE origin = 'local')";
 
+  private contentIndexStore: relationalStore.RdbStore | null = null;
+  private contentIndexTask: Promise<void> = Promise.resolve();
+
+  /**
+   * book_contents 的辅助索引。querySql 的结果集是懒执行的，查询在主线程 goToFirstRow/goToNextRow 时才真正跑。
+   * 这张表每行带整章正文，pinned、cacheDate、contentBytes 等列排在 content 后面，从表里取它们要把正文的溢出页
+   * 一并读出来；整表扫或按书扫时，页缓存一冷就是整段读盘，主线程卡满 6 秒被判 THREAD_BLOCK。
+   * - 两个部分索引：补算检查只看待补的行，补完即为空；
+   * - budget 覆盖索引：缓存统计、列出缓存、离线书只读索引；
+   * - book 覆盖索引：按书取各章缓存时间（每次读目录都要）、按章判断是否手动缓存，不碰正文。
+   * 首次在大表上建索引要扫全表，不放进 init 的等待链：打开数据库后在 RDB 线程上后台建，用到的查询先等它建完。
+   */
+  ensureContentIndexes(): Promise<void> {
+    const store = this.store;
+    if (!store) return Promise.resolve();
+    if (this.contentIndexStore !== store) {
+      this.contentIndexStore = store;
+      this.contentIndexTask = (async (): Promise<void> => {
+        // contentBytes 打头，规划器才会按 contentBytes<? 只查这个部分索引，而不是整扫 budget 覆盖索引。
+        await store.executeSql('CREATE INDEX IF NOT EXISTS idx_book_contents_unsized ' +
+          'ON book_contents(contentBytes, bookUrl) WHERE contentBytes < 0');
+        await store.executeSql('CREATE INDEX IF NOT EXISTS idx_book_contents_unindexed ' +
+          'ON book_contents(bookUrl) WHERE imagesIndexed = 0');
+        await store.executeSql('CREATE INDEX IF NOT EXISTS idx_book_contents_budget ' +
+          'ON book_contents(pinned, bookUrl, contentBytes, accessDate, cacheDate, chapterIndex, cacheRevision)');
+        await store.executeSql('CREATE INDEX IF NOT EXISTS idx_book_contents_book ' +
+          'ON book_contents(bookUrl, chapterIndex, pinned, cacheDate)');
+      })().catch((e: Error): void => {
+        // 建不成就下次再试；查询照常进行，只是慢。
+        if (this.contentIndexStore === store) this.contentIndexStore = null;
+        console.warn('[AppDatabase] create book_contents index failed', e);
+      });
+    }
+    return this.contentIndexTask;
+  }
+
   /** 升级前写入的行没有字节数，分批补算；返回本批补了多少行，0 表示已补完。 */
   async backfillCachedContentBytes(batchSize: number = 400): Promise<number> {
     if (!this.store) return 0;
@@ -2669,10 +3038,17 @@ export class AppDatabase implements BookSourceRuntimePersistence {
   async imagePaths(offlineOnly: boolean = false, protectedBooks: string[] = []): Promise<string[]> {
     if (!this.store) throw new Error('数据库未就绪');
     const marks = protectedBooks.map((): string => '?').join(',');
-    const rs = await this.store.querySql('SELECT DISTINCT r.path FROM reader_image_refs r JOIN book_contents c ' +
-      'ON c.bookUrl=r.bookUrl AND c.chapterIndex=r.chapterIndex' + (offlineOnly ?
-      ' WHERE (c.pinned=1 OR c.bookUrl LIKE \'local://%\' OR c.bookUrl IN (SELECT bookUrl FROM books WHERE origin=\'local\')' +
-      (marks ? ` OR c.bookUrl IN (${marks})` : '') + ')' : ''), offlineOnly ? protectedBooks : []);
+    let sql = 'SELECT DISTINCT r.path FROM reader_image_refs r JOIN book_contents c ' +
+      'ON c.bookUrl=r.bookUrl AND c.chapterIndex=r.chapterIndex';
+    if (offlineOnly) {
+      // 写成行值 IN 子查询：按 JOIN 写时规划器走主键索引回表取 pinned，要读正文溢出页；
+      // 子查询只扫 idx_book_contents_book 覆盖索引，不碰正文。
+      await this.ensureContentIndexes();
+      sql = 'SELECT DISTINCT r.path FROM reader_image_refs r WHERE (r.bookUrl, r.chapterIndex) IN ' +
+        '(SELECT c.bookUrl, c.chapterIndex FROM book_contents c WHERE c.pinned=1 OR c.bookUrl LIKE \'local://%\' OR ' +
+        'c.bookUrl IN (SELECT bookUrl FROM books WHERE origin=\'local\')' + (marks ? ` OR c.bookUrl IN (${marks})` : '') + ')';
+    }
+    const rs = await this.store.querySql(sql, offlineOnly ? protectedBooks : []);
     const paths: string[] = [];
     try { while (rs.goToNextRow()) paths.push(rs.getString(0)); } finally { rs.close(); }
     return paths;
@@ -2980,6 +3356,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
   /** 有离线内容的在线书：下载过音频，或有手动缓存的正文/漫画。书架封面的"离线"标识用它。 */
   async getOfflineBookUrls(): Promise<string[]> {
     if (!this.store) return [];
+    await this.ensureContentIndexes();
     const rs = await this.store.querySql('SELECT DISTINCT bookUrl FROM audio_offline_files UNION ' +
       `SELECT DISTINCT bookUrl FROM book_contents WHERE pinned=1 AND ${AppDatabase.ONLINE_CONTENT_WHERE}`);
     const urls: string[] = [];
@@ -2998,6 +3375,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
   async getBookChapterCacheDateMap(bookUrl: string): Promise<Map<number, number>> {
     const cacheDates: Map<number, number> = new Map();
     if (!this.store) return cacheDates;
+    await this.ensureContentIndexes();
     const predicates = new relationalStore.RdbPredicates('book_contents');
     predicates.equalTo('bookUrl', bookUrl);
     const resultSet = await this.store.querySql('SELECT c.chapterIndex,c.cacheDate FROM book_contents c WHERE c.bookUrl=? ' +

@@ -1,9 +1,15 @@
+import { WebParseSettingsStore } from '../utils/WebParseSettingsStore';
+import { ReaderRasterAssets } from '../core/reader/ReaderRasterAssets';
 import { AppAiHost } from '../utils/AppAiHost';
 import { AiAccessPolicy } from '../account/AiAccessPolicy';
 import { ComicColorizer } from '@legado/aiengine';
 import { ImmersiveLightSettingsStore } from '../utils/ImmersiveLightSettingsStore';
+import { ReaderCommentCardSettings } from '../utils/ReaderCommentCardSettings';
 import { SmartGripSettingsStore } from '../utils/SmartGripSettingsStore';
+import { ReaderNavIndicatorStore } from '../utils/ReaderNavIndicatorStore';
+import { FootprintSettingsStore } from '../utils/FootprintSettingsStore';
 import { HomeBackdropSettingsStore } from '../utils/HomeBackdropSettingsStore';
+import { AnimatedImagePolicy } from '../utils/AnimatedImagePolicy';
 import { HomeTabBarSettingsStore } from '../utils/HomeTabBarSettingsStore';
 import { AbilityConstant, UIAbility, Want, Configuration, ConfigurationConstant } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -18,6 +24,7 @@ import { AppThemeSettingsStore } from '../utils/AppThemeSettingsStore';
 import { CustomThemeSchemeStore } from '../utils/CustomThemeSchemeStore';
 import { ThemePackStore } from '../utils/ThemePackStore';
 import { AppThemeModeStore } from '../utils/AppThemeModeStore';
+import { AppColorModeApplier } from '../utils/AppColorModeApplier';
 import { AppIconSettingsStore } from '../utils/AppIconSettingsStore';
 import { AppIconManager } from '../utils/AppIconManager';
 import { ReaderFontBootstrap } from '../utils/ReaderFontBootstrap';
@@ -43,6 +50,7 @@ import { StartupCoverTextStore } from '../utils/StartupCoverTextStore';
 import { BookSourceRuntimeStore, NativeSourceInteraction, SourceScriptNotice, TlsTrustStore, SourceEngineHost } from '@legado/sourceengine';
 import { AppSourceInteraction } from '../utils/AppSourceInteraction';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { CrashReportStore } from '../utils/CrashReportStore';
 import { AppDatabase } from '../model/data/AppDatabase';
 import fs from '@ohos.file.fs';
 import { util } from '@kit.ArkTS';
@@ -50,6 +58,7 @@ import { FullTextCacheCancelCoordinator } from '../utils/FullTextCacheCancelCoor
 import { lanReaderServer } from '../core/lan/LanReaderServer';
 import { LanReaderPasswordStore } from '../core/lan/LanReaderPasswordStore';
 import { readStatsTracker } from '../core/stats/ReadStatsTracker';
+import { ReadStatsSettingsStore } from '../utils/ReadStatsSettingsStore';
 import { CloudAutoSync } from '../account/CloudAutoSync';
 import { ReaderCacheBudget } from '../core/book/ReaderCacheBudget';
 import { NetworkSettingsStore } from '../utils/NetworkSettingsStore';
@@ -61,7 +70,6 @@ import { AudioOfflineStore } from '../core/book/AudioOfflineStore';
 import { syncDesktopTitleBar, releaseSystemBarListeners } from '../utils/SystemBars';
 
 export default class EntryAbility extends UIAbility {
-  private appliedColorMode: number = -1;
   private modeDependentThemeKey: string = '';
   private immersiveLightBootstrapPromise: Promise<void> = Promise.resolve();
   private memberSettingsBootstrapPromise: Promise<void> = Promise.resolve();
@@ -69,8 +77,10 @@ export default class EntryAbility extends UIAbility {
   private readerBootstrapPromise: Promise<void> = Promise.resolve();
   private networkBootstrapPromise: Promise<void> = Promise.resolve();
   private smartGripBootstrapPromise: Promise<void> = Promise.resolve();
+  private footprintBootstrapPromise: Promise<void> = Promise.resolve();
   private homeBackdropBootstrapPromise: Promise<void> = Promise.resolve();
   private homeTabBarBootstrapPromise: Promise<void> = Promise.resolve();
+  private webParseBootstrapPromise: Promise<void> = Promise.resolve();
   private accountBootstrapPromise: Promise<void> = Promise.resolve();
   private membershipThemeTimer: number = -1;
   private deferredStartupScheduled: boolean = false;
@@ -84,7 +94,10 @@ export default class EntryAbility extends UIAbility {
         ChineseConverter.convertText(text, converterType)
     });
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onCreate');
+    ReaderRasterAssets.bindContext(this.context);
     AppStorage.setOrCreate('startupT0', Date.now());
+    // 上次运行的闪退/卡死/被系统结束事件在订阅后由系统投递，越早订阅越早拿到。
+    CrashReportStore.start(this.context);
     this.networkBootstrapPromise = NetworkSettingsStore.load(this.context).catch((error: Error) => {
       console.warn('恢复网络设置失败:', error);
     });
@@ -124,6 +137,9 @@ export default class EntryAbility extends UIAbility {
     CloudSyncSettingsStore.initializeStorage();
     CloudSyncChangeTracker.initializeStorage();
     readStatsTracker.init(this.context);
+    ReadStatsSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复阅读统计开关失败:', error);
+    });
     BookSourceRuntimeStore.install(AppDatabase.getInstance());
     SourceScriptNotice.setHandler((sourceName: string, message: string): void => {
       HdsFeedback.showToast(sourceName ? `${sourceName}：${message}` : message);
@@ -213,6 +229,11 @@ export default class EntryAbility extends UIAbility {
     ReaderInputScopes.load(this.context);
     PersistentStorage.persistProp('readerKeepScreenOn', true);
     PersistentStorage.persistProp('readerExtendToStatusBar', false);
+    // 开关值由 ReaderNavIndicatorStore 落盘，这里只先给各阅读页一个初值。
+    AppStorage.setOrCreate(ReaderNavIndicatorStore.KEY, false);
+    ReaderNavIndicatorStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复隐藏底部小白条设置失败:', error);
+    });
     PersistentStorage.persistProp('readerLastPageViewWidth', 0);
     PersistentStorage.persistProp('readerLastPageViewHeight', 0);
     PersistentStorage.persistProp('bookshelfShowTags', true);
@@ -231,6 +252,7 @@ export default class EntryAbility extends UIAbility {
     PersistentStorage.persistProp('bookshelfTypeCategoryEnabled', true);
     PersistentStorage.persistProp('bookshelfShowAllTypeTab', true);
     PersistentStorage.persistProp('bookshelfCompanionStagger', true);
+    PersistentStorage.persistProp('bookshelfCompanionCoverShadow', true);
     PersistentStorage.persistProp('bookshelfCompanionReadingNote', true);
     PersistentStorage.persistProp('bookshelfGreetingMode', 'time');
     PersistentStorage.persistProp('bookshelfGreetingTitle', '');
@@ -244,6 +266,9 @@ export default class EntryAbility extends UIAbility {
     PersistentStorage.persistProp('bookshelfIgnoreSourceCover', false);
     PersistentStorage.persistProp('bookshelfIgnoreEmptyCoverOnly', false);
     PersistentStorage.persistProp('bookshelfCoverMode', 'sequence');
+    // 首帧就要按深色调暗画封面，不等封面设置异步读完。
+    PersistentStorage.persistProp('bookshelfDarkCoverDim', false);
+    PersistentStorage.persistProp('bookshelfDarkCoverDimLevel', 20);
     PersistentStorage.persistProp('searchExploreShowResultCover', true);
     PersistentStorage.persistProp('searchExploreShowResultCoverBackground', true);
     PersistentStorage.persistProp('searchExploreUseBookshelfCoverGallery', false);
@@ -271,17 +296,38 @@ export default class EntryAbility extends UIAbility {
     // Immersive light strength: adaptive follows the system by default.
     PersistentStorage.persistProp('immersiveLightLevel', 'adaptive');
     PersistentStorage.persistProp('smartGripEnabled', true);
+    PersistentStorage.persistProp('footprintMonthCollapsed', false);
+    PersistentStorage.persistProp('footprintLayout', '');
     this.smartGripBootstrapPromise = SmartGripSettingsStore.load(this.context).catch((error: Error) => {
       console.warn('恢复智感握姿设置失败:', error);
+    });
+    this.footprintBootstrapPromise = FootprintSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复足迹页设置失败:', error);
     });
     this.homeBackdropBootstrapPromise = HomeBackdropSettingsStore.load(this.context).catch((error: Error) => {
       console.warn('恢复首页背景设置失败:', error);
     });
+    AnimatedImagePolicy.load(this.context).catch((error: Error) => {
+      console.warn('恢复动图设置失败:', error);
+    });
     this.homeTabBarBootstrapPromise = HomeTabBarSettingsStore.load(this.context).catch((error: Error) => {
       console.warn('恢复底栏设置失败:', error);
     });
+    // 首页页签数量取决于这个开关，要在加载首页前恢复。
+    this.webParseBootstrapPromise = WebParseSettingsStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复网页解析开关失败:', error);
+    });
+    if (!AppStorage.has(ReaderCommentCardSettings.KEY)) {
+      AppStorage.setOrCreate(ReaderCommentCardSettings.KEY, ReaderCommentCardSettings.DEFAULT);
+    }
+    ReaderCommentCardSettings.load(this.context).catch((error: Error) => {
+      console.warn('恢复热评卡片设置失败:', error);
+    });
     this.immersiveLightBootstrapPromise = ImmersiveLightSettingsStore.load(this.context).catch((error: Error) => {
       console.warn('恢复沉浸光感设置失败:', error);
+    });
+    ImmersiveLightSettingsStore.loadThemeTint(this.context).catch((error: Error) => {
+      console.warn('恢复沉浸光感主题色设置失败:', error);
     });
     PersistentStorage.persistProp('appIconId', AppIconSettingsStore.DEFAULT_ICON_ID);
     PersistentStorage.persistProp('explorePlatform', '');
@@ -393,7 +439,8 @@ export default class EntryAbility extends UIAbility {
     Promise.all([this.themeBootstrapPromise, this.immersiveLightBootstrapPromise,
       this.memberSettingsBootstrapPromise, this.networkBootstrapPromise,
       this.smartGripBootstrapPromise, this.homeBackdropBootstrapPromise,
-      this.homeTabBarBootstrapPromise]).finally(() => {
+      this.homeTabBarBootstrapPromise, this.footprintBootstrapPromise,
+      this.webParseBootstrapPromise]).finally(() => {
       this.loadStartupContent(windowStage);
     });
   }
@@ -518,7 +565,13 @@ export default class EntryAbility extends UIAbility {
     if (launchParam.launchReason === AbilityConstant.LaunchReason.CONTINUATION) {
       ReadingContinuation.accept(this.context, want);
     }
-    const launchTarget = this.handleLaunchWant(want);
+    let launchTarget = this.handleLaunchWant(want);
+    if (launchTarget === 'bookSource' && !WebParseSettingsStore.enabled()) {
+      // 规则文件只在网页解析开启后接收。
+      AppStorage.setOrCreate('pendingBookSourceImportUri', '');
+      HdsFeedback.showToast('请先在“我的 › 在线阅读”里开启网页解析');
+      launchTarget = '';
+    }
     if (launchTarget && this.mainWindowStage) {
       const targetUrl = launchTarget === 'bookSource' ? 'pages/BookSource' :
         launchTarget === 'themeImport' ? 'pages/ThemeSettings' :
@@ -646,12 +699,8 @@ export default class EntryAbility extends UIAbility {
     ReaderFontBootstrap.applyApplicationFont(this.context, 'mode-dependent-theme');
   }
 
-  private setApplicationColorMode(colorMode: number): void {
-    if (this.appliedColorMode === colorMode) {
-      return;
-    }
-    this.appliedColorMode = colorMode;
-    this.context.getApplicationContext().setColorMode(colorMode);
+  private setApplicationColorMode(colorMode: ConfigurationConstant.ColorMode): void {
+    AppColorModeApplier.apply(this.context, colorMode);
   }
 
   private handleLaunchWant(want: Want): string {
@@ -668,9 +717,16 @@ export default class EntryAbility extends UIAbility {
       return 'themeImport';
     }
     if (externalUri && externalFormat === 'qybook') {
-      // 碰一碰收到的在线书：加入书架（需本机有该书源）并打开到对方的阅读位置。
+      // 碰一碰收到的在线书：加入书架（需本机有对应规则）并打开到对方的阅读位置。
+      // 只在网页解析开启时接收；冷启动时开关还在恢复，等它读完再判断。
       const raw = this.readExternalText(externalUri);
-      if (raw) ReadingContinuation.acceptRaw(this.context, raw);
+      this.webParseBootstrapPromise.finally(() => {
+        if (!WebParseSettingsStore.enabled()) {
+          HdsFeedback.showToast('请先在“我的 › 在线阅读”里开启网页解析');
+        } else if (raw) {
+          ReadingContinuation.acceptRaw(this.context, raw);
+        }
+      });
       return '';
     }
     if (externalUri && externalFormat === 'json') {

@@ -34,13 +34,17 @@ function harness() {
     WebBookService: class {},
     BookSourceInteractionPostProcessor: { interactionCacheIdentity: () => 'source-settings' },
     ReaderOpenTrace: { mark() {} },
+    // 试读流程针对在线书，按网页解析已开启来跑。
+    WebParseSettingsStore: { visibleBook: () => true },
     ReaderCacheBudget: { setProtectedBooksProvider() {}, noteTextWrite() {} },
     AudioOfflineStore: { downloadedDates: async (...args) => {
       offlineLookups.push(args);
       return new Map([[0, 123]]);
     } },
     AppStorage: { setOrCreate: (key, value) => storage.set(key, value) },
-    getContext: () => ({}), HdsFeedback: { showToast() {} }
+    getContext: () => ({}), HdsFeedback: { showToast() {} },
+    // 加入书架时把书籍标记的标签带过去；这里没有标记。
+    BookMarkService: { carryTagsToShelfBook: async () => {} }
   });
   vm.runInContext([
     'model/data/Book.ts', 'core/book/BookTypeSupport.ts', 'utils/SearchExplorePendingBook.ets',

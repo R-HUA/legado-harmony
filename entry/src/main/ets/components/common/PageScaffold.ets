@@ -35,7 +35,7 @@ export struct PageScaffold {
   @Prop collapsible: boolean = true;
   @Prop externalCollapse: number = 0;
   @State headerCollapse: number = 0;
-  /** 页面自行滚动时传入实际使用的控制器，原生标题栏与内容保持联动。 */
+  /** 页面自行滚动或需要调整滚动位置时传入自己的 Scroller，未传入时使用内置控制器。 */
   scroller: Scroller | undefined = undefined;
   private contentScroller: Scroller = new Scroller();
   @State private actionsWidth: number = 12;
@@ -116,7 +116,7 @@ export struct PageScaffold {
         })
       } else {
         if (this.scrollable) {
-          Scroll(this.contentScroller) {
+          Scroll(this.scroller || this.contentScroller) {
             Column() {
               this.content()
             }
@@ -127,17 +127,19 @@ export struct PageScaffold {
             })
           }
           .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+          .scrollBar(BarState.Off)
           .width('100%')
           .height('100%')
           .align(Alignment.TopStart)
           .onDidScroll((_xOffset: number, yOffset: number) => {
             if (!this.collapsible) return;
             this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
-              this.contentScroller.currentOffset().yOffset);
+              (this.scroller || this.contentScroller).currentOffset().yOffset);
           })
           .onScrollStop(() => {
             if (!this.collapsible) return;
-            const target = CollapsingHeader.settle(this.headerCollapse, this.contentScroller.currentOffset().yOffset);
+            const target = CollapsingHeader.settle(this.headerCollapse,
+              (this.scroller || this.contentScroller).currentOffset().yOffset);
             if (target !== this.headerCollapse) {
               animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
                 this.headerCollapse = target;
@@ -200,6 +202,7 @@ export struct PageScaffold {
         })
       }
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+      .scrollBar(BarState.Off)
       .width('100%')
       .height('100%')
       .align(Alignment.TopStart)

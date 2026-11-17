@@ -9,7 +9,7 @@ const support = fs.readFileSync(new URL('../entry/src/main/ets/core/book/VideoPl
 const attempts = file.slice(file.indexOf('class VideoNativeAttempt'), file.indexOf('interface VideoPlayerParams'));
 const methods = file.slice(file.indexOf('struct VideoPlayerPage {'), file.indexOf('  @Builder'))
   .replace('struct VideoPlayerPage', 'class VideoPlayerPage')
-  .replace(/@(State|StorageProp|StorageLink)(\([^\n]*?\))?\s+/g, '');
+  .replace(/@(State|StorageProp|StorageLink|Watch)(\([^\n]*?\))?\s+/g, '');
 const saves = [], notices = [], requests = [], timers = new Map();
 let nextTimer = 0;
 class MediaController {
@@ -35,7 +35,7 @@ const context = vm.createContext({
     cancelPendingRequests() { this.cancelled = true; }
   },
   AppDatabase: { getInstance: () => ({ updateBook: async book => saves.push(structuredClone(book)) }) },
-  HdsFeedback: { showToast: text => notices.push(text) }, ReaderTtsFloatingSession: { pause: async () => {} },
+  HdsFeedback: { showToast: text => notices.push(text) }, ReaderTtsFloatingSession: { pause: async () => {}, suspendForOtherAudio: async () => {}, resumeAfterOtherAudio: async () => {} },
   CookieStore: { saveSync() {} },
   setTimeout: (fn, ms) => { const id = ++nextTimer; timers.set(id, { fn, ms }); return id; },
   clearTimeout: id => timers.delete(id), CONTROLS_HIDE_DELAY_MS: 4000, SPEEDS: [1, 1.25, 1.75, 2, 0.75],

@@ -614,6 +614,7 @@ struct ReaderReplaceRulesPage {
             }
           }, (spacerKey: string) => spacerKey)
         }
+        .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .layoutWeight(1)
         .width('100%')
@@ -1044,7 +1045,7 @@ struct ReaderReplaceRulesPage {
           .width('100%')
         }
 
-        this.textAreaField('特定范围', this.draft.scope, '书名、作者、书源或地址；留空表示全部', (value: string) => {
+        this.textAreaField('特定范围', this.draft.scope, '书名、作者、规则或地址；留空表示全部', (value: string) => {
           this.draft.scope = value;
           this.refreshDraft();
         })
@@ -1078,6 +1079,7 @@ struct ReaderReplaceRulesPage {
       .width('100%')
       .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG })
     }
+    .scrollBar(BarState.Off)
     .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
     .layoutWeight(1)
     .width('100%')

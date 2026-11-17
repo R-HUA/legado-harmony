@@ -39,7 +39,7 @@ export class ReaderSettings {
   pageTurnAnimationType: number = 1;
   landscapeDoublePage: boolean = false;
   screenOrientation: string = 'system';
-  tapZoneActions: string = '3,3,3,3,1,2,2,2,2';
+  tapZoneActions: string = '3,3,2,3,1,2,2,2,2';
   longPressSelectText: boolean = true;
   eyeTurnEnabled: boolean = false;
   eyeTurnPortraitCalibration: string = '';
@@ -49,6 +49,10 @@ export class ReaderSettings {
   eyeTurnNextEnabled: boolean = true;
   eyeTurnPreviousDwellMs: number = 850;
   eyeTurnNextDwellMs: number = 650;
+  // 新版识别模型（人脸关键点）：独立开关与独立校准，关掉即回到旧版亮度识别，旧校准不受影响。
+  eyeTurnModelEnabled: boolean = false;
+  eyeTurnModelPortraitCalibration: string = '';
+  eyeTurnModelLandscapeCalibration: string = '';
   screenTimeoutMinutes: number = -1;
   // 保留旧字段用于读取已有主题配置，以及兼容旧版本降级读取。
   keepScreenOn: boolean = true;
@@ -62,6 +66,8 @@ export class ReaderSettings {
   useBrightnessQuickAction: boolean = true;
   quickJumpMode: string = 'chapter';
   quickBookmarkEnabled: boolean = true;
+  /** 滚动阅读时短按正文按“点击区域动作”翻一屏；关闭时短按只呼出菜单。 */
+  scrollTapTurn: boolean = false;
   /** 夜间模式下插图的处理：保持原色 / 调暗 / 反色 / 自动（见 ReaderNightImage）。 */
   nightImageMode: string = ReaderNightImage.ORIGINAL;
   // 阅读页眉页脚配置。默认页眉关闭、页脚保持现有章节/页码信息。
@@ -147,6 +153,9 @@ export class ReaderSettingsStore {
   static readonly KEY_EYE_TURN_NEXT_ENABLED: string = 'readerEyeTurnNextEnabled';
   static readonly KEY_EYE_TURN_PREVIOUS_DWELL_MS: string = 'readerEyeTurnPreviousDwellMs';
   static readonly KEY_EYE_TURN_NEXT_DWELL_MS: string = 'readerEyeTurnNextDwellMs';
+  static readonly KEY_EYE_TURN_MODEL_ENABLED: string = 'readerEyeTurnModelEnabled';
+  static readonly KEY_EYE_TURN_MODEL_PORTRAIT_CALIBRATION: string = 'readerEyeTurnModelPortraitCalibration';
+  static readonly KEY_EYE_TURN_MODEL_LANDSCAPE_CALIBRATION: string = 'readerEyeTurnModelLandscapeCalibration';
   static readonly KEY_SCREEN_TIMEOUT_MINUTES: string = 'readerScreenTimeoutMinutes';
   static readonly KEY_KEEP_SCREEN_ON: string = 'readerKeepScreenOn';
   static readonly KEY_EXTEND_TO_STATUS_BAR: string = 'readerExtendToStatusBar';
@@ -159,6 +168,7 @@ export class ReaderSettingsStore {
   static readonly KEY_USE_BRIGHTNESS_QUICK_ACTION: string = 'readerUseBrightnessQuickAction';
   static readonly KEY_QUICK_JUMP_MODE: string = 'readerQuickJumpMode';
   static readonly KEY_QUICK_BOOKMARK_ENABLED: string = 'readerQuickBookmarkEnabled';
+  static readonly KEY_SCROLL_TAP_TURN: string = 'readerScrollTapTurn';
   static readonly KEY_NIGHT_IMAGE_MODE: string = 'readerNightImageMode';
   static readonly KEY_HEADER_ENABLED: string = 'readerHeaderEnabled';
   static readonly KEY_HEADER_CONTENT_MODE: string = 'readerHeaderContentMode';
@@ -192,11 +202,17 @@ export class ReaderSettingsStore {
   static readonly KEY_REGEX_FONT_SIZE: string = 'readerRegexFontSize';
   static readonly KEY_REGEX_SHADOW_COLOR: string = 'readerRegexShadowColor';
   static readonly KEY_REGEX_FONT_RULES_RAW: string = 'readerRegexFontRulesRaw';
-  /** 打开时每套主题各记一份排版、换主题即换排版；关闭时所有主题共用当前排版。同时作为 AppStorage 键。 */
+  /**
+   * 打开时每套主题各记一份排版和翻页等阅读设置、换主题一起换；关闭时这些所有主题共用，换主题只换阅读背景。
+   * 同时作为 AppStorage 键。
+   */
   static readonly KEY_TYPOGRAPHY_FOLLOWS_THEME: string = 'readerTypographyFollowsTheme';
   private static readonly STORE_NAME: string = 'reader_settings';
   private static readonly THEME_PROFILE_PREFIX: string = 'readerThemeProfileV1_';
   private static readonly LEGACY_CUSTOM_PROFILE_ID: string = 'custom';
+  // 上次在用的阅读档案：主题在应用外被换掉（同步后没读设置就退出）时，冷启动靠它把共用排版带过去。
+  private static readonly KEY_LAST_PROFILE_ID: string = 'readerLastThemeProfileId';
+  private static rememberedProfileId: string = '';
   // 旧版“已绑定排版”标记，现在只在删除档案时顺带清掉。
   private static readonly TYPOGRAPHY_BOUND_PREFIX: string = 'readerThemeTypographyBoundV1_';
   private static cachedSettings: ReaderSettings | null = null;
@@ -211,9 +227,38 @@ export class ReaderSettingsStore {
     if (ReaderSettingsStore.cachedSettings && ReaderSettingsStore.cachedThemeId === activeThemeId) {
       return ReaderSettingsStore.clone(ReaderSettingsStore.cachedSettings);
     }
+    // 冷启动时 AppThemeSettingsStore.load 迁移阅读外观会先读一次，那时主题 ID 还没恢复，只能按默认主题取档案。
+    // 这份只给调用方临时用：不带排版、不进缓存、不记成上次在用的档案、不写盘。否则主题恢复后的那次读取
+    // 会把默认主题的设置当成“上一套”，在排版不跟随主题时整套抄到正在用的主题上，每次冷启动都重置一遍。
+    const provisional = !ReaderSettingsStore.themeRestored();
+    // 走到这里时缓存若还在，就是上一套主题的设置。
+    let previousSettings = provisional ? null : ReaderSettingsStore.cachedSettings;
     const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
     const profile = await ReaderSettingsStore.loadThemeProfile(store, activeThemeId);
+    if (profile && provisional) {
+      profile.aiProcessingIndicatorEnabled = await ReaderSettingsStore.getBoolean(
+        store, ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED, true);
+      profile.quickJumpMode = ReaderQuickJumpModel.normalizeMode(await ReaderSettingsStore.getString(
+        store, ReaderSettingsStore.KEY_QUICK_JUMP_MODE, 'chapter'));
+      await ReaderSettingsStore.readGlobalFontSettings(store, profile);
+      ReaderSettingsStore.normalizeGlobalFontMode(profile);
+      return profile;
+    }
     if (profile) {
+      // 排版不跟随主题时，不经 switchThemeProfile 换来的主题（试用、会员到期回退、同步来的主题，
+      // 或主题 ID 已换、档案还没切时被别处读到）也沿用刚才那套排版，不读档案里各主题的旧排版。
+      // 冷启动没有缓存时，从上次在用的档案取。
+      // 翻页、点按区域、眼动翻页等阅读设置所有主题共用，只有排版可以跟随主题。不经 switchThemeProfile 换来的
+      // 主题也要沿用上一套的阅读设置；排版不跟随时连排版一起沿用。冷启动没有缓存时，从上次在用的档案取。
+      const follows = await ReaderSettingsStore.readTypographyFollowsTheme(store);
+      if (!previousSettings) {
+        previousSettings = await ReaderSettingsStore.loadRememberedProfile(store, activeThemeId);
+      }
+      const carried = previousSettings !== null;
+      if (carried && previousSettings) {
+        if (!follows) ReaderSettingsStore.copyTypography(previousSettings, profile);
+        ReaderSettingsStore.copyReadingBehavior(previousSettings, profile);
+      }
       // AI 处理标识是阅读通用设置，不随主题档案切换。
       profile.aiProcessingIndicatorEnabled = await ReaderSettingsStore.getBoolean(
         store, ReaderSettingsStore.KEY_AI_PROCESSING_INDICATOR_ENABLED, true);
@@ -221,9 +266,13 @@ export class ReaderSettingsStore {
         store, ReaderSettingsStore.KEY_QUICK_JUMP_MODE, 'chapter'));
       await ReaderSettingsStore.readGlobalFontSettings(store, profile);
       ReaderSettingsStore.normalizeGlobalFontMode(profile);
-      await ReaderSettingsStore.applyThemePageTurnDefault(store, activeThemeId, profile);
       ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(profile);
       ReaderSettingsStore.cachedThemeId = activeThemeId;
+      if (carried) {
+        await ReaderSettingsStore.persistThemeProfile(store, activeThemeId, profile);
+        await store.flush();
+      }
+      await ReaderSettingsStore.rememberActiveProfile(store, activeThemeId);
       return ReaderSettingsStore.clone(profile);
     }
     const settings = new ReaderSettings();
@@ -369,7 +418,7 @@ export class ReaderSettingsStore {
       await ReaderSettingsStore.getString(
         store,
         ReaderSettingsStore.KEY_TAP_ZONE_ACTIONS,
-        AppStorage.get<string>(ReaderSettingsStore.KEY_TAP_ZONE_ACTIONS) || '3,3,3,3,1,2,2,2,2'
+        AppStorage.get<string>(ReaderSettingsStore.KEY_TAP_ZONE_ACTIONS) || '3,3,2,3,1,2,2,2,2'
       )
     );
     settings.longPressSelectText = await ReaderSettingsStore.getBoolean(
@@ -399,6 +448,15 @@ export class ReaderSettingsStore {
       store, ReaderSettingsStore.KEY_EYE_TURN_PREVIOUS_DWELL_MS, 850, 'eyeTurnDwell');
     settings.eyeTurnNextDwellMs = await ReaderSettingsStore.getNumber(
       store, ReaderSettingsStore.KEY_EYE_TURN_NEXT_DWELL_MS, 650, 'eyeTurnDwell');
+    settings.eyeTurnModelEnabled = await ReaderSettingsStore.getBoolean(
+      store, ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED,
+      AppStorage.get<boolean>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED) ?? false);
+    settings.eyeTurnModelPortraitCalibration = await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_EYE_TURN_MODEL_PORTRAIT_CALIBRATION,
+      AppStorage.get<string>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_PORTRAIT_CALIBRATION) || '');
+    settings.eyeTurnModelLandscapeCalibration = await ReaderSettingsStore.getString(
+      store, ReaderSettingsStore.KEY_EYE_TURN_MODEL_LANDSCAPE_CALIBRATION,
+      AppStorage.get<string>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_LANDSCAPE_CALIBRATION) || '');
     const legacyKeepScreenOn = await ReaderSettingsStore.getBoolean(
       store,
       ReaderSettingsStore.KEY_KEEP_SCREEN_ON,
@@ -456,6 +514,8 @@ export class ReaderSettingsStore {
       ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED,
       AppStorage.get<boolean>(ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED) ?? true
     );
+    settings.scrollTapTurn = await ReaderSettingsStore.getBoolean(
+      store, ReaderSettingsStore.KEY_SCROLL_TAP_TURN, false);
     settings.nightImageMode = ReaderNightImage.normalize(await ReaderSettingsStore.getString(
       store, ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE, ReaderNightImage.ORIGINAL));
     settings.readerHeaderEnabled = await ReaderSettingsStore.getBoolean(
@@ -495,11 +555,13 @@ export class ReaderSettingsStore {
     settings.regexFontRulesRaw = await ReaderSettingsStore.getString(store, ReaderSettingsStore.KEY_REGEX_FONT_RULES_RAW, '');
     ReaderSettingsStore.mergeStorageFontSettings(settings);
     ReaderSettingsStore.normalizeGlobalFontMode(settings);
-    await ReaderSettingsStore.applyThemePageTurnDefault(store, activeThemeId, settings);
+    // 旧版顶层键要迁进正在用的主题档案，主题还没恢复时不知道是哪一套，等恢复后的那次读取再迁。
+    if (provisional) return settings;
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
     ReaderSettingsStore.cachedThemeId = activeThemeId;
     await ReaderSettingsStore.persistThemeProfile(store, activeThemeId, settings);
     await store.flush();
+    await ReaderSettingsStore.rememberActiveProfile(store, activeThemeId);
     return settings;
   }
 
@@ -508,8 +570,11 @@ export class ReaderSettingsStore {
     await ReaderSettingsStore.waitForLayoutElementSaves();
     await ReaderSettingsStore.waitForReaderLayoutSaves();
     await ReaderSettingsStore.waitForReaderChromeSaves();
-    ReaderSettingsStore.cachedSettings = null;
-    ReaderSettingsStore.cachedThemeId = '';
+    // 主题已经换了就留着上一套的缓存，load 要靠它在排版不跟随主题时把排版带过去。
+    if (ReaderSettingsStore.cachedThemeId === ReaderSettingsStore.activeThemeId()) {
+      ReaderSettingsStore.cachedSettings = null;
+      ReaderSettingsStore.cachedThemeId = '';
+    }
     return await ReaderSettingsStore.load(context);
   }
 
@@ -533,19 +598,22 @@ export class ReaderSettingsStore {
       next.lightThemeIndex = ReaderThemeHelper.APP_THEME_INDEX;
       next.darkThemeIndex = ReaderThemeHelper.APP_THEME_INDEX;
       next.themeIndex = ReaderThemeHelper.APP_THEME_INDEX;
-    } else if (!await ReaderSettingsStore.readTypographyFollowsTheme(store)) {
-      // 排版不跟随主题：目标主题只换翻页等其余设置，排版沿用当前这套。
-      ReaderSettingsStore.copyTypography(current, next);
+    } else {
+      // 阅读设置所有主题共用，始终沿用当前这套；排版不跟随主题时排版也沿用，目标主题只换阅读背景。
+      if (!await ReaderSettingsStore.readTypographyFollowsTheme(store)) {
+        ReaderSettingsStore.copyTypography(current, next);
+      }
+      ReaderSettingsStore.copyReadingBehavior(current, next);
     }
     next.quickJumpMode = current.quickJumpMode;
     next.aiProcessingIndicatorEnabled = current.aiProcessingIndicatorEnabled;
     ReaderSettingsStore.copyGlobalFontSettings(current, next);
-    await ReaderSettingsStore.applyThemePageTurnDefault(store, nextId, next);
     await ReaderSettingsStore.persistThemeProfile(store, nextId, next);
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(next);
     ReaderSettingsStore.cachedThemeId = nextId;
     ReaderSettingsStore.applyToStorage(next);
     await store.flush();
+    await ReaderSettingsStore.rememberActiveProfile(store, nextId);
     return ReaderSettingsStore.clone(next);
   }
 
@@ -752,6 +820,26 @@ export class ReaderSettingsStore {
     await store.flush();
   }
 
+  static async saveEyeTurnModelSettings(context: Context, enabled: boolean, portraitCalibration: string,
+    landscapeCalibration: string): Promise<void> {
+    const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
+    settings.eyeTurnModelEnabled = enabled === true;
+    settings.eyeTurnModelPortraitCalibration = portraitCalibration || '';
+    settings.eyeTurnModelLandscapeCalibration = landscapeCalibration || '';
+    ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
+    ReaderSettingsStore.applyEyeTurnToStorage(settings);
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    await store.put(ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED, settings.eyeTurnModelEnabled);
+    await store.put(ReaderSettingsStore.KEY_EYE_TURN_MODEL_PORTRAIT_CALIBRATION,
+      settings.eyeTurnModelPortraitCalibration);
+    await store.put(ReaderSettingsStore.KEY_EYE_TURN_MODEL_LANDSCAPE_CALIBRATION,
+      settings.eyeTurnModelLandscapeCalibration);
+    // Reader settings load from the active theme profile when one exists, so it must carry the change too; without
+    // this the switch and calibration came back off after reopening the reader.
+    await ReaderSettingsStore.persistActiveThemeProfile(store, settings);
+    await store.flush();
+  }
+
   static async saveTapZoneActions(context: Context, actions: string): Promise<void> {
     const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
     settings.tapZoneActions = ReaderSettingsStore.normalizeTapZoneActions(actions);
@@ -791,6 +879,17 @@ export class ReaderSettingsStore {
     ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
     const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
     await store.put(ReaderSettingsStore.KEY_PRELOAD_CHAPTER_COUNT, settings.preloadChapterCount);
+    await ReaderSettingsStore.persistActiveThemeProfile(store, settings);
+    await store.flush();
+  }
+
+  static async saveScrollTapTurn(context: Context, enabled: boolean): Promise<void> {
+    const settings = ReaderSettingsStore.cachedSettings || ReaderSettingsStore.fromStorage();
+    settings.scrollTapTurn = enabled;
+    ReaderSettingsStore.cachedSettings = ReaderSettingsStore.clone(settings);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_SCROLL_TAP_TURN, enabled);
+    const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    await store.put(ReaderSettingsStore.KEY_SCROLL_TAP_TURN, enabled);
     await ReaderSettingsStore.persistActiveThemeProfile(store, settings);
     await store.flush();
   }
@@ -1124,6 +1223,8 @@ export class ReaderSettingsStore {
       settings.eyeTurnPreviousDwellMs,
       settings.eyeTurnNextDwellMs
     );
+    await ReaderSettingsStore.saveEyeTurnModelSettings(context, settings.eyeTurnModelEnabled,
+      settings.eyeTurnModelPortraitCalibration, settings.eyeTurnModelLandscapeCalibration);
     await ReaderSettingsStore.saveTapZoneActions(context, settings.tapZoneActions);
     await ReaderSettingsStore.savePreloadEnabled(context, settings.preloadEnabled);
     await ReaderSettingsStore.saveChineseConverterType(context, settings.chineseConverterType);
@@ -1131,6 +1232,7 @@ export class ReaderSettingsStore {
     await ReaderSettingsStore.savePreloadChapterCount(context, settings.preloadChapterCount);
     await ReaderSettingsStore.saveAiProcessingIndicatorEnabled(context, settings.aiProcessingIndicatorEnabled);
     await ReaderSettingsStore.saveQuickBookmarkEnabled(context, settings.quickBookmarkEnabled);
+    await ReaderSettingsStore.saveScrollTapTurn(context, settings.scrollTapTurn);
     await ReaderSettingsStore.saveNightImageMode(context, settings.nightImageMode);
     await ReaderSettingsStore.saveFontSettings(
       context,
@@ -1188,6 +1290,7 @@ export class ReaderSettingsStore {
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_USE_BRIGHTNESS_QUICK_ACTION, normalized.useBrightnessQuickAction);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_QUICK_JUMP_MODE, normalized.quickJumpMode);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED, normalized.quickBookmarkEnabled);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_SCROLL_TAP_TURN, normalized.scrollTapTurn);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE, normalized.nightImageMode);
     ReaderSettingsStore.applyReaderChromeToStorage(normalized);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_FONT_FAMILY, normalized.fontFamily);
@@ -1251,6 +1354,11 @@ export class ReaderSettingsStore {
       settings.eyeTurnPreviousDwellMs);
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_NEXT_DWELL_MS,
       settings.eyeTurnNextDwellMs);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED, settings.eyeTurnModelEnabled);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_MODEL_PORTRAIT_CALIBRATION,
+      settings.eyeTurnModelPortraitCalibration);
+    AppStorage.setOrCreate(ReaderSettingsStore.KEY_EYE_TURN_MODEL_LANDSCAPE_CALIBRATION,
+      settings.eyeTurnModelLandscapeCalibration);
   }
 
   private static applyLayoutToStorage(settings: ReaderSettings): void {
@@ -1290,6 +1398,11 @@ export class ReaderSettingsStore {
       settings.darkCustomThemeTextColor
     );
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_CUSTOM_THEMES_RAW, settings.customThemesRaw);
+  }
+
+  /** 主题 ID 只在 AppThemeSettingsStore.applyToStorage 后才进 AppStorage，之前 activeThemeId 只是默认主题的猜测。 */
+  private static themeRestored(): boolean {
+    return !!AppStorage.get<string>('appThemeId');
   }
 
   private static activeThemeId(): string {
@@ -1354,6 +1467,51 @@ export class ReaderSettingsStore {
    * 主题排版页能编辑的全部字段：正文排版、段首缩进与对齐、页眉页脚、正文扩展至状态栏，
    * 以及阅读字体页的正文、标题字体和正则强调规则。全局字体是全应用共用的选择，不在其中。
    */
+  /**
+   * 排版以外、仍记在主题档案里的阅读设置：翻页方式与动画、横屏双页、屏幕方向、点按区域、长按选字、眼动翻页、
+   * 息屏与常亮、预加载、菜单快捷按钮、快速书签、夜间插图，以及旧版页眉页脚内容字段。
+   * 排版不跟随主题时这些也所有主题共用；阅读背景（主题序号与自定义配色）始终跟着主题走。
+   */
+  /**
+   * 阅读设置：所有主题共用，换主题（以及不经 switchThemeProfile 换来的主题）时始终从当前这套带过去。
+   * 档案仍整份保存 ReaderSettings，这些字段在各档案里的旧值不再生效。页眉页脚显示什么由 readerInfoBarConfig
+   * 决定，它属于排版；下面的旧页眉页脚模式只在没有该配置时兜底。
+   */
+  private static copyReadingBehavior(source: ReaderSettings, target: ReaderSettings): void {
+    target.pageTurnMode = source.pageTurnMode;
+    target.pageTurnAnimationType = source.pageTurnAnimationType;
+    target.landscapeDoublePage = source.landscapeDoublePage;
+    target.screenOrientation = source.screenOrientation;
+    target.tapZoneActions = source.tapZoneActions;
+    target.longPressSelectText = source.longPressSelectText;
+    target.eyeTurnEnabled = source.eyeTurnEnabled;
+    target.eyeTurnPortraitCalibration = source.eyeTurnPortraitCalibration;
+    target.eyeTurnLandscapeCalibration = source.eyeTurnLandscapeCalibration;
+    target.eyeTurnPreviousEnabled = source.eyeTurnPreviousEnabled;
+    target.eyeTurnNextEnabled = source.eyeTurnNextEnabled;
+    target.eyeTurnPreviousDwellMs = source.eyeTurnPreviousDwellMs;
+    target.eyeTurnNextDwellMs = source.eyeTurnNextDwellMs;
+    target.eyeTurnModelEnabled = source.eyeTurnModelEnabled;
+    target.eyeTurnModelPortraitCalibration = source.eyeTurnModelPortraitCalibration;
+    target.eyeTurnModelLandscapeCalibration = source.eyeTurnModelLandscapeCalibration;
+    target.screenTimeoutMinutes = source.screenTimeoutMinutes;
+    target.keepScreenOn = source.keepScreenOn;
+    target.preloadEnabled = source.preloadEnabled;
+    target.preloadChapterCount = source.preloadChapterCount;
+    target.useTtsQuickAction = source.useTtsQuickAction;
+    target.useAutoScrollQuickAction = source.useAutoScrollQuickAction;
+    target.useChapterQuickJump = source.useChapterQuickJump;
+    target.useBrightnessQuickAction = source.useBrightnessQuickAction;
+    target.quickBookmarkEnabled = source.quickBookmarkEnabled;
+    target.scrollTapTurn = source.scrollTapTurn;
+    target.nightImageMode = source.nightImageMode;
+    target.readerHeaderContentMode = source.readerHeaderContentMode;
+    target.readerFooterLeftMode = source.readerFooterLeftMode;
+    target.readerFooterProgressMode = source.readerFooterProgressMode;
+    target.readerFooterShowProgressBar = source.readerFooterShowProgressBar;
+    target.chineseConverterType = source.chineseConverterType;
+  }
+
   static copyTypography(source: ReaderSettings, target: ReaderSettings): void {
     target.fontSize = source.fontSize;
     target.fontWeight = source.fontWeight;
@@ -1402,13 +1560,17 @@ export class ReaderSettingsStore {
   /**
    * 关闭后换主题时不再取用各主题档案里的排版，而是把当前排版带过去（用过的主题档案随之记下共用排版）；
    * 没用过的主题保留原有排版，重新打开后照常取用。
-   * 与各主题档案一样只存本机。
+   * 各主题档案只存本机，开关本身随阅读设置云同步，重装或换设备登录后仍按用户的选择。
+   * 同步下来的值写入时 markChanged 传 false，不再触发一轮上传。
    */
-  static async setTypographyFollowsTheme(context: Context, follows: boolean): Promise<void> {
+  static async setTypographyFollowsTheme(context: Context, follows: boolean,
+    markChanged: boolean = true): Promise<void> {
     const store = await preferences.getPreferences(context, ReaderSettingsStore.STORE_NAME);
+    const changed = await ReaderSettingsStore.readTypographyFollowsTheme(store) !== follows;
     await store.put(ReaderSettingsStore.KEY_TYPOGRAPHY_FOLLOWS_THEME, follows);
     await store.flush();
     AppStorage.setOrCreate(ReaderSettingsStore.KEY_TYPOGRAPHY_FOLLOWS_THEME, follows);
+    if (changed && markChanged) CloudSyncChangeTracker.markPreferenceChanged();
   }
 
   private static async readTypographyFollowsTheme(store: preferences.Preferences): Promise<boolean> {
@@ -1491,18 +1653,19 @@ export class ReaderSettingsStore {
     return `${ReaderSettingsStore.THEME_PROFILE_PREFIX}${ReaderSettingsStore.normalizeThemeProfileId(themeId)}`;
   }
 
-  // Upgrade this theme once, including existing profiles. Later manual animation choices remain intact.
-  private static async applyThemePageTurnDefault(store: preferences.Preferences, themeId: string,
-    settings: ReaderSettings): Promise<void> {
-    if (ReaderSettingsStore.normalizeThemeProfileId(themeId) !== 'obsidian-archive') return;
-    const key = 'readerObsidian3DDefaultV1';
-    if (await store.get(key, false) === true) return;
-    // Vertical paging cannot render a horizontal page curl; use the normal horizontal mode for this preset.
-    if (settings.pageTurnMode === 0) settings.pageTurnMode = 2;
-    settings.pageTurnAnimationType = ReaderSettingsStore.PAGE_TURN_ANIMATION_3D;
-    await store.put(ReaderSettingsStore.themeProfileKey(themeId), JSON.stringify(ReaderSettingsStore.clone(settings)));
-    await store.put(key, true);
+  private static async rememberActiveProfile(store: preferences.Preferences, profileId: string): Promise<void> {
+    if (ReaderSettingsStore.rememberedProfileId === profileId) return;
+    await store.put(ReaderSettingsStore.KEY_LAST_PROFILE_ID, profileId);
     await store.flush();
+    ReaderSettingsStore.rememberedProfileId = profileId;
+  }
+
+  /** 上次在用、且不是当前主题的档案；没有记录或就是当前主题时返回 null。 */
+  private static async loadRememberedProfile(store: preferences.Preferences,
+    activeProfileId: string): Promise<ReaderSettings | null> {
+    const lastId = await store.get(ReaderSettingsStore.KEY_LAST_PROFILE_ID, '');
+    if (typeof lastId !== 'string' || !lastId || lastId === activeProfileId) return null;
+    return await ReaderSettingsStore.loadThemeProfile(store, lastId);
   }
 
   private static async loadThemeProfile(store: preferences.Preferences,
@@ -1581,6 +1744,9 @@ export class ReaderSettingsStore {
       ReaderSettingsStore.cachedThemeId === ReaderSettingsStore.normalizeThemeProfileId(themeId) ?
       ReaderSettingsStore.cachedSettings : settings;
     await store.put(ReaderSettingsStore.themeProfileKey(themeId), JSON.stringify(ReaderSettingsStore.clone(latest)));
+    // 存的是正在用的档案就顺带记下它；applyToStorage 预先填好缓存时 load 会直接返回，靠这里记录。
+    const id = ReaderSettingsStore.normalizeThemeProfileId(themeId);
+    if (id === ReaderSettingsStore.activeThemeId()) await ReaderSettingsStore.rememberActiveProfile(store, id);
   }
 
   private static async getNumber(
@@ -1814,7 +1980,7 @@ export class ReaderSettingsStore {
   }
 
   private static normalizeTapZoneActions(actions: string): string {
-    const fallback = [3, 3, 3, 3, 1, 2, 2, 2, 2];
+    const fallback = [3, 3, 2, 3, 1, 2, 2, 2, 2];
     const parts = (actions || '').split(',');
     const result: number[] = [];
     for (let i = 0; i < 9; i++) {
@@ -1915,6 +2081,9 @@ export class ReaderSettingsStore {
       typeof source.eyeTurnPreviousDwellMs === 'number' ? source.eyeTurnPreviousDwellMs : 850);
     settings.eyeTurnNextDwellMs = ReaderSettingsStore.normalizeEyeTurnDwell(
       typeof source.eyeTurnNextDwellMs === 'number' ? source.eyeTurnNextDwellMs : 650);
+    settings.eyeTurnModelEnabled = source.eyeTurnModelEnabled === true;
+    settings.eyeTurnModelPortraitCalibration = source.eyeTurnModelPortraitCalibration || '';
+    settings.eyeTurnModelLandscapeCalibration = source.eyeTurnModelLandscapeCalibration || '';
     settings.screenTimeoutMinutes = ReaderSettingsStore.normalizeScreenTimeoutMinutes(
       typeof source.screenTimeoutMinutes === 'number' ?
         source.screenTimeoutMinutes :
@@ -1944,6 +2113,8 @@ export class ReaderSettingsStore {
       (AppStorage.get<boolean>(ReaderSettingsStore.KEY_USE_BRIGHTNESS_QUICK_ACTION) ?? true);
     settings.quickBookmarkEnabled = typeof source.quickBookmarkEnabled === 'boolean' ? source.quickBookmarkEnabled :
       (AppStorage.get<boolean>(ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED) ?? true);
+    settings.scrollTapTurn = typeof source.scrollTapTurn === 'boolean' ? source.scrollTapTurn :
+      (AppStorage.get<boolean>(ReaderSettingsStore.KEY_SCROLL_TAP_TURN) ?? false);
     settings.nightImageMode = ReaderNightImage.normalize(source.nightImageMode ??
       (AppStorage.get<string>(ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE) || ReaderNightImage.ORIGINAL));
     settings.readerHeaderEnabled = source.readerHeaderEnabled === true;
@@ -2067,6 +2238,11 @@ export class ReaderSettingsStore {
       AppStorage.get<number>(ReaderSettingsStore.KEY_EYE_TURN_PREVIOUS_DWELL_MS) ?? 850);
     settings.eyeTurnNextDwellMs = ReaderSettingsStore.normalizeEyeTurnDwell(
       AppStorage.get<number>(ReaderSettingsStore.KEY_EYE_TURN_NEXT_DWELL_MS) ?? 650);
+    settings.eyeTurnModelEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_ENABLED) ?? false;
+    settings.eyeTurnModelPortraitCalibration =
+      AppStorage.get<string>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_PORTRAIT_CALIBRATION) || '';
+    settings.eyeTurnModelLandscapeCalibration =
+      AppStorage.get<string>(ReaderSettingsStore.KEY_EYE_TURN_MODEL_LANDSCAPE_CALIBRATION) || '';
     const legacyKeepScreenOn = AppStorage.get<boolean>(ReaderSettingsStore.KEY_KEEP_SCREEN_ON) ?? true;
     settings.screenTimeoutMinutes = ReaderSettingsStore.normalizeScreenTimeoutMinutes(
       AppStorage.get<number>(ReaderSettingsStore.KEY_SCREEN_TIMEOUT_MINUTES) ??
@@ -2095,6 +2271,7 @@ export class ReaderSettingsStore {
     settings.quickJumpMode = ReaderQuickJumpModel.normalizeMode(
       AppStorage.get<string>(ReaderSettingsStore.KEY_QUICK_JUMP_MODE) || 'chapter');
     settings.quickBookmarkEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_QUICK_BOOKMARK_ENABLED) ?? true;
+    settings.scrollTapTurn = AppStorage.get<boolean>(ReaderSettingsStore.KEY_SCROLL_TAP_TURN) ?? false;
     settings.nightImageMode = ReaderNightImage.normalize(
       AppStorage.get<string>(ReaderSettingsStore.KEY_NIGHT_IMAGE_MODE) || ReaderNightImage.ORIGINAL);
     settings.readerHeaderEnabled = AppStorage.get<boolean>(ReaderSettingsStore.KEY_HEADER_ENABLED) ?? false;

@@ -38,6 +38,7 @@ struct DataBackupPage {
   @State importLocalBooks: boolean = false;
   @State importSettings: boolean = false;
   @State importSearchHistory: boolean = false;
+  @StorageProp('webParseEnabled') webParseEnabled: boolean = false;
   @State importReady: boolean = false;
   @State importDescription: string = '请先选择备份文件';
   @State mode: string = 'export';
@@ -65,7 +66,12 @@ struct DataBackupPage {
     this.androidImport = this.mode === 'import' &&
       params?.['sourceFormat'] === AppDataBackupService.SOURCE_FORMAT_ANDROID;
     if (this.androidImport) {
-      this.importDescription = '请选择安卓版阅读导出的 ZIP 备份文件，可恢复书源、书架、阅读进度和阅读时长记录。';
+      this.importDescription = '请选择安卓版阅读导出的 ZIP 备份文件，可恢复规则、书架、阅读进度和阅读时长记录。';
+      if (!this.webParseEnabled) {
+        // 这份备份的主要内容是书源和在线书，入口只在网页解析开启后出现；被别处带到这里时直接退回。
+        HdsFeedback.showToast('请先在“我的 › 在线阅读”里开启网页解析');
+        this.getUIContext().getRouter().back();
+      }
     }
     this.tempCleanupTask = AppDataBackupService.cleanupStaleTempFiles(getContext(this)).catch((error: Error) => {
       console.warn('清理遗留备份临时文件失败:', error);
@@ -223,17 +229,19 @@ struct DataBackupPage {
   @Builder
   selectionCard(exporting: boolean) {
     Column() {
-      this.selectionRow('书源', '规则、分组、排序和启用状态；不含登录凭据', exporting,
-        AppDataBackupService.CATEGORY_SOURCES)
-      this.selectionRow('书架', '网络书籍、书架分组、标签和单书配置', exporting,
-        AppDataBackupService.CATEGORY_BOOKSHELF)
+      if (this.webParseEnabled) {
+        this.selectionRow('书源', '规则、分组、排序和启用状态；不含登录凭据', exporting,
+          AppDataBackupService.CATEGORY_SOURCES)
+        this.selectionRow('在线书籍', '通过网页解析加入书架的书、标签和单书配置', exporting,
+          AppDataBackupService.CATEGORY_BOOKSHELF)
+      }
       this.selectionRow(this.androidImport ? '阅读进度与记录' : '阅读进度',
         this.androidImport ? '当前章节、章内位置、已读状态和阅读时长记录' :
         (exporting ? '当前章节、页码、阅读时间及单书状态' :
           '当前章节、页码、单书状态；Android 备份另含阅读时长记录'), exporting,
         AppDataBackupService.CATEGORY_PROGRESS)
       if (!this.androidImport) {
-        this.selectionRow('书签', '章节位置和书签正文', exporting,
+        this.selectionRow('书签与笔记', '书签、正文划线和笔记', exporting,
           AppDataBackupService.CATEGORY_BOOKMARKS)
         this.selectionRow('本地图书', 'TXT/EPUB/MOBI/PDF 原文件及本地书籍信息', exporting,
           AppDataBackupService.CATEGORY_LOCAL_BOOKS)
@@ -424,8 +432,9 @@ struct DataBackupPage {
 
   selection(exporting: boolean): AppDataBackupSelection {
     const value = new AppDataBackupSelection();
-    value.sources = exporting ? this.exportSources : this.importSources;
-    value.bookshelf = exporting ? this.exportBookshelf : this.importBookshelf;
+    // 网页解析关闭时书源和在线书既不导出也不导入，备份里带着的这两类直接跳过。
+    value.sources = this.webParseEnabled && (exporting ? this.exportSources : this.importSources);
+    value.bookshelf = this.webParseEnabled && (exporting ? this.exportBookshelf : this.importBookshelf);
     value.progress = exporting ? this.exportProgress : this.importProgress;
     value.bookmarks = exporting ? this.exportBookmarks : this.importBookmarks;
     value.localBooks = exporting ? this.exportLocalBooks : this.importLocalBooks;

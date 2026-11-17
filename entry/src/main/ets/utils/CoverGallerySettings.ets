@@ -1,5 +1,6 @@
 import { Book } from '@legado/sourceengine';
 import { BookDisplayHelper } from './BookDisplayHelper';
+import { ShelfCoverSlots } from './ShelfCoverSlots';
 
 export class CoverAlbum {
   id: string = '';
@@ -82,19 +83,21 @@ export class CoverGallerySettings {
     ignoreEmptyCoverOnly: boolean = false
   ): string[] {
     const selectedAlbumId = CoverGallerySettings.selectedAlbumId(darkMode, lightAlbumId, darkAlbumId);
-    const albums = CoverGallerySettings.parseAlbums(albumsRaw);
+    const albums = CoverGallerySettings.cachedAlbums(albumsRaw);
     const album = CoverGallerySettings.getAlbum(albums, selectedAlbumId);
     // “仅忽略空封面”：书自带封面就只用它，没有封面才落到图集。
     const emptyOnly = ignoreSourceCover && ignoreEmptyCoverOnly;
     const sourceCovers = ignoreSourceCover && !emptyOnly ? [] : BookDisplayHelper.getCoverList(book);
+    // 书架书都有 bookUrl；临时拼的书没有时退到书名作者，免得“固定”模式全部落到同一张。
+    const seed = book.bookUrl || `${book.name}|${book.author}`;
     if (emptyOnly && sourceCovers.length > 0) {
-      return CoverGallerySettings.applyCoverMode(sourceCovers, coverMode, book.bookUrl);
+      return CoverGallerySettings.applyCoverMode(sourceCovers, coverMode, seed, book);
     }
     if (!album || album.covers.length === 0 || !CoverGallerySettings.appliesToBook(book.bookUrl, applyScope, targetBooksRaw)) {
-      return CoverGallerySettings.applyCoverMode(sourceCovers, coverMode, book.bookUrl);
+      return CoverGallerySettings.applyCoverMode(sourceCovers, coverMode, seed, book);
     }
     const covers = ignoreSourceCover ? album.covers : CoverGallerySettings.cleanCovers([...sourceCovers, ...album.covers]);
-    return CoverGallerySettings.applyCoverMode(covers, coverMode, book.bookUrl);
+    return CoverGallerySettings.applyCoverMode(covers, coverMode, seed, book);
   }
 
   static parseTargetBooks(raw: string): string[] {
@@ -143,12 +146,50 @@ export class CoverGallerySettings {
     if (applyScope !== 'books') {
       return true;
     }
-    return CoverGallerySettings.parseTargetBooks(targetBooksRaw).includes(bookUrl);
+    return CoverGallerySettings.cachedTargetBooks(targetBooksRaw).includes(bookUrl);
   }
 
-  private static applyCoverMode(covers: string[], coverMode: string, seed: string): string[] {
+  /**
+   * 书架每本书取封面都要解析一次图集设置，一个格子要取好几次；按原始字符串记住上次的解析结果。
+   * 只给本类只读使用（applyCoverMode 总是返回新数组），对外的 parseAlbums 仍每次返回新对象，调用方可以放心改。
+   */
+  private static albumsMemoRaw: string | null = null;
+  private static albumsMemo: CoverAlbum[] = [];
+  private static targetBooksMemoRaw: string | null = null;
+  private static targetBooksMemo: string[] = [];
+
+  private static cachedAlbums(raw: string): CoverAlbum[] {
+    if (raw !== CoverGallerySettings.albumsMemoRaw) {
+      CoverGallerySettings.albumsMemo = CoverGallerySettings.parseAlbums(raw);
+      CoverGallerySettings.albumsMemoRaw = raw;
+    }
+    return CoverGallerySettings.albumsMemo;
+  }
+
+  private static cachedTargetBooks(raw: string): string[] {
+    if (raw !== CoverGallerySettings.targetBooksMemoRaw) {
+      CoverGallerySettings.targetBooksMemo = CoverGallerySettings.parseTargetBooks(raw);
+      CoverGallerySettings.targetBooksMemoRaw = raw;
+    }
+    return CoverGallerySettings.targetBooksMemo;
+  }
+
+  /** 封面模式：sequence 轮播全部、random 每小时换一张、fixed 每本书固定一张（书架上的书按加入先后的序号轮流分，见 ShelfCoverSlots；其余按书算哈希）。 */
+  static isFixedMode(coverMode: string): boolean {
+    return coverMode === 'fixed';
+  }
+
+  private static applyCoverMode(covers: string[], coverMode: string, seed: string, book: Book): string[] {
     const cleaned = CoverGallerySettings.cleanCovers(covers);
-    if (cleaned.length <= 1 || coverMode !== 'random') {
+    if (cleaned.length <= 1) {
+      return cleaned;
+    }
+    if (CoverGallerySettings.isFixedMode(coverMode)) {
+      const slot = ShelfCoverSlots.slotOf(book);
+      const index = slot >= 0 ? slot : Math.abs(CoverGallerySettings.hashText(seed));
+      return [cleaned[index % cleaned.length]];
+    }
+    if (coverMode !== 'random') {
       return cleaned;
     }
     const index = Math.abs(CoverGallerySettings.hashText(`${seed}_${Math.floor(Date.now() / 3600000)}`)) % cleaned.length;

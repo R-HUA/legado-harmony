@@ -1512,9 +1512,10 @@ export class WebBookService {
       imageRequest, imageContext);
   }
 
-  private convertReaderNativeActions(_source: BookSource, content: string, _baseUrl: string): string {
+  private convertReaderNativeActions(_source: BookSource, content: string, baseUrl: string): string {
     if (!content) return content;
-    let value = this.convertReaderImageScriptActions(content);
+    let value = this.convertReaderNoteActions(content, baseUrl);
+    value = this.convertReaderImageScriptActions(value);
     value = value.replace(/<p\b[^>]*>\s*<img\b([^>]*\bident\s*=\s*["'][^"']+["'][^>]*)\/?\s*>\s*<\/p>/gi,
       (_all: string, attrs: string): string => {
         const identMatch = /\bident\s*=\s*["']([^"']+)["']/i.exec(attrs || '');
@@ -1522,7 +1523,12 @@ export class WebBookService {
         const marker = ReaderActionMarker.create('神评论', url, '神评论');
         return marker ? `${marker}\n` : '';
       });
-    value = value.replace(/<p\b[^>]*>([\s\S]*?)<comment\b([^>]*)\/?>([\s\S]*?)<\/p>/gi,
+    // One paragraph only: neither side may run past a <p>/<div> boundary. A source that rewrites
+    // `<p>甲</p><p>乙<comment/></p>` into `<div rs-native>甲</p><p>乙<comment></div></p>` would otherwise have the
+    // div's closing tag eaten here, and the rs-native pass below would then pair that div with the next
+    // paragraph's end and carry the bubble off after it.
+    value = value.replace(new RegExp('<p\\b[^>]*>((?:(?!<\\/?(?:p|div)\\b)[\\s\\S])*?)<comment\\b([^>]*)\\/?>' +
+      '((?:(?!<\\/?(?:p|div)\\b)[\\s\\S])*?)<\\/p>', 'gi'),
       (_all: string, before: string, attrs: string, after: string): string => {
         const text = this.decodeHtmlEntities(`${before || ''}${after || ''}`.replace(/<[^>]+>/g, '')).trim();
         const marker = this.readerActionMarkerFromCommentAttributes(attrs || '');
@@ -1532,22 +1538,55 @@ export class WebBookService {
     return value.replace(/<(div|span)\b[^>]*\brs-native\b[^>]*>([\s\S]*?)<\/\1>/gi,
       (_all: string, _tagName: string, inner: string): string => {
         // Clickable images inside the paragraph (hot-comment cards) were already turned into
-        // action markers; keep them after the paragraph and its comment bubble.
+        // action markers; keep them after the paragraph and its comment bubble. A count bubble that is
+        // already a marker belongs to the text before it and stays where it is.
         const cards: string[] = [];
         let rest = inner || '';
         let card = ReaderActionMarker.findFirst(rest);
         while (card) {
-          cards.push(card.marker);
-          rest = rest.substring(0, card.start) + rest.substring(card.end);
-          card = ReaderActionMarker.findFirst(rest, card.start);
+          if (/^(?:热评|章评|神评论)$/.test(card.data.title || '')) {
+            cards.push(card.marker);
+            rest = rest.substring(0, card.start) + rest.substring(card.end);
+            card = ReaderActionMarker.findFirst(rest, card.start);
+          } else {
+            card = ReaderActionMarker.findFirst(rest, card.end);
+          }
         }
         const comment = /<comment\b([^>]*)>/i.exec(rest);
+        // The block can hold more than one paragraph (see above); their boundaries stay line breaks and the
+        // bubble follows the last one, the paragraph it was written into.
         const text = this.decodeHtmlEntities(rest.replace(/<comment\b[^>]*>/gi, '')
-          .replace(/<[^>]+>/g, '')).trim();
+          .replace(/<\/p>|<br\s*\/?>|<p\b[^>]*>/gi, '\n')
+          .replace(/<[^>]+>/g, '')).replace(/[^\S\n]*\n\s*/g, '\n').trim();
         const marker = comment ? this.readerActionMarkerFromCommentAttributes(comment[1] || '') : '';
         const lines = cards.map((item: string): string => `${item}\n`).join('');
         if (!text && !marker) return lines;
         return `${text}${marker}\n${lines}`;
+      });
+  }
+
+  /**
+   * `<note label="神评论" ident="/path" text="…"></note>` is an inline comment card of iOS-style readers.
+   * Turn it into a reader action that opens `ident`. Attribute values are matched quote-aware: a server
+   * that wraps every line in `<div rs-native>` can split a multi-line `text` across two of those divs,
+   * so the whole tag must go before the rs-native pass or its halves leak into the text. A note without
+   * a usable address is dropped.
+   */
+  private convertReaderNoteActions(content: string, baseUrl: string): string {
+    if (!/<note\b/i.test(content || '')) return content;
+    return content.replace(/<note\b((?:[^>"']|"[^"]*"|'[^']*')*)>(?:\s*<\/note>)?/gi,
+      (_all: string, attrs: string): string => {
+        const attr = (name: string): string => {
+          const match = new RegExp(`\\b${name}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, 'i').exec(attrs || '');
+          return this.decodeHtmlEntities(match && match[2] ? match[2] : '').trim();
+        };
+        const url = BookUrlResolver.resolve(attr('ident'), baseUrl || '');
+        if (!/^https?:\/\//i.test(url)) return '';
+        const wording = attr('label');
+        const kind = /本章说|章评|章末/.test(wording) ? '章评' : (/热评|神评/.test(wording) ? '热评' : '段评');
+        // The note's text is the comment itself (or the chapter card's wording); the reader can show it as a card.
+        const marker = ReaderActionMarker.create(kind, url, kind, attr('text'));
+        return marker ? `${marker}\n` : '';
       });
   }
 
@@ -1557,25 +1596,51 @@ export class WebBookService {
    * expression is executed only after the user taps it, in the same bounded source runtime.
    */
   private convertReaderImageScriptActions(content: string): string {
-    return (content || '').replace(/<img\b[^>]*>/gi, (tag: string): string => {
+    return (content || '').replace(/<img\b[^>]*>/gi, (tag: string, offset: number, whole: string): string => {
       const clickMarker = this.readerActionMarkerFromClickableImage(tag);
-      if (clickMarker) return `${clickMarker}\n`;
+      if (clickMarker) return this.readerActionLine(clickMarker);
       const data = /data:image\/[A-Za-z0-9.+-]+;base64,([A-Za-z0-9+/=]+),(\{[\s\S]*\})/i.exec(tag);
       if (!data || !data[2]) return tag;
       const action = this.readerImageOptionString(data[2], 'click') ||
         this.readerImageOptionString(data[2], 'js');
       if (!action) return tag;
-      // Chapter-tail cards mark themselves with a distinct marker id; everything else with a
-      // count bubble is a paragraph comment.
-      const isChapterTail = this.readerImageOptionString(data[2], 'marker').startsWith('xyCommentTail');
-      const count = isChapterTail ? '' : this.readerDataImageLabel(data[1] || '');
-      const label = isChapterTail ? '章评' : (count ? `段评 ${count}` : '段评');
-      const marker = ReaderActionMarker.createSourceScript(label, action, isChapterTail ? '章评' : '段评');
+      // Chapter-tail cards mark themselves with a distinct marker id or say so on the card
+      // (本章说); hot-comment cards say 热评/神评. Only the remaining count bubbles are paragraph
+      // comments — a card's number is a like count, not a comment count.
+      const texts = this.readerDataImageTexts(data[1] || '');
+      const wording = this.readerDataImageText(texts);
+      const isChapterTail = this.readerImageOptionString(data[2], 'marker').startsWith('xyCommentTail') ||
+        /本章说|章评|章末/.test(wording);
+      const isHot = !isChapterTail && (/热评|神评/.test(wording) || this.readerDataImageIsCard(texts,
+        this.readerImageOptionString(data[2], 'style'), this.readerDataImageIsWide(data[1] || '')));
+      const count = isChapterTail || isHot ? '' : this.readerDataImageLabel(texts);
+      const kind = isChapterTail ? '章评' : (isHot ? '热评' : '段评');
+      const label = count ? `段评 ${count}` : kind;
+      const hot = isHot || isChapterTail ? this.readerDataImageHot(texts) : ['', ''];
+      // 本章说卡面上的数字含义因书源而异，不当点赞数。
+      const marker = ReaderActionMarker.createSourceScript(label, action, kind, hot[0], isChapterTail ? '' : hot[1]);
       // This data-image is an interaction control, not正文 artwork. If its imported click script exceeds the
       // bounded action budget, drop the control instead of passing the enormous base64/options tag into the
       // ordinary image pipeline (the latter can exhaust memory while opening the chapter).
-      return marker ? `${marker}\n` : '';
+      if (!marker) return '';
+      // An inline-style (TEXT) bubble with prose right after it sits at the start or in the middle of its
+      // paragraph. Android draws it in place; breaking the line there would leave the bubble alone on a line.
+      const inline = /^text$/i.test(this.readerImageOptionString(data[2], 'style')) &&
+        /^[^\S\n]*[^\s<]/.test(whole.substring(offset + tag.length, offset + tag.length + 16));
+      return this.readerActionLine(marker, inline);
     });
+  }
+
+  /**
+   * Text that replaces a converted comment control. A count bubble stays at the end of its paragraph (or, when
+   * `inline`, exactly where the source put it); a card (热评、本章说) always gets a line of its own, even when
+   * the source put it inside the paragraph.
+   */
+  private readerActionLine(marker: string, inline: boolean = false): string {
+    const data = ReaderActionMarker.parse(marker);
+    const card = !!data && /^(?:热评|章评)$/.test(data.title || '');
+    if (card) return `\n${marker}\n`;
+    return inline ? marker : `${marker}\n`;
   }
 
   /**
@@ -1619,32 +1684,94 @@ export class WebBookService {
     return this.decodeHtmlEntities(collected).trim();
   }
 
-  private readerDataImageLabel(encoded: string): string {
+  /**
+   * Every `<text>` of a data-URI SVG, nested `<tspan>` flattened, entities decoded and whitespace folded
+   * (at most 24), followed by the text of any `<foreignObject>`. Some cards split one label across tspans,
+   * which a plain `<text>…</text>` match misses; a long comment wrapped into one tspan per line runs to
+   * thousands of characters of markup, so the element length is bounded generously.
+   */
+  private readerDataImageTexts(encoded: string): string[] {
     try {
       const bytes = new util.Base64Helper().decodeSync(encoded || '');
       const svg = util.TextDecoder.create('utf-8').decodeWithStream(bytes, { stream: false });
-      const labels = svg.match(/<text\b[^>]*>([^<]{1,24})<\/text>/gi) || [];
-      for (const item of labels) {
-        const text = this.decodeHtmlEntities(item.replace(/<[^>]+>/g, '')).trim();
-        if (/^(?:\d+|99\+)$/.test(text)) return text;
-      }
+      const found = (svg.match(/<text\b[^>]*>[\s\S]{0,8000}?<\/text>/gi) || []).slice(0, 24)
+        .concat((svg.match(/<foreignObject\b[^>]*>[\s\S]{0,8000}?<\/foreignObject>/gi) || []).slice(0, 4));
+      return found.map((item: string): string => this.decodeHtmlEntities(item.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim())
+        .filter((text: string): boolean => !!text);
     } catch (_) {
+      return [];
+    }
+  }
+
+  /**
+   * Whether a data-URI SVG is drawn as a wide strip (at least three times as wide as tall, by its viewBox or
+   * width/height). Count bubbles are small and roughly square; a strip is a comment card even when none of its
+   * words could be read (drawn as paths or pictures).
+   */
+  private readerDataImageIsWide(encoded: string): boolean {
+    try {
+      const bytes = new util.Base64Helper().decodeSync(encoded || '');
+      const svg = util.TextDecoder.create('utf-8').decodeWithStream(bytes, { stream: false });
+      const root = /<svg\b[^>]*>/i.exec(svg);
+      if (!root) return false;
+      const numbers = (text: string): number[] => (text.match(/-?\d+(?:\.\d+)?/g) || [])
+        .map((item: string): number => Number(item));
+      const box = /\bviewBox\s*=\s*["']([^"']*)["']/i.exec(root[0]);
+      const boxValues = box ? numbers(box[1]) : [];
+      const widthAttr = /\bwidth\s*=\s*["']([^"'%]*)["']/i.exec(root[0]);
+      const heightAttr = /\bheight\s*=\s*["']([^"'%]*)["']/i.exec(root[0]);
+      const width = boxValues.length === 4 ? boxValues[2] : (widthAttr ? numbers(widthAttr[1])[0] || 0 : 0);
+      const height = boxValues.length === 4 ? boxValues[3] : (heightAttr ? numbers(heightAttr[1])[0] || 0 : 0);
+      return width > 0 && height > 0 && width >= height * 3;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /** The comment count drawn on a bubble: its first bare number. */
+  private readerDataImageLabel(texts: string[]): string {
+    for (const text of texts) {
+      if (/^(?:\d+|99\+)$/.test(text)) return text;
     }
     return '';
   }
 
-  /** The first few `<text>` labels of a data-URI SVG card, joined; used to name its action. */
-  private readerDataImageText(encoded: string): string {
-    try {
-      const bytes = new util.Base64Helper().decodeSync(encoded || '');
-      const svg = util.TextDecoder.create('utf-8').decodeWithStream(bytes, { stream: false });
-      const labels = (svg.match(/<text\b[^>]*>([^<]{1,48})<\/text>/gi) || []).slice(0, 4);
-      return labels.map((item: string): string => this.decodeHtmlEntities(item.replace(/<[^>]+>/g, '')).trim())
-        .join(' ');
-    } catch (_) {
-      return '';
-    }
+  /**
+   * A comment card rather than a count bubble. Cards are drawn full width, or carry words — a nickname or the
+   * comment itself — while a count bubble shows only its number (sometimes with 段评/评论/条). A card's number is
+   * a like count; reading it as a paragraph-comment count put a stray bubble on its own line under the paragraph.
+   */
+  private readerDataImageIsCard(texts: string[], style: string, wide: boolean = false): boolean {
+    if (wide || /^(?:FULL|BLOCK|CARD)$/i.test((style || '').trim())) return true;
+    return texts.some((text: string): boolean => text
+      .replace(/\d+(?:\.\d+)?[kKwW万千]?\+?|段评|评论|条|[\s，。！？、：；“”‘’"'.,!?:;()（）〈〉《》<>›»«…·\-—_|\/\\]/g, '')
+      .length >= 2);
   }
+
+  /** The first few labels of a card, joined; used to name its action. */
+  private readerDataImageText(texts: string[]): string {
+    return texts.slice(0, 4).join(' ');
+  }
+
+  /**
+   * Comment text and like count of a hot-comment SVG card: every `<text>` except the 神评/热评 tag; a trailing
+   * bare number is the like count. A 本章说 card gives its wording (such as “76条评论”). Returns [text, likes].
+   */
+  private readerDataImageHot(texts: string[]): string[] {
+    const parts = texts.map((text: string): string => text.replace(/[\s〉›>»]+$/, '').trim())
+      .filter((text: string): boolean => !!text && !/^(?:神评论?|热评|热门评论|精彩评论|本章说|章评)$/.test(text));
+    let likes = '';
+    if (parts.length > 1 && /^(?:\d+(?:\.\d+)?[kKwW万千]?\+?|99\+)$/.test(parts[parts.length - 1])) {
+      likes = parts.pop() as string;
+    }
+    // Lines of one wrapped comment join directly; a short leading part (a nickname) keeps a space.
+    let text = '';
+    for (const part of parts) {
+      text += text && text.length < 8 && !/[，。！？：,.!?:]$/.test(text) ? ` ${part}` : part;
+    }
+    return [text, likes];
+  }
+
 
   /**
    * iOS-style Legado markup puts the action on the image itself:
@@ -1662,11 +1789,15 @@ export class WebBookService {
     // Only generated SVG cards are controls; a real picture with a link stays a picture.
     const svg = /\bsrc\s*=\s*["']data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)/i.exec(tag);
     if (!svg) return '';
-    const wording = this.readerDataImageText(svg[1] || '');
-    const count = this.readerDataImageLabel(svg[1] || '');
-    const label = /本章说|章评|章末/.test(wording) ? '章评' : (/热评|神评/.test(wording) ? '热评' :
-      (count ? `段评 ${count}` : '评论'));
-    return ReaderActionMarker.create(label, url, label === '章评' ? '章评' : (label === '热评' ? '热评' : '段评'));
+    const texts = this.readerDataImageTexts(svg[1] || '');
+    const wording = this.readerDataImageText(texts);
+    const count = this.readerDataImageLabel(texts);
+    const card = /热评|神评/.test(wording) ||
+      this.readerDataImageIsCard(texts, '', this.readerDataImageIsWide(svg[1] || ''));
+    const label = /本章说|章评|章末/.test(wording) ? '章评' : (card ? '热评' : (count ? `段评 ${count}` : '评论'));
+    const hot = label === '热评' || label === '章评' ? this.readerDataImageHot(texts) : ['', ''];
+    return ReaderActionMarker.create(label, url, label === '章评' ? '章评' : (label === '热评' ? '热评' : '段评'),
+      hot[0], label === '章评' ? '' : hot[1]);
   }
 
   private readerActionMarkerFromCommentAttributes(attrs: string): string {

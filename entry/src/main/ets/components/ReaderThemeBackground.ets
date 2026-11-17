@@ -17,6 +17,8 @@ export struct ReaderThemeBackground {
   @Prop compact: boolean = false;
   @Prop viewportWidthHint: number = 0;
   @Prop viewportHeightHint: number = 0;
+  // ThemeAssetRegistry.readerDecorationSignature：主题包角饰换图或调大小而背景 ID 不变时，靠它触发重画。
+  @Prop decorationSignature: string = '';
   @State viewportWidth: number = 0;
   @State viewportHeight: number = 0;
 
@@ -44,7 +46,9 @@ export struct ReaderThemeBackground {
           .syncLoad(true)
           .draggable(false)
           .hitTestBehavior(HitTestMode.None)
-      } else if (this.backgroundAssetId) {
+      }
+      // 主题包整图模式也可以带角饰，叠在整图上面；内置主题和自定义图片不会同时带素材键和图片。
+      if (this.backgroundAssetId) {
         this.builtinThemeDecoration()
       }
     }
@@ -67,15 +71,18 @@ export struct ReaderThemeBackground {
 
   @Builder
   builtinThemeDecoration() {
-    if (ThemeAssetRegistry.readerBackgroundDecoration(this.backgroundAssetId)) {
+    if (this.hasOrnaments()) {
       Column() {
+        // 主题包可以只有一角的角饰，空着的那角只留占位。
         Row() {
-          Image(ThemeAssetRegistry.readerBackgroundDecoration(this.backgroundAssetId))
-            .width(this.decorationSize())
-            .height(this.decorationSize())
-            .objectFit(ImageFit.Contain)
-            .syncLoad(true)
-            .draggable(false)
+          if (this.leadingImage()) {
+            Image(this.leadingImage())
+              .width(this.decorationSize(false))
+              .height(this.decorationSize(false))
+              .objectFit(ImageFit.Contain)
+              .syncLoad(true)
+              .draggable(false)
+          }
           Blank()
             .layoutWeight(1)
         }
@@ -87,13 +94,15 @@ export struct ReaderThemeBackground {
         Row() {
           Blank()
             .layoutWeight(1)
-          Image(ThemeAssetRegistry.readerBackgroundTrailingDecoration(this.backgroundAssetId))
-            .width(this.decorationSize())
-            .height(this.decorationSize())
-            .objectFit(ImageFit.Contain)
-            .syncLoad(true)
-            .rotate({ angle: ThemeAssetRegistry.readerBackgroundTrailingRotation(this.backgroundAssetId) })
-            .draggable(false)
+          if (this.trailingImage()) {
+            Image(this.trailingImage())
+              .width(this.decorationSize(true))
+              .height(this.decorationSize(true))
+              .objectFit(ImageFit.Contain)
+              .syncLoad(true)
+              .rotate({ angle: this.trailingRotation() })
+              .draggable(false)
+          }
         }
         .width('100%')
       }
@@ -111,10 +120,32 @@ export struct ReaderThemeBackground {
     return ImageFit.Cover;
   }
 
+  // 下面几个取值都读一下 decorationSignature，让它变化时这些节点跟着更新。
+  hasOrnaments(): boolean {
+    return this.decorationSignature.length >= 0 &&
+      ThemeAssetRegistry.readerBackgroundHasOrnaments(this.backgroundAssetId);
+  }
+
+  leadingImage(): ResourceStr {
+    return this.decorationSignature.length >= 0 ?
+      ThemeAssetRegistry.readerBackgroundDecoration(this.backgroundAssetId) : '';
+  }
+
+  trailingImage(): ResourceStr {
+    return this.decorationSignature.length >= 0 ?
+      ThemeAssetRegistry.readerBackgroundTrailingDecoration(this.backgroundAssetId) : '';
+  }
+
+  trailingRotation(): number {
+    return this.decorationSignature.length >= 0 ?
+      ThemeAssetRegistry.readerBackgroundTrailingRotation(this.backgroundAssetId) : 0;
+  }
+
   // The placement math lives in ReaderThemeDecorationLayout, shared with the self-drawn page raster.
-  decorationSize(): number {
+  decorationSize(trailing: boolean): number {
+    if (this.decorationSignature.length < 0) return 0;
     return ReaderThemeDecorationLayout.size(this.effectiveViewportWidth(), this.effectiveViewportHeight(),
-      this.compact);
+      this.compact, ThemeAssetRegistry.readerBackgroundOrnamentScale(this.backgroundAssetId, trailing));
   }
 
   decorationInset(): Padding {

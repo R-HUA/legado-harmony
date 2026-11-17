@@ -29,6 +29,8 @@ import {
   assetPath,
   assetPathExtension,
   assetRef,
+  bubbleDarkDifference,
+  bubbleFor,
   checkSvgSource,
   decodeManifest,
   decodeTheme,
@@ -42,12 +44,18 @@ import {
   isPackThemeId,
   kindForExtension,
   mapPartsAssetRefs,
+  maxAssetsFor,
   maxBytesForKind,
   mergeRules,
+  navigationIsEmpty,
   packageFileName,
   packageIdOfThemeId,
   packThemeId,
   partsAssetRefs,
+  partsUseManyCovers,
+  partsUseBubbleFrameFeature,
+  partsUseBitmapCapOrShelfFrame,
+  partsUseSingleCorner,
   pickLayout,
   QYTHEME_EXTENSION,
   remapFonts,
@@ -60,6 +68,7 @@ import {
   sniffAssetExtension,
   SourceRestriction,
   THEME_SOURCE_FIELDS,
+  tooManyAssetsMessage,
   ThemePackageAsset,
   ThemePackageAssetKinds,
   ThemePackageCredits,
@@ -310,6 +319,18 @@ export class ThemePackageService {
       manifest.requires = [ThemePackageFeatures.CUSTOM_SCHEME, ThemePackageFeatures.READER_LAYOUT];
       if (bundled) {
         manifest.requires.push(ThemePackageFeatures.THEME_PARTS);
+        if (partsUseSingleCorner(bundled.record.parts)) {
+          manifest.requires.push(ThemePackageFeatures.READER_SINGLE_CORNER);
+        }
+        if (partsUseManyCovers(bundled.record.parts)) {
+          manifest.requires.push(ThemePackageFeatures.BOOK_COVERS_16);
+        }
+        if (partsUseBubbleFrameFeature(bundled.record.parts)) {
+          manifest.requires.push(ThemePackageFeatures.BUBBLE_FRAME);
+        }
+        if (partsUseBitmapCapOrShelfFrame(bundled.record.parts)) {
+          manifest.requires.push(ThemePackageFeatures.BITMAP_CAP_SHELF_FRAME);
+        }
         manifest.version = bundled.version;
         if (!manifest.description) manifest.description = bundled.description;
         manifest.baseTheme = bundled.baseTheme;
@@ -409,6 +430,9 @@ export class ThemePackageService {
       }
       if (manifest.assets.length > ThemePackageLimits.MAX_ASSETS) {
         throw new Error('主题素材过多，无法导出');
+      }
+      if (manifest.assets.length > ThemePackageLimits.LEGACY_MAX_ASSETS) {
+        manifest.requires.push(ThemePackageFeatures.ASSETS_128);
       }
 
       ThemePackageService.writeText(`${pkgDir}/manifest.json`, encodeManifest(manifest));
@@ -796,6 +820,12 @@ export class ThemePackageService {
     if (navigation && !(navigation.bookshelf && navigation.explore && navigation.mine)) {
       record.navigation = null;
     }
+    if (!record.navigation || navigationIsEmpty(record.navigationDark)) record.navigationDark = null;
+    // 深色气泡只带与浅色不同的那几项，素材清单也只收用得到的文件。
+    const lightBubble = bubbleFor(record, false);
+    const darkBubble = bubbleDarkDifference(record);
+    record.bubble = lightBubble;
+    record.bubbleDark = darkBubble;
     for (const relativePath of partsAssetRefs(record)) {
       const source = `${bundled.dir}/${relativePath}`;
       if (!ThemePackageService.exists(source)) {
@@ -975,7 +1005,7 @@ export class ThemePackageService {
       ThemePackageLimits.MAX_FONT_BYTES : ThemePackageLimits.MAX_IMAGE_BYTES;
     if (size <= 0 || size > maxSize) {
       throw new Error(kind === ThemePackageAssetKinds.FONT ? `字体「${name}」超过 40 MB，无法附带` :
-        '图片超过 20 MB，无法导出');
+        '图片超过 25 MB，无法导出');
     }
     const extension = sniffAssetExtension(ThemePackageService.readHead(path));
     if (!extension || kindForExtension(extension) !== kind) {
@@ -1074,8 +1104,8 @@ export class ThemePackageService {
       }
       let asset = findAssetByPath(manifest, name);
       if (!asset) {
-        if (manifest.assets.length >= ThemePackageLimits.MAX_ASSETS) {
-          throw new Error('主题包素材数量超出上限');
+        if (manifest.assets.length >= maxAssetsFor(manifest.requires)) {
+          throw new Error(tooManyAssetsMessage(manifest.assets.length + 1, manifest.requires));
         }
         asset = new ThemePackageAsset();
         asset.path = name;
@@ -1143,6 +1173,33 @@ export class ThemePackageService {
       const override = settings[key];
       if (!override || typeof override !== 'object') continue;
       const record = override as Record<string, Object>;
+      // 段评气泡图、角标图指向的包（不是这个包自己、这台设备也没装）取不到素材：改回跟随。
+      const comment = record['comment'];
+      if (comment && typeof comment === 'object') {
+        const commentRecord = comment as Record<string, Object>;
+        for (const field of ['image', 'ornamentImage']) {
+          const value = commentRecord[field];
+          if (typeof value === 'string' && isPackThemeId(value) && value !== ownThemeId &&
+            !ThemePackRegistry.has(value)) {
+            commentRecord[field] = '';
+          }
+        }
+      }
+      // 章首装饰指向的包同理。
+      const head = record['chapterHead'];
+      if (typeof head === 'string' && isPackThemeId(head) && head !== ownThemeId && !ThemePackRegistry.has(head)) {
+        record['chapterHead'] = '';
+      }
+      // 标题强调的气泡样式用不了时同样改回跟随（不另列提示）。
+      const title = record['title'];
+      if (title && typeof title === 'object') {
+        const titleRecord = title as Record<string, Object>;
+        const titleStyle = typeof titleRecord['bubbleStyle'] === 'string' ? titleRecord['bubbleStyle'] as string : '';
+        if (titleStyle && titleStyle !== 'emphasis' && !titleStyle.startsWith(`${ownThemeId}:`) &&
+          !ThemeAccessPolicy.canUseBubbleStyle(titleStyle)) {
+          titleRecord['bubbleStyle'] = '';
+        }
+      }
       const style = typeof record['bubbleStyle'] === 'string' ? record['bubbleStyle'] as string : '';
       if (!style || style === ownThemeId || ThemeAccessPolicy.canUseBubbleStyle(style)) continue;
       record['bubbleStyle'] = '';
@@ -1183,7 +1240,8 @@ export class ThemePackageService {
   /** 素材按内容命名：同一张图重复导入只存一份。 */
   private static installAsset(context: Context, baseDir: string, asset: ThemePackageAsset, dir: string): string {
     const fullDir = `${context.filesDir}/${dir}`;
-    fs.mkdirSync(fullDir, true);
+    // mkdirSync 的递归模式对已存在的目录会报 File exists：同一目录装第二个素材（或之前导入过）就会失败。
+    if (!ThemePackageService.exists(fullDir)) fs.mkdirSync(fullDir, true);
     const dot = asset.path.lastIndexOf('.');
     const target = `${fullDir}/${ThemePackageService.IMPORTED_FILE_PREFIX}${asset.id}${asset.path.substring(dot)}`;
     if (!ThemePackageService.exists(target) || fs.statSync(target).size !== asset.size) {

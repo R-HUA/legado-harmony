@@ -1,9 +1,10 @@
+import { WebParseSettingsStore } from '../../utils/WebParseSettingsStore';
 import fs from '@ohos.file.fs';
 import { BookCoverResolver } from '../../utils/BookCoverResolver';
 import socket from '@ohos.net.socket';
 import connection from '@ohos.net.connection';
 import { common, wantAgent } from '@kit.AbilityKit';
-import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
+import { BackgroundPermit } from '../../utils/BackgroundPermit';
 import { Context } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
@@ -314,9 +315,10 @@ export class LanReaderServer {
         requestCode: 18080,
         actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
       });
-      await backgroundTaskManager.startBackgroundRunning(abilityContext, ['dataTransfer'], agent);
+      // 登记后即算占用：没申请到时许可那边会自己重试，听书或朗读在播时共用它们的任务。
       this.backgroundRunning = true;
-      AppStorage.setOrCreate('lanReaderBackgroundStatus', '后台任务运行中');
+      const granted = await BackgroundPermit.acquire(abilityContext, 'lan-reader', 'dataTransfer', agent);
+      AppStorage.setOrCreate('lanReaderBackgroundStatus', granted ? '后台任务运行中' : '前台运行（后台任务未获准）');
     } catch (error) {
       // The server remains available in the foreground if the device rejects a continuous task.
       this.backgroundRunning = false;
@@ -329,7 +331,7 @@ export class LanReaderServer {
     if (!this.backgroundRunning || !this.context) return;
     this.backgroundRunning = false;
     try {
-      await backgroundTaskManager.stopBackgroundRunning(this.context as common.UIAbilityContext);
+      await BackgroundPermit.release('lan-reader');
     } catch (error) {
       console.warn('[LanReader] stop background task failed', error);
     }
@@ -564,7 +566,8 @@ export class LanReaderServer {
   }
 
   private async booksResponse(): Promise<LanHttpResponse> {
-    const books = PrivateShelfStore.publicBooks(await appDb.getAllBooks());
+    const books = PrivateShelfStore.publicBooks(await appDb.getAllBooks())
+      .filter((book: Book): boolean => WebParseSettingsStore.visibleBook(book.origin));
     const groups = await appDb.getCustomBookGroups();
     const groupNames = new Map<number, string>();
     const groupOrders = new Map<number, number>();

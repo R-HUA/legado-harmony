@@ -6,7 +6,12 @@ import { CoverGallerySettings } from '../../utils/CoverGallerySettings';
 import { CoverUrlNormalizer } from '../../utils/CoverUrlNormalizer';
 import { SearchBookShelfHelper } from '../../utils/SearchBookShelfHelper';
 import { ThemeBookCoverSettings } from '../../utils/ThemeBookCoverSettings';
+import { CoverDimSettings } from '../../utils/CoverDimSettings';
 import { PreparedResultCover } from '../../utils/ResultCoverPreparation';
+import { ThemeAssetRegistry } from '../../theme/ThemeAssetRegistry';
+import { ThemeImageSlots } from '../../theme/ThemePackRegistry';
+import { ThemeImageCrop } from '../../theme/share/ThemePackageFormat';
+import { ThemeCroppedImage } from '../theme/ThemeCroppedImage';
 
 /** 所有书籍展示入口共用书架的封面选择规则和多图轮播。 */
 @Component
@@ -23,6 +28,11 @@ export struct BookCover {
   @Prop cornerRadius: number = 6;
   @Prop decodeWidth: number = 360;
   @Prop decodeHeight: number = 480;
+  /**
+   * 已准备好的封面（preparedSelection）是否同步解码。默认同步，第一帧就带图；列表滑动中新建的格子传 false，
+   * 解码放到后台线程，不占滑动的帧，图到了再淡入（预加载的格子在滑进屏幕前通常已经解码完）。
+   */
+  @Prop syncDecode: boolean = true;
   @StorageProp('appDarkMode') @Watch('refreshCovers') appDarkMode: boolean = false;
   @StorageProp('bookshelfCoverAlbums') @Watch('refreshCovers') albums: string = '';
   @StorageProp('bookshelfLightCoverAlbumId') @Watch('refreshCovers') lightAlbum: string = '';
@@ -34,21 +44,35 @@ export struct BookCover {
   @StorageProp('bookshelfCoverMode') @Watch('refreshCovers') coverMode: string = 'sequence';
   @StorageProp('appThemeBookCoverEnabled') @Watch('refreshCovers') themeCoverEnabled: boolean = false;
   @StorageProp('themeRevision') @Watch('refreshCovers') themeRevision: number = 0;
+  @StorageProp('shelfCoverSlotRevision') @Watch('refreshCovers') shelfCoverSlotRevision: number = 0;
   @StorageProp('shelfUpdateTime') @Watch('onBookChanged') shelfUpdateTime: number = 0;
+  @StorageProp('bookshelfDarkCoverDim') darkCoverDim: boolean = false;
+  @StorageProp('bookshelfDarkCoverDimLevel') darkCoverDimLevel: number = 20;
   /** 实际交给 Image 的地址。每个异步任务完成后直接替换数组，避免依赖全局刷新穿透 Builder。 */
   @State displayCovers: ResourceStr[] = [];
   @State covers: ResourceStr[] = [];
   @State themeFrame: ResourceStr = '';
+  /** 正在显示主题自带的书籍封面（不一定有书框）。 */
+  @State themeCover: boolean = false;
   @State interval: number = 3500;
   @State activeIndex: number = 0;
   @State loadedRevision: number = 0;
+  @State decodedRevision: number = 0;
   private shelfBook: Book | null = null;
+  /** shelfBook 是哪本书查来的：同一本书再查时先沿用它。 */
+  private shelfBookKey: string = '';
   private loadedUrls: Set<string> = new Set();
+  private decodedUrls: Set<string> = new Set();
   private requestSerial: number = 0;
   private mounted: boolean = false;
   private coverLoadSerial: number = 0;
   private retryCounts: Map<number, number> = new Map();
   private retryTimers: Map<number, number> = new Map();
+  /** 上次按哪份已准备封面刷新的，见 onPreparedSelectionChanged。 */
+  private preparedApplied: string = '';
+  private readyNotified: ResourceStr | null = null;
+  private readyPending: ResourceStr = '';
+  private readyTimer: number = -1;
   onReadyCover: (url: ResourceStr) => void = (_url: ResourceStr): void => {};
 
   aboutToAppear(): void {
@@ -61,6 +85,8 @@ export struct BookCover {
     this.requestSerial++;
     this.coverLoadSerial++;
     this.clearCoverRetries();
+    if (this.readyTimer >= 0) clearTimeout(this.readyTimer);
+    this.readyTimer = -1;
   }
 
   onBookChanged(): void {
@@ -69,7 +95,13 @@ export struct BookCover {
       this.onPreparedSelectionChanged();
       return;
     }
-    this.shelfBook = null;
+    // 同一本书的刷新（保存进度后的 shelfUpdateTime 等）先沿用已查到的书目，查回来再换。清空的话这一帧封面列表
+    // 是空的，会露出占位色，查回来后图片还要重新解码一次——关听书页时大封面闪绿就是这样来的。
+    const key = `${this.origin}|${this.bookUrl}`;
+    if (key !== this.shelfBookKey) {
+      this.shelfBook = null;
+      this.shelfBookKey = key;
+    }
     this.refreshCovers();
     if (!this.mounted || !this.useBookshelfCover || !this.bookUrl) return;
     this.loadShelfBook(serial);
@@ -117,9 +149,11 @@ export struct BookCover {
       this.onPreparedSelectionChanged();
       return;
     }
+    this.preparedApplied = '';
     const themeCover = this.useBookshelfCover && ThemeBookCoverSettings.enabled(this.appDarkMode, this.themeCoverEnabled);
-    const covers: ResourceStr[] = themeCover ? ThemeBookCoverSettings.covers(this.coverBook(), this.appDarkMode) : this.rawCoverList();
+    const covers: ResourceStr[] = themeCover ? ThemeBookCoverSettings.covers(this.coverBook(), this.appDarkMode, this.coverMode) : this.rawCoverList();
     this.themeFrame = themeCover ? ThemeBookCoverSettings.frame(this.appDarkMode) : '';
+    this.themeCover = themeCover;
     this.interval = themeCover ? ThemeBookCoverSettings.interval(this.coverBook()) : 3500;
     if (JSON.stringify(covers) !== JSON.stringify(this.covers)) {
       this.covers = covers;
@@ -131,7 +165,13 @@ export struct BookCover {
   onPreparedSelectionChanged(): void {
     const prepared = this.preparedSelection;
     if (!prepared) return;
+    // 对象类型的 @Prop 每次父组件刷新都是一份新拷贝，内容没变也会走到这里。结果列表里任何一本的封面准备好，
+    // 在场的每个封面都会被刷新一遍；照做的话要重置封面列表（轮播随之重建）、取消并重启进行中的下载。
+    const applied = JSON.stringify([prepared.firstImage, prepared.covers, prepared.frame, prepared.interval, prepared.themeCover]);
+    if (applied === this.preparedApplied) return;
+    this.preparedApplied = applied;
     this.themeFrame = prepared.frame;
+    this.themeCover = prepared.themeCover;
     this.interval = prepared.interval;
     if (JSON.stringify(prepared.covers) !== JSON.stringify(this.covers)) {
       this.covers = prepared.covers.slice();
@@ -220,8 +260,21 @@ export struct BookCover {
     return this.loadedRevision >= 0 && this.loadedUrls.has(JSON.stringify(this.activeCover()));
   }
 
+  /**
+   * 回调一律延后到当前任务之后再发，且只在变化时发。这里常在父组件刷新本组件参数的过程中被调到（@Prop 变化 →
+   * @Watch），同步回调时父组件在自己的渲染里读写状态：读，会把这个封面节点记成那个状态的依赖；写，又把它标脏。
+   * 框架在一次重绘里循环处理到没有脏节点为止，两个封面对同一个键报出不同结果时就永远停不下来，主线程卡死被系统结束。
+   */
   notifyReadyCover(): void {
-    if (this.mounted) this.onReadyCover(this.isActiveCoverReady() ? this.activeCover() : '');
+    if (!this.mounted) return;
+    this.readyPending = this.isActiveCoverReady() ? this.activeCover() : '';
+    if (this.readyTimer >= 0) return;
+    this.readyTimer = setTimeout((): void => {
+      this.readyTimer = -1;
+      if (!this.mounted || this.readyPending === this.readyNotified) return;
+      this.readyNotified = this.readyPending;
+      this.onReadyCover(this.readyPending);
+    }, 0);
   }
 
   markLoaded(url: ResourceStr): void {
@@ -235,25 +288,68 @@ export struct BookCover {
     this.notifyReadyCover();
   }
 
+  dimOpacity(): number {
+    return CoverDimSettings.opacity(this.appDarkMode, this.darkCoverDim, this.darkCoverDimLevel);
+  }
+
+  preparedSync(): boolean {
+    return this.preparedSelection !== null && this.syncDecode;
+  }
+
+  /** 后台解码完成的地址：淡入只看这里。loadedUrls 对已准备的首图是提前记上的，不代表已经解码。 */
+  isDecoded(url: ResourceStr): boolean {
+    return this.decodedRevision >= 0 && this.decodedUrls.has(JSON.stringify(url));
+  }
+
+  markDecoded(url: ResourceStr): void {
+    const key = JSON.stringify(url);
+    if (this.decodedUrls.has(key)) return;
+    if (this.decodedUrls.size > 200) this.decodedUrls.clear();
+    this.decodedUrls.add(key);
+    this.decodedRevision++;
+  }
+
+  /** 主题包动图封面取景时记下的显示区域。 */
+  themeCrop(url: ResourceStr): ThemeImageCrop | null {
+    return this.themeCover ? ThemeAssetRegistry.imageCrop(ThemeImageSlots.COVER, url, this.appDarkMode) : null;
+  }
+
   @Builder
   coverImage(url: ResourceStr) {
-    Image(url)
-      // Prepared result images are small, validated local files; first paint must contain the image.
-      .syncLoad(this.preparedSelection !== null)
-      .width('100%')
-      .height('100%')
-      .objectFit(this.themeFrame ? ImageFit.Fill : ImageFit.Cover)
-      .sourceSize({ width: this.decodeWidth, height: this.decodeHeight })
-      .borderRadius(this.cornerRadius)
-      .onComplete(() => this.markLoaded(url))
-      .onError(() => this.markFailed(url))
+    if (this.themeCrop(url)) {
+      ThemeCroppedImage({ src: url, crop: this.themeCrop(url) as ThemeImageCrop,
+        syncLoad: this.preparedSync(),
+        onLoaded: () => this.markLoaded(url),
+        onFailed: () => this.markFailed(url) })
+        .width('100%')
+        .height('100%')
+        .borderRadius(this.cornerRadius)
+        .clip(true)
+    } else {
+      Image(url)
+        // Prepared result images are small, validated local files; first paint must contain the image.
+        .syncLoad(this.preparedSync())
+        .width('100%')
+        .height('100%')
+        .objectFit(this.themeFrame ? ImageFit.Fill : ImageFit.Cover)
+        .sourceSize({ width: this.decodeWidth, height: this.decodeHeight })
+        .borderRadius(this.cornerRadius)
+        .onComplete(() => {
+          this.markDecoded(url);
+          this.markLoaded(url);
+        })
+        .onError(() => this.markFailed(url))
+        // 后台解码的图到了再淡入；同步解码的第一帧就带图，不淡入。
+        .opacity(this.preparedSelection === null || this.syncDecode || this.isDecoded(url) ? 1 : 0)
+        .animation({ duration: 150, curve: Curve.EaseOut })
+    }
   }
 
   build() {
     Stack() {
       if (!this.isActiveCoverReady() && this.preparedSelection?.firstImage) {
         Image(this.preparedSelection.firstImage)
-          .syncLoad(true)
+          .syncLoad(this.syncDecode)
           .width('100%')
           .height('100%')
           .sourceSize({ width: this.decodeWidth, height: this.decodeHeight })
@@ -301,9 +397,18 @@ export struct BookCover {
           this.notifyReadyCover();
         })
       }
+      // 深色模式调暗封面；主题自带的书籍封面是为深色单独设计的，不调暗。
+      if (!this.themeCover && this.dimOpacity() > 0) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#000000')
+          .opacity(this.dimOpacity())
+          .hitTestBehavior(HitTestMode.None)
+      }
       if (this.themeFrame) {
         Image(this.themeFrame)
-          .syncLoad(this.preparedSelection !== null)
+          .syncLoad(this.preparedSync())
           .width('100%')
           .height('100%')
           .objectFit(ImageFit.Fill)

@@ -1,3 +1,4 @@
+import { firstGestureFinger } from '../../utils/GestureFingers';
 import { LocalBookService } from '../../core/book/LocalBookService';
 import { image } from '@kit.ImageKit';
 import { AnimatorResult } from '@kit.ArkUI';
@@ -13,6 +14,7 @@ import { AppSpacing } from '../../theme/AppSpacing';
 import { ReaderImageMarker } from '../../core/book/ReaderImageMarker';
 import { ReaderComicProcessing } from '../../core/reader/ReaderComicProcessing';
 import { ReaderComicProcessingBadge } from './ReaderComicProcessingBadge';
+import { ReaderSpreadSpine } from './ReaderSpreadSpine';
 import {
   ReaderComicImageItem, ReaderComicImageSizes, ReaderComicInfoBadge, ReaderComicRetryRegistry, ReaderPendingImageHint
 } from './ReaderComicView';
@@ -74,6 +76,8 @@ export struct ReaderComicPagedView {
   @Prop superResolution: boolean = false;
   /** 本书繁→简。 */
   @Prop textConvert: boolean = false;
+  /** 去白边（ReaderComicTrimMode 的取值）。 */
+  @Prop trimMode: string = 'off';
   @Prop surfaceColor: string = '#000000';
   /** 翻页动画里纸张的底色，必须不透明：背景跟随主题时 surfaceColor 是透明色，绘制器会把它当成黑色。 */
   @Prop paperColor: string = '#000000';
@@ -94,6 +98,8 @@ export struct ReaderComicPagedView {
   @Prop infoTime: string = '';
   @Prop infoBattery: number = -1;
   @Prop infoBottomInset: number = 6;
+  /** 角标右边距，阅读页按屏幕圆角算好传入。 */
+  @Prop infoRightInset: number = 10;
   onImageLongPress: (source: string, reload: () => void, snapshotId: string) => void = () => {};
   onImageDenied: (chapterIndex: number) => void = () => {};
   onPageChanged: (pageIndex: number) => void = () => {};
@@ -215,6 +221,14 @@ export struct ReaderComicPagedView {
       result.push(page);
     }
     return this.rightToLeft ? result.reverse() : result;
+  }
+
+  /** 双页并排时同一跨页里另一页的图片标记；单页或另一页不是图片时为空串。 */
+  private spreadPartnerMarker(chapterIndex: number, pageIndex: number, spreadPages: number): string {
+    if (spreadPages !== 2) return '';
+    const first = Math.floor(pageIndex / 2) * 2;
+    const partner = (this.chapterPages(chapterIndex)[pageIndex === first ? first + 1 : first] || '').trim();
+    return LocalBookService.isEpubImageMarker(partner) ? partner : '';
   }
 
   /** 越出本章的那一格能否直接显示相邻章节。 */
@@ -738,9 +752,9 @@ export struct ReaderComicPagedView {
   }
 
   private updateCurlFinger(event: GestureEvent): void {
-    if (this.animationType !== ReaderPageTurnAnimation.THREE_D || !event.fingerList ||
-      event.fingerList.length === 0) return;
-    this.emulationPainter.dragCorner(event.fingerList[0].localX, event.fingerList[0].localY);
+    const finger = firstGestureFinger(event);
+    if (this.animationType !== ReaderPageTurnAnimation.THREE_D || !finger) return;
+    this.emulationPainter.dragCorner(finger.localX, finger.localY);
   }
 
   private handlePanUpdate(event: GestureEvent): void {
@@ -823,6 +837,8 @@ export struct ReaderComicPagedView {
         retryKey: `${chapterIndex}_${pageIndex}`,
         superResolution: this.superResolution,
         textConvert: this.textConvert,
+        trimMode: this.trimMode,
+        trimPartner: this.spreadPartnerMarker(chapterIndex, pageIndex, spreadPages),
         retryRegistry: this.retryRegistry,
         processing: this.processing,
         onDenied: (): void => this.onImageDenied(chapterIndex)
@@ -913,6 +929,11 @@ export struct ReaderComicPagedView {
       .height(this.viewH())
       .backgroundColor(this.surfaceColor)
       .id(this.snapshotId(this.relativeSpread(chapterIndex, spread)))
+      // 双页中缝：漫画整屏铺满，中缝从屏幕顶端贯穿到底；放在截图节点外，翻页纹理自己画中缝，不会叠两道。
+      if (this.chapterSpreadPages(chapterIndex, spread).length === 2) {
+        ReaderSpreadSpine({ dark: this.darkMode })
+          .height(this.viewH())
+      }
       if (this.animationType === ReaderPageTurnAnimation.PUSH) {
         this.pushShade(this.relativeSpread(chapterIndex, spread))
       }
@@ -1018,12 +1039,12 @@ export struct ReaderComicPagedView {
           timeText: this.infoTime,
           battery: this.infoBattery
         })
-          .position({ right: 10, bottom: this.infoBottomInset })
+          .position({ right: this.infoRightInset, bottom: this.infoBottomInset })
           .hitTestBehavior(HitTestMode.None)
       }
 
       ReaderComicProcessingBadge({ processing: this.processing, colorSession: this.colorSession })
-        .position({ right: 10, bottom: this.infoBottomInset + (this.infoVisible ? 30 : 0) })
+        .position({ right: this.infoRightInset, bottom: this.infoBottomInset + (this.infoVisible ? 30 : 0) })
         .hitTestBehavior(HitTestMode.None)
 
       if (this.interactive) {

@@ -13,8 +13,8 @@ import type { Zippable } from 'fflate';
 import {
   QYTHEME_ASSET_PREFIX, ThemePackageAsset, ThemePackageAssetKinds, ThemePackageFeatures, ThemePackageLimits,
   ThemePackageManifest, ThemePackageTheme, IMAGE_SETTING_KEYS, assetPathExtension, checkSvgSource, decodeManifest,
-  decodeTheme, encodeParts, findAssetByPath, isValidPackageId, kindForExtension, mapPartsAssetRefs, maxBytesForKind,
-  packThemeId, replaceOwnPackIdWithSelf, sniffAssetExtension
+  bubbleDarkDifference, bubbleFor, commentBubbleIsEmpty, titleBubbleDarkDifference, titleBubbleFor, decodeTheme, encodeBubble, encodeParts, findAssetByPath, isValidPackageId, kindForExtension, mapPartsAssetRefs, maxAssetsFor, maxBytesForKind,
+  packThemeId, partsUseBitmapCapOrShelfFrame, partsUseBubbleFrameFeature, replaceOwnPackIdWithSelf, sniffAssetExtension, tooManyAssetsMessage
 } from '../../../../entry/src/main/ets/theme/share/ThemePackageFormat.ts';
 import { ZipEntryInfo, ZipEntryInspector, ZipInspectLimits } from '../../../../entry/src/main/ets/theme/share/ZipEntryInspector.ts';
 
@@ -81,14 +81,19 @@ export function mimeForExtension(ext: string): string {
 
 export function emptyParts(): Json {
   return {
-    light: { colors: {}, reader: {}, emphasis: {} },
-    dark: { colors: {}, reader: {}, emphasis: {} },
+    light: { colors: {}, reader: {}, emphasis: {}, commentBubble: {}, titleEmphasis: {}, chapterHead: {} },
+    dark: { colors: {}, reader: {}, emphasis: {}, commentBubble: {}, titleEmphasis: {}, chapterHead: {} },
     ttsPanel: { light: {}, dark: {} },
     navigation: {},
+    navigationDark: {},
     book: { covers: [] },
     startup: { light: {}, dark: {} },
     bubble: {},
+    bubbleDark: {},
+    titleBubble: {},
+    titleBubbleDark: {},
     homeBackdrop: {},
+    shelfBackdrop: {},
     logo: '',
     preview: '',
     radius: {},
@@ -295,7 +300,9 @@ async function collectAssets(files: FileMap, manifest: ThemePackageManifest): Pr
     if (data.length <= 0 || data.length > maxBytesForKind(kind)) throw new Error('主题包素材超出大小上限');
     let asset = findAssetByPath(manifest, name);
     if (!asset) {
-      if (manifest.assets.length >= ThemePackageLimits.MAX_ASSETS) throw new Error('主题包素材数量超出上限');
+      if (manifest.assets.length >= maxAssetsFor(manifest.requires)) {
+        throw new Error(tooManyAssetsMessage(manifest.assets.length + 1, manifest.requires));
+      }
       asset = new ThemePackageAsset();
       asset.path = name;
       asset.kind = kind;
@@ -473,6 +480,11 @@ function mergeParts(source: Json): Json {
     }
   };
   merge(parts, source);
+  // 首字行数在界面上是下拉，按字符串存。
+  for (const mode of ['light', 'dark']) {
+    const head = parts[mode] && parts[mode].chapterHead;
+    if (head && typeof head.dropCapLines === 'number') head.dropCapLines = head.dropCapLines > 0 ? String(head.dropCapLines) : '';
+  }
   return parts;
 }
 
@@ -540,18 +552,143 @@ function strip(value: Json): Json {
  * 写进 theme.json 的 parts：去掉空值；背景方式切换后残留的另一种素材不写；
  * 一个字段都没填的朗读面板、启动封面不写（填了一部分的照写，让格式层报出缺什么）。
  */
+/** 角饰模式只填了一角：要声明 reader-single-corner-v1（老版本应用会提示先更新，而不是报“缺图”）。 */
+function usesSingleCorner(parts: Json): boolean {
+  return ['light', 'dark'].some((mode) => {
+    const reader = parts[mode] && parts[mode].reader;
+    if (!reader) return false;
+    const bgMode = reader.backgroundMode || (reader.image ? 'image' : (reader.leading || reader.trailing ? 'ornaments' : ''));
+    return bgMode === 'ornaments' && !reader.leading !== !reader.trailing;
+  });
+}
+
 export function normalizedParts(parts: Json): Json {
   const copy = JSON.parse(JSON.stringify(parts || {}));
   for (const mode of ['light', 'dark']) {
     const reader = copy[mode] && copy[mode].reader;
     if (!reader) continue;
     const bgMode = reader.backgroundMode || '';
-    if (bgMode === 'image' || bgMode === 'none') { delete reader.leading; delete reader.trailing; }
+    // 整图模式也可以带角饰（叠在整图上面），只有“只有底色”才去掉角饰。
+    if (bgMode === 'none') { delete reader.leading; delete reader.trailing; }
+    const ornaments = bgMode === 'ornaments' || bgMode === 'image' ||
+      (!bgMode && !reader.image && (reader.leading || reader.trailing));
+    for (const key of ['leadingScale', 'trailingScale']) {
+      if (!ornaments || typeof reader[key] !== 'number' || reader[key] === 1) delete reader[key];
+    }
     if (bgMode === 'ornaments' || bgMode === 'none') delete reader.image;
     if (bgMode !== 'image' && !reader.image) delete reader.imageFit;
     if (reader.imageFit === 'cover' && Object.keys(strip(reader)).length === 1) delete reader.imageFit;
   }
+  // 动图取景的显示区域只对它记下的那张图有效：换了图、删了封面后留下的不写（也不带上旧图）。
+  const book = copy.book;
+  if (book && typeof book === 'object') {
+    // 只填了深色封面时写成 covers：应用里浅色本来就借用它，显示一样，旧版本应用也认得（应用导出时同样处理）。
+    if (!(Array.isArray(book.covers) && book.covers.length) && Array.isArray(book.coversDark) && book.coversDark.length) {
+      book.covers = book.coversDark;
+      book.coverCrops = book.coverCropsDark;
+      delete book.coversDark;
+      delete book.coverCropsDark;
+    }
+    const covers: Json[] = Array.isArray(book.covers) ? book.covers : [];
+    if (Array.isArray(book.coverCrops)) book.coverCrops = book.coverCrops.filter((crop: Json) => crop && covers.includes(crop.image));
+    const coversDark: Json[] = Array.isArray(book.coversDark) ? book.coversDark : [];
+    if (Array.isArray(book.coverCropsDark)) {
+      book.coverCropsDark = book.coverCropsDark.filter((crop: Json) => crop && coversDark.includes(crop.image));
+    }
+    // 书架边框同理：只填了深色那张时写成 shelfFrame；和浅色同一张时不写。
+    if (!book.shelfFrame && book.shelfFrameDark) {
+      book.shelfFrame = book.shelfFrameDark;
+      delete book.shelfFrameDark;
+    }
+    if (book.shelfFrameDark && book.shelfFrameDark === book.shelfFrame) delete book.shelfFrameDark;
+    // 文件夹插画同理：只填了深色那张时写成 shelfFolder。
+    if (!book.shelfFolder && book.shelfFolderDark) {
+      book.shelfFolder = book.shelfFolderDark;
+      book.shelfFolderCrop = book.shelfFolderCropDark;
+      delete book.shelfFolderDark;
+      delete book.shelfFolderCropDark;
+    }
+    if (book.shelfFolderCrop && book.shelfFolderCrop.image !== book.shelfFolder) delete book.shelfFolderCrop;
+    if (book.shelfFolderCropDark && book.shelfFolderCropDark.image !== book.shelfFolderDark) delete book.shelfFolderCropDark;
+  }
+  // 按书架布局的背景（shelfBackdrop.<布局>.light / dark）同样只留和当前图对得上的显示区域。
+  const shelfBackdrop = copy.shelfBackdrop;
+  if (shelfBackdrop && typeof shelfBackdrop === 'object') {
+    for (const entry of Object.values(shelfBackdrop) as Json[]) {
+      if (!entry || typeof entry !== 'object') continue;
+      for (const mode of ['light', 'dark']) {
+        const key = `${mode}Crop`;
+        if (entry[key] && entry[key].image !== entry[mode]) delete entry[key];
+      }
+    }
+  }
+  const backdrop = copy.homeBackdrop;
+  if (backdrop && typeof backdrop === 'object') {
+    for (const mode of ['light', 'dark']) {
+      const key = `${mode}Crop`;
+      if (backdrop[key] && backdrop[key].image !== backdrop[mode]) delete backdrop[key];
+    }
+  }
+  // 章首装饰：位置和大小只跟着饰图走；标题左侧、1 倍是缺省值，不写。
+  for (const mode of ['light', 'dark']) {
+    const head = copy[mode] && copy[mode].chapterHead;
+    if (!head || typeof head !== 'object') continue;
+    if (!head.image || (head.placement !== 'top' && head.placement !== 'bottom')) delete head.placement;
+    if (!head.image || typeof head.scale !== 'number' || head.scale === 1) delete head.scale;
+    // 首字：不处理时印章图、字占比不写；字占比只跟着印章图走，0.62 是缺省值。
+    // 编辑器里下拉存的是字符串，写进包时换回数字。
+    const capLines = Number(head.dropCapLines) === 3 ? 3 : (Number(head.dropCapLines) === 2 ? 2 : 0);
+    if (capLines) head.dropCapLines = capLines;
+    else { delete head.dropCapLines; delete head.dropCapImage; delete head.dropCapColor; }
+    if (!head.dropCapImage || typeof head.dropCapRatio !== 'number' || head.dropCapRatio === 0.62) delete head.dropCapRatio;
+  }
+  // 拉伸设置只跟着边框走：没有边框时不写；拉伸、每行两端、原色是缺省值，也不写。深色那套同样处理。
+  for (const key of ['bubble', 'bubbleDark', 'titleBubble', 'titleBubbleDark']) {
+    const bubble = copy[key];
+    if (!bubble || typeof bubble !== 'object') continue;
+    if (!bubble.frame) {
+      for (const field of ['frameSlice', 'frameRepeat', 'frameBreak', 'frameTint']) delete bubble[field];
+    } else {
+      if (bubble.frameRepeat !== 'round') delete bubble.frameRepeat;
+      if (bubble.frameBreak !== 'cut') delete bubble.frameBreak;
+      if (bubble.frameTint !== true) delete bubble.frameTint;
+    }
+  }
+  // 浅色写成 bubble、深色只留不同的那几项（只填了深色时就写成 bubble），同应用导出。
+  const lightBubble = bubbleFor(copy, false);
+  const darkBubble = bubbleDarkDifference(copy);
+  copy.bubble = lightBubble ? encodeBubble(lightBubble) : {};
+  copy.bubbleDark = darkBubble ? encodeBubble(darkBubble) : {};
+  const lightTitleBubble = titleBubbleFor(copy, false);
+  const darkTitleBubble = titleBubbleDarkDifference(copy);
+  copy.titleBubble = lightTitleBubble ? encodeBubble(lightTitleBubble) : {};
+  copy.titleBubbleDark = darkTitleBubble ? encodeBubble(darkTitleBubble) : {};
+  // 段评圆角只对圆角形状有效。气泡图：没有图时拉伸设置不写；拉伸、裁掉尾巴、原色是缺省值，也不写；拉伸线只写左右。
+  // 角标图、位置、大小只跟着“自定义图片”走。
+  for (const mode of ['light', 'dark']) {
+    const comment = copy[mode] && copy[mode].commentBubble;
+    if (!comment || typeof comment !== 'object') continue;
+    if (comment.shape !== 'rounded') delete comment.radius;
+    if (!comment.image) {
+      for (const field of ['imageSlice', 'imageText', 'imageRepeat', 'imageBreak', 'imageTint']) delete comment[field];
+    } else {
+      if (comment.imageRepeat !== 'round') delete comment.imageRepeat;
+      if (comment.imageBreak !== 'full') delete comment.imageBreak;
+      if (comment.imageTint !== true) delete comment.imageTint;
+      if (comment.imageSlice && typeof comment.imageSlice === 'object') {
+        comment.imageSlice = { left: comment.imageSlice.left, right: comment.imageSlice.right };
+      }
+    }
+    if (comment.ornament !== 'custom') {
+      delete comment.ornamentImage;
+      delete comment.ornamentCorner;
+      delete comment.ornamentSize;
+    }
+    if (typeof comment.ornamentSize === 'number' && comment.ornamentSize < 0) delete comment.ornamentSize;
+  }
   const result = strip(copy);
+  // 没有导航图标时深色那套也不写。
+  if (!result.navigation) delete result.navigationDark;
   // 旧版本应用还有“搜索”页签，导入时要求四个导航图标都在：没给就用发现的图标顶上（应用导出时同样处理）。
   const nav = result.navigation;
   if (nav && nav.explore && !nav.search) {
@@ -567,8 +704,29 @@ export function normalizedParts(parts: Json): Json {
   return result;
 }
 
+/** 强调覆盖里的段评设置全空时（应用导出的方案总会带一份 radius: -1 的空设置）不算覆盖。 */
+function overrideValue(key: string, value: Json): Json {
+  if ((key === 'customLightEmphasis' || key === 'customDarkEmphasis') && value && typeof value === 'object' &&
+    commentBubbleIsEmpty(value.comment)) {
+    const rest = { ...value };
+    delete rest.comment;
+    return rest;
+  }
+  return value;
+}
+
 const OVERRIDE_SETTING_KEYS: string[] = ['customLightPalette', 'customDarkPalette', 'customLightEmphasis',
   'customDarkEmphasis', 'customRadius', 'customLightStartupText', 'customDarkStartupText', 'customAppFontFamily'];
+
+/** 封面一套最多几张、整包最多几个素材：编辑器界面和检查用应用格式层的同一组上限。 */
+export const MAX_COVERS: number = ThemePackageLimits.MAX_COVERS;
+export const MAX_ASSETS: number = ThemePackageLimits.MAX_ASSETS;
+
+/** covers 超过老版本的 8 张：要声明 book-covers-16-v1（老版本应用会提示先更新，而不是报“最多 8 张”）。 */
+function usesManyCovers(parts: Json): boolean {
+  const covers = parts.book && parts.book.covers;
+  return Array.isArray(covers) && covers.length > ThemePackageLimits.LEGACY_MAX_COVERS;
+}
 
 export async function buildFiles(project: EditorProject): Promise<FileMap> {
   const parts = normalizedParts(project.parts);
@@ -585,11 +743,16 @@ export async function buildFiles(project: EditorProject): Promise<FileMap> {
   }
   const requires = new Set<string>([ThemePackageFeatures.CUSTOM_SCHEME]);
   if (Object.keys(parts).length) requires.add(ThemePackageFeatures.THEME_PARTS);
+  if (usesSingleCorner(parts)) requires.add(ThemePackageFeatures.READER_SINGLE_CORNER);
+  if (usesManyCovers(parts)) requires.add(ThemePackageFeatures.BOOK_COVERS_16);
+  if (partsUseBubbleFrameFeature(parts)) requires.add(ThemePackageFeatures.BUBBLE_FRAME);
+  if (partsUseBitmapCapOrShelfFrame(parts)) requires.add(ThemePackageFeatures.BITMAP_CAP_SHELF_FRAME);
+  if (assets.length > ThemePackageLimits.LEGACY_MAX_ASSETS) requires.add(ThemePackageFeatures.ASSETS_128);
   if (project.layout) requires.add(ThemePackageFeatures.READER_LAYOUT);
   if (project.emphasis) requires.add(ThemePackageFeatures.EMPHASIS_RULES);
   if (hasFont) requires.add(ThemePackageFeatures.FONTS);
   if (project.settings) {
-    const overrides = OVERRIDE_SETTING_KEYS.some((key) => !isEmptyValue(strip(project.settings[key])));
+    const overrides = OVERRIDE_SETTING_KEYS.some((key) => !isEmptyValue(strip(overrideValue(key, project.settings[key]))));
     if (overrides || project.manifest.requires.includes(ThemePackageFeatures.SCHEME_OVERRIDES)) {
       requires.add(ThemePackageFeatures.SCHEME_OVERRIDES);
     }
