@@ -226,8 +226,10 @@ struct TtsSettingsPage {
       }.width('100%').padding(AppSpacing.XL).backgroundColor(this.cardColor())
         .borderRadius(ThemeRuntime.cardRadius())
 
-      this.ttsCommerceSection()
-      this.ttsPackagesSection()
+      if (AccountCommerceConfig.COMMERCE_ENABLED) {
+        this.ttsCommerceSection()
+        this.ttsPackagesSection()
+      }
     }.width('100%').constraintSize({ maxWidth: 760 }).padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG })
   }
 

@@ -183,4 +183,12 @@ assert.equal(
   'entry/src/main/module.json5 must not request ohos.permission.CAMERA'
 );
 
+// (f) TtsSettings.ets 必须按开关隐藏在线朗读额度与兑换字数包入口。
+const ttsSettingsSource = readRepo('entry/src/main/ets/pages/TtsSettings.ets');
+assert.match(
+  ttsSettingsSource,
+  /if\s*\(\s*AccountCommerceConfig\.COMMERCE_ENABLED\s*\)\s*\{\s*this\.ttsCommerceSection\(\)\s*;?\s*this\.ttsPackagesSection\(\)\s*;?\s*\}/,
+  'TtsSettings.ets must gate ttsCommerceSection() and ttsPackagesSection() by AccountCommerceConfig.COMMERCE_ENABLED'
+);
+
 console.log('Local features check passed: commerce blocked before HTTP, sync retained, themes free, old cloud voice disabled, web parse always on, eye-turn & camera disabled.');
