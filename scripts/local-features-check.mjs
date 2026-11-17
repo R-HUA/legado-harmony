@@ -191,4 +191,28 @@ assert.match(
   'TtsSettings.ets must gate ttsCommerceSection() and ttsPackagesSection() by AccountCommerceConfig.COMMERCE_ENABLED'
 );
 
+// (g) About.ets 移除交流与反馈、贡献者感谢和备案号，保留崩溃记录与开源许可；Index.ets 同步更新崩溃记录路径提示。
+const aboutSource = readRepo('entry/src/main/ets/pages/About.ets');
+for (const removedText of [
+  '交流与反馈',
+  'i@icynol.com',
+  'QQ 交流群',
+  'CommunityGroup',
+  '与轻页同行',
+  'thanksCard',
+  'AboutContributor',
+  '蜀ICP备',
+  'APP 备案编号',
+  '版权与投诉',
+  'COMPLAINT_NOTICE'
+]) {
+  assert.equal(aboutSource.includes(removedText), false, `About.ets must exclude ${removedText}`);
+}
+assert.ok(aboutSource.includes("'pages/CrashReports'"), 'About.ets must keep pages/CrashReports entry');
+assert.ok(aboutSource.includes("'pages/OpenSourceLicenses'"), 'About.ets must keep pages/OpenSourceLicenses entry');
+const indexSource = readRepo('entry/src/main/ets/pages/Index.ets');
+assert.ok(indexSource.includes('“关于 › 崩溃记录”'), 'Index.ets crash prompt must point to 关于 › 崩溃记录');
+assert.equal(indexSource.includes('“关于 › 交流与反馈 › 崩溃记录”'), false,
+  'Index.ets crash prompt must not mention 交流与反馈');
+
 console.log('Local features check passed: commerce blocked before HTTP, sync retained, themes free, old cloud voice disabled, web parse always on, eye-turn & camera disabled.');

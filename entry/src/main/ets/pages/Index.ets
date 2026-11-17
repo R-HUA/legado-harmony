@@ -260,7 +260,7 @@ struct Index {
       this.getUIContext().getPromptAction().showDialog({
         title: title,
         message: '本机留下了一条崩溃记录。方便的话，可以把它分享给开发者帮助找到原因；' +
-          '以后也能在“关于 › 交流与反馈 › 崩溃记录”里查看。',
+          '以后也能在“关于 › 崩溃记录”里查看。',
         buttons: [
           { text: '知道了', color: ThemeRuntime.subTextColor(this.appDarkMode) },
           { text: '查看记录', color: ThemeRuntime.accentColor(this.appDarkMode) }
