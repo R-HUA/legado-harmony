@@ -76,7 +76,7 @@ struct SearchResultGroupPage {
         })
         .bindToScrollable([this.scroller])
         .dynamicHideTitleBar({
-          hideTitleArea: true,
+          hideTitleArea: false,
           hideStatusBar: false,
           mode: HideMode.SCROLL_UP_TO
         })

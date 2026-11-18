@@ -1,6 +1,6 @@
 import { WebParseSettingsStore } from '../../utils/WebParseSettingsStore';
 import { LengthMetrics, router } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode, TitleSize } from '@kit.UIDesignKit';
 import { ImmersiveMaterialRuntime } from '../../utils/ImmersiveMaterialRuntime';
 import { PopupMenuAction } from '../common/PopupMenuAction';
 import { Book, BookTypeSupport } from '@legado/sourceengine';
@@ -183,7 +183,7 @@ export struct ListenTabPage {
             end: LengthMetrics.vp(16)
           },
           content: {
-            title: { mainTitle: '听' }
+            title: { mainTitle: '听', mainTitleSize: TitleSize.TITLE_ML }
           },
           style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
             headerFrosted: this.headerFrosted,
@@ -195,7 +195,7 @@ export struct ListenTabPage {
         })
         .bindToScrollable([this.scroller])
         .dynamicHideTitleBar({
-          hideTitleArea: true,
+          hideTitleArea: false,
           hideStatusBar: false,
           mode: HideMode.SCROLL_UP_TO
         })

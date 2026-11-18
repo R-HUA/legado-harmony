@@ -35,11 +35,14 @@ export struct PageScaffold {
   @Prop collapsible: boolean = true;
   @Prop externalCollapse: number = 0;
   @State headerCollapse: number = 0;
-  @State private nativeScrollY: number = 0;
   /** 页面自行滚动或需要调整滚动位置时传入自己的 Scroller，未传入时使用内置控制器。 */
   scroller: Scroller | undefined = undefined;
   /** 多滚动容器页面（如宽窄屏或双页签）额外绑定的 Scroller 列表。 */
   extraScrollers: Array<Scroller> = [];
+  /** 切页面会换滚动容器时传入：每次渲染都现取当前挂载的容器。 */
+  scrollerProvider: (() => Array<Scroller>) | undefined = undefined;
+  /** 调用方切页时改这个值，触发原生标题栏重新绑定。 */
+  @Prop scrollBindingKey: string = '';
   private contentScroller: Scroller = new Scroller();
   @State private actionsWidth: number = 12;
   @StorageProp('appDarkMode') appDarkMode: boolean = false;
@@ -59,7 +62,22 @@ export struct PageScaffold {
   }
 
   private allScrollers(): Array<Scroller> {
+    // 读取 scrollBindingKey 作为依赖，切页时刷新 HdsNavigation 的滚动容器绑定。
+    const _bindingKey = this.scrollBindingKey;
     const result: Array<Scroller> = [];
+    if (this.scrollerProvider !== undefined) {
+      const provided = this.scrollerProvider();
+      if (this.scrollable && provided.length === 0) {
+        result.push(this.contentScroller);
+      }
+      for (let i = 0; i < provided.length; i++) {
+        const item = provided[i];
+        if (item !== undefined && !result.includes(item)) {
+          result.push(item);
+        }
+      }
+      return result;
+    }
     if (this.scroller !== undefined) {
       result.push(this.scroller);
     } else if (this.scrollable) {
@@ -72,14 +90,6 @@ export struct PageScaffold {
       }
     }
     return result;
-  }
-
-  private nativeActionsCollapse(): number {
-    if (!this.collapsible || this.allScrollers().length === 0) return 0;
-    if (this.scrollable) {
-      return Math.max(0, Math.min(CollapsingHeader.DISTANCE, this.nativeScrollY / 2));
-    }
-    return this.collapseAmount();
   }
 
   build() {
@@ -107,14 +117,14 @@ export struct PageScaffold {
         })
         .bindToScrollable(this.allScrollers())
         .dynamicHideTitleBar({
-          hideTitleArea: this.collapsible && this.allScrollers().length > 0,
+          hideTitleArea: false,
           hideStatusBar: false,
           mode: HideMode.SCROLL_UP_TO
         })
         .width('100%')
         .height('100%')
 
-        // 保留调用方的操作构建器，对齐右上角并为原生标题预留其实际宽度，上滑隐藏时同步淡出收起。
+        // 保留调用方的操作构建器，对齐右上角并为原生标题预留其实际宽度，与原生标题一致常驻显示。
         Row() {
           Row() {
             this.actions()
@@ -122,7 +132,6 @@ export struct PageScaffold {
           .height(PageScaffold.BAR_HEIGHT)
           .padding({ right: 12 })
           .alignItems(VerticalAlign.Center)
-          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse()) ? HitTestMode.Default : HitTestMode.None)
           .onAreaChange((_oldValue: Area, newValue: Area) => {
             const width = parseFloat(String(newValue.width));
             if (Number.isFinite(width) && Math.abs(width - this.actionsWidth) >= 1) {
@@ -135,9 +144,6 @@ export struct PageScaffold {
         .margin({ top: this.statusBarHeight })
         .justifyContent(FlexAlign.End)
         .hitTestBehavior(HitTestMode.Transparent)
-        .opacity(CollapsingHeader.contentOpacity(this.nativeActionsCollapse()))
-        .translate({ y: -this.nativeActionsCollapse() * 0.5 })
-        .accessibilityLevel(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse()) ? 'auto' : 'no-hide-descendants')
       } else {
         if (this.scrollable) {
           this.scrollableBody()
@@ -166,7 +172,9 @@ export struct PageScaffold {
           .height(PageScaffold.BAR_HEIGHT + this.statusBarHeight - this.collapseAmount())
           .clip(true)
           .opacity(CollapsingHeader.contentOpacity(this.collapseAmount()))
-          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.collapseAmount()) ? HitTestMode.Default : HitTestMode.None)
+          .enabled(CollapsingHeader.acceptsTouch(this.collapseAmount()))
+          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.collapseAmount()) ?
+            HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
         } else {
           this.titleBar()
         }
@@ -201,10 +209,9 @@ export struct PageScaffold {
     .height('100%')
     .align(Alignment.TopStart)
     .onDidScroll((_xOffset: number, yOffset: number) => {
-      const offset = (this.scroller || this.contentScroller).currentOffset().yOffset;
-      this.nativeScrollY = Number.isFinite(offset) ? Math.max(0, offset) : 0;
       if (!this.collapsible) return;
-      this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset, offset);
+      this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+        (this.scroller || this.contentScroller).currentOffset().yOffset);
     })
     .onScrollStop(() => {
       if (!this.collapsible) return;
@@ -228,7 +235,7 @@ export struct PageScaffold {
       }
       .width('100%')
       .height('100%')
-      .padding({ top: this.edgeToEdge ? 0 : PageScaffold.BAR_HEIGHT + this.statusBarHeight - this.collapseAmount() })
+      .padding({ top: this.edgeToEdge ? 0 : PageScaffold.BAR_HEIGHT + this.statusBarHeight })
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     }
   }

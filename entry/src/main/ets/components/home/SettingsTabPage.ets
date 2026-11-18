@@ -1,5 +1,5 @@
 import { LengthMetrics, router } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode, TitleSize } from '@kit.UIDesignKit';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { SearchExploreSettings } from '../../utils/SearchExploreSettingsStore';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
@@ -32,7 +32,6 @@ export struct SettingsPage {
   @Prop navBarHeight: number = 0;
   @State headerCollapse: number = 0;
   @State headerBackdropReveal: number = 0;
-  @State private nativeActionsCollapse: number = 0;
   @State private actionsWidth: number = 56;
   private scroller: Scroller = new Scroller();
   onHeaderCollapseChange: (progress: number) => void = () => {};
@@ -69,18 +68,7 @@ export struct SettingsPage {
     const rawOffset = this.scroller.currentOffset().yOffset;
     if (!Number.isFinite(rawOffset)) return;
     const offset = Math.max(0, rawOffset);
-    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
-      const nextActionsCollapse = Math.max(0, Math.min(CollapsingHeader.DISTANCE, offset / 2));
-      if (Math.abs(nextActionsCollapse - this.nativeActionsCollapse) >= 0.5 ||
-        (nextActionsCollapse === 0 && this.nativeActionsCollapse !== 0) ||
-        (nextActionsCollapse === CollapsingHeader.DISTANCE &&
-          this.nativeActionsCollapse !== CollapsingHeader.DISTANCE)) {
-        this.nativeActionsCollapse = nextActionsCollapse;
-        if (!CollapsingHeader.acceptsTouch(nextActionsCollapse) && this.showThemeModeMenu) {
-          this.showThemeModeMenu = false;
-        }
-      }
-    } else {
+    if (!ImmersiveMaterialRuntime.supportsHdsTabs()) {
       const reveal = CollapsingHeader.backdropReveal(offset);
       if (reveal !== this.headerBackdropReveal) this.headerBackdropReveal = reveal;
     }
@@ -124,7 +112,7 @@ export struct SettingsPage {
             end: LengthMetrics.vp(Math.max(16, this.actionsWidth))
           },
           content: {
-            title: { mainTitle: '我的' }
+            title: { mainTitle: '我的', mainTitleSize: TitleSize.TITLE_ML }
           },
           style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
             headerFrosted: this.headerFrosted,
@@ -136,7 +124,7 @@ export struct SettingsPage {
         })
         .bindToScrollable([this.scroller])
         .dynamicHideTitleBar({
-          hideTitleArea: true,
+          hideTitleArea: false,
           hideStatusBar: false,
           mode: HideMode.SCROLL_UP_TO
         })
@@ -150,9 +138,6 @@ export struct SettingsPage {
           .height(56)
           .padding({ left: AppSpacing.XS, right: AppSpacing.LG })
           .alignItems(VerticalAlign.Center)
-          .enabled(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse))
-          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse) ?
-            HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
           .onAreaChange((_oldValue: Area, newValue: Area) => {
             const width = parseFloat(String(newValue.width));
             if (Number.isFinite(width) && Math.abs(width - this.actionsWidth) >= 1) {
@@ -165,10 +150,6 @@ export struct SettingsPage {
         .margin({ top: this.statusBarHeight })
         .justifyContent(FlexAlign.End)
         .hitTestBehavior(HitTestMode.Transparent)
-        .opacity(CollapsingHeader.contentOpacity(this.nativeActionsCollapse))
-        .translate({ y: -this.nativeActionsCollapse * 0.5 })
-        .accessibilityLevel(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse) ?
-          'auto' : 'no-hide-descendants')
       } else {
         this.settingsScrollBody()
 

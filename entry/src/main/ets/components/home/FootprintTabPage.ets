@@ -1,6 +1,6 @@
 import { WebParseSettingsStore } from '../../utils/WebParseSettingsStore';
 import { LengthMetrics, router } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode, TitleSize } from '@kit.UIDesignKit';
 import { Bookmark } from '@legado/sourceengine';
 import { appDb, ReadStatsRow } from '../../model/data/AppDatabase';
 import { readStatsTracker } from '../../core/stats/ReadStatsTracker';
@@ -79,7 +79,6 @@ export struct FootprintTabPage {
   /** 本月日历卡收起与否，在 EntryAbility 里持久化。 */
   @StorageLink('footprintMonthCollapsed') monthCollapsed: boolean = false;
   @StorageProp('footprintLayout') layoutRaw: string = '';
-  @State private nativeActionsCollapse: number = 0;
   @State private actionsWidth: number = 156;
   private scroller: Scroller = new Scroller();
   private alive: boolean = false;
@@ -209,15 +208,7 @@ export struct FootprintTabPage {
     const rawOffset = this.scroller.currentOffset().yOffset;
     if (!Number.isFinite(rawOffset)) return;
     const offset = Math.max(0, rawOffset);
-    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
-      const nextActionsCollapse = Math.max(0, Math.min(CollapsingHeader.DISTANCE, offset / 2));
-      if (Math.abs(nextActionsCollapse - this.nativeActionsCollapse) >= 0.5 ||
-        (nextActionsCollapse === 0 && this.nativeActionsCollapse !== 0) ||
-        (nextActionsCollapse === CollapsingHeader.DISTANCE &&
-          this.nativeActionsCollapse !== CollapsingHeader.DISTANCE)) {
-        this.nativeActionsCollapse = nextActionsCollapse;
-      }
-    } else {
+    if (!ImmersiveMaterialRuntime.supportsHdsTabs()) {
       const reveal = CollapsingHeader.backdropReveal(offset);
       if (reveal !== this.headerBackdropReveal) this.headerBackdropReveal = reveal;
     }
@@ -260,10 +251,10 @@ export struct FootprintTabPage {
             { end: LengthMetrics.vp(Math.max(16, this.actionsWidth)) } :
             { start: LengthMetrics.vp(16), end: LengthMetrics.vp(Math.max(16, this.actionsWidth)) },
           content: this.showBack ? {
-            title: { mainTitle: '足迹' },
+            title: { mainTitle: '足迹', mainTitleSize: TitleSize.TITLE_S },
             backIcon: { label: '返回', action: () => router.back() }
           } : {
-            title: { mainTitle: '足迹' }
+            title: { mainTitle: '足迹', mainTitleSize: TitleSize.TITLE_ML }
           },
           style: ImmersiveMaterialRuntime.navigationTitleBarStyle(this.immersiveLightLevel, {
             headerFrosted: this.headerFrosted,
@@ -275,7 +266,7 @@ export struct FootprintTabPage {
         })
         .bindToScrollable([this.scroller])
         .dynamicHideTitleBar({
-          hideTitleArea: true,
+          hideTitleArea: false,
           hideStatusBar: false,
           mode: HideMode.SCROLL_UP_TO
         })
@@ -289,9 +280,6 @@ export struct FootprintTabPage {
           .height(56)
           .padding({ left: AppSpacing.XS, right: AppSpacing.LG })
           .alignItems(VerticalAlign.Center)
-          .enabled(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse))
-          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse) ?
-            HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
           .onAreaChange((_oldValue: Area, newValue: Area) => {
             const width = parseFloat(String(newValue.width));
             if (Number.isFinite(width) && Math.abs(width - this.actionsWidth) >= 1) {
@@ -304,10 +292,6 @@ export struct FootprintTabPage {
         .margin({ top: this.statusBarHeight })
         .justifyContent(FlexAlign.End)
         .hitTestBehavior(HitTestMode.Transparent)
-        .opacity(CollapsingHeader.contentOpacity(this.nativeActionsCollapse))
-        .translate({ y: -this.nativeActionsCollapse * 0.5 })
-        .accessibilityLevel(CollapsingHeader.acceptsTouch(this.nativeActionsCollapse) ?
-          'auto' : 'no-hide-descendants')
       } else {
         this.footprintScrollBody()
 

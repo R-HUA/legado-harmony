@@ -13,7 +13,7 @@ import { DeleteParticles, DeleteParticleLayer, DeleteParticleBurst } from '../co
 import { BookshelfCoverBadges } from '../BookshelfCoverBadges';
 import { BookshelfCoverBadgeSettings } from '../../utils/BookshelfCoverBadgeSettings';
 import { componentUtils, curves, FrameCallback, LengthMetrics, router, window } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationTitleMode, HideMode, TitleBarStyleOptions } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode, TitleBarStyleOptions, TitleSize } from '@kit.UIDesignKit';
 import { common, WantAgent, wantAgent } from '@kit.AbilityKit';
 import { BackgroundPermit } from '../../utils/BackgroundPermit';
 import { notificationManager } from '@kit.NotificationKit';
@@ -325,7 +325,7 @@ export struct BookshelfPage {
   @State privateShelfRevealed: boolean = false;
   private shelfCategoryPages: Map<string, ShelfCategoryPage> = new Map();
   /** 'all' 为普通书架，'private' 为隐私书架。 */
-  @State @Watch('onShelfNavigationScrollTargetChanged') shelfScope: string = 'all';
+  @State shelfScope: string = 'all';
   /** 当前有书的类型，决定分类栏显示哪几项；“全部”总在第一位。 */
   @State shelfTypeTabIds: string[] = ['all'];
   /** 分类栏的实际宽度：沉浸材质底板需要具体数值。 */
@@ -357,7 +357,7 @@ export struct BookshelfPage {
   /** 筛选弹窗当前页：空串为主页，'tag' / 'origin' 为标签、书源二级页。 */
   @State shelfFilterMenuPage: string = '';
   /** 分类栏选中的书籍类型，只在本次运行内保留（切换页签不丢，重启后回到“全部”）。 */
-  @StorageLink('bookshelfTypeTab') @Watch('onShelfNavigationScrollTargetChanged') shelfTypeTab: string = 'all';
+  @StorageLink('bookshelfTypeTab') shelfTypeTab: string = 'all';
   /** 筛选条件（FILTER_GROUPS 里的键）逗号分隔，同样只在本次运行内保留。 */
   @StorageLink('bookshelfFilterKeys') shelfFilterKeys: string = '';
   /** 书架搜索栏是否展开、框里的原始输入；同样只在本次运行内保留，主页返回键会先收起它。 */
@@ -558,7 +558,7 @@ export struct BookshelfPage {
   @StorageLink('bookshelfShowProgressBar') bookshelfShowProgressBar: boolean = false;
   @StorageLink('bookshelfShowLastReadTime') bookshelfShowLastReadTime: boolean = true;
   @StorageLink('bookshelfShowLastReadChapter') bookshelfShowLastReadChapter: boolean = false;
-  @StorageLink('bookshelfLayoutMode') @Watch('onShelfNavigationScrollTargetChanged') bookshelfLayoutMode: string = 'companion';
+  @StorageLink('bookshelfLayoutMode') bookshelfLayoutMode: string = 'companion';
   @StorageLink('bookshelfLastReadLeafMode') bookshelfLastReadLeafMode: string = 'adaptive';
   @StorageLink('bookshelfLastReadPinMode') @Watch('onLastReadPinModeChanged') bookshelfLastReadPinMode: string = 'large';
   @StorageLink('bookshelfLastReadPinCount') @Watch('onLastReadPinModeChanged') bookshelfLastReadPinCount: number = 1;
@@ -737,11 +737,6 @@ export struct BookshelfPage {
     // are retained.  Replacing them here (and forcing a reload) prevents a retained list/grid
     // from continuing to render the books from the previous group.
     this.reloadShelfDataSources(true, !tileGroupMove);
-    if (!tileGroupMove) {
-      const page = this.shelfCategoryPage(this.shelfPageKey());
-      const offset = this.isTileLayout() ? page.tileOffset : page.listOffset;
-      this.nativeScrollY = Math.min(112, Math.max(0, Math.round(offset || 0)));
-    }
     // 分组页的标题栏不收起，沉浸时底栏另记一份收起量；进分组页先收起，回到书架换回书架的收起量。
     this.tileGroupBarCollapse = this.shelfImmersiveActive() ? CollapsingHeader.DISTANCE : 0;
     this.reportShelfBarCollapse();
@@ -1678,8 +1673,6 @@ export struct BookshelfPage {
 
   /** 标题行收起量，0 为完整显示，CollapsingHeader.DISTANCE 为完全收起；类型页签不收起。 */
   @State @Watch('onShelfHeaderCollapseChanged') shelfHeaderCollapse: number = 0;
-  /** 原生 HdsNavigation 模式下跟踪当前激活列表/网格的滚动位置（仅在 0..2*DISTANCE 区间更新）。 */
-  @State @Watch('onShelfHeaderCollapseChanged') private nativeScrollY: number = 0;
   @State private headerActionsWidth: number = 160;
   @State private tileGroupActionsWidth: number = 96;
   // 顶栏毛玻璃按列表实际滚动距离显现，见 CollapsingHeader.backdropReveal。
@@ -1851,21 +1844,6 @@ export struct BookshelfPage {
     return style;
   }
 
-  private onShelfNavigationScrollTargetChanged(): void {
-    this.syncNativeScrollYFromActivePage();
-  }
-
-  private syncNativeScrollYFromActivePage(): void {
-    if (this.isTileGroupPage()) return;
-    const page = this.shelfCategoryPage(this.shelfMainPageKey());
-    const offset = this.isTileLayout() ? page.tileOffset : page.listOffset;
-    const clamped = Number.isFinite(offset) ? Math.max(0, offset) : 0;
-    const next = Math.min(CollapsingHeader.DISTANCE * 2, Math.round(clamped));
-    if (next !== this.nativeScrollY) {
-      this.nativeScrollY = next;
-    }
-  }
-
   @Builder
   shelfHeaderCollapseBar() {
     // 列表上滑时标题行收起：外层按收起量变矮并裁剪，标题行贴底上移并淡出。
@@ -1929,7 +1907,10 @@ export struct BookshelfPage {
       .alignItems(VerticalAlign.Center)
       .opacity(this.shelfSoloMenuMode() ? (this.shelfSoloMenuScrolling ? 0.35 : 1) :
         CollapsingHeader.contentOpacity(this.shelfHeaderCollapseValue()))
-      .hitTestBehavior(CollapsingHeader.acceptsTouch(this.shelfHeaderCollapseValue()) ? HitTestMode.Default : HitTestMode.None)
+      .enabled(CollapsingHeader.acceptsTouch(this.shelfHeaderCollapseValue()))
+      .hitTestBehavior(CollapsingHeader.acceptsTouch(this.shelfHeaderCollapseValue()) ?
+        HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
+      .visibility(this.shelfHeaderCollapseValue() >= CollapsingHeader.DISTANCE ? Visibility.Hidden : Visibility.Visible)
       // 标题栏里的按钮各自响应单击，双击只在空白处和标题文字上生效。
       .gesture(TapGesture({ count: 2 }).onAction(() => this.toggleShelfPrivateByHeaderDoubleTap()))
       .onTouch((event: TouchEvent) => {
@@ -1956,8 +1937,8 @@ export struct BookshelfPage {
     .height(56 + this.statusBarHeight - this.shelfHeaderCollapseValue())
     .clip(!this.shelfCategoryAnimating)
     .onAreaChange((_oldArea: Area, newArea: Area) => {
-      // 沉浸时底栏和按钮行分开收放，底栏按自己的收起量报。
-      if (this.shelfImmersiveActive()) {
+      // 沉浸或原生模式下底栏和标题分开控制，底栏按各自进度上报。
+      if (this.shelfImmersiveActive() || ImmersiveMaterialRuntime.supportsHdsTabs()) {
         this.reportShelfBarCollapse();
         return;
       }
@@ -2085,14 +2066,14 @@ export struct BookshelfPage {
             end: LengthMetrics.vp(Math.max(AppSpacing.XL, this.headerActionsWidth + AppSpacing.XL + AppSpacing.MD))
           },
           content: {
-            title: { mainTitle: this.nativeShelfMainTitle() }
+            title: { mainTitle: this.nativeShelfMainTitle(), mainTitleSize: TitleSize.TITLE_ML }
           },
           style: this.shelfNavigationTitleBarStyle(
             (this.shelfSearchActive ? BookshelfPage.SEARCH_BAR_HEIGHT : 0) + (this.isBookMultiSelect ? 42 : 0))
         })
         .bindToScrollable(this.activeShelfNavScrollers())
         .dynamicHideTitleBar({
-          hideTitleArea: this.activeShelfNavScrollers().length > 0 &&
+          hideTitleArea: this.activeShelfNavScrollers().length > 0 && this.shelfImmersiveActive() &&
             !this.isBookMultiSelect && !this.shelfSearchActive && !this.shelfSoloMenuMode(),
           hideStatusBar: false,
           mode: HideMode.SCROLL_UP_TO
@@ -2212,7 +2193,10 @@ export struct BookshelfPage {
             end: LengthMetrics.vp(Math.max(AppSpacing.XL, this.tileGroupActionsWidth + AppSpacing.XL + AppSpacing.MD))
           },
           content: {
-            title: { mainTitle: this.isBookMultiSelect ? '书架' : this.tileGroupLayerName() },
+            title: {
+              mainTitle: this.isBookMultiSelect ? '书架' : this.tileGroupLayerName(),
+              mainTitleSize: this.isBookMultiSelect ? TitleSize.TITLE_ML : TitleSize.TITLE_S
+            },
             backIcon: this.isBookMultiSelect ? undefined : {
               label: '返回',
               action: () => this.exitTileGroupPage()
@@ -4360,24 +4344,16 @@ export struct BookshelfPage {
   }
 
 
-  /** 书架标题行实际生效的收起量：没有可滚动的列表时标题行始终完整显示（分组页的标题栏不收起）。 */
+  /** 书架标题行实际生效的收起量：原生非沉浸常驻为 0；沉浸或旧版按收起量（分组页的标题栏不收起）。 */
   shelfHeaderCollapseValue(): number {
     if (this.isLoading || this.books.length === 0 || this.isBookMultiSelect ||
-      (ImmersiveMaterialRuntime.supportsHdsTabs() && this.shelfSearchActive)) {
+      (ImmersiveMaterialRuntime.supportsHdsTabs() && (!this.shelfImmersiveActive() || this.shelfSearchActive))) {
       return 0;
     }
-    if (!ImmersiveMaterialRuntime.supportsHdsTabs() || this.shelfImmersiveActive()) {
-      return this.shelfHeaderCollapse;
-    }
-    return Math.round(Math.max(0, Math.min(CollapsingHeader.DISTANCE, this.nativeScrollY / 2)));
+    return this.shelfHeaderCollapse;
   }
 
   onShelfListScroll(delta: number, offset: number): void {
-    const clampedOffset = Number.isFinite(offset) ? Math.max(0, offset) : 0;
-    const cappedNativeY = Math.min(CollapsingHeader.DISTANCE * 2, Math.round(clampedOffset));
-    if (cappedNativeY !== this.nativeScrollY) {
-      this.nativeScrollY = cappedNativeY;
-    }
     const reveal = CollapsingHeader.backdropReveal(offset);
     if (reveal !== this.shelfHeaderBackdropReveal) this.shelfHeaderBackdropReveal = reveal;
     if (this.shelfCategoryAnimating) return;
@@ -4385,10 +4361,12 @@ export struct BookshelfPage {
       this.onShelfImmersiveScroll(delta, offset);
       return;
     }
-    if (ImmersiveMaterialRuntime.supportsHdsTabs()) return;
     const next = CollapsingHeader.next(this.shelfHeaderCollapse, delta, offset);
     if (next !== this.shelfHeaderCollapse) {
       this.shelfHeaderCollapse = next;
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        this.reportShelfBarCollapse();
+      }
     }
   }
 
@@ -4450,7 +4428,6 @@ export struct BookshelfPage {
     this.showShelfSoloMenu = false;
     this.tileGroupBarCollapse = 0;
     this.shelfBarCollapse = 0;
-    this.syncNativeScrollYFromActivePage();
     const page = this.shelfCategoryPage(this.shelfPageKey());
     const offset = Math.max(0, this.isTileLayout() ? page.tileOffset : page.listOffset);
     if (this.shelfHeaderCollapse > offset) {
@@ -4606,6 +4583,9 @@ export struct BookshelfPage {
     if (this.shelfImmersiveActive()) {
       value = this.isTileGroupPage() ? this.tileGroupBarCollapse :
         (!this.isLoading && this.books.length > 0 ? this.shelfBarCollapse : 0);
+    } else if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      value = (!this.isLoading && this.books.length > 0 && !this.isBookMultiSelect && !this.shelfSearchActive) ?
+        this.shelfHeaderCollapse : 0;
     }
     this.onHeaderCollapseChange(value / CollapsingHeader.DISTANCE);
   }
@@ -4627,9 +4607,13 @@ export struct BookshelfPage {
       }
       return;
     }
-    if (ImmersiveMaterialRuntime.supportsHdsTabs()) return;
     const target = CollapsingHeader.settle(this.shelfHeaderCollapse, offset);
     if (target !== this.shelfHeaderCollapse) {
+      if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+        this.shelfHeaderCollapse = target;
+        this.reportShelfBarCollapse();
+        return;
+      }
       animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
         this.shelfHeaderCollapse = target;
       });
@@ -8193,7 +8177,6 @@ export struct BookshelfPage {
   }
 
   scrollShelfToTop(): void {
-    this.nativeScrollY = 0;
     const page = this.shelfCategoryPage(this.shelfPageKey());
     if (this.isTileLayout()) {
       page.tileOffset = 0;
@@ -8303,9 +8286,6 @@ export struct BookshelfPage {
       try {
         if (tile) page.tileScroller.scrollTo({ xOffset: 0, yOffset: offset, animation: false });
         else page.listScroller.scrollTo({ xOffset: 0, yOffset: offset, animation: false });
-        if (key === this.shelfMainPageKey()) {
-          this.nativeScrollY = Math.min(CollapsingHeader.DISTANCE * 2, Math.max(0, Math.round(offset)));
-        }
       } catch (_) {
         // 页已被原生懒加载回收时保留记录，下一次挂载再恢复。
       }
@@ -10326,8 +10306,10 @@ export struct BookshelfPage {
       }
       .scale({ x: this.shelfRefreshCapsuleScale, y: this.shelfRefreshCapsuleScale })
       // 只有胶囊本身可点（展开清单）；标题行收着、胶囊淡没时不挡住下面的书。
+      .enabled(this.shelfRefreshTotal > 0 && this.shelfRefreshCapsuleCollapse() < CollapsingHeader.DISTANCE / 2)
       .hitTestBehavior(this.shelfRefreshTotal > 0 &&
-        this.shelfRefreshCapsuleCollapse() < CollapsingHeader.DISTANCE / 2 ? HitTestMode.Default : HitTestMode.None)
+        this.shelfRefreshCapsuleCollapse() < CollapsingHeader.DISTANCE / 2 ?
+        HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
       .onClick(() => this.toggleShelfRefreshSheet())
       .bindPopup(this.shelfRefreshSheetVisible, ImmersiveMaterialRuntime.popupMenuOptions(this.immersiveLightLevel,
         (): void => {

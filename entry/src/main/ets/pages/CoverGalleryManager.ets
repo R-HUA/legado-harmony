@@ -105,7 +105,7 @@ struct CoverGalleryManagerPage {
         })
         .bindToScrollable([this.headerScroller])
         .dynamicHideTitleBar({
-          hideTitleArea: true,
+          hideTitleArea: false,
           hideStatusBar: false,
           mode: HideMode.SCROLL_UP_TO
         })
@@ -127,7 +127,9 @@ struct CoverGalleryManagerPage {
         .height(56 + this.statusBarHeight - this.headerCollapse)
         .clip(true)
         .opacity(CollapsingHeader.contentOpacity(this.headerCollapse))
-        .hitTestBehavior(CollapsingHeader.acceptsTouch(this.headerCollapse) ? HitTestMode.Default : HitTestMode.None)
+        .enabled(CollapsingHeader.acceptsTouch(this.headerCollapse))
+        .hitTestBehavior(CollapsingHeader.acceptsTouch(this.headerCollapse) ?
+          HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
       }
 
       if (this.deleteParticleBursts.length > 0 && !this.showImageManager) {
