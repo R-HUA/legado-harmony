@@ -614,11 +614,7 @@ struct BookSourcePage {
 
   private effectiveHeaderCollapseValue(): number {
     if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
-      const collapsible = this.effectiveHeaderCollapsibleHeight();
-      if (this.isLoading || this.sources.length === 0 || this.selectionMode || collapsible <= 0) {
-        return 0;
-      }
-      return Math.min(collapsible, Math.max(0, this.sourceNativeScrollY / 2));
+      return 0;
     }
     return this.sourceHeaderCollapseValue();
   }
@@ -1009,8 +1005,8 @@ struct BookSourcePage {
         })
         .bindToScrollable(!this.isLoading && this.sources.length > 0 ? [this.sourceListScroller] : [])
         .dynamicHideTitleBar({
-          hideTitleArea: !this.isLoading && this.sources.length > 0 && !this.selectionMode,
-          hideBottomBuilder: !this.isLoading && this.sources.length > 0 && !this.selectionMode,
+          hideTitleArea: false,
+          hideBottomBuilder: false,
           hideStatusBar: false,
           mode: HideMode.SCROLL_UP_TO
         })

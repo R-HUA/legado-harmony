@@ -1,7 +1,7 @@
 import { BookSourceGroupStore } from '../../utils/BookSourceGroupStore';
 import { SharedElementMotion } from '../../utils/SharedElementMotion';
 import { LengthMetrics, router } from '@kit.ArkUI';
-import { HdsNavigation, HdsNavigationTitleMode, HideMode } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HideMode, TitleSize } from '@kit.UIDesignKit';
 import deviceInfo from '@ohos.deviceInfo';
 import { Book, BookSource, SearchBook, BookFieldSanitizer } from '@legado/sourceengine';
 import { AppDatabase } from '../../model/data/AppDatabase';
@@ -193,8 +193,7 @@ export struct ExplorePage {
   private exploreSourceScroller: Scroller = new Scroller();
   private exploreChannelScroller: Scroller = new Scroller();
   /** 标题行收起量，0 为完整显示，exploreCollapsibleHeight() 为完全收起。 */
-  @State exploreHeaderCollapse: number = 0;
-  @State @Watch('onNativeExploreHeaderStateChanged') private nativeExploreScrollY: number = 0;
+  @State @Watch('onNativeExploreHeaderStateChanged') exploreHeaderCollapse: number = 0;
   @State private exploreActionsWidth: number = 160;
   private lastReportedExploreCollapse: number = -1;
   // 顶栏毛玻璃按列表实际滚动距离显现，见 CollapsingHeader.backdropReveal。
@@ -609,7 +608,7 @@ export struct ExplorePage {
             end: LengthMetrics.vp(Math.max(AppSpacing.XL, this.exploreActionsWidth))
           },
           content: {
-            title: { mainTitle: '发现' },
+            title: { mainTitle: '发现', mainTitleSize: TitleSize.TITLE_ML },
             bottomBuilder: this.exploreBottomBuilderHeight() > 0 ? {
               builder: (): void => this.exploreBottomBuilder(),
               height: this.exploreBottomBuilderHeight()
@@ -627,7 +626,7 @@ export struct ExplorePage {
           hideTitleArea: this.activeExploreScrollers().length > 0 && this.exploreCanCollapseHeader(),
           hideBottomBuilder: false,
           hideStatusBar: false,
-          mode: HideMode.SCROLL_UP_TO,
+          mode: HideMode.SCROLL_UP,
           hideRatio: 1.0
         })
         .width('100%')
@@ -640,8 +639,11 @@ export struct ExplorePage {
           .height(ExplorePage.TITLE_ROW_HEIGHT)
           .padding({ right: AppSpacing.XL })
           .alignItems(VerticalAlign.Center)
-          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.nativeExploreTitleCollapse()) ?
-            HitTestMode.Default : HitTestMode.None)
+          .enabled(CollapsingHeader.acceptsTouch(this.exploreHeaderCollapseValue()))
+          .hitTestBehavior(CollapsingHeader.acceptsTouch(this.exploreHeaderCollapseValue()) ?
+            HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
+          .visibility(this.exploreHeaderCollapseValue() >= this.exploreCollapsibleHeight() ?
+            Visibility.Hidden : Visibility.Visible)
           .onAreaChange((_oldValue: Area, newValue: Area) => {
             const width = parseFloat(String(newValue.width));
             if (Number.isFinite(width) && Math.abs(width - this.exploreActionsWidth) >= 1) {
@@ -654,9 +656,9 @@ export struct ExplorePage {
         .margin({ top: this.statusBarHeight })
         .justifyContent(FlexAlign.End)
         .hitTestBehavior(HitTestMode.Transparent)
-        .opacity(CollapsingHeader.contentOpacity(this.nativeExploreTitleCollapse()))
-        .translate({ y: -this.nativeExploreTitleCollapse() * 0.5 })
-        .accessibilityLevel(CollapsingHeader.acceptsTouch(this.nativeExploreTitleCollapse()) ?
+        .opacity(CollapsingHeader.contentOpacity(this.exploreHeaderCollapseValue()))
+        .translate({ y: -this.exploreHeaderCollapseValue() * 0.5 })
+        .accessibilityLevel(CollapsingHeader.acceptsTouch(this.exploreHeaderCollapseValue()) ?
           'auto' : 'no-hide-descendants')
       } else {
         Column() {
@@ -679,8 +681,9 @@ export struct ExplorePage {
               .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: this.statusBarHeight })
               .alignItems(VerticalAlign.Center)
               .opacity(CollapsingHeader.contentOpacity(this.exploreHeaderCollapseValue()))
+              .enabled(CollapsingHeader.acceptsTouch(this.exploreHeaderCollapseValue()))
               .hitTestBehavior(CollapsingHeader.acceptsTouch(this.exploreHeaderCollapseValue()) ?
-                HitTestMode.Default : HitTestMode.None)
+                HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
             }
             .width('100%')
             .height(this.statusBarHeight + this.exploreCollapsibleHeight() - this.exploreHeaderCollapseValue())
@@ -2271,7 +2274,6 @@ export struct ExplorePage {
     });
     if (previous === layout) return;
     this.exploreHeaderCollapse = 0;
-    this.nativeExploreScrollY = 0;
     this.exploreHeaderBackdropReveal = 0;
     this.notifyExploreHeaderCollapse(true);
     if (layout === ExploreRankStyle.LAYOUT_OVERVIEW) {
@@ -2569,10 +2571,6 @@ export struct ExplorePage {
   onExploreListScroll(delta: number, offset: number): void {
     const reveal = CollapsingHeader.backdropReveal(offset);
     if (reveal !== this.exploreHeaderBackdropReveal) this.exploreHeaderBackdropReveal = reveal;
-    const nativeY = Number.isFinite(offset) ? Math.max(0, offset) : 0;
-    if (nativeY !== this.nativeExploreScrollY) {
-      this.nativeExploreScrollY = nativeY;
-    }
     if (this.usesExploreCategoryPager() && offset <= 0 && delta >= 0) return;
     const next = CollapsingHeader.next(this.exploreHeaderCollapse, delta,
       this.usesExploreCategoryPager() ? this.exploreCollapsibleHeight() : offset, this.exploreCollapsibleHeight());
@@ -2643,7 +2641,7 @@ export struct ExplorePage {
     }
     if ((this.isSidebarLayout() || this.isOverviewLayout()) && this.getActiveEntries().length > 0) {
       return this.explorePageBooks(key).length > 0 ||
-        (this.explorePageLoading(key) && this.nativeExploreScrollY > 0);
+        (this.explorePageLoading(key) && this.exploreHeaderCollapseValue() > 0);
     }
     return this.explorePageBooks('').length > 0;
   }
@@ -2655,7 +2653,7 @@ export struct ExplorePage {
     const key = this.activeExploreKey();
     if ((this.isSidebarLayout() || this.isOverviewLayout()) && this.getActiveEntries().length > 0) {
       return this.explorePageBooks(key).length > 0 ||
-        (this.explorePageLoading(key) && this.nativeExploreScrollY > 0) ?
+        (this.explorePageLoading(key) && this.exploreHeaderCollapseValue() > 0) ?
         [this.exploreResultScroller(key)] : [];
     }
     if (this.usesExploreCategoryPager()) {
@@ -2663,26 +2661,6 @@ export struct ExplorePage {
         [this.exploreResultScroller(key)] : [];
     }
     return this.explorePageBooks('').length > 0 ? [this.exploreDefaultResultScroller] : [];
-  }
-
-  private nativeExploreTitleCollapse(): number {
-    if (!this.exploreCanCollapseHeader()) return 0;
-    return Math.max(0, Math.min(this.exploreCollapsibleHeight(), this.nativeExploreScrollY));
-  }
-
-  private activeExploreHeaderCollapse(): number {
-    return ImmersiveMaterialRuntime.supportsHdsTabs() ?
-      this.nativeExploreTitleCollapse() : this.exploreHeaderCollapseValue();
-  }
-
-  private readScrollerOffsetY(scroller: Scroller): number {
-    try {
-      const current = scroller.currentOffset();
-      const offset = current ? current.yOffset : -1;
-      return typeof offset === 'number' && Number.isFinite(offset) ? Math.max(0, offset) : -1;
-    } catch (_error) {
-      return -1;
-    }
   }
 
   private onExploreEntriesChanged(): void {
@@ -2697,47 +2675,43 @@ export struct ExplorePage {
 
   private onExploreSourceOrPlatformChanged(): void {
     this.exploreHeaderCollapse = 0;
-    this.nativeExploreScrollY = 0;
     this.exploreHeaderBackdropReveal = 0;
     this.notifyExploreHeaderCollapse(true);
   }
 
   private onExploreSelectedIndexChanged(): void {
     const key = this.activeExploreKey();
-    if (!this.showsOverviewHome() && key) {
-      const scroller = this.exploreResultScroller(key);
-      const liveOffset = this.readScrollerOffsetY(scroller);
+    if (!this.showsOverviewHome() && key && (this.isSidebarLayout() || this.isOverviewLayout())) {
       const snapshotOffset = this.explorePages.get(key)?.scrollOffset || 0;
-      if (liveOffset > 0) {
-        this.nativeExploreScrollY = liveOffset;
-      } else if (this.usesExploreCategoryPager()) {
-        if (snapshotOffset > 0) {
-          this.nativeExploreScrollY = Math.max(this.nativeExploreScrollY, snapshotOffset);
-        } else if (!this.explorePageLoading(key) && this.explorePageBooks(key).length === 0) {
-          this.nativeExploreScrollY = 0;
-        }
-      } else {
-        this.nativeExploreScrollY = snapshotOffset;
+      if (snapshotOffset <= 0 && !this.explorePageLoading(key)) {
+        this.exploreHeaderCollapse = 0;
       }
     }
     this.notifyExploreHeaderCollapse();
   }
 
   private onExploreActiveDataChanged(): void {
-    if (!this.exploreCanCollapseHeader() && this.nativeExploreScrollY !== 0) {
-      this.nativeExploreScrollY = 0;
+    if (!this.exploreCanCollapseHeader() && this.exploreHeaderCollapse !== 0) {
+      this.exploreHeaderCollapse = 0;
     }
     this.notifyExploreHeaderCollapse();
   }
 
   private onNativeExploreHeaderStateChanged(): void {
+    if (ImmersiveMaterialRuntime.supportsHdsTabs() &&
+      !CollapsingHeader.acceptsTouch(this.exploreHeaderCollapseValue())) {
+      if (this.showExploreSourcePicker) this.showExploreSourcePicker = false;
+      if (this.showExploreFilterPanel) this.closeExploreFilterPanel();
+      if (this.showExploreMoreMenu) this.showExploreMoreMenu = false;
+    }
     this.notifyExploreHeaderCollapse();
   }
 
   private notifyExploreHeaderCollapse(force: boolean = false): void {
     if (!ImmersiveMaterialRuntime.supportsHdsTabs()) return;
     const distance = this.exploreCollapsibleHeight();
-    const progress = distance > 0 ? Math.max(0, Math.min(1, this.nativeExploreTitleCollapse() / distance)) : 0;
+    const collapse = this.exploreCanCollapseHeader() ? this.exploreHeaderCollapseValue() : 0;
+    const progress = distance > 0 ? Math.max(0, Math.min(1, collapse / distance)) : 0;
     if (!force && Math.abs(progress - this.lastReportedExploreCollapse) < 0.001) return;
     this.lastReportedExploreCollapse = progress;
     this.onHeaderCollapseChange(progress);
@@ -2991,7 +2965,7 @@ export struct ExplorePage {
       ListItem() {
         Row()
           .width('100%')
-          .height(Math.max(0, this.exploreTopOverlayHeight() - this.activeExploreHeaderCollapse()))
+          .height(Math.max(0, this.exploreTopOverlayHeight() - this.exploreHeaderCollapseValue()))
       }
 
       ForEach(this.exploreSidebarSections(), (section: ExploreSidebarSection) => {
@@ -3115,7 +3089,6 @@ export struct ExplorePage {
   /** 点进总览里的某个榜单或分类：沿用普通的频道加载，总览卡片已拿到的结果会直接复用。 */
   openOverviewEntry(index: number): void {
     this.exploreHeaderCollapse = 0;
-    this.nativeExploreScrollY = 0;
     this.exploreHeaderBackdropReveal = 0;
     this.overviewDrilled = true;
     this.selectExploreEntry(index);
@@ -3125,7 +3098,6 @@ export struct ExplorePage {
   onOverviewDrillActiveChanged(): void {
     if (this.overviewDrilled) return;
     this.exploreHeaderCollapse = 0;
-    this.nativeExploreScrollY = 0;
     this.exploreHeaderBackdropReveal = 0;
     if (this.showsOverviewHome()) this.requestOverviewCards(this.overviewVisibleEnd);
     this.notifyExploreHeaderCollapse(true);

@@ -149,7 +149,7 @@ export struct SearchPage {
   private searchCategoryScrollers: Map<string, ListScroller> = new Map();
   /** 分类栏以上（标题行、搜索框、状态行）的收起量，0 为完整显示；结果分类栏不收起。 */
   @State searchHeaderCollapse: number = 0;
-  @State @Watch('onSearchHeaderStateChanged') private nativeSearchScrollY: number = 0;
+  @State @Watch('onSearchHeaderStateChanged') private searchBarCollapse: number = 0;
   private lastReportedSearchCollapse: number = -1;
   // 顶栏毛玻璃按列表实际滚动距离显现，见 CollapsingHeader.backdropReveal。
   @State searchHeaderBackdropReveal: number = 0;
@@ -339,7 +339,7 @@ export struct SearchPage {
     if (this.searchResultLayout !== 'grid') {
       this.searchResultScroller.scrollToIndex(0);
       this.searchHeaderCollapse = 0;
-      this.nativeSearchScrollY = 0;
+      this.searchBarCollapse = 0;
       this.searchHeaderBackdropReveal = 0;
     }
   }
@@ -600,7 +600,7 @@ export struct SearchPage {
     this.searchResultKeySet.clear();
     this.showResult = false;
     this.searchHeaderCollapse = 0;
-    this.nativeSearchScrollY = 0;
+    this.searchBarCollapse = 0;
     this.searchHeaderBackdropReveal = 0;
     this.statusMessage = '';
     this.verificationUrl = '';
@@ -645,11 +645,10 @@ export struct SearchPage {
         })
         .bindToScrollable(this.activeSearchScrollers())
         .dynamicHideTitleBar({
-          hideTitleArea: this.activeSearchScrollers().length > 0 && this.searchCanCollapseHeader(),
+          hideTitleArea: false,
           hideBottomBuilder: false,
           hideStatusBar: false,
-          mode: HideMode.SCROLL_UP_TO,
-          hideRatio: 1.0
+          mode: HideMode.SCROLL_UP_TO
         })
         .width('100%')
         .height('100%')
@@ -660,12 +659,6 @@ export struct SearchPage {
         .width('100%')
         .height(this.searchFieldRowHeight())
         .margin({ top: this.statusBarHeight })
-        .opacity(CollapsingHeader.contentOpacity(this.nativeSearchTitleCollapse()))
-        .translate({ y: -this.nativeSearchTitleCollapse() * 0.5 })
-        .hitTestBehavior(CollapsingHeader.acceptsTouch(this.nativeSearchTitleCollapse()) ?
-          HitTestMode.Default : HitTestMode.None)
-        .accessibilityLevel(CollapsingHeader.acceptsTouch(this.nativeSearchTitleCollapse()) ?
-          'auto' : 'no-hide-descendants')
       } else {
         Column() {
           Column() {
@@ -1279,11 +1272,22 @@ export struct SearchPage {
     .align(Alignment.TopStart)
     .scrollBar(BarState.Off)
     .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-    .onDidScroll(() => {
-      const offset = this.searchIdleScroller.currentOffset().yOffset;
-      const nativeY = Number.isFinite(offset) ? Math.max(0, offset) : 0;
-      if (nativeY !== this.nativeSearchScrollY) {
-        this.nativeSearchScrollY = nativeY;
+    .onDidScroll((_xOffset: number, yOffset: number) => {
+      if (!ImmersiveMaterialRuntime.supportsHdsTabs()) return;
+      const rawOffset = this.searchIdleScroller.currentOffset().yOffset;
+      const offset = Number.isFinite(rawOffset) ? Math.max(0, rawOffset) : 0;
+      const next = CollapsingHeader.next(this.searchBarCollapse, yOffset, offset, this.searchFieldRowHeight());
+      if (next !== this.searchBarCollapse) {
+        this.searchBarCollapse = next;
+      }
+    })
+    .onScrollStop(() => {
+      if (!ImmersiveMaterialRuntime.supportsHdsTabs()) return;
+      const rawOffset = this.searchIdleScroller.currentOffset().yOffset;
+      const offset = Number.isFinite(rawOffset) ? Math.max(0, rawOffset) : 0;
+      const target = CollapsingHeader.settle(this.searchBarCollapse, offset, this.searchFieldRowHeight());
+      if (target !== this.searchBarCollapse) {
+        this.searchBarCollapse = target;
       }
     })
   }
@@ -1620,7 +1624,7 @@ export struct SearchPage {
     this.searchCategoryCounts = [0, 0, 0, 0];
     // 新一轮搜索从完整顶栏开始，不沿用上一轮结果滚动留下的收起量。
     this.searchHeaderCollapse = 0;
-    this.nativeSearchScrollY = 0;
+    this.searchBarCollapse = 0;
     this.searchHeaderBackdropReveal = 0;
     this.statusMessage = '正在准备搜索...';
     this.verificationUrl = '';
@@ -2099,12 +2103,17 @@ export struct SearchPage {
   onSearchListScroll(delta: number, offset: number): void {
     const reveal = CollapsingHeader.backdropReveal(offset);
     if (reveal !== this.searchHeaderBackdropReveal) this.searchHeaderBackdropReveal = reveal;
-    const nativeY = Number.isFinite(offset) ? Math.max(0, offset) : 0;
-    if (nativeY !== this.nativeSearchScrollY) {
-      this.nativeSearchScrollY = nativeY;
-    }
     // 分类共享顶栏收起量，不受各自纵向位置限制；布局变化由结果列表过滤，不驱动顶栏。
     if (this.usesSearchCategoryPager() && offset <= 0 && delta >= 0) return;
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      const next = CollapsingHeader.next(this.searchBarCollapse, delta,
+        this.usesSearchCategoryPager() ? this.searchFieldRowHeight() : offset,
+        this.searchFieldRowHeight());
+      if (next !== this.searchBarCollapse) {
+        this.searchBarCollapse = next;
+      }
+      return;
+    }
     const next = CollapsingHeader.next(this.searchHeaderCollapseValue(), delta,
       this.usesSearchCategoryPager() ? this.searchCollapsibleHeight() : offset,
       this.searchCollapsibleHeight());
@@ -2114,6 +2123,15 @@ export struct SearchPage {
   }
 
   onSearchListScrollStop(offset: number): void {
+    if (ImmersiveMaterialRuntime.supportsHdsTabs()) {
+      const target = CollapsingHeader.settle(this.searchBarCollapse,
+        this.usesSearchCategoryPager() ? this.searchFieldRowHeight() : offset,
+        this.searchFieldRowHeight());
+      if (target !== this.searchBarCollapse) {
+        this.searchBarCollapse = target;
+      }
+      return;
+    }
     const target = CollapsingHeader.settle(this.searchHeaderCollapseValue(),
       this.usesSearchCategoryPager() ? this.searchCollapsibleHeight() : offset,
       this.searchCollapsibleHeight());
@@ -2175,39 +2193,22 @@ export struct SearchPage {
     return this.displayedSearchResults.length > 0;
   }
 
-  private nativeSearchTitleCollapse(): number {
+  private effectiveSearchBarCollapse(): number {
     if (!this.searchCanCollapseHeader()) return 0;
-    return Math.max(0, Math.min(this.searchFieldRowHeight(), this.nativeSearchScrollY));
-  }
-
-  private readSearchScrollerOffsetY(scroller: Scroller): number {
-    try {
-      const current = scroller.currentOffset();
-      const offset = current ? current.yOffset : -1;
-      return typeof offset === 'number' && Number.isFinite(offset) ? Math.max(0, offset) : -1;
-    } catch (_error) {
-      return -1;
-    }
+    return Math.max(0, Math.min(this.searchFieldRowHeight(), this.searchBarCollapse));
   }
 
   private onSearchCategoryChanged(): void {
-    if (this.showResult && this.usesSearchCategoryPager()) {
-      const key = this.activeSearchPageKey();
-      if (this.searchBooksForCategory(key).length === 0) {
-        this.nativeSearchScrollY = 0;
-      } else {
-        const liveOffset = this.readSearchScrollerOffsetY(this.searchCategoryScroller(key));
-        if (liveOffset > 0) {
-          this.nativeSearchScrollY = liveOffset;
-        }
-      }
+    if (this.showResult && this.usesSearchCategoryPager() &&
+      this.searchBooksForCategory(this.activeSearchPageKey()).length === 0) {
+      this.searchBarCollapse = 0;
     }
     this.notifySearchHeaderCollapse();
   }
 
   private onSearchHeaderStateChanged(): void {
-    if (!this.searchCanCollapseHeader() && this.nativeSearchScrollY !== 0) {
-      this.nativeSearchScrollY = 0;
+    if (!this.searchCanCollapseHeader() && this.searchBarCollapse !== 0) {
+      this.searchBarCollapse = 0;
     }
     this.notifySearchHeaderCollapse();
   }
@@ -2215,7 +2216,7 @@ export struct SearchPage {
   private notifySearchHeaderCollapse(force: boolean = false): void {
     if (!ImmersiveMaterialRuntime.supportsHdsTabs()) return;
     const distance = this.searchFieldRowHeight();
-    const progress = distance > 0 ? Math.max(0, Math.min(1, this.nativeSearchTitleCollapse() / distance)) : 0;
+    const progress = distance > 0 ? Math.max(0, Math.min(1, this.effectiveSearchBarCollapse() / distance)) : 0;
     if (!force && Math.abs(progress - this.lastReportedSearchCollapse) < 0.001) return;
     this.lastReportedSearchCollapse = progress;
     this.onHeaderCollapseChange(progress);
