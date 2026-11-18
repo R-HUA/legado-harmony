@@ -1,5 +1,4 @@
 import { router } from '@kit.ArkUI';
-import { SegmentButton, SegmentButtonOptions } from '@ohos.arkui.advanced.SegmentButton';
 import { BookUrlImportService } from '../core/book/BookUrlImportService';
 import { BookUrlSourceMatcher } from '../core/book/BookUrlSourceMatcher';
 import { BookSourceStageRuntimeHost } from '../components/BookSourceStageRuntimeHost';
@@ -9,7 +8,6 @@ import { SearchBookShelfHelper } from '../utils/SearchBookShelfHelper';
 import { BookIdentity } from '../utils/BookIdentity';
 import { syncSystemBars } from '../utils/SystemBars';
 import { ThemeRuntime } from '../theme/ThemeRuntime';
-import { LocalBookScanResult, LocalBookService } from '../core/book/LocalBookService';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { Book } from '@legado/sourceengine';
 import { HdsFeedback } from '../utils/HdsFeedback';
@@ -18,24 +16,16 @@ import { AppSpacing } from '../theme/AppSpacing';
 import { PageScaffold } from '../components/common/PageScaffold';
 import { CollapsingHeader } from '../utils/CollapsingHeader';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
-import { CloudAutoSync } from '../account/CloudAutoSync';
 
 @Entry
 @Component
 struct LocalBookSettingsPage {
   @State headerCollapse: number = 0;
-  @StorageLink('appDarkMode') @Watch('refreshTabStyle') appDarkMode: boolean = false;
+  @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
   @StorageLink('appLightButtonColor') appLightButtonColor: string = '#007DFF';
   @StorageLink('appDarkButtonColor') appDarkButtonColor: string = '#3F8CFF';
   @StorageProp('navBarHeight') navBarHeight: number = 0;
-  @State isScanning: boolean = false;
-  @State statusText: string = '';
-  @State books: Book[] = [];
-  @State @Watch('onImportTabChanged') importTabs: number[] = [0];
-  @State importTabOptions: SegmentButtonOptions = SegmentButtonOptions.tab({
-    buttons: [{ text: '书籍链接' }, { text: '本地文件' }]
-  });
   @State bookLink: string = '';
   @State isResolving: boolean = false;
   @State isSaving: boolean = false;
@@ -43,28 +33,23 @@ struct LocalBookSettingsPage {
   @State parsedBook: Book | null = null;
   @State addedToShelf: boolean = false;
   private linkScroller: Scroller = new Scroller();
-  private localScroller: Scroller = new Scroller();
   private linkService: BookUrlImportService | null = null;
   private linkRequest: number = 0;
 
   aboutToAppear(): void {
-    this.loadBooks();
-    this.refreshTabStyle();
     this.syncBars();
   }
 
   onPageShow(): void {
-    this.loadBooks();
-    this.refreshTabStyle();
     this.syncBars();
   }
 
   build() {
     Stack() {
       WebBookFetchRuntimeHost()
-      PageScaffold({ title: '添加书籍', scrollable: false,
+      PageScaffold({ title: '书籍链接', scrollable: false,
         collapsible: !ImmersiveMaterialRuntime.supportsHdsTabs(),
-        scroller: this.importTabs[0] === 0 ? this.linkScroller : this.localScroller,
+        scroller: this.linkScroller,
         externalCollapse: this.headerCollapse, content: () => {
         this.pageContent()
       } })
@@ -78,114 +63,31 @@ struct LocalBookSettingsPage {
 
   @Builder
   pageContent() {
-    Column() {
+    Scroll(this.linkScroller) {
       Column() {
-        SegmentButton({ options: this.importTabOptions, selectedIndexes: $importTabs })
+        this.linkImportPanel()
       }
       .width('100%')
-      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG })
-      .enabled(!this.isResolving && !this.isSaving && !this.isScanning)
-
-      if (this.importTabs[0] === 0) {
-        Scroll(this.linkScroller) {
-          Column() {
-            this.linkImportPanel()
-          }
-          .width('100%')
-          .constraintSize({ maxWidth: 448 })
-          .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXXL,
-            bottom: 32 + this.navBarHeight })
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        .onDidScroll((_x: number, yOffset: number) => {
-          this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
-            this.linkScroller.currentOffset().yOffset);
-        })
-        .onScrollStop(() => {
-          const target = CollapsingHeader.settle(this.headerCollapse, this.linkScroller.currentOffset().yOffset);
-          if (target !== this.headerCollapse) {
-            animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-              this.headerCollapse = target;
-            });
-          }
-        })
-      } else {
-        this.localImportPanel()
-      }
+      .constraintSize({ maxWidth: 448 })
+      .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXXL,
+        bottom: 32 + this.navBarHeight })
     }
     .width('100%')
     .height('100%')
-  }
-
-  @Builder
-  bookItem(book: Book) {
-    Row() {
-      Column({ space: AppSpacing.XS }) {
-        Text(book.name || '未命名书籍')
-          .fontSize(AppFontSize.BODY_LARGE)
-          .fontColor(this.primaryTextColor())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(book.author ? `${book.author} · ${book.totalChapterNum}${LocalBookService.isPdfBook(book) ? '页' : '章'}` : `${book.totalChapterNum}${LocalBookService.isPdfBook(book) ? '页' : '章'}`)
-          .fontSize(AppFontSize.CAPTION)
-          .fontColor(this.subTextColor())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+    .align(Alignment.Top)
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+    .onDidScroll((_x: number, yOffset: number) => {
+      this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
+        this.linkScroller.currentOffset().yOffset);
+    })
+    .onScrollStop(() => {
+      const target = CollapsingHeader.settle(this.headerCollapse, this.linkScroller.currentOffset().yOffset);
+      if (target !== this.headerCollapse) {
+        animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+          this.headerCollapse = target;
+        });
       }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-      Text(LocalBookService.formatOf(book).toUpperCase())
-        .fontSize(AppFontSize.CAPTION)
-        .fontColor(this.subTextColor())
-        .margin({ left: AppSpacing.MD })
-    }
-    .width('100%')
-    .padding({ left: AppSpacing.LG, right: AppSpacing.LG, top: AppSpacing.LG, bottom: AppSpacing.LG })
-    .backgroundColor(this.cardColor())
-    .borderRadius(ThemeRuntime.cardRadius())
-  }
-
-  async loadBooks(): Promise<void> {
-    try {
-      const db = AppDatabase.getInstance();
-      await db.initWithContext(getContext(this));
-      this.books = (await db.getAllBooks()).filter((book: Book) => LocalBookService.isPhysicalLocalBook(book));
-    } catch (e) {
-      console.error('加载已添加本地书籍失败:', e);
-      this.books = [];
-    }
-  }
-
-  async addBooks(): Promise<void> {
-    if (this.isScanning) return;
-    this.isScanning = true;
-    try {
-      const selected = await LocalBookService.chooseBookFiles(getContext(this));
-      if (selected.length === 0) return;
-      this.statusText = `正在导入${selected.length}个文件...`;
-      const result = await LocalBookService.importSelectedFiles(getContext(this), selected);
-      this.finishImport(result);
-      CloudAutoSync.schedule(getContext(this));
-      await this.loadBooks();
-    } catch (e) {
-      console.error('添加本地书籍失败:', e);
-      this.statusText = '导入失败，请重新选择文件';
-      HdsFeedback.showToast('导入失败');
-    } finally {
-      this.isScanning = false;
-    }
-  }
-
-  finishImport(result: LocalBookScanResult): void {
-    const failed = result.failed > 0 ? `，${result.failed}本失败` : '';
-    const duplicated = result.duplicates.length > 0 ? `，${result.duplicates.length}本已在书架` : '';
-    const summary = `导入完成：成功${result.imported}本${duplicated}${failed}`;
-    const details = result.duplicates.map((name: string): string => `已在书架：${name}`).concat(result.failures);
-    this.statusText = summary + (details.length ? `\n${details.join('\n')}` : '');
-    AppStorage.setOrCreate('shelfUpdateTime', Date.now());
-    HdsFeedback.showToast(summary);
+    })
   }
 
   pageColor(): string {
@@ -214,20 +116,6 @@ struct LocalBookSettingsPage {
 
   aboutToDisappear(): void {
     this.cancelLinkImport();
-  }
-
-  onImportTabChanged(): void {
-    this.headerCollapse = 0;
-  }
-
-  refreshTabStyle(): void {
-    this.importTabOptions = SegmentButtonOptions.tab({
-      buttons: [{ text: '书籍链接' }, { text: '本地文件' }],
-      fontColor: this.subTextColor(),
-      selectedFontColor: this.primaryTextColor(),
-      backgroundColor: ThemeRuntime.inputColor(this.appDarkMode),
-      selectedBackgroundColor: this.cardColor()
-    });
   }
 
   @Builder
@@ -375,84 +263,5 @@ struct LocalBookSettingsPage {
     } finally {
       this.isSaving = false;
     }
-  }
-
-  @Builder
-  localImportPanel() {
-    Column({ space: AppSpacing.LG }) {
-      Row() {
-        Text(`已添加书籍（${this.books.length}）`)
-          .fontSize(AppFontSize.BODY_LARGE)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.primaryTextColor())
-          .layoutWeight(1)
-      }
-      .width('100%')
-
-      if (this.books.length === 0) {
-        Column({ space: AppSpacing.SM }) {
-          Text('暂无已添加书籍')
-            .fontSize(AppFontSize.BODY_LARGE)
-            .fontColor(this.primaryTextColor())
-          Text('点击下方按钮选择 TXT / EPUB / MOBI / PDF 文件或 ZIP 压缩包')
-            .fontSize(AppFontSize.BODY)
-            .fontColor(this.subTextColor())
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-      } else {
-        List({ space: AppSpacing.MD, scroller: this.localScroller }) {
-          ForEach(this.books, (book: Book) => {
-            ListItem() {
-              this.bookItem(book)
-            }
-          }, (book: Book) => book.bookUrl)
-        }
-        .scrollBar(BarState.Off)
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        .width('100%')
-        .layoutWeight(1)
-        .clip(true)
-        .onDidScroll((yOffset: number) => {
-          this.headerCollapse = CollapsingHeader.next(this.headerCollapse, yOffset,
-            this.localScroller.currentOffset().yOffset);
-        })
-        .onScrollStop(() => {
-          const target = CollapsingHeader.settle(this.headerCollapse, this.localScroller.currentOffset().yOffset);
-          if (target !== this.headerCollapse) {
-            animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-              this.headerCollapse = target;
-            });
-          }
-        })
-      }
-
-      Text('选择 TXT / EPUB / MOBI / PDF 文件或 ZIP 压缩包导入书架')
-        .fontSize(AppFontSize.BODY_LARGE)
-        .fontColor(this.primaryTextColor())
-      Text('支持一次选择多个文件，导入后文件会复制到应用内部存储，不依赖原文件位置。')
-        .fontSize(AppFontSize.BODY)
-        .fontColor(this.subTextColor())
-      Button(this.isScanning ? '正在导入' : '选择书籍文件')
-        .width('100%')
-        .height(44)
-        .backgroundColor(this.buttonColor())
-        .fontColor(ThemeRuntime.onAccentColor())
-        .enabled(!this.isScanning)
-        .onClick(() => {
-          this.addBooks();
-        })
-      if (this.statusText) {
-        Text(this.statusText)
-          .fontSize(AppFontSize.BODY)
-          .fontColor(this.subTextColor())
-          .width('100%')
-          .margin({ top: AppSpacing.MD })
-      }
-    }
-    .width('100%')
-    .layoutWeight(1)
-    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.XXXL, bottom: 32 + this.navBarHeight })
   }
 }
