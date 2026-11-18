@@ -18,7 +18,6 @@ const pages = [
   ['pages/SyncDevices', 'headerScroller', true],
   ['pages/SyncIssues', 'headerScroller', true],
   ['pages/LocalBookSettings', 'linkScroller', false, 0],
-  ['pages/LocalBookSettings', 'localScroller', true, 1],
   ['pages/WebDav', 'headerScroller', true],
   ['pages/OpdsServers', 'headerScroller', true],
   ['pages/ReaderReplaceRules', 'ruleListScroller', true],

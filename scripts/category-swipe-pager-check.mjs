@@ -16,7 +16,8 @@ const context = vm.createContext({
   },
   ListScroller: class { scrollToIndex() {} },
   // 简繁同搜未就绪时聚合按逐字分组，与没开该功能时一致。
-  SearchChineseScriptRuntime: { ready: () => null }
+  SearchChineseScriptRuntime: { ready: () => null },
+  ImmersiveMaterialRuntime: { supportsHdsTabs: () => false }
 });
 Object.assign(context, {
   SearchPage: { HEADER_CONTROL_SIZE: 40, FIELD_ROW_TOP_GAP: 8, STATUS_ROW_HEIGHT: 28, CATEGORY_BAR_HEIGHT: 44 },
@@ -28,9 +29,9 @@ vm.runInContext(stripTypeScriptTypes(read('utils/CollapsingHeader.ets').replace(
 function methods(file, names, folder = 'home') {
   const source = read(`components/${folder}/${file}.ets`);
   const bodies = names.map(name => {
-    const start = new RegExp(`^  (?:async )?${name}\\(`, 'm').exec(source)?.index ?? -1;
+    const start = new RegExp(`^  (?:private |async )*${name}\\(`, 'm').exec(source)?.index ?? -1;
     assert.ok(start >= 0, name);
-    return source.slice(start, source.indexOf('\n  }', start) + 4);
+    return source.slice(start, source.indexOf('\n  }', start) + 4).replace(/^  private /, '  ');
   });
   return vm.runInContext(stripTypeScriptTypes(`({${bodies.join(',')}})`), context);
 }
@@ -292,6 +293,29 @@ for (const [file, prefix] of [['ExplorePage', 'explore'], ['SearchPage', 'search
   page[`on${name}ListScroll`](0, 0);
   assert.equal(value(), isSearch ? 0 : distance,
     `${file}: discovery list paging also preserves the shared header when an idle page mounts`);
+}
+
+// HDS native SearchPage derives bottom-bar progress incrementally so reverse scroll mid-list restores it.
+{
+  context.ImmersiveMaterialRuntime.supportsHdsTabs = () => true;
+  const search = methods('SearchPage', [
+    'searchFieldRowHeight', 'searchCanCollapseHeader', 'effectiveSearchBarCollapse',
+    'onSearchListScroll', 'onSearchListScrollStop'
+  ]);
+  Object.assign(search, {
+    showResult: true, displayedSearchResults: [{}], searchCategoryCounts: [1, 0, 0, 0],
+    searchResultLayout: 'list', searchBarCollapse: 0, usesSearchCategoryPager: () => false
+  });
+  search.onSearchListScroll(100, 1000);
+  assert.equal(search.effectiveSearchBarCollapse(), 56, 'HDS search reaches full collapse down the result list');
+  search.onSearchListScroll(-24, 976);
+  assert.equal(search.effectiveSearchBarCollapse(), 32, 'HDS search begins recovering mid-list on reverse drag');
+  search.onSearchListScrollStop(976);
+  assert.equal(search.effectiveSearchBarCollapse(), 56, 'HDS search settles when released under half threshold');
+  search.onSearchListScroll(-40, 936);
+  search.onSearchListScrollStop(936);
+  assert.equal(search.effectiveSearchBarCollapse(), 0, 'HDS search fully recovers far from top on downward swipe');
+  context.ImmersiveMaterialRuntime.supportsHdsTabs = () => false;
 }
 
 // 分类进入时补齐共享顶栏的滚动距离；滚动中只更新收起量，不能反过来调整列表位置或尺寸。
