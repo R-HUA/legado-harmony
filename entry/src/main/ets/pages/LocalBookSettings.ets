@@ -1,6 +1,7 @@
 import { router } from '@kit.ArkUI';
 import { BookUrlImportService } from '../core/book/BookUrlImportService';
 import { BookUrlSourceMatcher } from '../core/book/BookUrlSourceMatcher';
+import { BookCover } from '../components/book/BookCover';
 import { BookSourceStageRuntimeHost } from '../components/BookSourceStageRuntimeHost';
 import { WebBookFetchRuntimeHost } from '../components/WebBookFetchRuntimeHost';
 import { SearchExplorePendingBook } from '../utils/SearchExplorePendingBook';
@@ -149,17 +150,39 @@ struct LocalBookSettingsPage {
       }
 
       if (this.parsedBook) {
-        Column({ space: 8 }) {
-          Text(this.parsedBook.name).fontSize(18).fontWeight(FontWeight.Medium)
-            .fontColor(this.primaryTextColor())
-          Text(this.parsedBook.author || '作者未知').fontSize(14).fontColor(this.subTextColor())
-          Text(this.parsedBook.originName).fontSize(13).fontColor(this.subTextColor())
-          if (this.parsedBook.intro) {
-            Text(this.parsedBook.intro).fontSize(14).fontColor(this.subTextColor()).maxLines(4)
-              .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 4 })
+        Row({ space: AppSpacing.LG }) {
+          Stack() {
+            BookCover({
+              bookUrl: this.parsedBook.bookUrl,
+              origin: this.parsedBook.origin,
+              coverUrl: this.parsedBook.coverUrl,
+              name: this.parsedBook.name,
+              useBookshelfCover: false,
+              placeholderColor: this.buttonColor(),
+              decodeWidth: 180,
+              decodeHeight: 240
+            })
           }
+          .width(54)
+          .height(72)
+
+          Column({ space: AppSpacing.XS }) {
+            Text(this.parsedBook.name).fontSize(18).fontWeight(FontWeight.Medium)
+              .fontColor(this.primaryTextColor())
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.parsedBook.author || '作者未知').fontSize(14).fontColor(this.subTextColor())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.parsedBook.originName).fontSize(13).fontColor(this.subTextColor())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            if (this.parsedBook.intro.trim()) {
+              Text(this.parsedBook.intro.replace(/\s+/g, ' ').trim())
+                .fontSize(14).fontColor(this.subTextColor()).maxLines(4)
+                .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: AppSpacing.XS })
+            }
+          }
+          .layoutWeight(1).alignItems(HorizontalAlign.Start)
         }
-        .width('100%').alignItems(HorizontalAlign.Start)
+        .width('100%').alignItems(VerticalAlign.Top)
         .padding(16).borderRadius(16).backgroundColor(this.cardColor())
         Button(this.addedToShelf ? '已在书架' : (this.isSaving ? '正在加入' : '加入书架'))
           .width('100%').height(48)
