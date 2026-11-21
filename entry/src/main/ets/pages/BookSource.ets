@@ -621,7 +621,7 @@ struct BookSourcePage {
 
   private bottomBuilderHorizontalPadding(): number {
     if (this.bottomBuilderHostWidth <= 0) {
-      return 0;
+      return AppSpacing.XL;
     }
     const systemInset = Math.max(0, (this.contextViewportWidth - this.bottomBuilderHostWidth) / 2);
     if (systemInset >= AppSpacing.XL - 1) {
@@ -648,16 +648,17 @@ struct BookSourcePage {
   nativeTitleBottomBuilder() {
     Column() {
       if (this.sourceSearchOpen) {
-        this.sourceSearchBarRow(this.bottomBuilderHorizontalPadding(), false)
+        this.sourceSearchBarRow(0, false)
       }
       if (!this.selectionMode) {
-        this.sourceFormatBar(this.bottomBuilderHorizontalPadding())
+        this.sourceFormatBar(0)
         if (this.showCompatSourceNotice()) {
-          this.compatSourceNoticeBar(this.bottomBuilderHorizontalPadding(), false)
+          this.compatSourceNoticeBar(0, false)
         }
       }
     }
     .width('100%')
+    .padding({ left: this.bottomBuilderHorizontalPadding(), right: this.bottomBuilderHorizontalPadding() })
     .alignItems(HorizontalAlign.Start)
     .onAreaChange((_oldValue: Area, newValue: Area) => {
       const width = Math.floor(Number(newValue.width));
