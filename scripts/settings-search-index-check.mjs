@@ -17,12 +17,13 @@ const failures = [];
 
 /** 不进搜索的设置行：确认弹窗、一次性操作、只在特定状态出现的提示行。 */
 const IGNORED = new Map([
-  ['Settings', ['恢复主题预设', '从其他主题复制排版', '眼动校准', '每页最多', '卡片行数']],
+  ['Settings', ['恢复主题预设', '从其他主题复制排版', '眼动校准', '眼动翻页（beta）', '新版识别模型（beta）', '每页最多', '卡片行数']],
+  ['ComicSettings', ['AI着色']],
   ['TtsSettings', ['兑换在线朗读字数']],
   ['LabSettings', ['后台脚本线程验证']],
-  ['WebParseSettings', ['请确认使用须知', '使用须知']],
+  ['WebParseSettings', ['请确认使用须知', '使用须知', '网页解析', '导入安卓阅读备份']],
   ['OtherSettings', ['删除离线音频？', '删除离线内容？', '其他设置']],
-  ['DataSync', ['书源']],
+  ['DataSync', ['云同步', '书源']],
   ['BookshelfSettings', ['重置隐私书架']],
   ['CoverSettings', ['书籍自带封面']]
 ]);
@@ -75,7 +76,7 @@ for (const label of labels) {
 const rowSrc = read(path.join(etsRoot, 'components/common/SettingRow.ets'));
 const scaffoldSrc = read(path.join(etsRoot, 'components/common/PageScaffold.ets'));
 if ((rowSrc.match(/SettingsFocus\.claim\(this\.title\)/g) ?? []).length < 2) failures.push('SettingRow/SettingScopeRow 没有认领搜索定位');
-if (!scaffoldSrc.includes('SettingsFocus.bindScroller(this.scroller)')) failures.push('PageScaffold 没有登记滚动容器');
+if (!/SettingsFocus\.bindScroller\(this\.scroller\b/.test(scaffoldSrc)) failures.push('PageScaffold 没有登记滚动容器');
 
 // 6. 常见叫法的排序
 const first = (query) => searchSettings(query)[0]?.title;

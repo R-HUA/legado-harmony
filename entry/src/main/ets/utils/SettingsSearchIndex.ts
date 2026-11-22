@@ -18,6 +18,21 @@ export interface SettingsSearchPage {
   requiresWebParse?: boolean;
 }
 
+export interface SettingsSearchFeatureFlags {
+  eyeTurn: boolean;
+  webParseAlwaysOn: boolean;
+  commerceEnabled: boolean;
+  comicColorizer: boolean;
+}
+
+/** 本地发行版默认特性状态，与 LocalBuildFeatures / AccountCommerceConfig / ComicColorizer 保持一致。 */
+export const DEFAULT_SETTINGS_SEARCH_FLAGS: SettingsSearchFeatureFlags = {
+  eyeTurn: false,
+  webParseAlwaysOn: true,
+  commerceEnabled: false,
+  comicColorizer: false
+};
+
 export interface SettingsSearchEntry {
   id: number;
   page: SettingsSearchPage;
@@ -80,6 +95,7 @@ const ROWS: Row[] = [
   [READ, '阅读通用', '音量键翻页', '音量上/下键翻到上一页/下一页，条漫为翻一屏', '音量 按键'],
   [READ, '阅读通用', '智控键翻页', '智控键上滑/下滑翻到上一页/下一页，条漫为翻一屏', '指纹键 侧键'],
   [READ, '阅读通用', '翻页震感', '点击、滑动或按键翻页时轻震一下，翻到新章节时稍重', '震动 振动 触感 马达'],
+  [READ, '阅读通用', '简繁转换', '在繁体中文与简体中文之间转换正文', '繁体 简体 繁简 繁转简 简转繁'],
   [READ, '阅读通用', '隐藏底部小白条', '阅读正文时收起底部导航条，呼出菜单时恢复', '导航条 手势条 横条'],
   [READ, '阅读通用', '点击区域动作', '点击正文不同区域时做什么', '点击翻页 九宫格 左手 右手'],
   [READ, '提示', 'AI处理标识', '显示 EPUB 插图、漫画和 PDF 的 AI 处理及超分提示', ''],
@@ -259,7 +275,19 @@ function splitAliases(text: string): string[] {
   return text ? text.split(' ').filter((item: string) => item.length > 0) : [];
 }
 
-function buildEntries(): SettingsSearchEntry[] {
+function clonePageWithPath(page: SettingsSearchPage, path: string): SettingsSearchPage {
+  return {
+    key: page.key,
+    path: path,
+    url: page.url,
+    params: page.params,
+    requiresWebParse: page.requiresWebParse
+  };
+}
+
+export function buildSettingsSearchEntries(
+  flags: SettingsSearchFeatureFlags = DEFAULT_SETTINGS_SEARCH_FLAGS
+): SettingsSearchEntry[] {
   const entries: SettingsSearchEntry[] = [];
   const push = (page: SettingsSearchPage, section: string, title: string, description: string, aliases: string,
     focus: string, requiresWebParse: boolean): void => {
@@ -267,15 +295,59 @@ function buildEntries(): SettingsSearchEntry[] {
       aliases: splitAliases(aliases), focus: focus, requiresWebParse: requiresWebParse });
   };
   NAVS.forEach((nav: Nav) => {
-    const page: SettingsSearchPage = { key: 'Mine', path: nav[0], url: nav[4], params: nav[5],
+    if (flags.webParseAlwaysOn && nav[4] === 'pages/WebParseSettings') return;
+    let navPath = nav[0];
+    let description = nav[2];
+    if (flags.webParseAlwaysOn && nav[4] === 'pages/SearchExploreSettings') {
+      navPath = '我的';
+    }
+    if (!flags.comicColorizer && nav[4] === 'pages/ComicSettings') {
+      description = description.replace('/着色', '');
+    }
+    if (!flags.commerceEnabled && nav[4] === 'pages/TtsSettings') {
+      description = '音色、倍速、MiMo 朗读';
+    }
+    const page: SettingsSearchPage = { key: 'Mine', path: navPath, url: nav[4], params: nav[5],
       requiresWebParse: nav[6] };
-    push(page, '', nav[1], nav[2], nav[3], '', nav[6]);
+    push(page, '', nav[1], description, nav[3], '', nav[6]);
   });
+  if (flags.webParseAlwaysOn) {
+    const importPage: SettingsSearchPage = {
+      key: 'Mine',
+      path: '其他设置 › 数据',
+      url: 'pages/DataBackup',
+      params: { mode: 'import', sourceFormat: 'legado-android' }
+    };
+    push(importPage, '', '导入安卓阅读备份', '导入安卓版阅读导出的 ZIP 备份', '安卓 迁移 legado', '', false);
+  }
   TYPOGRAPHY_SLIDERS.forEach((item: string[]) => {
     push(NOVEL_TYPO, '排版', item[0], item[1], item[2], '', false);
   });
   ROWS.forEach((row: Row) => {
-    push(row[0], row[1], row[2], row[3], row[4], row[2], row[0].requiresWebParse === true || row[5] === true);
+    const basePage = row[0];
+    const title = row[2];
+    if (!flags.eyeTurn && basePage.key === 'Settings' &&
+      (title === '眼动翻页（beta）' || title === '新版识别模型（beta）')) {
+      return;
+    }
+    if (!flags.comicColorizer && basePage.key === 'ComicSettings' && title === 'AI着色') {
+      return;
+    }
+    if (flags.webParseAlwaysOn && basePage.key === 'WebParseSettings') {
+      return;
+    }
+    if (!flags.commerceEnabled && basePage.key === 'DataSync' && title === '云同步') {
+      return;
+    }
+    let page = basePage;
+    let description = row[3];
+    if (flags.webParseAlwaysOn && basePage.key === 'SearchExploreSettings') {
+      page = clonePageWithPath(basePage, '我的 › 搜索与发现');
+    }
+    if (!flags.commerceEnabled && basePage.key === 'TtsSettings' && title === '音色管理') {
+      description = '离线音色 / 系统音色 / 自定义音色';
+    }
+    push(page, row[1], title, description, row[4], title, page.requiresWebParse === true || row[5] === true);
   });
   // 页眉页脚、阅读背景面板里的项目不是设置行，搜到后打开对应面板。
   push(NOVEL_INFO, '页眉页脚', '页眉内容', '书名、章节名、时间等', '标题栏', '', false);
@@ -287,7 +359,7 @@ function buildEntries(): SettingsSearchEntry[] {
   return entries;
 }
 
-export const SETTINGS_SEARCH_ENTRIES: SettingsSearchEntry[] = buildEntries();
+export const SETTINGS_SEARCH_ENTRIES: SettingsSearchEntry[] = buildSettingsSearchEntries(DEFAULT_SETTINGS_SEARCH_FLAGS);
 export const SETTINGS_SEARCH_MINE_PAGE: SettingsSearchPage = MINE;
 /** 搜索层空白时的推荐词。 */
 export const SETTINGS_SEARCH_HINTS: string[] = ['字号', '息屏', '音量键', '夜间', '缓存', '隐私书架', '翻页动画', '备份'];

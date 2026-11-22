@@ -1,6 +1,8 @@
 import { promptAction, router } from '@kit.ArkUI';
 import preferences from '@ohos.data.preferences';
-import { TextTranslator } from '@legado/aiengine';
+import { ComicColorizer, TextTranslator } from '@legado/aiengine';
+import { LocalBuildFeatures } from '../../config/LocalBuildFeatures';
+import { AccountCommerceConfig } from '../../account/AccountCommerceConfig';
 import { ThemeRuntime } from '../../theme/ThemeRuntime';
 import { AppFontSize } from '../../theme/AppFontSize';
 import { AppSpacing } from '../../theme/AppSpacing';
@@ -9,6 +11,7 @@ import { ImmersiveMaterialSurface } from '../ImmersiveMaterialSurface';
 import { HelpData, HelpManual, HelpSection } from '../../utils/HelpManual';
 import { SettingsFocus } from '../../utils/SettingsFocus';
 import {
+  buildSettingsSearchEntries,
   normalizeSettingsQuery,
   searchSettings,
   SETTINGS_SEARCH_HINTS,
@@ -57,6 +60,12 @@ export struct SettingsSearchLayer {
   private toSimplified: ((text: string) => string) | null = null;
   private dictionaryLoading: boolean = false;
   private scroller: Scroller = new Scroller();
+  private activeEntries: SettingsSearchEntry[] = buildSettingsSearchEntries({
+    eyeTurn: LocalBuildFeatures.EYE_TURN,
+    webParseAlwaysOn: LocalBuildFeatures.WEB_PARSE_ALWAYS_ON,
+    commerceEnabled: AccountCommerceConfig.COMMERCE_ENABLED,
+    comicColorizer: ComicColorizer.supported()
+  });
 
   aboutToAppear(): void {
     const context = getContext(this);
@@ -99,14 +108,14 @@ export struct SettingsSearchLayer {
       this.faqResults = [];
       return;
     }
-    let settings = searchSettings(query);
+    let settings = searchSettings(query, this.activeEntries);
     let faq = this.searchFaq(query);
     if (settings.length === 0 && faq.length === 0) {
       // 可能是繁体输入：折成简体再搜一次；字典第一次用到时才加载。
       if (this.toSimplified) {
         const simplified = this.toSimplified(query);
         if (simplified !== query) {
-          settings = searchSettings(simplified);
+          settings = searchSettings(simplified, this.activeEntries);
           faq = this.searchFaq(simplified);
         }
       } else {
@@ -154,6 +163,7 @@ export struct SettingsSearchLayer {
   }
 
   isBlocked(entry: SettingsSearchEntry): boolean {
+    if (LocalBuildFeatures.WEB_PARSE_ALWAYS_ON) return false;
     return entry.requiresWebParse && !this.webParseEnabled;
   }
 
