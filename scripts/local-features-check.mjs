@@ -53,6 +53,7 @@ for (const theme of bindings.BuiltinThemeRegistry.all()) {
 }
 assert.equal(bindings.BuiltinThemeRegistry.isFree('unknown-theme'), false);
 load('utils/TtsVoiceAvailability.ts');
+load('utils/PlaybackSpeed.ts');
 load('utils/TtsSettingsStore.ets');
 const settings = bindings.TtsSettingsStore.fromStorage();
 assert.equal(settings.cloudVoiceId, '');
@@ -64,7 +65,8 @@ for (const action of [
   () => api.loginWithPassword('user', 'password123'),
   () => api.fetchLoginMethods('token'),
   () => api.bindHuawei('code', 'token'),
-  () => api.requestAccountDeletion('password123', 'token')
+  () => api.requestAccountDeletion('password123', 'token'),
+  () => api.cloudRequest('/summary', 'GET', '', 'token')
 ]) {
   await assert.rejects(action, error => error.errorCode === 'SERVICE_DISABLED');
 }
@@ -98,7 +100,9 @@ assert.equal(requests.length, requestsBeforeAuth, 'Blocked account/auth methods 
 // (b) main_pages.json 必须为合法 JSON 且不注册账号/会员/云空间路由。
 const readRepo = rel => fs.readFileSync(new URL('../' + rel, import.meta.url), 'utf8');
 const mainPages = JSON.parse(readRepo('entry/src/main/resources/base/profile/main_pages.json'));
-assert.ok(Array.isArray(mainPages.src) && mainPages.src.length > 0, 'main_pages.json must list routes');
+assert.ok(Array.isArray(mainPages.src) && mainPages.src.length === 73,
+  `main_pages.json must list 73 local routes, got ${mainPages.src?.length}`);
+assert.equal(mainPages.src.includes('pages/CoverSettings'), true, 'main_pages.json must include pages/CoverSettings');
 for (const removedRoute of [
   'pages/AccountCenter',
   'pages/MemberBenefits',
@@ -215,4 +219,43 @@ assert.ok(indexSource.includes('“关于 › 崩溃记录”'), 'Index.ets cras
 assert.equal(indexSource.includes('“关于 › 交流与反馈 › 崩溃记录”'), false,
   'Index.ets crash prompt must not mention 交流与反馈');
 
-console.log('Local features check passed: commerce blocked before HTTP, sync retained, themes free, old cloud voice disabled, web parse always on, eye-turn & camera disabled.');
+// (h) 自定义主题云同步与 DataSync 文件同步行受商业化开关门控。
+const dataSyncSource = readRepo('entry/src/main/ets/pages/DataSync.ets');
+assert.match(
+  dataSyncSource,
+  /if\s*\(\s*AccountCommerceConfig\.COMMERCE_ENABLED\s*\)\s*\{[\s\S]*?fileSyncRow\([\s\S]*?'THEME'\)/,
+  'DataSync.ets must gate THEME fileSyncRow by AccountCommerceConfig.COMMERCE_ENABLED'
+);
+const cloudThemeSyncSource = readRepo('entry/src/main/ets/account/CloudThemeSync.ets');
+assert.match(cloudThemeSyncSource, /remotePackageIds\(\)[\s\S]*?if\s*\(\s*!AccountCommerceConfig\.COMMERCE_ENABLED\s*\)\s*return\s*\[\]/,
+  'CloudThemeSync.remotePackageIds() must return [] when commerce is disabled');
+assert.match(cloudThemeSyncSource, /ensureSchemePacks\([\s\S]*?if\s*\(\s*!AccountCommerceConfig\.COMMERCE_ENABLED/,
+  'CloudThemeSync.ensureSchemePacks() must bail out when commerce is disabled');
+
+// (i) 设置搜索索引必须剔除停用入口并同步本地特性开关。
+const searchIndex = await import('../entry/src/main/ets/utils/SettingsSearchIndex.ts');
+assert.equal(searchIndex.DEFAULT_SETTINGS_SEARCH_FLAGS.eyeTurn, bindings.LocalBuildFeatures.EYE_TURN);
+assert.equal(searchIndex.DEFAULT_SETTINGS_SEARCH_FLAGS.webParseAlwaysOn, bindings.LocalBuildFeatures.WEB_PARSE_ALWAYS_ON);
+assert.equal(searchIndex.DEFAULT_SETTINGS_SEARCH_FLAGS.commerceEnabled, bindings.AccountCommerceConfig.COMMERCE_ENABLED);
+assert.equal(searchIndex.DEFAULT_SETTINGS_SEARCH_FLAGS.comicColorizer, false);
+for (const hiddenQuery of ['眼动', '新版识别模型', 'AI着色', '着色', '在线阅读', '云同步']) {
+  assert.deepEqual(searchIndex.searchSettings(hiddenQuery), [], `Settings search must exclude "${hiddenQuery}"`);
+}
+for (const hiddenTitle of ['眼动翻页（beta）', '新版识别模型（beta）', 'AI着色', '网页解析', '在线阅读', '云同步']) {
+  assert.equal(
+    searchIndex.SETTINGS_SEARCH_ENTRIES.some(e => e.title === hiddenTitle),
+    false,
+    `Settings search entries must exclude "${hiddenTitle}"`
+  );
+}
+assert.equal(
+  searchIndex.SETTINGS_SEARCH_ENTRIES.some(e => e.page.url === 'pages/WebParseSettings'),
+  false,
+  'Settings search must not expose pages/WebParseSettings when WEB_PARSE_ALWAYS_ON=true'
+);
+assert.ok(searchIndex.searchSettings('简繁转换').some(e => e.title === '简繁转换'),
+  'Settings search must include 简繁转换');
+assert.ok(searchIndex.searchSettings('导入安卓').some(e => e.page.url === 'pages/DataBackup'),
+  'Settings search must route 安卓阅读备份 import directly to pages/DataBackup');
+
+console.log('Local features check passed: commerce blocked before HTTP, sync retained, themes free, old cloud voice disabled, web parse always on, eye-turn & camera disabled, settings search filtered.');
