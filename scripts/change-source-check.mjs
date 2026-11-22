@@ -35,12 +35,14 @@ function harness(disk = new Map()) {
   class WebBookService {
     constructor(cancelled) { this.cancelled = cancelled; }
     cancelPendingRequests() { events.push('cancel-work'); }
+    setCatalogProgress(listener) { this.catalogProgress = listener; }
     async getBookInfo(_source, next) {
       events.push('detail'); if (detailGate) await detailGate.promise;
       return Object.assign(next, { name: '测试书完整版', author: '作者 著', bookUrl: next.bookUrl + '/detail' });
     }
     async getChapterList() {
       events.push('toc'); if (tocGate) await tocGate.promise;
+      this.catalogProgress?.(1, 2);
       return [{ title: '第一章', url: '/chapter' }, { title: '第二章', url: '/chapter2' }];
     }
   }
@@ -67,10 +69,10 @@ function harness(disk = new Map()) {
     SourceEngineHost: { getError: () => '' },
     BookFieldSanitizer: { prefer: (a, b) => a || b }, CoverUrlNormalizer: { prefer: (a, b) => a || b },
     AppStorage: { setOrCreate() {} }, getContext: () => ({}),
-    SearchExploreSettingsStore: { getSearchConcurrency: () => 6 },
+    SearchExploreSettingsStore: { getSearchConcurrency: () => 6, CHANGE_SOURCE_SCOPE_ALL: 'all', CHANGE_SOURCE_SCOPE_GROUP: 'group' },
     SearchBookShelfHelper: { isNavigationResult: () => false },
     BookIdentity: { keyOfUrl: (url, origin) => origin + '|' + url, keyOfSearchBook: b => b.origin + '|' + b.bookUrl },
-    SearchChineseScriptRuntime: { forSearch: async () => null, saveHints: async () => {} },
+    SearchChineseScriptRuntime: { forSearch: async () => null, saveHints: async () => {}, ready: () => null, enabled: () => true },
     HdsFeedback: { showToast: text => events.push(text) }
   });
   function load(path, name, component = false) {
@@ -83,13 +85,99 @@ function harness(disk = new Map()) {
   }
   const Cache = load('utils/ChangeSourceResultCache.ets', 'ChangeSourceResultCache');
   const Operation = load('core/book/SourceSwitchOperation.ts', 'SourceSwitchOperation');
+  const Matcher = load('core/book/ChapterPositionMatcher.ts', 'ChapterPositionMatcher');
   const Task = load('core/book/BookSourceSwitchTask.ets', 'BookSourceSwitchTask');
+  const AuthorMatch = load('core/book/ChangeSourceAuthorMatch.ts', 'ChangeSourceAuthorMatch');
+  const Policy = load('core/book/BatchSourceSwitchPolicy.ts', 'BatchSourceSwitchPolicy');
+  load('core/book/ChangeSourceCandidates.ets', 'ChangeSourceCandidates');
   const Dialog = load('components/BookChangeSourceDialog.ets', 'BookChangeSourceDialog', true);
-  return { Cache, Operation, Task, Dialog, events, writes, disk, old, get searchCount() { return searchCount; },
+  return { Cache, Operation, Matcher, Task, AuthorMatch, Policy, Dialog, events, writes, disk, old, get searchCount() { return searchCount; },
     holdDetail() { return detailGate = deferred(); }, holdToc() { return tocGate = deferred(); },
     holdCommit() { return commitGate = deferred(); }, holdSearch() { return searchGate = deferred(); },
     holdWrite() { return beforeWrite = deferred(); }, holdRead() { return beforeRead = deferred(); },
     failCommit() { failCommit = true; } };
+}
+
+// The new catalog's reading position follows the chapter title, not the bare index.
+{
+  const { Matcher } = harness();
+  const titles = list => list.map(title => ({ title }));
+  // An extra notice in front shifts every chapter by one.
+  assert.equal(Matcher.match(2, '第三章 风起', 10, titles(['公告', '第一章 开端', '第二章 相遇', '第三章 风起', '第四章'])), 3);
+  // Same chapter written with different numerals and spacing.
+  assert.equal(Matcher.match(4, '第十二章　夜雨', 20, titles(['第8章', '第9章', '第10章', '第11章', '请假条', '第12章 夜雨', '第13章'])), 5);
+  // Only the number survives when the other source drops chapter names.
+  assert.equal(Matcher.match(1, '第一百零五章 归来', 200, titles(['第104章', '第105章', '第106章'])), 1);
+  assert.equal(Matcher.match(0, '第一百零五章 归来', 3, titles(['第103章', '第104章', '第105章'])), 2);
+  // Volumes restarting at chapter one: the nearest equal title wins.
+  const volumes = titles(['第一卷', '第一章 起', '第二章 承', '第二卷', '第一章 起', '第二章 承']);
+  assert.equal(Matcher.match(5, '第二章 承', 6, volumes), 5);
+  assert.equal(Matcher.match(2, '第二章 承', 6, volumes), 2);
+  // Nothing recognisable: keep the clamped index.
+  assert.equal(Matcher.match(3, '番外', 4, titles(['甲', '乙'])), 1);
+  assert.equal(Matcher.match(3, '', 4, titles(['第一章', '第二章'])), 1);
+  // Far outside the window, a unique full-title match is still taken; duplicates are not.
+  const far = titles(Array.from({ length: 80 }, (_, i) => `第${i + 1}章`));
+  far[70] = { title: '尾声 再见' };
+  assert.equal(Matcher.match(5, '尾声 再见', 80, far), 70);
+  far[71] = { title: '尾声 再见' };
+  assert.equal(Matcher.match(5, '尾声 再见', 80, far), 5);
+  assert.equal(Matcher.parseNumber('二〇二三'), 2023);
+  assert.equal(Matcher.parseNumber('一千零二十'), 1020);
+  assert.equal(Matcher.parseNumber('十二'), 12);
+  assert.equal(Matcher.parseNumber('三万零五'), 30005);
+  assert.equal(Matcher.chapterNumber('０３２ 回家'), 32);
+}
+
+// The switch reports catalog progress and maps the position by title.
+{
+  const h = harness();
+  h.old.durChapterIndex = 3;
+  h.old.durChapterTitle = '第一章';
+  const labels = [];
+  const task = new h.Task(false);
+  const next = await task.run({}, 'key', h.old, book('B'), null, label => labels.push(label), () => {});
+  assert(labels.includes('正在加载新源目录：已读 1 页 · 2 章'), labels.join('|'));
+  assert.equal(next.durChapterIndex, 0);
+  assert.equal(next.durChapterTitle, '第一章');
+}
+
+// Batch switching prepares candidates without touching the shelf, then commits the chosen one from a fresh task.
+{
+  const h = harness();
+  const preparing = new h.Task(false, 30000);
+  const prepared = await preparing.prepare({}, 'key', h.old, book('B'), null, () => {});
+  preparing.release();
+  assert.equal(prepared.chapters.length, 2);
+  assert.equal(h.Task.revisionOf(h.old), 0, 'preparing alone must not count as a switch');
+  let delivered;
+  const next = await new h.Task(false).commit({}, prepared, () => {}, (switched, previousUrl) => {
+    delivered = [switched.origin, previousUrl];
+  }, 0);
+  assert.equal(next.origin, 'B');
+  assert.deepEqual(delivered, ['B', '/a']);
+  assert(h.Task.revisionOf({ origin: 'A', bookUrl: '/a' }) > 0);
+  // The book was switched meanwhile (by hand, or by an earlier commit): a stale prepared result is refused.
+  prepared.target = { origin: 'A', bookUrl: '/a' };
+  await assert.rejects(new h.Task(false).commit({}, prepared, () => {}, () => {}, 0), /已经换过源/);
+}
+
+// Batch policy: only confidently identified candidates, and the longest catalog that reaches the reading position.
+{
+  const { Policy: P } = harness();
+  const fold = text => text.replace(/貓/g, '猫').replace(/膩/g, '腻');
+  assert.deepEqual(Array.from(P.eligible('猫腻', ['貓膩', '', '别人', '猫腻 著'], fold)), [0, 3]);
+  assert.deepEqual(Array.from(P.eligible('猫腻', ['貓膩'])), [], 'without the dictionary a traditional name is not assumed equal');
+  // The shelf book has no author: accept only when the candidates cannot be two different books.
+  assert.deepEqual(Array.from(P.eligible('', ['', '猫腻', '貓膩'], fold)), [0, 1, 2]);
+  assert.deepEqual(Array.from(P.eligible('未知', ['猫腻', '别人'], fold)), []);
+  assert.equal(P.pick([120, 800, 800, 30], 100), 1);
+  assert.equal(P.pick([50, 100], 100), -1, 'a catalog ending at or before the reading position is not usable');
+  assert.equal(P.pick([1], 0), 0);
+  assert.equal(P.pick([], 0), -1);
+  assert.equal(P.enough(800, 800, 100), true);
+  assert.equal(P.enough(799, 800, 100), false);
+  assert.equal(P.enough(800, 0, 100), false, 'unknown old length: keep comparing candidates');
 }
 
 // Partial results survive immediate A -> B selection, changed metadata/URL, disposal and restart.
@@ -127,6 +215,62 @@ function harness(disk = new Map()) {
   const dialogSource = readEtsModule('components/BookChangeSourceDialog.ets');
   assert(!dialogSource.includes('excludeSourceUrls'), 'change source must search the current source too');
   assert(/maxResultsPerSource: MAX_RESULTS_PER_SOURCE/.test(dialogSource));
+}
+
+// Author check: normalized names match, placeholders stay undecided, same-title books by others are told apart.
+{
+  const { AuthorMatch: M } = harness();
+  const fold = text => text.replace(/貓/g, '猫').replace(/膩/g, '腻');
+  const cases = [
+    ['土豆豌豆', '土豆豌豆', M.SAME],
+    ['土豆豌豆', '作者：土豆豌豆 著', M.SAME],
+    ['土豆豌豆', '土豆豌豆（完结）', M.SAME],
+    ['土豆豌豆', '土豆豌豆/著', M.SAME],
+    ['作者 著', '作者', M.SAME],
+    ['Ｊ.Ｋ.Rowling', 'jk rowling', M.SAME],
+    ['土豆豌豆', '土豆豌豆工作室', M.SAME],
+    ['土豆豌豆', '锈迹斑斑的克雷恩', M.DIFFERENT],
+    ['唐', '唐家三少', M.DIFFERENT],
+    ['土豆豌豆', '', M.UNKNOWN],
+    ['土豆豌豆', '未知', M.UNKNOWN],
+    ['', '锈迹斑斑的克雷恩', M.UNKNOWN],
+  ];
+  for (const [a, b, expected] of cases) assert.equal(M.compare(a, b), expected, `${a} vs ${b}`);
+  assert.equal(M.compare('貓膩', '猫腻'), M.DIFFERENT, 'without the dictionary scripts differ');
+  assert.equal(M.compare('貓膩', '猫腻', fold), M.SAME);
+}
+
+// The panel hides other authors behind a status-line link, keeps unknown authors after matching ones,
+// and counts other-group results only among those it would show.
+{
+  const h = harness();
+  const target = book('A', { author: '土豆豌豆' });
+  const panel = new h.Dialog(); panel.targetBook = target;
+  panel.aboutToAppear(); await drain();
+  panel.allResults = [
+    book('X', { author: '锈迹斑斑的克雷恩' }), book('U', { author: '' }), book('B', { author: '土豆豌豆 著' }),
+    book('Y', { author: '锈迹斑斑的克雷恩' }), book('C', { author: '土豆豌豆' }), book('Z', { author: '别人' })
+  ];
+  panel.applyScope();
+  assert.deepEqual(Array.from(panel.results, b => b.origin), ['B', 'C', 'U']);
+  assert.equal(panel.authorHiddenCount, 3);
+  assert.equal(panel.authorTip(), '；3 个作者不同，');
+  assert.equal(panel.authorLink(), '显示');
+  panel.sourceGroupOf = new Map([['B', '女频'], ['C', '男频'], ['U', '女频'], ['X', '女频'], ['Y', '男频'], ['Z', '男频']]);
+  panel.scopeMode = 'group'; panel.scopeGroups = ['女频'];
+  assert(panel.isScoped());
+  panel.applyScope();
+  assert.deepEqual(Array.from(panel.results, b => b.origin), ['B', 'U']);
+  assert.equal(panel.hiddenCount, 1, 'other-group count skips other authors');
+  assert.equal(panel.authorHiddenCount, 1);
+  panel.revealAuthorMismatch();
+  assert.deepEqual(Array.from(panel.results, b => b.origin), ['B', 'U', 'X']);
+  assert.equal(panel.hiddenCount, 3);
+  assert.equal(panel.authorTip(), '');
+  assert(panel.isAuthorMismatch(panel.results[2]));
+  panel.revealHiddenResults();
+  assert.deepEqual(Array.from(panel.results, b => b.origin), ['B', 'C', 'U', 'X', 'Y', 'Z']);
+  panel.requestClose(); await h.Cache.flush({});
 }
 
 // Different authors/media stay separate; empty/partial refresh retains old candidates, expired entries remain usable.

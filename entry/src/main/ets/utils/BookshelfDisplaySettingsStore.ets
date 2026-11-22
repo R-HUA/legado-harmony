@@ -30,10 +30,15 @@ export class BookshelfDisplaySettings {
   companionCoverShadow: boolean = true;
   // 陪伴布局问候与书架之间的“阅读小记”卡片。
   companionReadingNote: boolean = true;
-  // 陪伴布局左上角问候语：time 按时段的内置文案，custom 用下面两行（可含占位符），off 不显示。
+  // 平铺布局封面的描边、投影与底色；关闭后封面直接放在书架上，透明底的主题封面不再有灰色卡片。
+  tileCoverFrame: boolean = true;
+  // 陪伴布局左上角问候语：time 按时段的内置文案，custom 用自己写的（可含占位符），off 不显示。
   greetingMode: string = 'time';
+  // 自定义文案的第一个时段，同时是只认这两项的旧数据；分时段的完整内容在 greetingSlots。
   greetingTitle: string = '';
   greetingSubtitle: string = '';
+  // 自定义文案的时段列表（JSON，见 ShelfGreetingTemplate.parseSlots）；空串表示只有上面两行、全天一条。
+  greetingSlots: string = '';
   // 陪伴布局书架网格上方的标题；空串显示默认文案。
   companionSectionTitle: string = '';
   // 打开应用后在后台检查书架上连载书的新章节；关闭后只在下拉书架时检查。属于网页解析的设置项。
@@ -67,9 +72,11 @@ export class BookshelfDisplaySettingsStore {
   private static readonly KEY_COMPANION_STAGGER: string = 'bookshelfCompanionStagger';
   private static readonly KEY_COMPANION_COVER_SHADOW: string = 'bookshelfCompanionCoverShadow';
   private static readonly KEY_COMPANION_READING_NOTE: string = 'bookshelfCompanionReadingNote';
+  private static readonly KEY_TILE_COVER_FRAME: string = 'bookshelfTileCoverFrame';
   private static readonly KEY_GREETING_MODE: string = 'bookshelfGreetingMode';
   private static readonly KEY_GREETING_TITLE: string = 'bookshelfGreetingTitle';
   private static readonly KEY_GREETING_SUBTITLE: string = 'bookshelfGreetingSubtitle';
+  private static readonly KEY_GREETING_SLOTS: string = 'bookshelfGreetingSlots';
   private static readonly KEY_COMPANION_SECTION_TITLE: string = 'bookshelfCompanionSectionTitle';
   private static readonly KEY_AUTO_REFRESH: string = 'bookshelfAutoRefresh';
   private static readonly KEY_IMMERSIVE: string = 'bookshelfImmersive';
@@ -128,12 +135,16 @@ export class BookshelfDisplaySettingsStore {
       store, BookshelfDisplaySettingsStore.KEY_COMPANION_COVER_SHADOW, true);
     settings.companionReadingNote = await BookshelfDisplaySettingsStore.getBoolean(
       store, BookshelfDisplaySettingsStore.KEY_COMPANION_READING_NOTE, true);
+    settings.tileCoverFrame = await BookshelfDisplaySettingsStore.getBoolean(
+      store, BookshelfDisplaySettingsStore.KEY_TILE_COVER_FRAME, true);
     settings.greetingMode = BookshelfDisplaySettingsStore.normalizeGreetingMode(
       await BookshelfDisplaySettingsStore.getString(store, BookshelfDisplaySettingsStore.KEY_GREETING_MODE, 'time'));
     settings.greetingTitle = await BookshelfDisplaySettingsStore.getString(
       store, BookshelfDisplaySettingsStore.KEY_GREETING_TITLE, '');
     settings.greetingSubtitle = await BookshelfDisplaySettingsStore.getString(
       store, BookshelfDisplaySettingsStore.KEY_GREETING_SUBTITLE, '');
+    settings.greetingSlots = await BookshelfDisplaySettingsStore.getString(
+      store, BookshelfDisplaySettingsStore.KEY_GREETING_SLOTS, '');
     settings.companionSectionTitle = await BookshelfDisplaySettingsStore.getString(
       store, BookshelfDisplaySettingsStore.KEY_COMPANION_SECTION_TITLE, '');
     settings.autoRefresh = await BookshelfDisplaySettingsStore.getBoolean(
@@ -182,9 +193,11 @@ export class BookshelfDisplaySettingsStore {
     await store.put(BookshelfDisplaySettingsStore.KEY_COMPANION_STAGGER, settings.companionStagger !== false);
     await store.put(BookshelfDisplaySettingsStore.KEY_COMPANION_COVER_SHADOW, settings.companionCoverShadow !== false);
     await store.put(BookshelfDisplaySettingsStore.KEY_COMPANION_READING_NOTE, settings.companionReadingNote !== false);
+    await store.put(BookshelfDisplaySettingsStore.KEY_TILE_COVER_FRAME, settings.tileCoverFrame !== false);
     await store.put(BookshelfDisplaySettingsStore.KEY_GREETING_MODE, settings.greetingMode);
     await store.put(BookshelfDisplaySettingsStore.KEY_GREETING_TITLE, settings.greetingTitle);
     await store.put(BookshelfDisplaySettingsStore.KEY_GREETING_SUBTITLE, settings.greetingSubtitle);
+    await store.put(BookshelfDisplaySettingsStore.KEY_GREETING_SLOTS, settings.greetingSlots);
     await store.put(BookshelfDisplaySettingsStore.KEY_COMPANION_SECTION_TITLE, settings.companionSectionTitle);
     await store.put(BookshelfDisplaySettingsStore.KEY_AUTO_REFRESH, settings.autoRefresh !== false);
     await store.put(BookshelfDisplaySettingsStore.KEY_IMMERSIVE, settings.immersive === true);
@@ -196,12 +209,15 @@ export class BookshelfDisplaySettingsStore {
     CloudSyncChangeTracker.markApplicationPreferenceChanged();
   }
 
-  /** 书架长按问候语与书架设置共用：只改问候语三项，其余设置取当前内存里的值。 */
-  static async saveGreeting(context: Context, mode: string, title: string, subtitle: string): Promise<void> {
+  /** 书架长按问候语与书架设置共用：只改问候语几项，其余设置取当前内存里的值。 */
+  static async saveGreeting(
+    context: Context, mode: string, title: string, subtitle: string, slots: string
+  ): Promise<void> {
     const settings = BookshelfDisplaySettingsStore.fromStorage();
     settings.greetingMode = BookshelfDisplaySettingsStore.normalizeGreetingMode(mode);
     settings.greetingTitle = title;
     settings.greetingSubtitle = subtitle;
+    settings.greetingSlots = slots;
     BookshelfDisplaySettingsStore.applyToStorage(settings);
     await BookshelfDisplaySettingsStore.save(context, settings);
   }
@@ -248,9 +264,11 @@ export class BookshelfDisplaySettingsStore {
       settings.companionCoverShadow !== false);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_COMPANION_READING_NOTE,
       settings.companionReadingNote !== false);
+    AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_TILE_COVER_FRAME, settings.tileCoverFrame !== false);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_GREETING_MODE, settings.greetingMode);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_GREETING_TITLE, settings.greetingTitle);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_GREETING_SUBTITLE, settings.greetingSubtitle);
+    AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_GREETING_SLOTS, settings.greetingSlots);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_COMPANION_SECTION_TITLE, settings.companionSectionTitle);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_AUTO_REFRESH, settings.autoRefresh !== false);
     AppStorage.setOrCreate(BookshelfDisplaySettingsStore.KEY_IMMERSIVE, settings.immersive === true);
@@ -289,10 +307,12 @@ export class BookshelfDisplaySettingsStore {
       AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_COMPANION_COVER_SHADOW) ?? true;
     settings.companionReadingNote =
       AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_COMPANION_READING_NOTE) ?? true;
+    settings.tileCoverFrame = AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_TILE_COVER_FRAME) ?? true;
     settings.greetingMode = BookshelfDisplaySettingsStore.normalizeGreetingMode(
       AppStorage.get<string>(BookshelfDisplaySettingsStore.KEY_GREETING_MODE) ?? 'time');
     settings.greetingTitle = AppStorage.get<string>(BookshelfDisplaySettingsStore.KEY_GREETING_TITLE) ?? '';
     settings.greetingSubtitle = AppStorage.get<string>(BookshelfDisplaySettingsStore.KEY_GREETING_SUBTITLE) ?? '';
+    settings.greetingSlots = AppStorage.get<string>(BookshelfDisplaySettingsStore.KEY_GREETING_SLOTS) ?? '';
     settings.companionSectionTitle =
       AppStorage.get<string>(BookshelfDisplaySettingsStore.KEY_COMPANION_SECTION_TITLE) ?? '';
     settings.autoRefresh = AppStorage.get<boolean>(BookshelfDisplaySettingsStore.KEY_AUTO_REFRESH) ?? true;
@@ -376,9 +396,11 @@ export class BookshelfDisplaySettingsStore {
     settings.companionStagger = source.companionStagger !== false;
     settings.companionCoverShadow = source.companionCoverShadow !== false;
     settings.companionReadingNote = source.companionReadingNote !== false;
+    settings.tileCoverFrame = source.tileCoverFrame !== false;
     settings.greetingMode = BookshelfDisplaySettingsStore.normalizeGreetingMode(source.greetingMode);
     settings.greetingTitle = source.greetingTitle || '';
     settings.greetingSubtitle = source.greetingSubtitle || '';
+    settings.greetingSlots = source.greetingSlots || '';
     settings.companionSectionTitle = source.companionSectionTitle || '';
     settings.autoRefresh = source.autoRefresh !== false;
     settings.immersive = source.immersive === true;

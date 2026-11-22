@@ -34,6 +34,9 @@ const MAX_SEARCH_CONCURRENCY = 12;
 const SEARCH_RATE_LIMIT_MAX_WAIT_MS = 60000;
 // Overall budget for one source: request, scripts and result parsing together.
 const SEARCH_SOURCE_TIMEOUT_MS = 60000;
+// The result-list rule runs synchronously on the main thread and cannot yield midway. Past this budget its remaining
+// per-element JS is skipped and the source fails, well before the 6-second freeze kill (AnalyzeRule.setDeadline).
+const SEARCH_LIST_RULE_DEADLINE_MS = 2000;
 
 /** Tells an abandoned source run that its result is no longer wanted. */
 class SearchSourceAbort {
@@ -52,6 +55,8 @@ interface ParsedSearchBooks {
   books: SearchBook[];
   itemCount: number;
   cancelled: boolean;
+  /** The list rule ran out of its main-thread budget; the partial list was dropped. */
+  listRuleTimedOut: boolean;
 }
 
 /**
@@ -63,6 +68,8 @@ class SourceResultBudget {
   private readonly perCategory: boolean;
   private readonly counts: Map<string, number> = new Map<string, number>();
   private total: number = 0;
+  /** 标了分站的结果已经收了多少；有这类结果的书源按分站分别计上限。 */
+  private sited: number = 0;
 
   constructor(limit: number, perCategory: boolean) {
     this.limit = limit;
@@ -71,6 +78,18 @@ class SourceResultBudget {
 
   /** Takes a slot for the book; false when its type (or the whole source) is already full. */
   take(book: SearchBook): boolean {
+    // 聚合书源给结果标了分站：每个分站各有一份上限（分类型计时再按类型分），整个书源不超过总上限。
+    const site = NativeSourceService.siteOf(book);
+    if (site) {
+      if (this.sited >= MAX_TOTAL_SEARCH_RESULTS) return false;
+      const key = this.perCategory ? `site:${site}:${book.mediaCategory || BookTypeSupport.mediaCategoryOf(book)}` :
+        `site:${site}`;
+      const taken = this.counts.get(key) || 0;
+      if (taken >= this.limit) return false;
+      this.counts.set(key, taken + 1);
+      this.sited++;
+      return true;
+    }
     if (!this.perCategory) {
       if (this.total >= this.limit) return false;
       this.total++;
@@ -85,6 +104,8 @@ class SourceResultBudget {
 
   /** True once no further book can be taken. Per-type budgets never count as full: a later book may be another type. */
   get full(): boolean {
+    // 按分站计的书源不算满：后面的结果可能属于另一个分站，收够总上限为止。
+    if (this.sited > 0) return this.sited >= MAX_TOTAL_SEARCH_RESULTS;
     return !this.perCategory && this.total >= this.limit;
   }
 }
@@ -543,7 +564,7 @@ export class SearchCoordinator {
     js.setVar('page', String(this.currentPage));
 
     const searchSerial = this.searchSerial;
-    const au = new AnalyzeUrl(source, this.http)
+    const au = new AnalyzeUrl(source, this.http).trustSourceAuthoredUrl()
       .setCancelCheck((): boolean => stopped() || searchSerial !== this.searchSerial,
         SEARCH_RATE_LIMIT_MAX_WAIT_MS);
     const onPartialBody = partial.listener ? (text: string): void => {
@@ -619,6 +640,10 @@ export class SearchCoordinator {
     if (parsed.cancelled) {
       return this.sourceResult([], BookSource.VALIDATION_TEMPORARY_ERROR, '校验已取消');
     }
+    if (parsed.listRuleTimedOut && partial.emitted.length === 0) {
+      return this.sourceResult([], BookSource.VALIDATION_FAILED,
+        `搜索列表规则执行超过 ${SEARCH_LIST_RULE_DEADLINE_MS / 1000} 秒，已跳过（规则对每条结果运行的脚本过慢）`);
+    }
     if (parsed.books.length > 0 || partial.emitted.length > 0) {
       console.info('[SC] result:', source.bookSourceName, partial.emitted.length + parsed.books.length);
       if (debugContext) {
@@ -654,7 +679,7 @@ export class SearchCoordinator {
   private async parseSearchBooks(source: BookSource, keyword: string, options: SearchOptions, stopped: () => boolean,
     body: string, baseUrl: string, encodedVariables: Record<string, string>, budget: SourceResultBudget,
     debugContext: BookSourceDebugContext | null, seenBookKeys: Set<string>): Promise<ParsedSearchBooks> {
-    const parsed: ParsedSearchBooks = { books: [], itemCount: 0, cancelled: false };
+    const parsed: ParsedSearchBooks = { books: [], itemCount: 0, cancelled: false, listRuleTimedOut: false };
     const searchRule = source.searchRule;
     const rule = new AnalyzeRule(body, baseUrl);
     this.seedSourceVariables(rule.getContext(), source);
@@ -673,8 +698,14 @@ export class SearchCoordinator {
       return parsed;
     }
     const allTypedItems = stageItems === null ?
-      rule.execute(searchRule.bookList || '', RuleExecutionTarget.ELEMENTS) :
+      rule.setDeadline(SEARCH_LIST_RULE_DEADLINE_MS).execute(searchRule.bookList || '', RuleExecutionTarget.ELEMENTS) :
       stageItems.map((item: string): RuleValue => RuleValue.fromExternal(item));
+    if (rule.deadlineExceeded()) {
+      console.warn('[SC] list rule over main-thread budget, source skipped:', source.bookSourceName,
+        `${SEARCH_LIST_RULE_DEADLINE_MS}ms`);
+      parsed.listRuleTimedOut = true;
+      return parsed;
+    }
     // A per-type search reads further down the list, so an aggregated source's later types are reached at all.
     const candidateLimit = this.normalizedLimit(options.maxCandidatesPerSource,
       options.leanResult === true ? 60 : options.maxResultsPerCategory !== undefined ? 200 : 120, 1, 200);
@@ -883,6 +914,9 @@ export class SearchCoordinator {
         this.sanitizeSearchBook(book);
         book.mediaCategory = BookTypeSupport.mediaCategoryOf(book);
         if (!this.matchesMediaCategory(book, options)) continue;
+        // 聚合书源一次交回几百条、其中不少只是沾边：每源上限只数与关键词相关的，
+        // 否则排在后面的子站（哪怕书名完全一致）会被前面不相关的结果挤掉。校验只看有没有结果，不筛。
+        if (options.validationOnly !== true && this.filterSearchResults([book], keyword, options).length === 0) continue;
         if (!budget.take(book)) continue;
         books.push(book);
         if (budget.full) break;

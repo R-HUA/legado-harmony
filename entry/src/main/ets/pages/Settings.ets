@@ -1,5 +1,6 @@
 import { SettingsSelect } from '../components/SettingsSelect';
 import { READER_FONT_SECTION_BODY, READER_FONT_SECTION_LABELS, ReaderFontSettingsEditor } from './ReaderFontSettings';
+import { SettingsFocus } from '../utils/SettingsFocus';
 import { MaterialSegmentTabs } from '../components/common/MaterialSegmentTabs';
 import { ReaderMaterialPanel } from '../components/reader/ReaderFloatingMaterialBar';
 import { ImmersiveHeaderAction } from '../components/ImmersiveHeaderAction';
@@ -15,6 +16,8 @@ import { ReaderNavIndicatorStore } from '../utils/ReaderNavIndicatorStore';
 import { AudioBookSettingsStore } from '../utils/AudioBookSettingsStore';
 import { ReaderSettings, ReaderSettingsStore } from '../utils/ReaderSettingsStore';
 import { ReaderThemeHelper, ReaderThemeItem } from '../utils/ReaderThemeHelper';
+import { ReaderBackgroundDisplay, ReaderBackgroundDisplayStore } from '../utils/ReaderBackgroundDisplay';
+import { ReaderBackgroundDisplayControl } from '../components/reader/ReaderBackgroundDisplayControl';
 import { ReaderCustomThemeData, ReaderCustomThemeHelper, ReaderCustomThemeScheme } from '../utils/ReaderCustomThemeHelper';
 import { ReaderBackgroundImageStore } from '../utils/ReaderBackgroundImageStore';
 import { ImmersiveBackButton } from '../components/ImmersiveBackButton';
@@ -35,6 +38,7 @@ import { ChineseConverter } from '../utils/ChineseConverter';
 import { HexColor } from '../utils/HexColor';
 import { AppFontSize } from '../theme/AppFontSize';
 import { AppSpacing } from '../theme/AppSpacing';
+import { PlaybackSpeed } from '../utils/PlaybackSpeed';
 import { PageScaffold } from '../components/common/PageScaffold';
 import { SettingNavRow, SettingRow, SettingScopeRow, SettingSwitchRow } from '../components/common/SettingRow';
 import { ReaderInputKind, ReaderInputScopes } from '../utils/ReaderInputScopes';
@@ -64,6 +68,7 @@ struct SettingsPage {
   @StorageProp('immersiveLightLevel') immersiveLightLevel: string = 'adaptive';
   @StorageLink('appDarkMode') appDarkMode: boolean = false;
   @StorageLink('themeRevision') themeRevision: number = 0;
+  @StorageProp('readerBackgroundDisplayRevision') readerBackgroundDisplayRevision: number = 0;
   @StorageLink('readerFontWeight') readerFontWeight: number = 400;
   @StorageLink('readerTypographyFollowsTheme') typographyFollowsTheme: boolean = true;
   @State typographyThemeName: string = '';
@@ -180,12 +185,21 @@ struct SettingsPage {
   /** 第一层（空串）放阅读通用设置及小说、漫画、PDF 分类入口；SECTION_NOVEL 为小说子页。 */
   private section: string = '';
   private static readonly SECTION_NOVEL: string = 'novel';
+  /** 设置搜索要求打开的样式面板分组，首次 onPageShow 时打开；-1 表示没有。 */
+  private pendingStyleGroup: number = -1;
 
   // 设置和字体只在 onPageShow 里读：首次进入时它紧跟 aboutToAppear 执行，两处都读会把同样的活做两遍。
   aboutToAppear() {
     ReaderInputScopes.load(getContext(this));
     const params = router.getParams() as Record<string, string> | undefined;
     this.section = params?.['section'] === SettingsPage.SECTION_NOVEL ? SettingsPage.SECTION_NOVEL : '';
+    // 设置搜索直接打开小说样式面板的某一组（排版/页眉页脚/阅读字体/阅读背景）。
+    const group = Number(params?.['group'] ?? '');
+    if (this.isNovelSection() && params?.['group'] !== undefined && group >= 0 && group <= 3) {
+      this.pendingStyleGroup = group;
+      // 面板里的设置行在面板自己的滚动区里，先于 PageScaffold 登记。
+      SettingsFocus.bindScroller(this.novelSettingsScroller);
+    }
     SmartControlKey.detect();
   }
 
@@ -200,6 +214,11 @@ struct SettingsPage {
     else this.loadDoublePageScope();
     this.reloadCustomFonts();
     this.syncBars();
+    if (this.pendingStyleGroup >= 0) {
+      const group = this.pendingStyleGroup;
+      this.pendingStyleGroup = -1;
+      this.openNovelStyleEditor(group);
+    }
   }
 
   aboutToDisappear(): void {
@@ -549,7 +568,7 @@ struct SettingsPage {
       SettingNavRow({
         title: '朗读',
         description: '音色、倍速、MiMo 朗读、在线朗读字数',
-        value: `${this.ttsSpeed.toFixed(1)}×`,
+        value: `${PlaybackSpeed.label(this.ttsSpeed)}×`,
         icon: $r('sys.symbol.speaker_wave_3'),
         showDivider: false,
         onTap: () => {
@@ -567,7 +586,7 @@ struct SettingsPage {
     Column() {
       SettingSwitchRow({
         title: '与其他应用同时播放',
-        description: '朗读和有声书不再被游戏、视频的声音打断，开始播放时也不暂停其他应用；来电和语音通话仍会暂停',
+        description: '不被游戏、视频的声音打断，也不暂停其他应用；来电时仍暂停',
         isOn: this.audioMixWithOthers,
         showDivider: false,
         onChange: (value: boolean) => {
@@ -610,7 +629,7 @@ struct SettingsPage {
       }
       SettingScopeRow({
         title: '双翻页',
-        description: '横屏、折叠屏展开等宽屏下并排显示两页；漫画条漫与滚动阅读不生效',
+        description: '宽屏下并排显示两页；条漫与滚动阅读不生效',
         scope: this.doublePageScope(),
         labels: ReaderInputKind.LABELS,
         values: ReaderInputKind.VALUES,
@@ -658,7 +677,7 @@ struct SettingsPage {
         }, 'settings_reader_chinese_converter_select', true)
       SettingSwitchRow({
         title: '隐藏底部小白条',
-        description: '阅读正文时收起底部导航条，呼出菜单时恢复；小说、漫画、PDF 都生效',
+        description: '阅读时收起底部导航条，呼出菜单时恢复',
         isOn: this.readerHideNavIndicator,
         showDivider: false,
         onChange: (value: boolean) => {
@@ -677,7 +696,7 @@ struct SettingsPage {
     Column() {
       SettingSwitchRow({
         title: 'AI处理标识',
-        description: '显示 EPUB 插图、漫画和 PDF 的 AI 处理及超分提示',
+        description: '显示插图、漫画和 PDF 的 AI 处理与超分提示',
         isOn: this.readerAiProcessingIndicatorEnabled,
         showDivider: this.webParseEnabled,
         onChange: (enabled: boolean): void => this.setReaderAiProcessingIndicatorEnabled(enabled)
@@ -746,7 +765,7 @@ struct SettingsPage {
       Column() {
         SettingSwitchRow({
           title: '段评气泡',
-          description: '段落末尾的评论数气泡；关闭后不显示，热评卡片仍可点开评论',
+          description: '段落末尾的评论数气泡；关闭后热评卡片仍可点开',
           isOn: ReaderCommentCardSettings.bubbles(this.readerCommentCard),
           onChange: (checked: boolean): void => {
             this.setReaderCommentCard(-1, -1, -1, checked ? 1 : 0, -1);
@@ -770,7 +789,7 @@ struct SettingsPage {
               this.setReaderCommentCard(-1, -1, index + 1, -1, -1);
             }, 'settings_comment_card_lines_select')
         }
-        this.selectItem('本章说', '章末的本章评论入口；选卡片时，单独成段的入口显示为整宽卡片',
+        this.selectItem('本章说', '章末的本章评论入口；选卡片时显示为整宽卡片',
           this.commentCardOptions(ReaderCommentCardSettings.CHAPTER_LABELS),
           ReaderCommentCardSettings.chapter(this.readerCommentCard), (index: number) => {
             this.setReaderCommentCard(-1, -1, -1, -1, index);
@@ -822,7 +841,7 @@ struct SettingsPage {
         if (this.readerEyeTurnEnabled) {
           SettingSwitchRow({
             title: '新版识别模型（beta）',
-            description: '识别更稳，不怕暗光和眼镜；开启后看向屏幕上沿以外翻页，耗电略多',
+            description: '暗光、戴眼镜也稳；看向屏幕上沿以外翻页，略耗电',
             isOn: this.readerEyeTurnModelEnabled,
             showDivider: true,
             onChange: (value: boolean) => {
@@ -1792,7 +1811,7 @@ struct SettingsPage {
   }
 
   normalizeReaderVerticalMargin(value: number): number {
-    return Math.max(0, Math.min(Math.round(value), 120));
+    return Math.max(0, Math.min(Math.round(value), 360));
   }
 
   setReaderCommentBubbleSize(value: number): void {
@@ -2021,11 +2040,33 @@ struct SettingsPage {
     return current.backgroundType === 'image' ? current.backgroundImageUri : '';
   }
 
-  setCurrentCustomThemeImageFit(index: number): void {
-    const fits = ['cover', 'contain', 'fill'];
+  /** 拖动取景途中不保存，松手时再存。 */
+  setCurrentCustomThemeDisplay(display: ReaderBackgroundDisplay, commit: boolean): void {
+    if (!commit) return;
     const data = this.customThemeData();
-    ReaderCustomThemeHelper.selected(data, this.appDarkMode).backgroundImageFit = fits[index] || 'cover';
+    const current = ReaderCustomThemeHelper.selected(data, this.appDarkMode);
+    current.backgroundImageFit = display.fit;
+    current.backgroundImagePosition = display.position;
+    current.backgroundImageGap = display.gap;
     this.persistCustomThemeData(data);
+  }
+
+  /** 主题包整图背景的显示方式：display 为 null 时恢复主题默认；拖动取景途中只预览。 */
+  setAppThemeBackgroundDisplay(display: ReaderBackgroundDisplay | null, commit: boolean): void {
+    const key = this.currentReaderTheme().backgroundDisplayKey;
+    if (!key) return;
+    if (display && !commit) {
+      ReaderBackgroundDisplayStore.preview(key, display);
+      return;
+    }
+    ReaderBackgroundDisplayStore.save(getContext(this), key, display).catch((error: Error) => {
+      console.warn('保存阅读背景显示方式失败:', error);
+    });
+  }
+
+  appThemeBackgroundDisplayOverridden(): boolean {
+    return this.readerBackgroundDisplayRevision >= 0 &&
+      !!ReaderBackgroundDisplayStore.override(this.currentReaderTheme().backgroundDisplayKey);
   }
 
   saveReaderThemeSettings(): void {
@@ -2466,11 +2507,6 @@ struct SettingsPage {
     return options;
   }
 
-  customThemeFitSelectedIndex(): number {
-    const fit = this.currentCustomThemeScheme().backgroundImageFit;
-    return fit === 'contain' ? 1 : (fit === 'fill' ? 2 : 0);
-  }
-
   persistCustomThemeData(data: ReaderCustomThemeData): void {
     const selected = ReaderCustomThemeHelper.selected(data, this.appDarkMode);
     if (this.appDarkMode) {
@@ -2487,17 +2523,22 @@ struct SettingsPage {
   currentReaderThemes(): ReaderThemeItem[] {
     const custom = this.currentCustomThemeScheme();
     return ReaderThemeHelper.themes(this.appDarkMode, custom.backgroundColor, custom.textColor,
-      this.currentCustomThemeBackgroundImageUri(), custom.backgroundImageFit);
+      this.currentCustomThemeBackgroundImageUri(), custom.backgroundImageFit, custom.backgroundImagePosition,
+      custom.backgroundImageGap);
   }
 
   currentReaderTheme(): ReaderThemeItem {
-    return ReaderThemeHelper.themeAt(
+    const custom = this.currentCustomThemeScheme();
+    // 读一下 revision：主题包整图背景的显示方式改了以后预览跟着刷新。
+    return this.readerBackgroundDisplayRevision < 0 ? new ReaderThemeItem() : ReaderThemeHelper.themeAt(
       this.appDarkMode,
       this.currentReaderThemeIndex(),
-      this.currentCustomThemeBackgroundColor(),
-      this.currentCustomThemeTextColor(),
+      custom.backgroundColor,
+      custom.textColor,
       this.currentCustomThemeBackgroundImageUri(),
-      this.currentCustomThemeScheme().backgroundImageFit
+      custom.backgroundImageFit,
+      custom.backgroundImagePosition,
+      custom.backgroundImageGap
     );
   }
 
@@ -2699,6 +2740,29 @@ struct SettingsPage {
       }
       .width('100%')
 
+      if (this.currentReaderThemeIndex() === ReaderThemeHelper.APP_THEME_INDEX &&
+        this.currentReaderTheme().backgroundDisplayKey) {
+        ReaderBackgroundDisplayControl({
+          fit: this.currentReaderTheme().backgroundImageFit,
+          cropPosition: this.currentReaderTheme().backgroundImagePosition,
+          gap: this.currentReaderTheme().backgroundImageGap,
+          imageUri: this.currentReaderTheme().backgroundImageUri,
+          defaultFit: ReaderThemeHelper.packDefaultDisplay(this.currentReaderTheme().backgroundAssetId).fit,
+          overridden: this.appThemeBackgroundDisplayOverridden(),
+          hint: '按主题记住，只在这台设备上生效',
+          dark: this.appDarkMode,
+          textColor: this.primaryTextColor(),
+          subTextColor: this.subTextColor(),
+          accentColor: this.accentColor(),
+          onChange: (display: ReaderBackgroundDisplay, commit: boolean): void => {
+            this.setAppThemeBackgroundDisplay(display, commit);
+          },
+          onReset: (): void => {
+            this.setAppThemeBackgroundDisplay(null, true);
+          }
+        })
+      }
+
       if (this.currentReaderThemeIndex() === ReaderThemeHelper.CUSTOM_THEME_INDEX) {
         Column({ space: AppSpacing.MD }) {
           Row({ space: AppSpacing.MD }) {
@@ -2797,21 +2861,24 @@ struct SettingsPage {
                   .onClick(() => {
                     this.clearCurrentCustomThemeImage();
                   })
-                SettingsSelect({
-                  options: [{ value: '裁剪填充' }, { value: '完整显示' }, { value: '拉伸铺满' }],
-                  selectedIndex: this.customThemeFitSelectedIndex(),
-                  selectedLabel: ['裁剪填充', '完整显示', '拉伸铺满'][this.customThemeFitSelectedIndex()],
-                  darkMode: this.appDarkMode,
-                  textSize: AppFontSize.BODY,
-                  textColor: this.subTextColor(),
-                  onSelected: (index: number) => {
-                    this.setCurrentCustomThemeImageFit(index);
-                  }
-                })
-                  .layoutWeight(1)
               }
             }
             .width('100%')
+            if (this.currentCustomThemeScheme().backgroundImageUri) {
+              ReaderBackgroundDisplayControl({
+                fit: this.currentCustomThemeScheme().backgroundImageFit,
+                cropPosition: this.currentCustomThemeScheme().backgroundImagePosition,
+                gap: this.currentCustomThemeScheme().backgroundImageGap,
+                imageUri: this.currentCustomThemeScheme().backgroundImageUri,
+                dark: this.appDarkMode,
+                textColor: this.primaryTextColor(),
+                subTextColor: this.subTextColor(),
+                accentColor: this.accentColor(),
+                onChange: (display: ReaderBackgroundDisplay, commit: boolean): void => {
+                  this.setCurrentCustomThemeDisplay(display, commit);
+                }
+              })
+            }
           }
           AdaptiveColorPicker({
             value: this.currentCustomThemeTextColor(),

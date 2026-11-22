@@ -4,6 +4,7 @@ import fileUri from '@ohos.file.fileuri';
 import hash from '@ohos.file.hash';
 import { BuiltinThemeRegistry } from '../theme/BuiltinThemeRegistry';
 import { InstalledThemePack, ThemePackRecord, ThemePackRegistry } from '../theme/ThemePackRegistry';
+import { CloudThemeChange } from '../account/CloudThemeChange';
 import {
   assetPath,
   checkSvgSource,
@@ -59,6 +60,15 @@ export class ThemePackStore {
     return count;
   }
 
+  /**
+   * 桌面卡片跑在单独的进程里，不经过 EntryAbility 的冷启动加载，每次出数据前整份重读：
+   * 应用里新装、改过或删掉的包要同步过来。清空和重读之间没有 await，并发的卡片更新看不到半份注册表。
+   */
+  static async reloadInstalled(context: Context): Promise<number> {
+    ThemePackRegistry.clear();
+    return ThemePackStore.loadInstalled(context);
+  }
+
   static isLoaded(): boolean {
     return ThemePackStore.loaded;
   }
@@ -73,6 +83,20 @@ export class ThemePackStore {
     const installed = ThemePackStore.readInstalled(context, record.packageId);
     if (!installed) {
       throw new Error('主题包安装后无法读取');
+    }
+    ThemePackRegistry.register(installed);
+    CloudThemeChange.notify();
+    return installed;
+  }
+
+  /**
+   * 注册已经整包放进目录的主题包（云同步下载的），不重写 pack.json：
+   * 云端按文件内容比对新旧，重写会让两台设备永远对不上。
+   */
+  static registerExisting(context: Context, packageId: string): InstalledThemePack {
+    const installed = ThemePackStore.readInstalled(context, packageId);
+    if (!installed) {
+      throw new Error('主题包无法读取');
     }
     ThemePackRegistry.register(installed);
     return installed;
@@ -90,6 +114,7 @@ export class ThemePackStore {
   static uninstall(context: Context, packageId: string): void {
     ThemePackRegistry.unregister(packageId);
     ThemePackStore.removeDir(ThemePackStore.packDir(context, packageId));
+    CloudThemeChange.notify();
   }
 
   /** 删掉没有任何方案再引用的包（注册表里的和只剩目录的都算）。 */
@@ -273,6 +298,8 @@ export class ThemePackStore {
     parts.startupDark = source.startupDark || null;
     parts.bubble = source.bubble || null;
     parts.bubbleDark = source.bubbleDark || null;
+    parts.titleBubble = source.titleBubble || null;
+    parts.titleBubbleDark = source.titleBubbleDark || null;
     parts.homeBackdropLight = source.homeBackdropLight || '';
     parts.homeBackdropDark = source.homeBackdropDark || '';
     parts.homeBackdropLightCrop = source.homeBackdropLightCrop || null;

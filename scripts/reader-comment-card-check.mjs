@@ -78,12 +78,14 @@ try {
     }
   });
   vm.runInContext(['core/reader/ReaderV2Document.ets', 'core/reader/ReaderV2LayoutSnapshot.ets',
-    'core/reader/ReaderV2CommentCard.ets', 'core/reader/ReaderV2PageLayout.ets', 'core/reader/ReaderV2Paginator.ets']
+    'core/reader/ReaderV2CommentCard.ets', 'core/reader/ReaderV2PageLayout.ets', 'core/reader/ReaderV2ChapterHead.ets',
+    'core/reader/ReaderV2Paginator.ets']
     .map(file => compile(read(file))).join('\n') + `
     globalThis.cardApi = { ReaderV2DocumentParser, ReaderV2SpeechText, ReaderV2Paginator, ReaderV2LayoutSnapshot,
-      ReaderV2LayoutInput };`, sandbox);
+      ReaderV2LayoutInput, ReaderV2CommentCardLayout };`, sandbox);
   const { ReaderV2DocumentParser: Parser, ReaderV2SpeechText: Speech, ReaderV2Paginator: Paginator,
-    ReaderV2LayoutSnapshot: Snapshot, ReaderV2LayoutInput: Input } = sandbox.cardApi;
+    ReaderV2LayoutSnapshot: Snapshot, ReaderV2LayoutInput: Input, ReaderV2CommentCardLayout: CardLayout } =
+    sandbox.cardApi;
   const Marker = modules.ReaderActionMarker;
 
   const bubble = (n, preview = '', likes = '') =>
@@ -150,6 +152,31 @@ try {
   assert.equal(onPage.actions.find(area => area.rect.top >= cards[0].paragraphY - 0.01).actionId,
     onPage.actions.find(area => area.actionId === document.actions[0].id).actionId);
 
+  // Cards keep the same visible gap to the glyph ink above and below, whatever the line and paragraph spacing;
+  // stacked cards get their own gap.
+  for (const [lineSpacing, paragraphSpacing] of [[0, 0], [4, 30], [40, 2]]) {
+    input.lineSpacingPx = lineSpacing; input.paragraphSpacingPx = paragraphSpacing;
+    const stacked = ['标题', `　　上一段。${bubble(5, '第一条热评')}`, hotCard('第二条热评'), '　　下一段。'].join('\n');
+    const page = Paginator.paginate(Parser.parse(stacked, 0, '标题'), Snapshot.create(input)).pages[0];
+    const pair = cardsOf(page);
+    assert.equal(pair.length, 2);
+    const before = page.fragments[page.fragments.indexOf(pair[0]) - 1];
+    const after = page.fragments[page.fragments.indexOf(pair[1]) + 1];
+    const inkBottom = before.paragraphY + 20 * 1.1;
+    const inkTop = after.paragraphY + 20 * 0.1;
+    const gapAbove = pair[0].paragraphY - inkBottom;
+    const gapBelow = inkTop - (pair[1].paragraphY + pair[1].paragraphHeight);
+    const label = `line ${lineSpacing} paragraph ${paragraphSpacing}`;
+    assert.ok(Math.abs(gapAbove - gapBelow) < 0.01, `symmetric card gaps, ${label}: ${gapAbove} / ${gapBelow}`);
+    assert.ok(gapAbove >= 16 * 0.9 - 0.01, `card gap floor, ${label}`);
+    assert.ok(pair[0].paragraphY >= before.paragraphY + before.paragraphHeight - 0.01, `no overlap, ${label}`);
+    assert.ok(Math.abs(pair[1].paragraphY - pair[0].paragraphY - pair[0].paragraphHeight - 16 * 0.5) < 0.01,
+      `stacked card gap, ${label}`);
+    assert.ok(pair.every(fragment => fragment.fixedGapBefore) && after.fixedGapBefore,
+      'page-bottom alignment leaves card gaps alone');
+  }
+  input.lineSpacingPx = 0; input.paragraphSpacingPx = 10;
+
   // Every style lays out; the tag style points its tail at the count bubble.
   for (const style of [2, 3]) {
     input.commentCardStyle = style;
@@ -197,38 +224,86 @@ try {
   assert.deepEqual(session.pageSet.pages.map(page => [page.displayStart, page.displayEnd, cardsOf(page).length]),
     split.pages.map(page => [page.displayStart, page.displayEnd, cardsOf(page).length]));
 
-  // 本章说: a chapter-end entry on its own line becomes a full-width card in every style; inside a paragraph it
+  // 本章说: a chapter-end entry on its own line becomes the chapter-end block in every style; inside a paragraph it
   // stays a bubble and never trails the paragraph.
+  const chapterHots = [{ user: '凌啸绝顶21', text: '石膏里藏的东西才是关键', likes: '29' },
+    { user: '撒盐的咖啡', text: '报销油费和吃饭二选一', likes: '18' }, { user: '', text: '第三条', likes: '' }];
   const chapterSource = ['标题', '　　最后一段。', '',
     Marker.create('本章说', 'https://c.example/chapter', '本章说'),
     `　　段内的入口。${Marker.create('章评', 'https://c.example/chapter2', '章评', '12条评论')}`,
-    Marker.create('章评', 'https://c.example/chapter3', '章评', '76条评论', '698')].join('\n');
+    Marker.create('章评', 'https://c.example/chapter3', '章评', '76条评论', '698'),
+    Marker.create('本章说', 'https://c.example/chapter4', '本章说', chapterHots[0].text, '29', '79条评论', chapterHots),
+    Marker.create('本章说', 'https://c.example/chapter5', '本章说', '老周这章太帅', '12')].join('\n');
   const chapterDoc = Parser.parse(chapterSource, 0, '标题');
   const chapterBlocks = chapterDoc.blocks;
   assert.equal(chapterBlocks[2].card?.chapter, true, 'a native 本章说 entry becomes a card even without wording');
   assert.equal(chapterBlocks[3].card, null);
   assert.equal(chapterBlocks[3].trailingCard, null, 'a 本章说 bubble inside a paragraph stays a bubble');
-  assert.equal(chapterBlocks[4].card?.preview, '76条评论');
+  assert.equal(chapterBlocks[4].card?.count, '76条评论', 'an old card wording starting with a count fills the title row');
+  assert.equal(chapterBlocks[4].card?.hots.length, 0);
+  assert.equal(chapterBlocks[5].card?.count, '79条评论');
+  assert.deepEqual(Array.from(chapterBlocks[5].card?.hots ?? [], hot => [hot.user, hot.text, hot.likes]),
+    chapterHots.map(hot => [hot.user, hot.text, hot.likes]), 'the marker keeps up to three hot comments');
+  assert.equal(chapterBlocks[6].card?.count, '');
+  assert.deepEqual(Array.from(chapterBlocks[6].card?.hots ?? [], hot => [hot.user, hot.text, hot.likes]),
+    [['', '老周这章太帅', '12']], 'an old native marker becomes one hot comment without a nickname');
   assert.equal(document.actions.every(action => !action.chapter), true, 'paragraph and hot comments are not chapter entries');
   input.viewportHeightPx = 2000;
   input.commentChapterCard = true;
-  // The 本章说 card has its own switch and does not depend on the hot-comment style.
+  // The 本章说 block has its own switch and does not depend on the hot-comment style.
   for (const style of [0, 1, 2, 3]) {
     input.commentCardStyle = style;
     const page = Paginator.paginate(Parser.parse(chapterSource, 0, '标题'), Snapshot.create(input)).pages[0];
     const chapterCards = cardsOf(page);
-    assert.equal(chapterCards.length, 2, `style ${style}`);
+    assert.equal(chapterCards.length, 4, `style ${style}`);
     for (const fragment of chapterCards) {
       assert.equal(fragment.card.chapter, true);
-      assert.equal(fragment.card.style, 1, '本章说 is always the full-width card');
+      assert.equal(fragment.card.style, 4, '本章说 is always the chapter-end block');
       assert.equal(fragment.card.box.width(), fragment.card.width);
-      assert.equal(fragment.card.tailX, -1);
+      assert.equal(fragment.card.box.height(), fragment.card.height);
+      assert.equal(fragment.card.tag.text, '本章说');
     }
-    assert.equal(chapterCards[0].card.text.text, '查看本章评论');
-    assert.equal(chapterCards[1].card.text.text, '76条评论');
-    assert.equal(chapterCards[1].card.meta.text, '♥ 698  ›', 'a chapter hot comment shows its likes before the arrow');
-    assert.equal(chapterCards[0].card.meta.text, '›');
+    const [empty, countOnly, listed, single] = chapterCards.map(fragment => fragment.card);
+    assert.equal(empty.meta.text, '查看本章评论 ›');
+    assert.equal(empty.hots.length, 0);
+    assert.equal(countOnly.meta.text, '76条评论 ›');
+    assert.equal(countOnly.hots.length, 0);
+    assert.equal(listed.meta.text, '79条评论 ›');
+    assert.equal(listed.hots.length, 2, 'at most two hot comments are listed');
+    assert.deepEqual(Array.from(listed.hots, row => [row.user?.text, row.likes?.text, row.text.text]),
+      [['凌啸绝顶21', '29', chapterHots[0].text], ['撒盐的咖啡', '18', chapterHots[1].text]]);
+    assert.ok(listed.hots[0].textY > listed.hots[0].userY, 'the comment sits under its nickname row');
+    assert.ok(listed.hots[1].bar.top > listed.hots[0].bar.bottom, 'each hot comment has its own bar');
+    assert.ok(listed.rule && listed.rule.left > 0 && listed.rule.right < listed.metaX, 'the rule sits between title and count');
+    assert.equal(single.meta.text, '全部评论 ›');
+    assert.equal(single.hots[0].user, null);
+    assert.equal(single.hots[0].likes.text, '12');
+    assert.ok(single.hots[0].textY > single.hots[0].pill.top, 'without a nickname the likes pill keeps its row');
   }
+
+  // The last page shrinks the 本章说 block before moving it: two hot comments, then one, then the title row alone.
+  input.commentCardStyle = 1;
+  const fullPage = Paginator.paginate(Parser.parse(chapterSource, 0, '标题'), Snapshot.create(input)).pages[0];
+  const listedFragment = cardsOf(fullPage)[2];
+  const listedAction = Parser.parse(chapterSource, 0, '标题').blocks[5].card;
+  const snapshot = Snapshot.create(input);
+  const oneHeight = CardLayout.build(listedAction, snapshot, listedFragment.card.width, -1, 1).height;
+  const headHeight = CardLayout.build(listedAction, snapshot, listedFragment.card.width, -1, 0).height;
+  assert.ok(headHeight < oneHeight && oneHeight < listedFragment.card.height);
+  const viewportBelowContent = input.viewportHeightPx - snapshot.contentRect.bottom;
+  const fitTo = room => {
+    input.viewportHeightPx = Math.floor(listedFragment.paragraphY + room + viewportBelowContent);
+    return Paginator.paginate(Parser.parse(chapterSource, 0, '标题'), Snapshot.create(input)).pages;
+  };
+  let pages = fitTo((oneHeight + listedFragment.card.height) / 2);
+  assert.equal(cardsOf(pages[0]).at(-1).card.hots.length, 1, 'one hot comment is dropped to stay on the page');
+  assert.equal(cardsOf(pages[1])[0].card.hots.length, 1, 'the next 本章说 block starts the next page');
+  pages = fitTo((headHeight + oneHeight) / 2);
+  assert.equal(cardsOf(pages[0]).at(-1).card.hots.length, 0, 'only the title row is left');
+  pages = fitTo(headHeight / 2);
+  assert.equal(cardsOf(pages[0]).length, 2, 'a block whose title row does not fit moves to the next page');
+  assert.equal(cardsOf(pages[1])[0].card.hots.length, 2, 'on a fresh page it lists both hot comments again');
+  input.viewportHeightPx = 2000;
   input.commentCardStyle = 1;
   input.commentChapterCard = false;
   assert.equal(cardsOf(Paginator.paginate(Parser.parse(chapterSource, 0, '标题'), Snapshot.create(input)).pages[0])
@@ -271,7 +346,8 @@ try {
   const noHot = Parser.parse(mixed, 0, '标题', [], null, show(false, false, true));
   assert.deepEqual(labels(noHot), ['本章说', '打开'], 'with hot cards off a hot entry counts as a bubble');
 
-  console.log('PASS: 本章说 cards, card paragraphs, off = unchanged layout, three styles, per-page cap, card moved to the next page, ' +
+  console.log('PASS: 本章说 blocks (count, hot list, shrink before moving), card paragraphs, off = unchanged layout, ' +
+    'three styles, per-page cap, card moved to the next page, ' +
     'async parity, never spoken or copied');
 } finally {
   modules.cleanup();

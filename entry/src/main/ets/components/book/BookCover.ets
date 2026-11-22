@@ -39,8 +39,11 @@ export struct BookCover {
   @StorageProp('bookshelfDarkCoverAlbumId') @Watch('refreshCovers') darkAlbum: string = '';
   @StorageProp('bookshelfCoverApplyScope') @Watch('refreshCovers') applyScope: string = 'all';
   @StorageProp('bookshelfCoverTargetBooks') @Watch('refreshCovers') targetBooks: string = '';
-  @StorageProp('bookshelfIgnoreSourceCover') @Watch('refreshCovers') ignoreSource: boolean = false;
-  @StorageProp('bookshelfIgnoreEmptyCoverOnly') @Watch('refreshCovers') ignoreEmptyOnly: boolean = false;
+  @StorageProp('bookshelfCoverReplaceAlbum') @Watch('refreshCovers') replaceAlbum: boolean = false;
+  @StorageProp('bookshelfCoverAlbumMix') @Watch('refreshCovers') albumMix: boolean = false;
+  @StorageProp('bookshelfCoverFallback') @Watch('refreshCovers') fallback: string = 'text';
+  /** 有封面地址被确认取不到（或又取到了）：重新取图。 */
+  @StorageProp('coverFailureRevision') @Watch('refreshCovers') coverFailureRevision: number = 0;
   @StorageProp('bookshelfCoverMode') @Watch('refreshCovers') coverMode: string = 'sequence';
   @StorageProp('appThemeBookCoverEnabled') @Watch('refreshCovers') themeCoverEnabled: boolean = false;
   @StorageProp('themeRevision') @Watch('refreshCovers') themeRevision: number = 0;
@@ -141,7 +144,8 @@ export struct BookCover {
     }
     const book = this.coverBook();
     return CoverGallerySettings.getDisplayCoverList(book, this.appDarkMode, this.albums,
-      this.lightAlbum, this.darkAlbum, this.applyScope, this.targetBooks, this.ignoreSource, this.coverMode, this.ignoreEmptyOnly);
+      this.lightAlbum, this.darkAlbum, this.applyScope, this.targetBooks, this.coverMode, this.replaceAlbum,
+      this.albumMix, this.fallback);
   }
 
   refreshCovers(): void {
@@ -150,7 +154,8 @@ export struct BookCover {
       return;
     }
     this.preparedApplied = '';
-    const themeCover = this.useBookshelfCover && ThemeBookCoverSettings.enabled(this.appDarkMode, this.themeCoverEnabled);
+    const themeCover = this.useBookshelfCover &&
+      ThemeBookCoverSettings.enabledFor(this.coverBook(), this.appDarkMode, this.themeCoverEnabled);
     const covers: ResourceStr[] = themeCover ? ThemeBookCoverSettings.covers(this.coverBook(), this.appDarkMode, this.coverMode) : this.rawCoverList();
     this.themeFrame = themeCover ? ThemeBookCoverSettings.frame(this.appDarkMode) : '';
     this.themeCover = themeCover;
@@ -249,6 +254,10 @@ export struct BookCover {
     this.displayCovers = this.displayCovers.map((value: ResourceStr, position: number): ResourceStr =>
       position === index ? '' : value);
     this.notifyReadyCover();
+    const raw = this.covers[index];
+    if (typeof raw === 'string' && raw && !/^https?:\/\//i.test(raw)) {
+      BookCoverCache.checkLocalCover(getContext(this), raw).catch((): void => {});
+    }
     this.scheduleCoverRetry(index, this.coverLoadSerial, true);
   }
 

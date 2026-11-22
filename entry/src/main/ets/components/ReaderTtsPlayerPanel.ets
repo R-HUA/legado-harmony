@@ -9,6 +9,8 @@ import { AppSpacing } from '../theme/AppSpacing';
 import { TtsPanelThemeBackground } from './TtsPanelThemeBackground';
 import { ImmersiveMaterialSurface } from './ImmersiveMaterialSurface';
 import { PlaybackLoudnessGain } from '../utils/PlaybackLoudnessGain';
+import { PlaybackSpeed } from '../utils/PlaybackSpeed';
+import { AudioSkipRange } from '../utils/AudioSkipRange';
 
 /** 顶栏圆形按钮的尺寸。 */
 const PANEL_CONTROL_SIZE: number = 40;
@@ -18,10 +20,27 @@ const AUDIO_COVER_MIN_HEIGHT: number = 72;
 const AUDIO_VOICE_ROW_HEIGHT: number = 44;
 const SECONDARY_TIMER: string = 'timer';
 const SECONDARY_SPEED: string = 'speed';
-const SECONDARY_GAIN: string = 'gain';
 const SECONDARY_CATALOG: string = 'catalog';
 const SECONDARY_STOP: string = 'stop';
-const SECONDARY_DOWNLOAD: string = 'download';
+const SECONDARY_SKIP: string = 'skip';
+// 听视频：回到播放页看画面。
+const SECONDARY_WATCH: string = 'watch';
+/** 跳过提示显示的时长。 */
+const SKIP_NOTICE_MS: number = 3000;
+/** 定时最后这么多秒按钮和状态行改用危险色，提醒快停了。 */
+const TIMER_WARN_SECONDS: number = 60;
+/** 定时面板“加时”一次加的分钟数。 */
+const TIMER_EXTEND_MINUTES: number = 15;
+
+/** 定时剩余时间：不足一小时 mm:ss，否则 h:mm:ss。 */
+function formatTimerRemaining(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const pad = (value: number): string => value < 10 ? `0${value}` : `${value}`;
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${pad(minutes)}:${pad(secs)}`;
+}
 
 @Component
 export struct ReaderTtsPlayerPanel {
@@ -93,17 +112,26 @@ export struct ReaderTtsPlayerPanel {
   @StorageLink('globalTtsCanNext') globalTtsCanNext: boolean = false;
   @StorageLink('globalTtsAudioPositionMs') globalTtsAudioPositionMs: number = 0;
   @StorageLink('globalTtsAudioDurationMs') globalTtsAudioDurationMs: number = 0;
+  @StorageProp('globalTtsAudioSkipHead') globalTtsAudioSkipHead: number = 0;
+  @StorageProp('globalTtsAudioSkipTail') globalTtsAudioSkipTail: number = 0;
+  @StorageProp('globalTtsAudioSkipNotice') globalTtsAudioSkipNotice: string = '';
+  @StorageProp('globalTtsAudioSkipUndo') globalTtsAudioSkipUndo: string = '';
+  @StorageProp('globalTtsAudioSkipNoticeSerial') @Watch('onSkipNoticeChanged') globalTtsAudioSkipNoticeSerial: number = 0;
   @StorageLink('globalTtsVoiceRevision') globalTtsVoiceRevision: number = 0;
   @StorageLink('globalTtsStatusText') globalTtsStatusText: string = '';
   @StorageLink('globalTtsBusy') globalTtsBusy: boolean = false;
+  /** 朗读主人支持按原文位置重新开读时为 true：显示上一句/下一句，正文可以点句跳读。 */
+  @StorageProp('globalTtsSentenceControl') globalTtsSentenceControl: boolean = false;
   @StorageProp('ttsLoudnessGain') ttsLoudnessGain: number = 0;
   @StorageProp('audioLoudnessGain') audioLoudnessGain: number = 0;
   @StorageProp('ttsLoudnessGainSupported') ttsLoudnessGainSupported: boolean = true;
   @StorageProp('audioLoudnessGainSupported') audioLoudnessGainSupported: boolean = true;
-  /** 0 关闭，1 定时，2 倍速，3 音量增益。 */
+  /** 0 关闭，1 定时，2 倍速与音量增益，4 跳过片头片尾。 */
   @State optionsPanel: number = 0;
   /** 拖动增益滑条时只改显示，松手才下发；-1 表示没在拖。 */
   @State gainDraft: number = -1;
+  /** 拖动倍速滑条时的显示值；-1 表示没在拖。 */
+  @State speedDraft: number = -1;
   @State audioVoiceMenuRevision: number = 0;
   // 听书封面区实际分到的高度和其中章节名、状态行的高度。定时/倍速/增益面板展开后封面区变矮，
   // 封面按这些量出来的值缩小；否则屏幕矮的机型上内容溢出，音色下拉会压到进度条上。
@@ -114,6 +142,8 @@ export struct ReaderTtsPlayerPanel {
   private readingTextController: TextController = new TextController();
   private readingViewportHeight: number = 0;
   private textUpdateTimer: number = -1;
+  @State skipNoticeVisible: boolean = false;
+  private skipNoticeTimer: number = -1;
 
   aboutToAppear(): void {
     this.scrollToCurrentSentence(false);
@@ -122,6 +152,17 @@ export struct ReaderTtsPlayerPanel {
   aboutToDisappear(): void {
     if (this.textUpdateTimer >= 0) clearTimeout(this.textUpdateTimer);
     this.textUpdateTimer = -1;
+    if (this.skipNoticeTimer >= 0) clearTimeout(this.skipNoticeTimer);
+    this.skipNoticeTimer = -1;
+  }
+
+  onSkipNoticeChanged(): void {
+    if (this.skipNoticeTimer >= 0) clearTimeout(this.skipNoticeTimer);
+    this.skipNoticeVisible = !!this.globalTtsAudioSkipNotice;
+    this.skipNoticeTimer = setTimeout(() => {
+      this.skipNoticeTimer = -1;
+      this.skipNoticeVisible = false;
+    }, SKIP_NOTICE_MS);
   }
 
   onCurrentTextChanged(): void {
@@ -169,8 +210,8 @@ export struct ReaderTtsPlayerPanel {
             this.timerOptions()
           } else if (this.optionsPanel === 2) {
             this.speedOptions()
-          } else if (this.optionsPanel === 3) {
-            this.gainOptions()
+          } else if (this.optionsPanel === 4 && this.isAudio()) {
+            this.skipOptions()
           }
 
           this.secondaryActions()
@@ -204,7 +245,7 @@ export struct ReaderTtsPlayerPanel {
           .fontColor(this.primaryTextColor)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.isAudio() ? (this.globalTtsChapterProgress || '正在听书') : '正在朗读')
+        Text(this.isAudio() ? (this.globalTtsChapterProgress || (this.isVideo() ? '正在听视频' : '正在听书')) : '正在朗读')
           .fontSize(AppFontSize.CAPTION)
           .fontColor(this.subTextColor)
           .maxLines(1)
@@ -212,10 +253,14 @@ export struct ReaderTtsPlayerPanel {
       .layoutWeight(1)
       .padding({ left: AppSpacing.MD, right: AppSpacing.MD })
       .alignItems(HorizontalAlign.Center)
-      // 与左侧按钮等宽的占位，让标题真正居中。
-      Column()
-        .width(PANEL_CONTROL_SIZE)
-        .height(PANEL_CONTROL_SIZE)
+      // 在线有声书的下载放在右上角；没有时用等宽占位让标题真正居中。
+      if (this.hostDownloadAvailable && this.isAudio()) {
+        this.circleButton($r('sys.symbol.download'), '下载', () => this.onOpenDownload())
+      } else {
+        Column()
+          .width(PANEL_CONTROL_SIZE)
+          .height(PANEL_CONTROL_SIZE)
+      }
     }
     .width('100%')
     .alignItems(VerticalAlign.Center)
@@ -265,19 +310,28 @@ export struct ReaderTtsPlayerPanel {
           if (this.audioHeroTitleHeight !== height) this.audioHeroTitleHeight = height;
         })
 
-      Scroll() {
-        Text(this.globalTtsContent || this.hostIntro || '暂无书籍简介')
-          .fontSize(AppFontSize.BODY)
-          .lineHeight(22)
-          .fontColor(this.subTextColor)
-          .copyOption(CopyOptions.LocalDevice)
-          .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
-          .width('100%')
+      // 跳过片头片尾的提示叠在简介底部：放在简介区域里面，撤回按钮才点得到，也不挤动下面的进度条。
+      Stack({ alignContent: Alignment.Bottom }) {
+        Scroll() {
+          Text(this.globalTtsContent || this.hostIntro || '暂无书籍简介')
+            .fontSize(AppFontSize.BODY)
+            .lineHeight(22)
+            .fontColor(this.subTextColor)
+            .copyOption(CopyOptions.LocalDevice)
+            .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
+            .width('100%')
+        }
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .width('100%')
+        .height('100%')
+        .scrollBar(BarState.Off)
+
+        if (this.skipNoticeVisible && this.globalTtsAudioSkipNotice) {
+          this.skipNotice()
+        }
       }
-      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       .layoutWeight(1)
       .width('100%')
-      .scrollBar(BarState.Off)
 
       if (this.statusText()) {
         Column() {
@@ -290,10 +344,12 @@ export struct ReaderTtsPlayerPanel {
         })
       }
 
-      Row() {
-        this.audioVoiceSelect()
+      if (this.showAudioVoiceRow()) {
+        Row() {
+          this.audioVoiceSelect()
+        }
+        .width('100%')
       }
-      .width('100%')
     }
     .layoutWeight(1)
     .width('100%')
@@ -349,6 +405,8 @@ export struct ReaderTtsPlayerPanel {
         .wordBreak(WordBreak.NORMAL)
         .width('100%')
         .constraintSize({ maxWidth: 840 })
+        // 点某一句从那句开始读；拖动翻看由外层 Scroll 处理，不会触发点按。
+        .onClick((event: ClickEvent) => this.onReadingTextTap(event))
         .onAreaChange((oldArea: Area, area: Area): void => {
           if (oldArea.width !== area.width || oldArea.height !== area.height) {
             this.scrollToCurrentSentence(false);
@@ -468,11 +526,16 @@ export struct ReaderTtsPlayerPanel {
     .accessibilityText(this.statusText())
   }
 
-  /** 主控制区：上一章、大号播放键、下一章。 */
+  /** 主控制区：上一章、[后退 15 秒 / 上一句]、大号播放键、[前进 15 秒 / 下一句]、下一章。 */
   @Builder
   mainControls() {
     Row() {
       this.chapterButton(false)
+      if (this.isAudio()) {
+        this.seekStepButton(-1)
+      } else if (this.globalTtsSentenceControl) {
+        this.sentenceStepButton(-1)
+      }
       Stack({ alignContent: Alignment.Center }) {
         Circle().width(68).height(68).fill(this.playButtonColor)
         if (this.isBusy()) {
@@ -496,6 +559,11 @@ export struct ReaderTtsPlayerPanel {
       .onClick(() => {
         if (!this.isBusy()) this.onTogglePlayback();
       })
+      if (this.isAudio()) {
+        this.seekStepButton(1)
+      } else if (this.globalTtsSentenceControl) {
+        this.sentenceStepButton(1)
+      }
       this.chapterButton(true)
     }
     .width('100%')
@@ -518,7 +586,7 @@ export struct ReaderTtsPlayerPanel {
     .height(56)
     .opacity(this.chapterEnabled(forward) ? 1 : 0.4)
     .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.9 })
-    .accessibilityText(forward ? '下一章' : '上一章')
+    .accessibilityText(forward ? (this.isVideo() ? '下一集' : '下一章') : (this.isVideo() ? '上一集' : '上一章'))
     .onClick(() => {
       if (!this.chapterEnabled(forward)) return;
       if (forward) {
@@ -529,17 +597,68 @@ export struct ReaderTtsPlayerPanel {
     })
   }
 
-  /** 底部一排：定时、倍速、增益、目录、停止；音色统一使用内容下方的整行下拉框。 */
+  /**
+   * 前进/后退一次 15 秒。还不知道总时长（缓冲中、没点过播放）时不能用。
+   * direction：-1 后退，1 前进。
+   */
+  @Builder
+  seekStepButton(direction: number) {
+    Stack({ alignContent: Alignment.Center }) {
+      SymbolGlyph(direction < 0 ? $r('sys.symbol.gobackward_15') : $r('sys.symbol.goforward_15'))
+        .fontSize(28)
+        .fontColor([this.globalTtsAudioDurationMs > 0 ? this.primaryTextColor : this.subTextColor])
+    }
+    .width(48)
+    .height(56)
+    .opacity(this.globalTtsAudioDurationMs > 0 ? 1 : 0.4)
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.9 })
+    .accessibilityText(direction < 0 ? '后退 15 秒' : '前进 15 秒')
+    .onClick(() => {
+      if (this.globalTtsAudioDurationMs <= 0) return;
+      ReaderTtsFloatingSession.seekAudioBy(direction * AudioSkipRange.SEEK_STEP_MS);
+    })
+  }
+
+  /** 朗读的上一句/下一句：点一下按句，长按按段。direction：-1 往前，1 往后。 */
+  @Builder
+  sentenceStepButton(direction: number) {
+    Column({ space: 1 }) {
+      SymbolGlyph($r('sys.symbol.backward_fill'))
+        .fontSize(22)
+        .fontColor([this.primaryTextColor])
+        .rotate({ angle: direction < 0 ? 0 : 180 })
+      Text(direction < 0 ? '上一句' : '下一句')
+        .fontSize(AppFontSize.MICRO)
+        .fontColor(this.subTextColor)
+        .maxLines(1)
+    }
+    .width(52)
+    .height(56)
+    .justifyContent(FlexAlign.Center)
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.9 })
+    .accessibilityText(direction < 0 ? '上一句，长按上一段' : '下一句，长按下一段')
+    .gesture(GestureGroup(GestureMode.Exclusive,
+      LongPressGesture({ repeat: false, duration: 500 })
+        .onAction(() => ReaderTtsFloatingSession.stepSentence(direction, true)),
+      TapGesture()
+        .onAction(() => ReaderTtsFloatingSession.stepSentence(direction, false))))
+  }
+
+  /**
+   * 底部一排：定时、倍速（含音量增益）、[跳过]、目录、停止。跳过只有听书有；
+   * 在线有声书的下载在顶栏右边，音色统一使用内容下方的整行下拉框。
+   */
   @Builder
   secondaryActions() {
     Row() {
-      this.secondaryItem(SECONDARY_TIMER)
+      this.timerItem()
       this.secondaryItem(SECONDARY_SPEED)
-      this.secondaryItem(SECONDARY_GAIN)
-      this.secondaryItem(SECONDARY_CATALOG)
-      if (this.hostDownloadAvailable && this.isAudio()) {
-        this.secondaryItem(SECONDARY_DOWNLOAD)
+      if (this.isVideo()) {
+        this.secondaryItem(SECONDARY_WATCH)
+      } else if (this.isAudio()) {
+        this.secondaryItem(SECONDARY_SKIP)
       }
+      this.secondaryItem(SECONDARY_CATALOG)
       this.secondaryItem(SECONDARY_STOP)
     }
     .width('100%')
@@ -567,48 +686,217 @@ export struct ReaderTtsPlayerPanel {
     .onClick(() => this.onSecondaryTap(kind))
   }
 
+  /**
+   * 定时按钮：开着定时时文字是分秒倒计时，图标外圈细环按“剩余 / 总时长”变短。
+   * 细环叠在图标的 22vp 占位外面，不改变这一格的高度，和同排其他按钮的文字保持对齐。
+   */
+  @Builder
+  timerItem() {
+    Column({ space: AppSpacing.XS }) {
+      Stack({ alignContent: Alignment.Center }) {
+        if (this.timerActive()) {
+          Progress({ value: this.timerRemainingShown(), total: this.timerTotalSeconds(), type: ProgressType.Ring })
+            .width(32)
+            .height(32)
+            .color(this.timerColor())
+            .backgroundColor(ThemeRuntime.hairlineColor(this.darkMode))
+            .style({ strokeWidth: 2 })
+            .hitTestBehavior(HitTestMode.None)
+        }
+        SymbolGlyph($r('sys.symbol.timer'))
+          .fontSize(this.timerActive() ? 17 : 22)
+          .fontColor([this.timerActive() ? this.timerColor() : this.secondaryColor(SECONDARY_TIMER, true)])
+      }
+      .width(22)
+      .height(22)
+      Text(this.secondaryLabel(SECONDARY_TIMER))
+        .fontSize(AppFontSize.CAPTION)
+        .fontWeight(this.timerActive() ? FontWeight.Medium : FontWeight.Regular)
+        .fontColor(this.timerActive() ? this.timerColor() : this.secondaryColor(SECONDARY_TIMER, false))
+        .fontFeature('"tnum" on')
+        .maxLines(1)
+    }
+    .layoutWeight(1)
+    .height(56)
+    .justifyContent(FlexAlign.Center)
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
+    .accessibilityText(this.timerActive() ?
+      `定时，剩余 ${formatTimerRemaining(this.globalTtsTimerRemainingSeconds)}` : '定时')
+    .onClick(() => this.onSecondaryTap(SECONDARY_TIMER))
+  }
+
+  /** 开着定时时顶部一行显示剩余时间、几点停止，以及加时、关闭；下面的档位点哪个都从那一档重新计时。 */
   @Builder
   timerOptions() {
-    Row({ space: AppSpacing.SM }) {
-      this.timerChip(0, '关闭')
-      this.timerChip(15, '15分')
-      this.timerChip(30, '30分')
-      this.timerChip(60, '60分')
-      this.timerChip(90, '90分')
-      this.timerChip(120, '120分')
+    Column({ space: AppSpacing.SM }) {
+      if (this.timerActive()) {
+        this.timerStatusRow()
+      }
+      Row({ space: AppSpacing.SM }) {
+        this.timerChip(0, '关闭')
+        this.timerChip(15, '15分')
+        this.timerChip(30, '30分')
+        this.timerChip(60, '60分')
+        this.timerChip(90, '90分')
+        this.timerChip(120, '120分')
+      }
+      .width('100%')
     }
     .width('100%')
   }
 
   @Builder
-  speedOptions() {
-    Row({ space: AppSpacing.MD }) {
-      this.speedChip(0.8)
-      this.speedChip(1.0)
-      this.speedChip(1.2)
-      this.speedChip(1.5)
-      this.speedChip(2.0)
-      this.speedChip(3.0)
+  timerStatusRow() {
+    Row({ space: AppSpacing.SM }) {
+      SymbolGlyph($r('sys.symbol.timer'))
+        .fontSize(18)
+        .fontColor([this.timerColor()])
+      Text('剩余')
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.subTextColor)
+      Text(formatTimerRemaining(this.globalTtsTimerRemainingSeconds))
+        .fontSize(AppFontSize.BODY_LARGE)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.timerWarning() ? this.timerColor() : this.primaryTextColor)
+        .fontFeature('"tnum" on')
+        .maxLines(1)
+      Text(`${this.timerEndClock()} 停止`)
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.subTextColor)
+        .fontFeature('"tnum" on')
+        .maxLines(1)
+        .layoutWeight(1)
+      this.timerStatusButton(`+${TIMER_EXTEND_MINUTES}分`, `延长 ${TIMER_EXTEND_MINUTES} 分钟`, true,
+        () => ReaderTtsFloatingSession.extendTimer(TIMER_EXTEND_MINUTES))
+      this.timerStatusButton('关闭', '关闭定时', false, () => ReaderTtsFloatingSession.setTimer(0))
     }
     .width('100%')
+    .height(44)
+    .padding({ left: AppSpacing.MD, right: AppSpacing.SM })
+    .borderRadius(ThemeRuntime.buttonRadius())
+    .backgroundColor(ThemeRuntime.softFillColor(this.darkMode))
+  }
+
+  @Builder
+  timerStatusButton(label: string, accessibility: string, accent: boolean, action: () => void) {
+    Text(label)
+      .fontSize(AppFontSize.CAPTION)
+      .fontWeight(accent ? FontWeight.Medium : FontWeight.Regular)
+      .fontColor(accent ? this.accentColor : this.subTextColor)
+      .height(30)
+      .padding({ left: AppSpacing.MD, right: AppSpacing.MD })
+      .borderRadius(15)
+      .backgroundColor(ThemeRuntime.cardColor(this.darkMode))
+      .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
+      .accessibilityText(accessibility)
+      .onClick(action)
+  }
+
+  /**
+   * 倍速：滑条 0.05 一格，两侧按钮微调，下面是快捷档；再往下是音量增益，两者都是调声音，放在一个面板里。
+   * 朗读换倍速要从当前句重新合成，拖动中只改显示、松手才下发；有声书边拖边变速。
+   */
+  @Builder
+  speedOptions() {
+    Column({ space: AppSpacing.SM }) {
+      Row() {
+        Text('倍速')
+          .fontSize(AppFontSize.CAPTION)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.primaryTextColor)
+          .layoutWeight(1)
+        Text(`${PlaybackSpeed.label(this.speedShown())}x`)
+          .fontSize(AppFontSize.CAPTION)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.accentColor)
+      }
+      .width('100%')
+
+      Row({ space: AppSpacing.SM }) {
+        this.speedStepButton(-1)
+        Slider({
+          value: this.speedShown(),
+          min: PlaybackSpeed.MIN,
+          max: PlaybackSpeed.MAX,
+          step: PlaybackSpeed.STEP
+        })
+          .layoutWeight(1)
+          .selectedColor(this.accentColor)
+          .trackColor(ThemeRuntime.inputColor(this.darkMode))
+          .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
+          .accessibilityText('倍速')
+          .onChange((value: number, mode: SliderChangeMode) => {
+            const speed = PlaybackSpeed.normalize(value);
+            if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+              this.speedDraft = -1;
+              this.commitSpeed(speed);
+            } else {
+              this.speedDraft = speed;
+              if (this.isAudio()) this.commitSpeed(speed);
+            }
+          })
+        this.speedStepButton(1)
+      }
+      .width('100%')
+
+      Row({ space: AppSpacing.SM }) {
+        ForEach(PlaybackSpeed.PRESETS, (value: number) => {
+          this.speedChip(value)
+        }, (value: number) => value.toString())
+      }
+      .width('100%')
+
+      Divider()
+        .strokeWidth(0.5)
+        .color(ThemeRuntime.hairlineColor(this.darkMode))
+        .margin({ top: AppSpacing.XS, bottom: AppSpacing.XS })
+      this.gainOptions()
+    }
+    .width('100%')
+  }
+
+  /** direction：-1 减一格，1 加一格。可用状态在这里现读，倍速变化后立即刷新。 */
+  @Builder
+  speedStepButton(direction: number) {
+    Stack({ alignContent: Alignment.Center }) {
+      SymbolGlyph(direction < 0 ? $r('sys.symbol.minus') : $r('sys.symbol.plus'))
+        .fontSize(16)
+        .fontColor([this.speedStepEnabled(direction) ? this.primaryTextColor : this.subTextColor])
+    }
+    .width(30)
+    .height(30)
+    .borderRadius(15)
+    .backgroundColor(ThemeRuntime.softFillColor(this.darkMode))
+    .opacity(this.speedStepEnabled(direction) ? 1 : 0.5)
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
+    .accessibilityText(direction < 0 ? '降低倍速' : '提高倍速')
+    .onClick(() => {
+      if (!this.speedStepEnabled(direction)) return;
+      this.speedDraft = -1;
+      this.commitSpeed(PlaybackSpeed.normalize(this.globalTtsSpeed + direction * PlaybackSpeed.STEP));
+    })
   }
 
   @Builder
   speedChip(value: number) {
-    Text(`${value.toFixed(1)}x`)
+    Text(`${PlaybackSpeed.label(value)}x`)
       .fontSize(AppFontSize.CAPTION)
-      .fontWeight(Math.abs(this.globalTtsSpeed - value) < 0.01 ? FontWeight.Bold : FontWeight.Regular)
-      .fontColor(Math.abs(this.globalTtsSpeed - value) < 0.01 ? ThemeRuntime.onAccentColor() : this.primaryTextColor)
+      .fontWeight(PlaybackSpeed.same(this.speedShown(), value) ? FontWeight.Bold : FontWeight.Regular)
+      .fontColor(PlaybackSpeed.same(this.speedShown(), value) ? ThemeRuntime.onAccentColor() : this.primaryTextColor)
       .textAlign(TextAlign.Center)
       .layoutWeight(1)
       .height(30)
       .borderRadius(ThemeRuntime.buttonRadius())
-      .backgroundColor(Math.abs(this.globalTtsSpeed - value) < 0.01 ? this.accentColor :
+      .backgroundColor(PlaybackSpeed.same(this.speedShown(), value) ? this.accentColor :
         (ThemeRuntime.softFillColor(this.darkMode)))
-      .onClick(() => ReaderTtsFloatingSession.setSpeed(value))
+      .accessibilityText(`倍速 ${PlaybackSpeed.label(value)}`)
+      .onClick(() => {
+        this.speedDraft = -1;
+        this.commitSpeed(value);
+      })
   }
 
-  /** 音量增益：滑条到 24 dB，快捷档到 +12；朗读和有声书各存一个值。 */
+  /** 音量增益：滑条到 24 dB，放在倍速面板下半部分；朗读和有声书各存一个值。 */
   @Builder
   gainOptions() {
     Column({ space: AppSpacing.SM }) {
@@ -652,16 +940,6 @@ export struct ReaderTtsPlayerPanel {
       .width('100%')
       .opacity(this.gainSupported() ? 1 : 0.5)
 
-      Row({ space: AppSpacing.SM }) {
-        this.gainChip(0)
-        this.gainChip(3)
-        this.gainChip(6)
-        this.gainChip(9)
-        this.gainChip(12)
-      }
-      .width('100%')
-      .opacity(this.gainSupported() ? 1 : 0.5)
-
       if (this.gainHint()) {
         Text(this.gainHint())
           .fontSize(AppFontSize.CAPTION)
@@ -673,37 +951,143 @@ export struct ReaderTtsPlayerPanel {
     .width('100%')
   }
 
+  /** 跳过片头片尾：两行用 ± 调整，“设为当前”取播放位置；只对这本书生效，规则见 AudioSkipRange。 */
   @Builder
-  gainChip(value: number) {
-    Text(value === 0 ? '关' : `+${value}`)
-      .fontSize(AppFontSize.CAPTION)
-      .fontWeight(this.gainShown() === value ? FontWeight.Bold : FontWeight.Regular)
-      .fontColor(this.gainShown() === value ? ThemeRuntime.onAccentColor() : this.primaryTextColor)
-      .textAlign(TextAlign.Center)
-      .layoutWeight(1)
-      .height(30)
-      .borderRadius(ThemeRuntime.buttonRadius())
-      .backgroundColor(this.gainShown() === value ? this.accentColor : ThemeRuntime.softFillColor(this.darkMode))
-      .accessibilityText(value === 0 ? '关闭音量增益' : `音量增益 ${value} 分贝`)
-      .onClick(() => {
-        if (!this.gainSupported()) return;
-        this.gainDraft = -1;
-        PlaybackLoudnessGain.set(this.gainKind(), value);
-      })
+  skipOptions() {
+    Column({ space: AppSpacing.SM }) {
+      Row() {
+        Text('跳过片头片尾')
+          .fontSize(AppFontSize.CAPTION)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.primaryTextColor)
+          .layoutWeight(1)
+        Text('仅本书')
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.subTextColor)
+      }
+      .width('100%')
+
+      this.skipRow(true)
+      this.skipRow(false)
+
+      Text('从章节开头播放时跳过片头；剩余不到片尾时长时直接播下一章')
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.subTextColor)
+        .width('100%')
+        .maxLines(2)
+    }
+    .width('100%')
   }
 
+  @Builder
+  skipRow(head: boolean) {
+    Row({ space: AppSpacing.SM }) {
+      Text(head ? '片头' : '片尾')
+        .fontSize(AppFontSize.BODY)
+        .fontColor(this.subTextColor)
+        .width(32)
+      Row({ space: AppSpacing.XS }) {
+        this.skipStepButton(head, -1)
+        Text(this.skipSeconds(head) > 0 ? AudioSkipRange.label(this.skipSeconds(head)) : '不跳过')
+          .fontSize(AppFontSize.BODY)
+          .fontWeight(this.skipSeconds(head) > 0 ? FontWeight.Bold : FontWeight.Regular)
+          .fontColor(this.skipSeconds(head) > 0 ? this.primaryTextColor : this.subTextColor)
+          .fontFeature('"tnum" on')
+          .textAlign(TextAlign.Center)
+          .width(64)
+        this.skipStepButton(head, 1)
+      }
+      .layoutWeight(1)
+      .justifyContent(FlexAlign.Center)
+      Text('设为当前')
+        .fontSize(AppFontSize.CAPTION)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.accentColor)
+        .height(30)
+        .padding({ left: AppSpacing.MD, right: AppSpacing.MD })
+        .borderRadius(15)
+        .backgroundColor(ThemeRuntime.cardColor(this.darkMode))
+        .opacity(this.globalTtsAudioDurationMs > 0 ? 1 : 0.5)
+        .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
+        .accessibilityText(head ? '把当前位置设为片头结束' : '把当前位置设为片尾开始')
+        .onClick(() => this.setSkipToCurrent(head))
+    }
+    .width('100%')
+    .height(44)
+    .padding({ left: AppSpacing.MD, right: AppSpacing.SM })
+    .borderRadius(ThemeRuntime.buttonRadius())
+    .backgroundColor(ThemeRuntime.softFillColor(this.darkMode))
+  }
+
+  /** direction：-1 减 5 秒，1 加 5 秒。 */
+  @Builder
+  skipStepButton(head: boolean, direction: number) {
+    Stack({ alignContent: Alignment.Center }) {
+      SymbolGlyph(direction < 0 ? $r('sys.symbol.minus') : $r('sys.symbol.plus'))
+        .fontSize(16)
+        .fontColor([this.skipStepEnabled(head, direction) ? this.primaryTextColor : this.subTextColor])
+    }
+    .width(30)
+    .height(30)
+    .borderRadius(15)
+    .backgroundColor(ThemeRuntime.cardColor(this.darkMode))
+    .opacity(this.skipStepEnabled(head, direction) ? 1 : 0.5)
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
+    .accessibilityText(`${head ? '片头' : '片尾'}${direction < 0 ? '减少' : '增加'} ${AudioSkipRange.STEP_SECONDS} 秒`)
+    .onClick(() => {
+      if (!this.skipStepEnabled(head, direction)) return;
+      this.changeSkip(head, this.skipSeconds(head) + direction * AudioSkipRange.STEP_SECONDS);
+    })
+  }
+
+  /** 跳过后的提示：文字加可选的撤回按钮，3 秒后消失。 */
+  @Builder
+  skipNotice() {
+    Row({ space: AppSpacing.MD }) {
+      Text(this.globalTtsAudioSkipNotice)
+        .fontSize(AppFontSize.CAPTION)
+        .fontColor(this.darkMode ? '#18191C' : '#FFFFFF')
+        .maxLines(1)
+      if (this.globalTtsAudioSkipUndo) {
+        Text(this.globalTtsAudioSkipUndo)
+          .fontSize(AppFontSize.CAPTION)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.darkMode ? '#18191C' : '#FFFFFF')
+          .height(26)
+          .padding({ left: AppSpacing.MD, right: AppSpacing.MD })
+          .borderRadius(13)
+          .backgroundColor(this.darkMode ? '#1F000000' : '#33FFFFFF')
+          .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
+          .onClick(() => {
+            this.skipNoticeVisible = false;
+            ReaderTtsFloatingSession.undoAudioSkip();
+          })
+      }
+    }
+    .height(36)
+    .padding({ left: AppSpacing.LG, right: this.globalTtsAudioSkipUndo ? AppSpacing.SM : AppSpacing.LG })
+    .borderRadius(18)
+    .backgroundColor(this.darkMode ? '#E6FFFFFF' : '#D118191C')
+    .margin({ bottom: AppSpacing.SM })
+    .alignItems(VerticalAlign.Center)
+    .transition(TransitionEffect.opacity(0).combine(TransitionEffect.translate({ y: 6 }))
+      .animation({ duration: 180, curve: Curve.EaseOut }))
+  }
+
+  /** 倒计时中档位都不高亮（剩余时间已不等于档位），没开定时时“关闭”高亮。 */
   @Builder
   timerChip(minutes: number, label: string) {
     Text(label)
       .fontSize(AppFontSize.CAPTION)
-      .fontWeight(this.globalTtsTimerMinutes === minutes ? FontWeight.Bold : FontWeight.Regular)
-      .fontColor(this.globalTtsTimerMinutes === minutes ? ThemeRuntime.onAccentColor() : this.primaryTextColor)
+      .fontWeight(this.timerChipSelected(minutes) ? FontWeight.Bold : FontWeight.Regular)
+      .fontColor(this.timerChipSelected(minutes) ? ThemeRuntime.onAccentColor() : this.primaryTextColor)
       .textAlign(TextAlign.Center)
       .layoutWeight(1)
       .height(30)
       .borderRadius(ThemeRuntime.buttonRadius())
-      .backgroundColor(this.globalTtsTimerMinutes === minutes ? this.accentColor :
+      .backgroundColor(this.timerChipSelected(minutes) ? this.accentColor :
         (ThemeRuntime.softFillColor(this.darkMode)))
+      .accessibilityText(minutes > 0 ? `定时 ${minutes} 分钟` : '关闭定时')
       .onClick(() => ReaderTtsFloatingSession.setTimer(minutes))
   }
 
@@ -909,8 +1293,13 @@ export struct ReaderTtsPlayerPanel {
     this.onClose();
   }
 
+  /** 听视频和听书用同一套界面：大封面、进度条、前进后退 15 秒。 */
   isAudio(): boolean {
-    return this.hostAudioPage || this.globalTtsMode === 'audio';
+    return this.hostAudioPage || this.globalTtsMode === 'audio' || this.globalTtsMode === 'video';
+  }
+
+  isVideo(): boolean {
+    return !this.hostAudioPage && this.globalTtsMode === 'video';
   }
 
   isPaused(): boolean {
@@ -946,11 +1335,54 @@ export struct ReaderTtsPlayerPanel {
     const preferred = this.coverHeight();
     if (this.audioHeroHeight <= 0) return preferred;
     const hasStatus = !!this.statusText();
-    // 子项间距：封面、章节名、简介、[状态行]、音色；再加封面和章节名各自的上边距。
-    const gaps = AppSpacing.MD * (hasStatus ? 4 : 3) + AppSpacing.SM * 2;
+    const hasVoice = this.showAudioVoiceRow();
+    // 子项间距：封面、章节名、简介、[状态行]、[音色]；再加封面和章节名各自的上边距。
+    const gaps = AppSpacing.MD * (2 + (hasStatus ? 1 : 0) + (hasVoice ? 1 : 0)) + AppSpacing.SM * 2;
     const fixed = this.audioHeroTitleHeight + (hasStatus ? this.audioHeroStatusHeight : 0) +
-      AUDIO_VOICE_ROW_HEIGHT + gaps;
+      (hasVoice ? AUDIO_VOICE_ROW_HEIGHT : 0) + gaps;
     return Math.max(AUDIO_COVER_MIN_HEIGHT, Math.min(preferred, Math.floor(this.audioHeroHeight - fixed)));
+  }
+
+  /** 朗读卡片里点到的字换算成面板文字里的位置，交给朗读主人找到那一句重新开读。 */
+  onReadingTextTap(event: ClickEvent): void {
+    if (this.isAudio() || !this.globalTtsSentenceControl || !this.globalTtsCurrentText) return;
+    try {
+      const ui = this.getUIContext();
+      const position = this.readingTextController.getLayoutManager()
+        .getGlyphPositionAtCoordinate(ui.vp2px(event.x), ui.vp2px(event.y));
+      ReaderTtsFloatingSession.jumpToPanelText(position.position, this.globalTtsTextBefore.length);
+    } catch (error) {
+      console.warn('朗读面板点句跳读失败:', error);
+    }
+  }
+
+  /** 书源提供了多个音色，或简介里说明了音色代码时才显示音色下拉（里面有“自定义音色代码”）。 */
+  showAudioVoiceRow(): boolean {
+    if (this.isVideo()) return false;
+    return this.globalTtsVoiceRevision >= 0 &&
+      (this.audioVoiceTitles().length > 1 || /音色/.test(this.hostIntro || this.globalTtsContent || ''));
+  }
+
+  skipSeconds(head: boolean): number {
+    return AudioSkipRange.normalize(head ? this.globalTtsAudioSkipHead : this.globalTtsAudioSkipTail);
+  }
+
+  skipStepEnabled(head: boolean, direction: number): boolean {
+    const value = this.skipSeconds(head);
+    return direction < 0 ? value > 0 : value < AudioSkipRange.MAX_SECONDS;
+  }
+
+  changeSkip(head: boolean, seconds: number): void {
+    const value = AudioSkipRange.normalize(seconds);
+    ReaderTtsFloatingSession.setAudioSkip(head ? value : this.skipSeconds(true), head ? this.skipSeconds(false) : value);
+  }
+
+  /** 片头取当前位置；片尾取“总时长 − 当前位置”。还不知道总时长时不处理。 */
+  setSkipToCurrent(head: boolean): void {
+    const duration = this.globalTtsAudioDurationMs;
+    if (duration <= 0) return;
+    const position = Math.max(0, Math.min(this.globalTtsAudioPositionMs, duration));
+    this.changeSkip(head, (head ? position : duration - position) / 1000);
   }
 
   hasTtsVoices(): boolean {
@@ -960,6 +1392,20 @@ export struct ReaderTtsPlayerPanel {
 
   chapterEnabled(forward: boolean): boolean {
     return forward ? this.globalTtsCanNext : this.globalTtsCanPrevious;
+  }
+
+  speedShown(): number {
+    return this.speedDraft > 0 ? this.speedDraft : PlaybackSpeed.normalize(this.globalTtsSpeed);
+  }
+
+  speedStepEnabled(direction: number): boolean {
+    return direction < 0 ? this.globalTtsSpeed > PlaybackSpeed.MIN + 0.001 :
+      this.globalTtsSpeed < PlaybackSpeed.MAX - 0.001;
+  }
+
+  commitSpeed(value: number): void {
+    if (PlaybackSpeed.same(this.globalTtsSpeed, value)) return;
+    ReaderTtsFloatingSession.setSpeed(value);
   }
 
   gainKind(): string {
@@ -976,6 +1422,10 @@ export struct ReaderTtsPlayerPanel {
 
   gainSupported(): boolean {
     return this.isAudio() ? this.audioLoudnessGainSupported : this.ttsLoudnessGainSupported;
+  }
+
+  gainActive(): boolean {
+    return this.gainSupported() && this.gainStored() > 0;
   }
 
   gainValueText(gain: number): string {
@@ -996,21 +1446,59 @@ export struct ReaderTtsPlayerPanel {
   secondaryIcon(kind: string): Resource {
     if (kind === SECONDARY_TIMER) return $r('sys.symbol.timer');
     if (kind === SECONDARY_SPEED) return $r('sys.symbol.hourglass');
-    if (kind === SECONDARY_GAIN) return $r('sys.symbol.speaker_wave_3');
     if (kind === SECONDARY_CATALOG) return $r('sys.symbol.list_bullet');
-    if (kind === SECONDARY_DOWNLOAD) return $r('sys.symbol.download');
+    if (kind === SECONDARY_SKIP) return $r('sys.symbol.arrow_right_to_line');
+    if (kind === SECONDARY_WATCH) return $r('sys.symbol.video');
     return $r('sys.symbol.stop_circle');
+  }
+
+  timerActive(): boolean {
+    return this.globalTtsTimerMinutes > 0 && this.globalTtsTimerRemainingSeconds > 0;
+  }
+
+  timerWarning(): boolean {
+    return this.timerActive() && this.globalTtsTimerRemainingSeconds <= TIMER_WARN_SECONDS;
+  }
+
+  timerColor(): ResourceColor {
+    return this.timerWarning() ? ThemeRuntime.dangerColor(this.darkMode) : this.accentColor;
+  }
+
+  /** 恢复的定时可能只知道剩余秒数，总时长取两者较大值，细环不会超过一圈。 */
+  timerTotalSeconds(): number {
+    return Math.max(1, this.globalTtsTimerMinutes * 60, this.globalTtsTimerRemainingSeconds);
+  }
+
+  timerRemainingShown(): number {
+    return Math.min(this.timerTotalSeconds(), Math.max(0, this.globalTtsTimerRemainingSeconds));
+  }
+
+  timerEndClock(): string {
+    const end = new Date(Date.now() + this.globalTtsTimerRemainingSeconds * 1000);
+    const hours = end.getHours();
+    const minutes = end.getMinutes();
+    return `${hours < 10 ? '0' : ''}${hours}:${minutes < 10 ? '0' : ''}${minutes}`;
+  }
+
+  timerChipSelected(minutes: number): boolean {
+    return minutes === 0 && !this.timerActive();
   }
 
   secondaryLabel(kind: string): string {
     if (kind === SECONDARY_TIMER) {
-      return this.globalTtsTimerMinutes > 0 ?
-        `${Math.max(1, Math.ceil(this.globalTtsTimerRemainingSeconds / 60))}分` : '定时';
+      return this.timerActive() ? formatTimerRemaining(this.globalTtsTimerRemainingSeconds) : '定时';
     }
-    if (kind === SECONDARY_SPEED) return `${this.globalTtsSpeed.toFixed(1)}x`;
-    if (kind === SECONDARY_GAIN) return this.gainSupported() && this.gainStored() > 0 ? `+${this.gainStored()}dB` : '增益';
-    if (kind === SECONDARY_CATALOG) return '目录';
-    if (kind === SECONDARY_DOWNLOAD) return '下载';
+    if (kind === SECONDARY_SPEED) {
+      const speed = `${PlaybackSpeed.label(this.globalTtsSpeed)}x`;
+      return this.gainActive() ? `${speed}·+${this.gainStored()}` : speed;
+    }
+    if (kind === SECONDARY_SKIP) {
+      if (this.skipSeconds(true) > 0) return `片头${AudioSkipRange.label(this.skipSeconds(true))}`;
+      if (this.skipSeconds(false) > 0) return `片尾${AudioSkipRange.label(this.skipSeconds(false))}`;
+      return '跳过';
+    }
+    if (kind === SECONDARY_CATALOG) return this.isVideo() ? '选集' : '目录';
+    if (kind === SECONDARY_WATCH) return '看画面';
     return '停止';
   }
 
@@ -1020,9 +1508,9 @@ export struct ReaderTtsPlayerPanel {
     if (kind === SECONDARY_TIMER) {
       active = this.globalTtsTimerMinutes > 0 || this.optionsPanel === 1;
     } else if (kind === SECONDARY_SPEED) {
-      active = Math.abs(this.globalTtsSpeed - 1) > 0.01 || this.optionsPanel === 2;
-    } else if (kind === SECONDARY_GAIN) {
-      active = (this.gainSupported() && this.gainStored() > 0) || this.optionsPanel === 3;
+      active = Math.abs(this.globalTtsSpeed - 1) > 0.01 || this.gainActive() || this.optionsPanel === 2;
+    } else if (kind === SECONDARY_SKIP) {
+      active = this.skipSeconds(true) > 0 || this.skipSeconds(false) > 0 || this.optionsPanel === 4;
     }
     if (active) return this.accentColor;
     return icon ? this.primaryTextColor : this.subTextColor;
@@ -1032,14 +1520,16 @@ export struct ReaderTtsPlayerPanel {
     if (kind === SECONDARY_TIMER) {
       this.optionsPanel = this.optionsPanel === 1 ? 0 : 1;
     } else if (kind === SECONDARY_SPEED) {
-      this.optionsPanel = this.optionsPanel === 2 ? 0 : 2;
-    } else if (kind === SECONDARY_GAIN) {
+      this.speedDraft = -1;
       this.gainDraft = -1;
-      this.optionsPanel = this.optionsPanel === 3 ? 0 : 3;
+      this.optionsPanel = this.optionsPanel === 2 ? 0 : 2;
+    } else if (kind === SECONDARY_SKIP) {
+      this.optionsPanel = this.optionsPanel === 4 ? 0 : 4;
     } else if (kind === SECONDARY_CATALOG) {
       this.onOpenCatalog();
-    } else if (kind === SECONDARY_DOWNLOAD) {
-      this.onOpenDownload();
+    } else if (kind === SECONDARY_WATCH) {
+      this.close();
+      ReaderTtsFloatingSession.watchVideo();
     } else {
       this.close();
       ReaderTtsFloatingSession.stop();

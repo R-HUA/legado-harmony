@@ -9,7 +9,9 @@ import { util } from '@kit.ArkTS';
 import { CloudSyncChangeTracker } from '../../account/CloudSyncChangeTracker';
 import { BookAnnotation, BookAnnotationStyles } from '../reader/BookAnnotation';
 import { BookMark, BookMarkRules } from '../book/BookMark';
+import { SourceGroupName } from '../../utils/SourceGroupName';
 import { BookIdentity } from '../../utils/BookIdentity';
+import { BookReadStatsRecord } from '../../core/stats/BookReadStats';
 import { ReadStatsPendingUpload, ReadStatsSyncPayload, ReadStatsSyncChange,
   ReadStatsSyncAck } from '../../core/stats/ReadStatsSyncModels';
 
@@ -1940,7 +1942,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
       bookSourceUrl: source.bookSourceUrl,
       bookSourceName: source.bookSourceName,
       bookSourceType: source.bookSourceType,
-      bookSourceGroup: source.bookSourceGroup,
+      bookSourceGroup: SourceGroupName.clean(source.bookSourceGroup),
       bookSourceComment: source.bookSourceComment,
       loginUrl: source.loginUrl,
       loginUi: source.loginUi,
@@ -2028,7 +2030,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
       bookSourceUrl: source.bookSourceUrl,
       bookSourceName: source.bookSourceName,
       bookSourceType: source.bookSourceType,
-      bookSourceGroup: source.bookSourceGroup,
+      bookSourceGroup: SourceGroupName.clean(source.bookSourceGroup),
       bookSourceComment: source.bookSourceComment,
       loginUrl: source.loginUrl,
       loginUi: source.loginUi,
@@ -2166,7 +2168,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
       bookSourceUrl: source.bookSourceUrl,
       bookSourceName: source.bookSourceName,
       bookSourceType: source.bookSourceType,
-      bookSourceGroup: source.bookSourceGroup,
+      bookSourceGroup: SourceGroupName.clean(source.bookSourceGroup),
       bookSourceComment: source.bookSourceComment,
       loginUrl: source.loginUrl,
       loginUi: source.loginUi,
@@ -2296,7 +2298,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
         source.sourceFormat = this.getStringColumn(resultSet, 'jsLibHead') === NATIVE_SOURCE_JSLIB_HEAD ? 'native' : '';
         source.bookSourceUrl = resultSet.getString(resultSet.getColumnIndex('bookSourceUrl'));
         source.bookSourceName = resultSet.getString(resultSet.getColumnIndex('bookSourceName'));
-        source.bookSourceGroup = resultSet.getString(resultSet.getColumnIndex('bookSourceGroup'));
+        source.bookSourceGroup = SourceGroupName.clean(resultSet.getString(resultSet.getColumnIndex('bookSourceGroup')));
         source.loginUrl = resultSet.getString(resultSet.getColumnIndex('loginUrl'));
         source.loginUi = resultSet.getString(resultSet.getColumnIndex('loginUi'));
         source.loginCheckJs = resultSet.getString(resultSet.getColumnIndex('loginCheckJs'));
@@ -2322,7 +2324,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
     if (!this.store) return;
     if (await this.isBookSourceLocked(bookSourceUrl)) return;
     const bucket: relationalStore.ValuesBucket = {};
-    if (fields['bookSourceGroup'] !== undefined) bucket['bookSourceGroup'] = fields['bookSourceGroup'];
+    if (fields['bookSourceGroup'] !== undefined) bucket['bookSourceGroup'] = SourceGroupName.clean(String(fields['bookSourceGroup']));
     if (fields['enabled'] !== undefined) bucket['enabled'] = fields['enabled'];
     if (fields['enabledExplore'] !== undefined) bucket['enabledExplore'] = fields['enabledExplore'];
     if (fields['customOrder'] !== undefined) bucket['customOrder'] = fields['customOrder'];
@@ -2400,7 +2402,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
     if (!this.store || !bookSourceUrl) return;
     const predicates = new relationalStore.RdbPredicates('book_sources');
     predicates.equalTo('bookSourceUrl', bookSourceUrl);
-    await this.store.update({ bookSourceGroup: groupName, lastUpdateTime: Date.now() }, predicates);
+    await this.store.update({ bookSourceGroup: SourceGroupName.clean(groupName), lastUpdateTime: Date.now() }, predicates);
     CloudSyncChangeTracker.markBookSourceChanged();
   }
 
@@ -2522,7 +2524,7 @@ export class AppDatabase implements BookSourceRuntimePersistence {
     source.bookSourceUrl = this.getStringColumn(resultSet, 'bookSourceUrl');
     source.bookSourceName = this.getStringColumn(resultSet, 'bookSourceName');
     source.bookSourceType = this.getLongColumn(resultSet, 'bookSourceType');
-    source.bookSourceGroup = this.getStringColumn(resultSet, 'bookSourceGroup');
+    source.bookSourceGroup = SourceGroupName.clean(this.getStringColumn(resultSet, 'bookSourceGroup'));
     source.bookSourceComment = this.getStringColumn(resultSet, 'bookSourceComment');
     source.loginUrl = this.getStringColumn(resultSet, 'loginUrl');
     source.loginUi = this.getStringColumn(resultSet, 'loginUi');
@@ -3596,6 +3598,51 @@ export class AppDatabase implements BookSourceRuntimePersistence {
       resultSet.close();
     }
     return rows;
+  }
+
+  /**
+   * 单本书的阅读记录，所有设备合计。书名和作者都有时按作品归并，换源前后的记录算同一本；
+   * 这里不排除隐私书，调用方是这本书自己的详情页。
+   */
+  async getBookReadStatsRecords(bookUrl: string, name: string, author: string,
+    ownerId: string): Promise<BookReadStatsRecord[]> {
+    const records: BookReadStatsRecord[] = [];
+    if (!this.store || !bookUrl) return records;
+    await this.readStatsWriteTask;
+    const work = name && author ? 1 : 0;
+    const resultSet = await this.store.querySql(`SELECT r.dayKey, r.durationMs, r.startedAt
+      FROM read_stats_records r
+      WHERE r.deletedAt = 0 AND (r.ownerId = '' OR r.ownerId = ?)
+      AND (r.bookUrl = ? OR (? = 1 AND r.bookUrl IN (
+        SELECT bookUrl FROM books WHERE name = ? AND author = ?
+        UNION SELECT bookUrl FROM read_stats_books WHERE name = ? AND author = ?)))`,
+      [ownerId, bookUrl, work, name, author, name, author]);
+    try {
+      while (resultSet.goToNextRow()) {
+        const record = new BookReadStatsRecord();
+        record.dayKey = resultSet.getString(0);
+        record.durationMs = resultSet.getLong(1);
+        record.startedAt = resultSet.getLong(2);
+        records.push(record);
+      }
+    } finally {
+      resultSet.close();
+    }
+    return records;
+  }
+
+  /** 这本书的划线数量：[全部, 写了想法的, 收进摘录的]。 */
+  async getBookAnnotationCounts(bookUrl: string): Promise<number[]> {
+    if (!this.store || !bookUrl) return [0, 0, 0];
+    const resultSet = await this.store.querySql(`SELECT COUNT(*),
+      COALESCE(SUM(CASE WHEN note <> '' THEN 1 ELSE 0 END), 0),
+      COALESCE(SUM(CASE WHEN excerpt = 1 THEN 1 ELSE 0 END), 0)
+      FROM book_annotations WHERE bookUrl = ?`, [bookUrl]);
+    try {
+      return resultSet.goToFirstRow() ? [resultSet.getLong(0), resultSet.getLong(1), resultSet.getLong(2)] : [0, 0, 0];
+    } finally {
+      resultSet.close();
+    }
   }
 
   async getReadStatsDevices(ownerId: string): Promise<ReadStatsDeviceOption[]> {

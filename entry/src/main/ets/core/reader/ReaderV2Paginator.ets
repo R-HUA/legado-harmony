@@ -314,6 +314,11 @@ export class ReaderV2Paginator {
       // Paragraph hot-comment cards placed in the current page (or, while scrolling, the current screen height).
       let cardWindow = 0;
       let cardsInWindow = 0;
+      // The fragment just placed is a comment card; cardEdgeGap is the visible gap that card group got above it.
+      let previousWasCard = false;
+      let cardEdgeGap = 0;
+      // Page y of the glyph ink bottom of the last text line placed, NaN when the previous fragment is not text.
+      let lastInkBottom = Number.NaN;
       const cardsEnabled = session.snapshot.commentsEnabled && session.snapshot.commentCardStyle > 0;
       const chapterCardsEnabled = session.snapshot.commentsEnabled && session.snapshot.commentChapterCard;
 
@@ -338,12 +343,31 @@ export class ReaderV2Paginator {
             session.measuredBlock = null;
             continue;
           }
-          const gap = !hasContent ? 0 : (pendingCard ? ReaderV2CommentCardLayout.gapBefore(session.snapshot) :
-            ReaderV2Paginator.blockSpacingBefore(session, hasContent, previousWasImage));
+          // Cards keep the same visible distance to the text above and below, measured from the glyph ink rather
+          // than the line box (whose trailing line spacing and font padding differ between the two sides).
+          let gap = 0;
+          if (previousWasCard) {
+            gap = ReaderV2CommentCardLayout.stackGap(session.snapshot);
+          } else if (hasContent) {
+            const edge = ReaderV2CommentCardLayout.edgeGap(session.snapshot, action.chapter);
+            const belowInk = Number.isNaN(lastInkBottom) ? 0 : Math.max(0, y - lastInkBottom);
+            gap = Math.max(0, edge - belowInk);
+            cardEdgeGap = belowInk + gap;
+          } else {
+            cardEdgeGap = ReaderV2CommentCardLayout.edgeGap(session.snapshot, action.chapter);
+          }
           const anchor = pendingCard ? ReaderV2Paginator.bubbleCenterX(page, action.id) - column.left : -1;
-          const card = ReaderV2CommentCardLayout.build(action, session.snapshot, session.width,
+          let card = ReaderV2CommentCardLayout.build(action, session.snapshot, session.width,
             anchor >= 0 ? anchor : -1);
           const top = y + gap;
+          if (action.chapter) {
+            // 本章说放不下时先少列几条热评，最后只留标题行；还放不下才整块挪到下一页。
+            let hotCount = Math.min(action.hots.length, ReaderV2CommentCardLayout.CHAPTER_MAX_HOTS);
+            while (hotCount > 0 && top + card.height > columnBottom + 0.01) {
+              hotCount--;
+              card = ReaderV2CommentCardLayout.build(action, session.snapshot, session.width, -1, hotCount);
+            }
+          }
           if (hasContent && top + card.height > columnBottom + 0.01) {
             mustEndPage = true;
             continue;
@@ -353,7 +377,7 @@ export class ReaderV2Paginator {
           cardFragment.blockIndex = session.blockIndex;
           cardFragment.card = card;
           // Keep a trailing card attached to its paragraph when the page bottom is aligned.
-          cardFragment.fixedGapBefore = pendingCard && hasContent;
+          cardFragment.fixedGapBefore = hasContent;
           cardFragment.paragraphX = column.left;
           cardFragment.paragraphY = top;
           cardFragment.paragraphHeight = card.height;
@@ -374,6 +398,8 @@ export class ReaderV2Paginator {
           hasContent = true;
           topInkGuardApplied = true;
           previousWasImage = false;
+          previousWasCard = true;
+          lastInkBottom = Number.NaN;
           y = top + card.height;
           session.blockIndex++;
           session.lineIndex = 0;
@@ -403,6 +429,8 @@ export class ReaderV2Paginator {
               hasContent = true;
               topInkGuardApplied = true;
               previousWasImage = false;
+              previousWasCard = false;
+              lastInkBottom = Number.NaN;
               continue;
             }
           }
@@ -466,6 +494,8 @@ export class ReaderV2Paginator {
           page.displayEnd = imageFragment.displayEnd;
           hasContent = true;
           previousWasImage = true;
+          previousWasCard = false;
+          lastInkBottom = Number.NaN;
           y = imageRect.bottom;
           session.blockIndex++;
           session.lineIndex = 0;
@@ -497,6 +527,12 @@ export class ReaderV2Paginator {
           spacing = Math.max(0, dropLeadTop + drop.lines * drop.pitchPx - y);
         }
         const firstLine = current.line(session.lineIndex);
+        const followsCard = previousWasCard && startsNewBlock && hasContent && !current.block.title;
+        if (followsCard) {
+          // Mirror the gap the card group has above it.
+          const ink = ReaderV2Paginator.lineInk(current, session.lineIndex, session.snapshot);
+          spacing = Math.max(0, cardEdgeGap - (ink ? ink.top - firstLine.topHeight : 0));
+        }
         if (!hasContent && !topInkGuardApplied) {
           // A zero user margin places the first logical line box on the page boundary. Some fonts (notably the
           // serif family used by several themes) paint one or two physical pixels above that logical box. The
@@ -552,7 +588,7 @@ export class ReaderV2Paginator {
         const previous = session.blockIndex > 0 ? session.document.blocks[session.blockIndex - 1] : null;
         fragment.fixedGapBefore = startsNewBlock && hasContent &&
           ((current.block.title && session.titleMarginTopPx > 0) ||
-            (!current.block.title && !!previous && previous.title && session.titleMarginBottomPx > 0));
+            (!current.block.title && !!previous && previous.title && session.titleMarginBottomPx > 0)) || followsCard;
         if (dropLead && drop) {
           fragment.dropCapTopPx = drop.boxTopPx;
           fragment.dropCapBoxPx = drop.boxPx;
@@ -569,6 +605,10 @@ export class ReaderV2Paginator {
         page.displayEnd = fragment.displayEnd;
         hasContent = true;
         previousWasImage = false;
+        previousWasCard = false;
+        const lastInk = cardsEnabled || chapterCardsEnabled ?
+          ReaderV2Paginator.lineInk(current, fragmentLastLine, session.snapshot) : null;
+        lastInkBottom = lastInk ? y + lastInk.bottom - paragraphLineTop : Number.NaN;
         y += fragmentBottom - paragraphLineTop;
 
         if (session.lineIndex >= current.lineCount) {
@@ -580,7 +620,10 @@ export class ReaderV2Paginator {
               continue;
             }
             // A paragraph shorter than the drop cap: the next block starts below the cap.
-            if (!Number.isNaN(dropLeadTop)) y = Math.max(y, dropLeadTop + drop.boxTopPx + drop.boxPx);
+            if (!Number.isNaN(dropLeadTop) && dropLeadTop + drop.boxTopPx + drop.boxPx > y) {
+              y = dropLeadTop + drop.boxTopPx + drop.boxPx;
+              lastInkBottom = Number.NaN;
+            }
           }
           session.dropPart = 0;
           if (cardsEnabled && current.block.trailingCard) {
@@ -1057,6 +1100,32 @@ export class ReaderV2Paginator {
   private static bodyFontWeight(weight: number): graphicsText.FontWeight {
     // Static faces use the nearest SDK weight; the wght axis below preserves precise variable-font values.
     return ReaderV2Paginator.FONT_WEIGHTS[Math.max(0, Math.min(8, Math.round(weight / 100) - 1))];
+  }
+
+  /**
+   * 一行文字字面的上下边（段落坐标）。热评卡片上下的留白按它量，不按行框量：行框在段末带一份行距，
+   * 首尾行还有字体留白，两头不一样宽。行距不为零时行度量里的基线不能当字的位置用，所以取文字实际占的
+   * 范围，再按字号收到字身框。取不到时返回 null。
+   */
+  private static lineInk(measured: ReaderV2MeasuredBlock, lineIndex: number,
+    snapshot: ReaderV2LayoutSnapshot): ReaderV2Rect | null {
+    const line = measured.line(lineIndex);
+    const rects = measured.paragraph.getRectsForRange({ start: line.startIndex, end: line.endIndex },
+      graphicsText.RectWidthStyle.TIGHT, graphicsText.RectHeightStyle.TIGHT);
+    let top = Number.MAX_VALUE;
+    let bottom = -Number.MAX_VALUE;
+    for (const item of rects) {
+      if (item.rect.bottom <= item.rect.top) continue;
+      top = Math.min(top, item.rect.top);
+      bottom = Math.max(bottom, item.rect.bottom);
+    }
+    if (bottom <= top) return null;
+    const inset = Math.max(0, (bottom - top - ReaderV2Paginator.blockFontSize(measured.block, snapshot)) / 2);
+    return new ReaderV2Rect(0, top + inset, 0, bottom - inset);
+  }
+
+  private static blockFontSize(block: ReaderV2Block, snapshot: ReaderV2LayoutSnapshot): number {
+    return ReaderV2Paginator.baseTextStyle(block, snapshot).fontSize ?? snapshot.fontSizePx;
   }
 
   private static baseTextStyle(block: ReaderV2Block, snapshot: ReaderV2LayoutSnapshot): graphicsText.TextStyle {

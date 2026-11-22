@@ -2,10 +2,11 @@ import { ReaderImageRecovery } from './ReaderImageRecovery';
 import { appDb } from '../../model/data/AppDatabase';
 import { ReaderImageCache } from './ReaderImageCache';
 import { ReaderImageReferences } from './ReaderImageReferences';
-import { SourceEngineHost, Book, BookChapter, BookSource, ContentRule, HttpClient, HttpResponse, AnalyzeUrl, AnalyzeRule, RuleContext, VerificationSupport, EncodedSourceUrl, BookUrlResolver, BookFieldSanitizer, AjaxRuleCompat, JavaRegexCompat, JsRuntime, ScriptEngine, ScriptEngineContext, SourceRuntimeStage, BookSourceStageWebRuntime, StageWebRuntimeRequest, ReaderActionMarker, CookieStore, RuleExecutionService, RuleBatchExecutionRequest, RuleFieldRequest, CooperativeScheduler, RuleExecutionTarget, RuleValue, BookSourceDebugContext, LogText, NativeSourceService, NetworkErrorText } from '@legado/sourceengine';
+import { SourceEngineHost, Book, BookChapter, BookSource, ContentRule, HttpClient, HttpResponse, AnalyzeUrl, AnalyzeRule, RuleContext, VerificationSupport, EncodedSourceUrl, BookUrlResolver, BookFieldSanitizer, AjaxRuleCompat, JavaRegexCompat, JsRuntime, ScriptEngine, ScriptEngineContext, BookSourceRuntimeRouter, SourceRuntimeStage, BookSourceStageWebRuntime, StageWebRuntimeRequest, ReaderActionMarker, ReaderActionHot, CookieStore, RuleExecutionService, RuleBatchExecutionRequest, RuleFieldRequest, CooperativeScheduler, RuleExecutionTarget, RuleValue, BookSourceDebugContext, LogText, NativeSourceService, NetworkErrorText } from '@legado/sourceengine';
 import { util } from '@kit.ArkTS';
 import { BookSourceDataUrlSupport } from './BookSourceDataUrlSupport';
 import { ReaderImageMarker } from './ReaderImageMarker';
+import { MixedVideoChapter } from './MixedVideoChapter';
 import { ComicImagePipeline, ComicImageRequestContext, ComicImageTiming } from './ComicImagePipeline';
 import { ReaderImageRequest, ReaderImageScheduler } from './ReaderImageScheduler';
 import { ReaderImageResults } from './ReaderImageResults';
@@ -21,6 +22,21 @@ class ContentPageData {
   nextUrl: string = '';
 }
 
+/** 书源自带的本章说图卡拆出的条数与那一条评论。 */
+class ReaderDataImageChapter {
+  count: string = '';
+  user: string = '';
+  text: string = '';
+
+  hots(): ReaderActionHot[] {
+    if (!this.text) return [];
+    const hot = new ReaderActionHot();
+    hot.user = this.user;
+    hot.text = this.text;
+    return [hot];
+  }
+}
+
 export class WebBookService {
   static readonly GENERIC_TOC_FALLBACK_KEY: string = '__genericTocFallback';
   private http: HttpClient;
@@ -28,11 +44,52 @@ export class WebBookService {
 
   private preparationCancelled: (() => boolean) | null;
   private requireCompleteCatalog: boolean;
+  /**
+   * 书架检查更新用：目录分页有一页取不到（请求失败或要网页验证）就整体失败，不返回半截目录。
+   * 半截目录会被当成新目录写进库，最新章节反而退回到中间某章。比换源的完整模式宽松：字段规则
+   * 报错、分页地址循环照旧容忍，免得个别规则小毛病让这本书每次检查都失败。
+   */
+  private requireAllCatalogPages: boolean;
+  /**
+   * 原生书源的详情、目录、正文脚本这次能不能弹出网页（browser.verify / browser.open）。默认可以；书架检查更新、
+   * 缓存下载、预加载、搜索结果补封面等后台调用设为不行，书源要验证时改走「去验证」，不打断用户。
+   */
+  private sourceInteraction: () => boolean = (): boolean => true;
 
-  constructor(preparationCancelled: (() => boolean) | null = null, requireCompleteCatalog: boolean = false) {
+  constructor(preparationCancelled: (() => boolean) | null = null, requireCompleteCatalog: boolean = false,
+    requireAllCatalogPages: boolean = false) {
     this.http = new HttpClient(10000);
     this.preparationCancelled = preparationCancelled;
     this.requireCompleteCatalog = requireCompleteCatalog;
+    this.requireAllCatalogPages = requireAllCatalogPages;
+  }
+
+  /** 目录分页没取全：换源模式与书架检查模式各自抛出对应说明，其余调用方照旧保留已取到的部分。 */
+  private rejectIncompleteCatalog(switchMessage: string, refreshMessage: string): void {
+    if (this.requireCompleteCatalog) throw new Error(switchMessage);
+    if (this.requireAllCatalogPages) throw new Error(refreshMessage);
+  }
+
+  /** 网页书源目录每读完一页回报（已读页数、已得章数）；换源用来显示进度。原生书源不回报。 */
+  private catalogProgress: ((pages: number, chapters: number) => void) | null = null;
+
+  setCatalogProgress(listener: ((pages: number, chapters: number) => void) | null): void {
+    this.catalogProgress = listener;
+  }
+
+  private reportCatalogProgress(pages: number, chapters: number): void {
+    if (!this.catalogProgress) return;
+    try {
+      this.catalogProgress(pages, chapters);
+    } catch (error) {
+      console.warn('[WS] catalog progress listener failed:', (error as Error).message);
+    }
+  }
+
+  /** 见 sourceInteraction。返回自身便于链式创建。 */
+  setSourceInteraction(allowed: () => boolean): WebBookService {
+    this.sourceInteraction = allowed;
+    return this;
   }
 
   private checkPreparation(): void {
@@ -71,7 +128,8 @@ export class WebBookService {
     const video = new VideoPlaybackSource();
     try {
       if (NativeSourceService.isNative(source)) {
-        const result = await NativeSourceService.getVideoContent(source, this.http, book, chapter, cancelled);
+        const result = await NativeSourceService.getVideoContent(source, this.http, book, chapter, cancelled,
+          this.sourceInteraction);
         if (cancelled()) return video;
         video.url = VideoPlaybackSupport.httpUrl(result.text);
         video.pageUrl = VideoPlaybackSupport.httpUrl(result.videoPage || '');
@@ -100,7 +158,8 @@ export class WebBookService {
     if (NativeSourceService.isNative(source)) {
       // 原生书源不经过脚本引擎，也不套用兼容书源的各类兜底修补。
       try {
-        return await NativeSourceService.getBookInfo(source, this.http, book, debugContext, (): boolean => this.isPreparationCancelled());
+        return await NativeSourceService.getBookInfo(source, this.http, book, debugContext,
+          (): boolean => this.isPreparationCancelled(), this.sourceInteraction);
       } catch (e) {
         console.warn('[WS] native book info failed:', source.bookSourceName, (e as Error).message);
         SourceEngineHost.setError(source, (e as Error).message || '详情解析失败');
@@ -339,7 +398,8 @@ export class WebBookService {
     if (NativeSourceService.isNative(source)) {
       try {
         const nativeChapters = await NativeSourceService.getChapterList(source, this.http, book,
-          maxChapters > 0 ? Math.max(1, Math.round(maxChapters)) : 0, debugContext, (): boolean => this.isPreparationCancelled(), this.requireCompleteCatalog);
+          maxChapters > 0 ? Math.max(1, Math.round(maxChapters)) : 0, debugContext, (): boolean => this.isPreparationCancelled(),
+          this.requireCompleteCatalog, this.sourceInteraction);
         if (nativeChapters.length === 0) {
           SourceEngineHost.setError(source, '目录规则没有匹配到章节');
         }
@@ -445,7 +505,7 @@ export class WebBookService {
     for (let page = 0; page < 1000; page++) {
       this.checkPreparation();
       if (!currentResp.success || !currentResp.body) {
-        if (this.requireCompleteCatalog) throw new Error('目录分页加载失败，已保留原书源');
+        this.rejectIncompleteCatalog('目录分页加载失败，已保留原书源', `目录第 ${page + 1} 页加载失败`);
         break;
       }
       const pageKey = this.urlWithoutFragment(currentResp.url || currentUrl);
@@ -458,7 +518,7 @@ export class WebBookService {
       const pageChapters = await parsePage(currentResp, currentUrl, page === 0);
       this.checkPreparation();
       if (pageChapters === null) {
-        if (this.requireCompleteCatalog) throw new Error('目录需要网页验证，已保留原书源');
+        this.rejectIncompleteCatalog('目录需要网页验证，已保留原书源', '目录需要网页验证');
         break;
       }
       if (page === 0 && !tocRule.nextTocUrl && hasStageRule && pageChapters.length > 0) {
@@ -467,6 +527,7 @@ export class WebBookService {
         if (!lastError) return pageChapters;
       }
       appendChapters(pageChapters);
+      this.reportCatalogProgress(seenPageUrls.size, chapters.length);
       // A later page produced chapters: a diagnostic left by an empty earlier attempt is no longer the outcome.
       if (page > 0 && pageChapters.length > 0) SourceEngineHost.setError(source, '');
       if (chapterLimit > 0 && chapters.length >= chapterLimit) break;
@@ -507,17 +568,19 @@ export class WebBookService {
           seenPageUrls.add(this.urlWithoutFragment(batchUrls[index]));
           this.checkPreparation();
           if (!listedResp || !listedResp.success || !listedResp.body) {
-            if (this.requireCompleteCatalog) throw new Error('目录分页加载失败，已保留原书源');
+            this.rejectIncompleteCatalog('目录分页加载失败，已保留原书源',
+              `目录第 ${seenPageUrls.size} 页加载失败`);
             continue;
           }
           const listedChapters = await parsePage(listedResp, batchUrls[index], false);
           this.checkPreparation();
           if (listedChapters === null) {
-            if (this.requireCompleteCatalog) throw new Error('目录需要网页验证，已保留原书源');
+            this.rejectIncompleteCatalog('目录需要网页验证，已保留原书源', '目录需要网页验证');
             stopped = true;
             break;
           }
           appendChapters(listedChapters);
+          this.reportCatalogProgress(seenPageUrls.size, chapters.length);
           if (listedChapters.length > 0) SourceEngineHost.setError(source, '');
           if (chapterLimit > 0 && chapters.length >= chapterLimit) {
             stopped = true;
@@ -692,14 +755,16 @@ export class WebBookService {
   /**
    * imageRequest 决定正文图片的调度优先级，以及是否先返回待加载标记，见 ReaderImageRequest。
    * nextChapterUrl 是目录里下一章的地址：“正文下一页”翻到它就停，不把后面的章节拼进本章。
+   * sourceInteraction 给出时代替本实例的设置，用于同一阅读引擎里区分当前章与预加载的邻章。
    */
   async getContent(source: BookSource, book: Book, chapter: BookChapter,
     shouldCancel: (() => boolean) | null = null,
     debugContext: BookSourceDebugContext | null = null,
     imageRequest: ReaderImageRequest = ReaderImageRequest.DEFAULT,
-    nextChapterUrl: string = ''): Promise<string> {
+    nextChapterUrl: string = '', sourceInteraction: (() => boolean) | null = null): Promise<string> {
     if (NativeSourceService.isNative(source)) {
-      return await this.getNativeContent(source, book, chapter, shouldCancel, debugContext, imageRequest);
+      return await this.getNativeContent(source, book, chapter, shouldCancel, debugContext, imageRequest,
+        sourceInteraction ?? this.sourceInteraction);
     }
     // `ruleContent.audioUrl` is the dedicated media-address rule of an audio source. It takes
     // precedence over `content`, which remains the fallback when it yields nothing.
@@ -718,11 +783,14 @@ export class WebBookService {
 
   private async getNativeContent(source: BookSource, book: Book, chapter: BookChapter,
     shouldCancel: (() => boolean) | null, debugContext: BookSourceDebugContext | null = null,
-    imageRequest: ReaderImageRequest = ReaderImageRequest.DEFAULT): Promise<string> {
+    imageRequest: ReaderImageRequest = ReaderImageRequest.DEFAULT,
+    sourceInteraction: (() => boolean) | null = null): Promise<string> {
     SourceEngineHost.setError(source, '');
+    // 图文书里的视频章只给阅读页一张播放卡片，不请求网络；调试页照常取，方便核对 video 规则。
+    if (!debugContext && MixedVideoChapter.isMixedVideo(book, chapter)) return MixedVideoChapter.cardText(chapter);
     try {
       const result = await NativeSourceService.getContent(source, this.http, book, chapter,
-        (): boolean => this.contentRequestCanceled(shouldCancel), debugContext);
+        (): boolean => this.contentRequestCanceled(shouldCancel), debugContext, sourceInteraction ?? this.sourceInteraction);
       if (this.contentRequestCanceled(shouldCancel)) return '';
       if (result.kind === 'audio' || result.kind === 'video') return result.text.trim();
       if (result.kind === 'images' && result.images.length > 0) {
@@ -1616,9 +1684,13 @@ export class WebBookService {
       const count = isChapterTail || isHot ? '' : this.readerDataImageLabel(texts);
       const kind = isChapterTail ? '章评' : (isHot ? '热评' : '段评');
       const label = count ? `段评 ${count}` : kind;
-      const hot = isHot || isChapterTail ? this.readerDataImageHot(texts) : ['', ''];
-      // 本章说卡面上的数字含义因书源而异，不当点赞数。
-      const marker = ReaderActionMarker.createSourceScript(label, action, kind, hot[0], isChapterTail ? '' : hot[1]);
+      const hot = isHot ? this.readerDataImageHot(texts) : ['', ''];
+      // 本章说卡面拆成条数与那一条评论；卡面上的数字含义因书源而异，不当点赞数。
+      const chapter = isChapterTail ? this.readerDataImageChapter(texts) : new ReaderDataImageChapter();
+      const marker = isChapterTail ?
+        ReaderActionMarker.createSourceScript(label, action, kind, chapter.text || chapter.count, '', chapter.count,
+          chapter.hots()) :
+        ReaderActionMarker.createSourceScript(label, action, kind, hot[0], hot[1]);
       // This data-image is an interaction control, not正文 artwork. If its imported click script exceeds the
       // bounded action budget, drop the control instead of passing the enormous base64/options tag into the
       // ordinary image pipeline (the latter can exhaust memory while opening the chapter).
@@ -1772,6 +1844,32 @@ export class WebBookService {
     return [text, likes];
   }
 
+  /**
+   * A 本章说 SVG card split into its parts: the comment count (“79 条评论” → “79条评论”) for the card's title row,
+   * and the one comment it shows — a short first line is the nickname, the remaining lines are the wrapped comment.
+   * Numbers on these cards mean different things per source, so none is read as a like count.
+   */
+  private readerDataImageChapter(texts: string[]): ReaderDataImageChapter {
+    const found = new ReaderDataImageChapter();
+    const parts: string[] = [];
+    for (const raw of texts) {
+      const text = raw.replace(/^(?:本章说|章评|章末评论)\s*/, '').replace(/[\s〉›>»]+$/, '').trim();
+      if (!text) continue;
+      const count = /^(?:共\s*)?(\d+(?:\.\d+)?[万wWkK千]?\+?)\s*(?:条评论|条|评论)$/.exec(text);
+      if (count && !found.count) {
+        found.count = `${count[1]}条评论`;
+        continue;
+      }
+      if (/^(?:\d+(?:\.\d+)?[kKwW万千]?\+?|99\+)$/.test(text)) continue;
+      parts.push(text);
+    }
+    if (parts.length >= 2 && parts[0].length <= 16 && !/[，。！？：；,.!?:;…]$/.test(parts[0])) {
+      found.user = parts.shift() as string;
+    }
+    found.text = parts.join('');
+    return found;
+  }
+
 
   /**
    * iOS-style Legado markup puts the action on the image itself:
@@ -1795,9 +1893,13 @@ export class WebBookService {
     const card = /热评|神评/.test(wording) ||
       this.readerDataImageIsCard(texts, '', this.readerDataImageIsWide(svg[1] || ''));
     const label = /本章说|章评|章末/.test(wording) ? '章评' : (card ? '热评' : (count ? `段评 ${count}` : '评论'));
-    const hot = label === '热评' || label === '章评' ? this.readerDataImageHot(texts) : ['', ''];
-    return ReaderActionMarker.create(label, url, label === '章评' ? '章评' : (label === '热评' ? '热评' : '段评'),
-      hot[0], label === '章评' ? '' : hot[1]);
+    if (label === '章评') {
+      const chapter = this.readerDataImageChapter(texts);
+      return ReaderActionMarker.create(label, url, '章评', chapter.text || chapter.count, '', chapter.count,
+        chapter.hots());
+    }
+    const hot = label === '热评' ? this.readerDataImageHot(texts) : ['', ''];
+    return ReaderActionMarker.create(label, url, label === '热评' ? '热评' : '段评', hot[0], hot[1]);
   }
 
   private readerActionMarkerFromCommentAttributes(attrs: string): string {

@@ -1,5 +1,4 @@
 import { AnimatorResult, FrameNode, router, window } from '@kit.ArkUI';
-import { deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { webview } from '@kit.ArkWeb';
 import { WebRuntimeAvailability } from '../utils/WebRuntimeAvailability';
@@ -104,6 +103,8 @@ struct Index {
   @State exploreTabMounted: boolean = false;
   /** 发现页里的搜索层：点发现页搜索框或外部要求搜索时打开，取消/返回收起。 */
   @StorageLink('homeSearchActive') @Watch('onHomeSearchActiveChanged') homeSearchActive: boolean = false;
+  /** “我的”页的设置搜索层（SettingsSearchLayer）。 */
+  @StorageLink('mineSearchActive') mineSearchActive: boolean = false;
   /** 搜索层第一次打开后常驻，收起只隐藏，关键词与结果保留。 */
   @State searchLayerMounted: boolean = false;
   /** 搜索层淡出期间仍可见，淡完再隐藏，不再参与绘制。 */
@@ -405,7 +406,8 @@ struct Index {
 
   /** 书架多选和发现页的搜索层都是整页，底栏收起。 */
   homeTabBarHidden(): boolean {
-    return this.bookshelfMultiSelectActive || this.homeSearchLayerActive();
+    return this.bookshelfMultiSelectActive || this.homeSearchLayerActive() ||
+      (this.mineSearchActive && this.currentIndex === this.mineTabIndex());
   }
 
   onSearchHeaderCollapseChange(progress: number): void {
@@ -437,6 +439,8 @@ struct Index {
       this.exploreTabMounted = true;
     }
     if (this.currentIndex === 0) this.shelfEnterTick++;
+    // 离开“我的”时设置搜索层随页签一起撤掉。
+    if (this.currentIndex !== this.mineTabIndex() && this.mineSearchActive) this.mineSearchActive = false;
     // 书架保留列表与滚动位置，底栏沿用该页的收起进度；重建的第四个页签和“我的”重置。
     if (this.currentIndex > 0 && this.currentIndex !== this.exploreTabIndex()) {
       this.tabHeaderCollapseProgress[this.currentIndex] = 0;
@@ -628,6 +632,11 @@ struct Index {
       this.closeGlobalTtsPanel();
       return true;
     }
+    // “我的”页的设置搜索层开着时，返回键先收起它。
+    if (this.currentIndex === this.mineTabIndex() && this.mineSearchActive) {
+      this.mineSearchActive = false;
+      return true;
+    }
     // 发现页的搜索层开着时，返回键先收起它回到发现内容。
     if (this.currentIndex === this.exploreTabIndex() && this.homeSearchActive) {
       this.homeSearchActive = false;
@@ -726,7 +735,8 @@ struct Index {
   private openGlobalTtsCatalogWithFreshCacheFlags(): void {
     const ownerId = ReaderTtsFloatingSession.currentOwnerId();
     const bookUrl = AppStorage.get<string>('globalTtsBookUrl') || '';
-    if (!ownerId || !bookUrl) {
+    // 听视频的选集没有缓存标记；图文书的选集只列视频章，按位置套全部章节的标记也对不上。
+    if (!ownerId || !bookUrl || this.globalTtsMode === 'video') {
       this.presentGlobalTtsCatalog();
       return;
     }
@@ -955,7 +965,7 @@ struct Index {
           onOpenCatalog: () => this.openGlobalTtsCatalog(),
           hostDownloadAvailable: this.globalAudioOffline() !== null,
           onOpenDownload: () => this.globalAudioOffline()?.openDownload(this.getUIContext()),
-          showOpenReader: this.globalTtsMode !== 'audio',
+          showOpenReader: this.globalTtsMode !== 'audio' && this.globalTtsMode !== 'video',
           onOpenReader: () => this.openGlobalTtsReader()
         })
       }
@@ -1662,9 +1672,7 @@ struct Index {
     .barMode(BarMode.Fixed)
     .barHeight(this.homeTabBarHidden() ? 0 : 56)
     .barOverlap(true)
-    // Desktop already clips the entire window to its native outline. A second 30vp
-    // content radius cuts away the header backdrop inside the smaller window corners.
-    .borderRadius(deviceInfo.deviceType === '2in1' ? 0 : 30)
+    // 不加圆角：屏幕/窗口的圆角由系统裁，内容再裁一层会在截图和圆角较小的屏上把顶部背景两角切掉。
     .clip(true)
     .barFloatingStyle({
       systemMaterialEffect: {

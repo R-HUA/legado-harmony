@@ -8,6 +8,7 @@ import { ReaderCommentCardSettings } from '../utils/ReaderCommentCardSettings';
 import { SmartGripSettingsStore } from '../utils/SmartGripSettingsStore';
 import { ReaderNavIndicatorStore } from '../utils/ReaderNavIndicatorStore';
 import { FootprintSettingsStore } from '../utils/FootprintSettingsStore';
+import { ReaderBackgroundDisplayStore } from '../utils/ReaderBackgroundDisplay';
 import { HomeBackdropSettingsStore } from '../utils/HomeBackdropSettingsStore';
 import { AnimatedImagePolicy } from '../utils/AnimatedImagePolicy';
 import { HomeTabBarSettingsStore } from '../utils/HomeTabBarSettingsStore';
@@ -16,7 +17,9 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { UIContext, window } from '@kit.ArkUI';
 import { RecentReadShortcut, OPEN_BOOK_SHORTCUT_ACTION } from '../utils/RecentReadShortcut';
 import { CoverGalleryStore } from '../utils/CoverGalleryStore';
+import { CoverFailureStore } from '../utils/CoverFailureStore';
 import { BookshelfDisplaySettingsStore } from '../utils/BookshelfDisplaySettingsStore';
+import { ShelfPreload } from '../utils/ShelfPreload';
 import { SearchExploreSettingsStore } from '../utils/SearchExploreSettingsStore';
 import { ReaderSettingsStore } from '../utils/ReaderSettingsStore';
 import { ChineseConverter } from '../utils/ChineseConverter';
@@ -254,9 +257,11 @@ export default class EntryAbility extends UIAbility {
     PersistentStorage.persistProp('bookshelfCompanionStagger', true);
     PersistentStorage.persistProp('bookshelfCompanionCoverShadow', true);
     PersistentStorage.persistProp('bookshelfCompanionReadingNote', true);
+    PersistentStorage.persistProp('bookshelfTileCoverFrame', true);
     PersistentStorage.persistProp('bookshelfGreetingMode', 'time');
     PersistentStorage.persistProp('bookshelfGreetingTitle', '');
     PersistentStorage.persistProp('bookshelfGreetingSubtitle', '');
+    PersistentStorage.persistProp('bookshelfGreetingSlots', '');
     PersistentStorage.persistProp('bookshelfCompanionSectionTitle', '');
     PersistentStorage.persistProp('bookshelfCoverAlbums', '');
     PersistentStorage.persistProp('bookshelfLightCoverAlbumId', '');
@@ -310,6 +315,9 @@ export default class EntryAbility extends UIAbility {
     AnimatedImagePolicy.load(this.context).catch((error: Error) => {
       console.warn('恢复动图设置失败:', error);
     });
+    ReaderBackgroundDisplayStore.load(this.context).catch((error: Error) => {
+      console.warn('恢复阅读背景显示方式失败:', error);
+    });
     this.homeTabBarBootstrapPromise = HomeTabBarSettingsStore.load(this.context).catch((error: Error) => {
       console.warn('恢复底栏设置失败:', error);
     });
@@ -332,6 +340,7 @@ export default class EntryAbility extends UIAbility {
     PersistentStorage.persistProp('appIconId', AppIconSettingsStore.DEFAULT_ICON_ID);
     PersistentStorage.persistProp('explorePlatform', '');
     PersistentStorage.persistProp('exploreSourceUrl', '');
+    CoverFailureStore.load(this.context);
     CoverGalleryStore.load(this.context).then((snapshot) => {
       CoverGalleryStore.applyToStorage(snapshot);
       return CoverGalleryStore.save(this.context, snapshot);
@@ -343,6 +352,8 @@ export default class EntryAbility extends UIAbility {
     }).catch((e: Error) => {
       hilog.warn(0x0000, 'testTag', 'Sync bookshelf display settings failed: %{public}s', JSON.stringify(e));
     });
+    // 书架数据尽早开始读，启动页结束时多半已经读好。
+    ShelfPreload.start(this.context);
     SearchExploreSettingsStore.load(this.context).then((settings) => {
       SearchExploreSettingsStore.applyToStorage(settings);
     }).catch((e: Error) => {
@@ -534,6 +545,10 @@ export default class EntryAbility extends UIAbility {
     if (AppStorage.get<boolean>('lanReaderEnabled') && !lanReaderServer.isRunning()) {
       lanReaderServer.start(this.context).catch((e: Error) => {
         hilog.warn(0x0000, 'testTag', 'Restart LAN reader failed: %{public}s', JSON.stringify(e));
+      });
+    } else if (AppStorage.get<boolean>('lanReaderEnabled')) {
+      lanReaderServer.ensureBackgroundTask().catch((e: Error) => {
+        hilog.warn(0x0000, 'testTag', 'Renew LAN reader background task failed: %{public}s', JSON.stringify(e));
       });
     }
     ThemeTrialManager.stopIfExpired();

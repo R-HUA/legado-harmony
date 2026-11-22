@@ -2,11 +2,12 @@ import { Context } from '@kit.AbilityKit';
 import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
 import http from '@ohos.net.http';
-import { HttpClient, SourceCoverLoader, SourceCoverUrl } from '@legado/sourceengine';
+import { BookSource, CookieStore, HttpClient, SourceCoverLoader, SourceCoverUrl } from '@legado/sourceengine';
 import { AppDatabase } from '../model/data/AppDatabase';
 import { CoverUrlNormalizer } from './CoverUrlNormalizer';
-import { BookSource, CookieStore } from '@legado/sourceengine';
 import { ComicImagePipeline } from '../core/book/ComicImagePipeline';
+import { CoverFailures } from './CoverFailures';
+import { CoverFailureStore } from './CoverFailureStore';
 
 /**
  * 封面本地缓存。
@@ -135,7 +136,7 @@ export class BookCoverCache {
 
   static async resolveCover(context: Context, raw: string, origin: string = '',
     pageUrl: string = ''): Promise<string> {
-    return await BookCoverCache.resolveCoverInRoot(context.cacheDir, raw, origin, pageUrl);
+    return await BookCoverCache.resolveCoverInRoot(context.cacheDir, raw, origin, pageUrl, context);
   }
 
   /**
@@ -143,10 +144,10 @@ export class BookCoverCache {
    * Referer，让受保护的图片站把请求当成浏览器发出的请求。
    */
   static async resolveCoverInRoot(root: string, raw: string, origin: string = '',
-    pageUrl: string = ''): Promise<string> {
+    pageUrl: string = '', context: Context | null = null): Promise<string> {
     const active = BookCoverCache.inFlightResolutions.get(raw);
     if (active) return await active;
-    const task = BookCoverCache.resolveCoverInternal(root, raw, origin, pageUrl);
+    const task = BookCoverCache.resolveCoverInternal(root, raw, origin, pageUrl, context);
     BookCoverCache.inFlightResolutions.set(raw, task);
     try {
       return await task;
@@ -158,7 +159,7 @@ export class BookCoverCache {
   }
 
   private static async resolveCoverInternal(root: string, raw: string, origin: string,
-    pageUrl: string): Promise<string> {
+    pageUrl: string, context: Context | null = null): Promise<string> {
     if (!raw) {
       return '';
     }
@@ -170,8 +171,14 @@ export class BookCoverCache {
         BookCoverCache.resolvedCoverUris.set(raw, resolved);
         return resolved;
       }
+      // 下载前先看有没有网：没网时的失败不算这个地址取不到。
+      const online = context ? CoverFailureStore.online() : false;
       const path = await BookCoverCache.downloadCover(root, raw, origin, pageUrl);
-      if (!path) return SourceCoverUrl.isEncoded(raw) ? '' : raw;
+      if (!path) {
+        if (context && online) CoverFailureStore.markFailed(context, raw);
+        return SourceCoverUrl.isEncoded(raw) ? '' : raw;
+      }
+      if (context) CoverFailureStore.markLoaded(context, raw);
       const resolved = fileUri.getUriFromPath(path);
       BookCoverCache.resolvedCoverUris.set(raw, resolved);
       return resolved;
@@ -184,7 +191,25 @@ export class BookCoverCache {
     if (copiedPath) {
       return fileUri.getUriFromPath(copiedPath);
     }
+    if (context && BookCoverCache.isForeignLocalCover(raw, localPath)) CoverFailureStore.markFailed(context, raw);
     return raw;
+  }
+
+  /**
+   * 本机读不到的本地封面：绝对路径上没有文件，或是别的系统的 content:// 地址（多见于从安卓备份带过来的自定义封面）。
+   * 其余写法的地址（应用沙箱 URI、媒体库 URI、data: 等）这里判断不了存不存在，不下结论。
+   */
+  private static isForeignLocalCover(raw: string, localPath: string): boolean {
+    return raw.startsWith('content://') || localPath.startsWith('/');
+  }
+
+  /** 不经下载的本地封面显示不出来时调用：确认文件确实不在，就记为取不到。 */
+  static async checkLocalCover(context: Context, raw: string): Promise<void> {
+    if (!raw || raw.startsWith('http://') || raw.startsWith('https://') || CoverFailures.has(raw)) return;
+    const localPath = BookCoverCache.localPathFromUri(raw);
+    if (!BookCoverCache.isForeignLocalCover(raw, localPath)) return;
+    if (localPath && await BookCoverCache.existsAsync(localPath)) return;
+    CoverFailureStore.markFailed(context, raw);
   }
 
   static async prepareCoverFile(context: Context, raw: string, origin: string = '',

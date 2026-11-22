@@ -1,7 +1,7 @@
 import { ReaderImageReferences } from './ReaderImageReferences';
 import { ReaderCacheCoordinator } from './ReaderCacheCoordinator';
 import { ReaderImageCache } from './ReaderImageCache';
-import { Book, BookChapter, BookSource, SearchBook, ReaderActionMarker, BookUrlResolver, BookTypeSupport } from '@legado/sourceengine';
+import { Book, BookChapter, BookSource, SearchBook, ReaderActionMarker, BookUrlResolver, BookTypeSupport, SourceEngineHost } from '@legado/sourceengine';
 import { AudioDownloadTask, AudioOfflineStore } from './AudioOfflineStore';
 import { AudioOfflinePolicy } from './AudioOfflinePolicy';
 import { AudioUrlResolver } from './AudioUrlResolver';
@@ -61,6 +61,11 @@ export class ReadBookEngine {
   private preloadBackwardCount: number = 0;
   private chapterPreloads: Map<number, ReaderChapterPreloadTask> = new Map();
   private bookGeneration: number = 0;
+  /** 正在进行的目录刷新：同一本书、同样参数的重复调用共用这一次，不并发解析、不并发删表重插。 */
+  private tocRefreshTask: Promise<void> | null = null;
+  private tocRefreshKey: string = '';
+  /** 最近一次目录刷新没取到章节时的原因；取到了或还没刷新过为空。抛错的失败由调用方自己接住。 */
+  lastTocRefreshError: string = '';
   private sourceInteractionIdentity: string = '';
   private openBookTask: Promise<void> | null = null;
   private openBookTaskUrl: string = '';
@@ -79,7 +84,10 @@ export class ReadBookEngine {
   /** 渐进加载中、等图片补完再写缓存的各章正文；刷新本章后旧版本补完也不再写入。 */
   private deferredChapterTexts: Map<number, Promise<string>> = new Map();
 
-  private constructor() { this.webBook = new WebBookService(); }
+  private constructor(webBook: WebBookService = new WebBookService()) {
+    // 只有阅读页的共享实例能让原生书源弹出验证网页；书架检查更新、缓存下载、后台朗读的实例改走「去验证」。
+    this.webBook = webBook.setSourceInteraction((): boolean => this.foregroundReader);
+  }
 
   static get(): ReadBookEngine {
     if (!ReadBookEngine.inst) {
@@ -92,6 +100,11 @@ export class ReadBookEngine {
 
   static createBackgroundWorker(): ReadBookEngine {
     return new ReadBookEngine();
+  }
+
+  /** 书架检查更新用：目录分页有一页没取到就整本算失败，保留库里原目录，不拿半截目录覆盖。 */
+  static createShelfRefreshWorker(): ReadBookEngine {
+    return new ReadBookEngine(new WebBookService(null, false, true));
   }
 
   /**
@@ -326,6 +339,24 @@ export class ReadBookEngine {
   /** staleCatalog：现有目录已知不可用（坏链接），和没有目录一样允许通用目录兜底。 */
   async refreshToc(expectedGeneration: number = this.bookGeneration, staleCatalog: boolean = false): Promise<void> {
     if (!this.book || !this.source) return;
+    const key = `${expectedGeneration}|${this.book.bookUrl}|${staleCatalog ? 1 : 0}`;
+    if (this.tocRefreshTask && this.tocRefreshKey === key) return this.tocRefreshTask;
+    this.lastTocRefreshError = '';
+    const task = this.runRefreshToc(expectedGeneration, staleCatalog);
+    this.tocRefreshTask = task;
+    this.tocRefreshKey = key;
+    try {
+      await task;
+    } finally {
+      if (this.tocRefreshTask === task) {
+        this.tocRefreshTask = null;
+        this.tocRefreshKey = '';
+      }
+    }
+  }
+
+  private async runRefreshToc(expectedGeneration: number, staleCatalog: boolean): Promise<void> {
+    if (!this.book || !this.source) return;
     const sessionBook = this.book;
     const sessionSource = this.source;
     const sessionBookUrl = sessionBook.bookUrl;
@@ -407,6 +438,7 @@ export class ReadBookEngine {
       } else {
         this.book.latestChapterTitle = this.book.latestChapterTitle || oldLatestChapter;
         this.book.tocUrl = this.book.tocUrl || oldTocUrl;
+        this.lastTocRefreshError = SourceEngineHost.getError(sessionSource) || '没有取到目录';
         console.warn('[RE] refreshToc returned no chapters, keep existing chapters:', this.chapters.length);
       }
     } finally {
@@ -720,8 +752,10 @@ export class ReadBookEngine {
     try {
       let text = '';
       try {
+        // 预加载的邻章、缓存全文不弹验证网页，只有读者正停在这一章时才弹。
         text = await this.webBook.getContent(sessionSource, sessionBook, chapter, shouldCancel, null, imageRequest,
-          nextChapterUrl);
+          nextChapterUrl, (): boolean => !background && this.foregroundReader && this.curIdx === idx &&
+            this.book === sessionBook);
       } catch (e) {
         if (cached && this.isCurrentBookSession(generation, sessionBookUrl) && !shouldCancel?.()) return cached;
         throw e;

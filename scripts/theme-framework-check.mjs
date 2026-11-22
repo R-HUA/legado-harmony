@@ -324,14 +324,18 @@ assert(reader.includes('readerV2TtsHighlightRects(') && reader.includes('this.re
   'TTS highlight overlay is missing');
 assert(reader.includes('start >= displayText.length || regex.lastIndex >= displayText.length'),
   'Reader zero-length regex guard is missing');
-assert(regexSettings.includes('start >= text.length || regex.lastIndex >= text.length'),
+// 预览改用正文同一套排版后，零长度命中的写法是先判断到头再推进 lastIndex。
+assert(regexSettings.includes('if (start >= content.length) break;') &&
+  regexSettings.includes('regex.lastIndex = Math.max(regex.lastIndex + 1, start + 1)'),
   'Preview zero-length regex guard is missing');
 
 assert(readerThemes.includes('APP_THEME_INDEX: number = 4'), 'Reader app-theme compatibility index is missing');
 assert(runtime.includes("KEY_THEME_REVISION"), 'Theme runtime revision broadcast is missing');
 assert(readerBackgroundComponent.includes('ThemeAssetRegistry.readerBackgroundDecoration'),
   'Responsive reader background decoration resolver is not connected');
-assert(reader.includes('ReaderThemeBackground({') && reader.includes('customImageFit: this.getBackgroundImageFit()'),
+assert(reader.includes('ReaderThemeBackground({') &&
+  reader.includes('customImageFit: this.currentReaderTheme().backgroundImageFit') &&
+  reader.includes('customImagePosition: this.currentReaderTheme().backgroundImagePosition'),
   'Reader root surface does not draw the responsive theme background');
 assert(readerBackgroundComponent.includes('.objectFit(ImageFit.Contain)') &&
   !readerBackgroundComponent.includes('.border('),

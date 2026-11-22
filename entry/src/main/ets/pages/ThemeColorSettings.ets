@@ -62,6 +62,7 @@ import {
   chapterHeadIsEmpty,
   normalizeChapterHead,
   normalizeDropCapRatio,
+  normalizeOrnamentInset,
   normalizeOrnamentScale,
   ThemePackageChapterHead
 } from '../theme/share/ThemePackageFormat';
@@ -74,6 +75,7 @@ import {
 import { ReaderRegexBubbleStyleResolver, ReaderRegexEmphasisContext } from '../model/reader/ReaderRegexFontRule';
 import { ImmersiveMaterialRuntime } from '../utils/ImmersiveMaterialRuntime';
 import { HdsFeedback } from '../utils/HdsFeedback';
+import { CloudThemeSync } from '../account/CloudThemeSync';
 import { ListDissolve } from '../utils/ListDissolve';
 import { DeleteParticleBurst, DeleteParticleLayer, DeleteParticles } from '../components/common/DeleteParticles';
 import { AppFontSize } from '../theme/AppFontSize';
@@ -137,6 +139,8 @@ interface AssetSlotOptions {
   onTap: () => void;
   rotation?: number;
   icon?: boolean;
+  // 书架边框这类中心透明的 SVG：不套 fillColor，否则透明的中心也会被填成一整块。
+  untinted?: boolean;
   // 动图取景记下的显示区域，按区域显示缩略图。
   crop?: ThemeImageCrop | null;
 }
@@ -285,6 +289,9 @@ struct ThemeColorSettingsPage {
   // 拖动左上/右下“角饰大小”时的实时百分比；松手保存完回到 -1，改读主题包里的值。
   @State leadingScaleDrag: number = -1;
   @State trailingScaleDrag: number = -1;
+  // “角饰边距”同理。
+  @State leadingInsetDrag: number = -1;
+  @State trailingInsetDrag: number = -1;
   @State chapterHeadScaleDrag: number = -1;
   @State dropCapRatioDrag: number = -1;
   @State appFontFamily: string = '';
@@ -365,6 +372,8 @@ struct ThemeColorSettingsPage {
   private fontDraftRevision: number = -1;
 
   aboutToAppear(): void {
+    // 进来时编辑的那一套跟着应用当前的日夜模式：夜间看到的是深色，改的也应是深色
+    this.selectedMode = this.appDarkMode ? 'dark' : 'light';
     this.reloadSettings();
     this.syncBars();
   }
@@ -524,6 +533,15 @@ struct ThemeColorSettingsPage {
       }
       if (!scheme) {
         return;
+      }
+      // 素材包还在云端时先下载：在缺包的方案上改素材会建出一个残缺的包，再同步回去就覆盖了云端的完整版本。
+      if (CloudThemeSync.remotePacksOf(scheme).length > 0) {
+        HdsFeedback.showToast('正在下载云端的主题素材…');
+      }
+      try {
+        await CloudThemeSync.ensureSchemePacks(getContext(this), scheme);
+      } catch (e) {
+        HdsFeedback.showToast(`主题素材下载失败：${(e as Error).message}`);
       }
       this.schemeName = scheme.name;
       this.schemeAuthor = scheme.author;
@@ -1399,6 +1417,9 @@ struct ThemeColorSettingsPage {
   }
 
   customPreviewTheme(): ThemePack {
+    // 来源指向方案自己的素材包时，图片取自包注册表（不是状态变量）；读 assetRevision 让素材增删后跟着刷新。
+    const revision = this.assetRevision;
+    if (revision < 0) return BuiltinThemeRegistry.findById(this.customBaseThemeId);
     return AppThemeSettingsStore.customTheme(
       this.settingsFromState(),
       this.selectedMode === 'dark'
@@ -1901,7 +1922,7 @@ struct ThemeColorSettingsPage {
           SettingNavRow({ title: '套用当前阅读排版', description: '把正在使用的排版和字体复制到这套主题',
             onTap: () => this.copyCurrentTypography() })
         }
-        SettingNavRow({ title: '恢复默认排版', description: '字号、间距、边距与页眉页脚恢复默认，字体和强调规则保留',
+        SettingNavRow({ title: '恢复默认排版', description: '排版与页眉页脚恢复默认，字体和强调规则保留',
           onTap: () => this.confirmResetTypography() })
         SettingNavRow({ title: '整页预览', description: '按真实分页看一页正文，也可以在那里调整并保存',
           showDivider: false, onTap: () => this.openTypography() })
@@ -2563,7 +2584,7 @@ struct ThemeColorSettingsPage {
     .alignItems(VerticalAlign.Top)
     .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
     if (this.chapterHeadAdjustable()) {
-      SettingRow({ title: '饰图位置', description: '左侧时贴版心左边、上下对齐整组标题；上方、下方时单独占一行' }) {
+      SettingRow({ title: '饰图位置', description: '左侧时贴版心左边并对齐标题；上方、下方时单独一行' }) {
         Select(this.chapterHeadPlacementOptions())
           .id('theme_editor_chapter_head_placement')
           .width('44%')
@@ -2632,7 +2653,7 @@ struct ThemeColorSettingsPage {
     if (this.ownChapterHeadNumberColor()) {
       this.resetRow('序号行改回和标题同色', () => this.setChapterHeadNumberColor(''))
     }
-    SettingRow({ title: '首字装饰', description: '每章第一段的第一个字放大，后面的字绕着它排；开头是引号、数字、字母时这一章不处理' }) {
+    SettingRow({ title: '首字装饰', description: '每章首字放大、后文绕排；开头是引号、数字、字母时不处理' }) {
       Select(this.dropCapLineOptions())
         .id('theme_editor_drop_cap_lines')
         .width('44%')
@@ -3941,6 +3962,74 @@ struct ThemeColorSettingsPage {
     .opacity(this.readerOrnamentScalable(trailing) ? 1 : 0.45)
   }
 
+  readerOrnamentInsetPercent(trailing: boolean): number {
+    const drag = trailing ? this.trailingInsetDrag : this.leadingInsetDrag;
+    if (drag >= 0) return drag;
+    if (this.assetRevision < 0) return 100;
+    const own = this.ownOrnamentReader();
+    if (!own) return 100;
+    // 旧记录里没有这两个字段，按默认边距。
+    return Math.round(normalizeOrnamentInset(trailing ? own.trailingInset : own.leadingInset) * 100);
+  }
+
+  setOrnamentInsetDrag(trailing: boolean, percent: number): void {
+    if (trailing) this.trailingInsetDrag = percent;
+    else this.leadingInsetDrag = percent;
+  }
+
+  async setReaderOrnamentInset(trailing: boolean, percent: number): Promise<void> {
+    this.setOrnamentInsetDrag(trailing, Math.round(percent));
+    try {
+      if (!(await this.ensureAdvanced())) return;
+      const dark = this.selectedMode === 'dark';
+      await this.runAssetUpload((): Promise<SchemeAssetResult> =>
+        SchemeAssetService.setReaderOrnamentInset(getContext(this), this.schemeId, dark, trailing, percent / 100),
+        '', false, false, '');
+    } finally {
+      this.setOrnamentInsetDrag(trailing, -1);
+    }
+  }
+
+  ornamentInsetLabel(trailing: boolean): string {
+    if (!this.readerOrnamentScalable(trailing)) return trailing ? '上传右下角饰后可调' : '上传左上角饰后可调';
+    const percent = this.readerOrnamentInsetPercent(trailing);
+    return percent <= 0 ? '贴边' : `${percent}%`;
+  }
+
+  @Builder
+  ornamentInsetRow(trailing: boolean) {
+    Column({ space: AppSpacing.XS }) {
+      Row() {
+        Text(trailing ? '右下角饰边距' : '左上角饰边距')
+          .fontSize(AppFontSize.BODY)
+          .fontColor(this.primaryTextColor())
+          .layoutWeight(1)
+        Text(this.ornamentInsetLabel(trailing))
+          .fontSize(AppFontSize.CAPTION)
+          .fontColor(this.subTextColor())
+      }
+      .width('100%')
+      Slider({ value: this.readerOrnamentInsetPercent(trailing), min: 0, max: 300, step: 10,
+        style: SliderStyle.OutSet })
+        .id(trailing ? 'theme_editor_reader_trailing_inset' : 'theme_editor_reader_leading_inset')
+        .sliderInteractionMode(SliderInteraction.SLIDE_ONLY)
+        .width('100%')
+        .enabled(this.readerOrnamentScalable(trailing))
+        .selectedColor(ThemeRuntime.accentColor(this.appDarkMode))
+        .accessibilityText(trailing ? '右下角饰边距' : '左上角饰边距')
+        .onChange((value: number, mode: SliderChangeMode) => {
+          if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+            this.setReaderOrnamentInset(trailing, value);
+          } else {
+            this.setOrnamentInsetDrag(trailing, Math.round(value));
+          }
+        })
+    }
+    .width('100%')
+    .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.SM, bottom: AppSpacing.SM })
+    .opacity(this.readerOrnamentScalable(trailing) ? 1 : 0.45)
+  }
+
   @Builder
   readerSlots() {
     Column({ space: AppSpacing.MD }) {
@@ -3969,7 +4058,7 @@ struct ThemeColorSettingsPage {
     }
     .width('100%')
     .padding({ left: AppSpacing.XL, right: AppSpacing.XL, top: AppSpacing.LG, bottom: AppSpacing.LG })
-    this.moreRow('reader', '角饰大小与整图铺放')
+    this.moreRow('reader', '角饰大小、边距与整图铺放')
     if (this.moreOpen('reader')) {
       this.readerMoreRows()
     }
@@ -3981,7 +4070,9 @@ struct ThemeColorSettingsPage {
   @Builder
   readerMoreRows() {
     this.ornamentScaleRow(false)
+    this.ornamentInsetRow(false)
     this.ornamentScaleRow(true)
+    this.ornamentInsetRow(true)
     Column() {
       SettingRow({ title: '整图铺放', description: this.ownReaderMode() === 'image' ? '整图背景在阅读页上的铺法' : '上传整图后可选',
         showDivider: !!this.ownReaderMode() }) {
@@ -4614,7 +4705,7 @@ struct ThemeColorSettingsPage {
       }
       Row({ space: AppSpacing.XL }) {
         this.assetSlot({ label: '书架边框', image: this.shelfFrameImage(), state: this.shelfPartState(false),
-          slotWidth: 50, slotHeight: 74, onTap: () => this.tapShelfPart(false) })
+          slotWidth: 50, slotHeight: 74, untinted: true, onTap: () => this.tapShelfPart(false) })
         this.assetSlot({ label: '分组文件夹', image: this.shelfFolderImage(),
           state: this.shelfPartState(true), slotWidth: 50, slotHeight: 74, onTap: () => this.tapShelfPart(true),
           crop: ThemeAssetRegistry.imageCrop(ThemeImageSlots.FOLDER, this.shelfFolderImage(),
@@ -5132,6 +5223,8 @@ struct ThemeColorSettingsPage {
   // ---- 素材槽 ----
 
   ownPack(): InstalledThemePack | null {
+    // 主题包记录不是状态变量：读 assetRevision，只移掉包里某一项（包和来源都没变）时格子也会重新取值。
+    if (this.assetRevision < 0) return null;
     return this.ownPackageId ? ThemePackRegistry.getByPackageId(this.ownPackageId) : null;
   }
 
@@ -5155,6 +5248,14 @@ struct ThemeColorSettingsPage {
             .width('100%')
             .height('100%')
             .opacity($$.state === 'own' ? 1 : 0.5)
+        } else if ($$.state !== 'empty' && ThemeColorSettingsPage.hasImage($$.image) && $$.untinted) {
+          Image($$.image)
+            .width('100%')
+            .height('100%')
+            .objectFit(ImageFit.Cover)
+            .rotate({ angle: $$.rotation || 0 })
+            .opacity($$.state === 'own' ? 1 : 0.5)
+            .draggable(false)
         } else if ($$.state !== 'empty' && ThemeColorSettingsPage.hasImage($$.image)) {
           Image($$.image)
             .width($$.icon ? '60%' : '100%')

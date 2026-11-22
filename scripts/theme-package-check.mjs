@@ -450,6 +450,7 @@ test('v2 theme: parts resolve by path, settings optional, kinds and required fie
   onlyTrailing.light.reader.leading = '';
   onlyTrailing.light.reader.trailingScale = 1.5;
   onlyTrailing.light.reader.leadingScale = 0.7;
+  onlyTrailing.light.reader.trailingInset = 0;
   const decodedSingle = format.decodeTheme(JSON.stringify({ parts: onlyTrailing }), singleManifest).parts;
   assert.equal(decodedSingle.light.reader.leading, '');
   assert.match(decodedSingle.light.reader.trailing, /^qytheme-asset:[0-9a-f]{24}$/);
@@ -463,6 +464,14 @@ test('v2 theme: parts resolve by path, settings optional, kinds and required fie
   assert.equal(format.normalizeOrnamentScale(9), 2);
   assert.equal(format.normalizeOrnamentScale(0.1), 0.5);
   assert.equal(format.normalizeOrnamentScale(undefined), 1);
+  // 两角边距缺省按 1，0 是贴边要保留，超出范围夹到 0–3。
+  assert.equal(decodedSingle.light.reader.trailingInset, 0);
+  assert.equal(decodedSingle.light.reader.leadingInset, 1);
+  assert.equal(parts.light.reader.leadingInset, 1);
+  assert.equal(format.normalizeOrnamentInset(0), 0);
+  assert.equal(format.normalizeOrnamentInset(9), 3);
+  assert.equal(format.normalizeOrnamentInset(-1), 0);
+  assert.equal(format.normalizeOrnamentInset(undefined), 1);
   broken(j => { j.ttsPanel.light.glowColor = ''; }, /artwork、skyColor/);
   broken(j => { j.radius.card = 99; }, /0 到 48/);
   broken(j => { j.book.covers = Array(17).fill('assets/cover_01.jpg'); }, /最多 16 张/);
@@ -1013,4 +1022,16 @@ test('comment bubble image and custom ornament: decode, per-mode fallback, refs,
   // 旧数据里的覆盖只有颜色：不算有图。
   assert.equal(format.commentBubbleIsEmpty({ image: 'none' }), false);
   assert.equal(format.commentBubbleIsEmpty({}), true);
+});
+
+test('installed pack record keeps every parts field when read back', async () => {
+  // 本机记录读回时逐个字段拷贝：ThemePackageParts 加了字段而这里没跟上，装好的包重启后就丢那一部分。
+  const { readFileSync } = await import('node:fs');
+  const store = readFileSync(path.join(projectRoot, 'entry', 'src', 'main', 'ets', 'utils', 'ThemePackStore.ets'), 'utf8');
+  const start = store.indexOf('private static normalizeParts(');
+  assert(start >= 0);
+  const body = store.substring(start, store.indexOf('\n  }\n', start));
+  for (const key of Object.keys(new format.ThemePackageParts())) {
+    assert(body.includes(`parts.${key} = `), `ThemePackStore.normalizeParts 漏了 ${key}`);
+  }
 });
