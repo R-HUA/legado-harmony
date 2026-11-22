@@ -158,7 +158,7 @@ assert(/effectiveChineseConverterType\(\): number \{\s*if \(this\.readerTextConv
   '全局方向是唯一来源，开书询问选的繁→简只覆盖本书');
 assert(/ReaderContentPreprocessor\.apply\(content[^]*?ReaderTextConvertRuntime\.convert\(getContext\(this\), replaced,\s*this\.effectiveChineseConverterType\(\)\)/.test(reader),
   '正文必须先替换净化、再简繁转换');
-assert(/ReaderReplaceRuleStore\.applyTitle\(title[^]*?ReaderTextConvertRuntime\.convertNow\(replaced, this\.effectiveChineseConverterType\(\)\)/.test(reader),
+assert(/ReaderReplaceRuleStore\.applyTitle(?:Cached)?\(title[^]*?ReaderTextConvertRuntime\.convertNow\(replaced, this\.effectiveChineseConverterType\(\)\)/.test(reader),
   '章节标题必须先替换、再转换');
 assert(reader.includes('`cc${this.effectiveChineseConverterType()}`'), '正文预处理缓存键必须包含转换方向');
 assert(reader.includes('offerReaderTextConvertLater(replaced, chapterIndex)'), '未转换时开书检测繁体并询问');

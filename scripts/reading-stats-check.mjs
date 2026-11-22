@@ -63,12 +63,16 @@ test('ranking merges source editions with complete matching metadata and keeps d
   assert.equal(spaced.items.length, 2, 'normalization preserves meaningful word boundaries');
 });
 test('ranking merges simplified/traditional titles and attaches author-less records only when unambiguous', () => {
-  const engine = new URL('../harmony-book-ai-engine/aiengine/src/main/', import.meta.url);
-  const { ComicChineseDictionary: Dictionary } = load(new URL('ets/core/reader/ComicChineseDictionary.ts', engine),
-    {}, 'ComicChineseDictionary');
-  const raw = name => fs.readFileSync(new URL(`resources/rawfile/opencc/${name}`, engine), 'utf8');
-  const dictionary = new Dictionary(raw('TSCharacters.txt'), raw('TSPhrases.txt'));
-  const fold = text => dictionary.convertSameLength(text);
+  const converter = load('utils/ChineseConverter.ts', { setTimeout: fn => fn() },
+    'createEmptyChineseDictionary,applyChineseDictionaryLines,convertWithChineseDictionarySameLength,T2S_EXCLUDED_PHRASES');
+  const raw = name => fs.readFileSync(new URL(`../entry/src/main/resources/rawfile/chinese/${name}`, import.meta.url), 'utf8')
+    .split('\n').filter(line => line.trim() && !line.startsWith('#'));
+  const dict = converter.createEmptyChineseDictionary();
+  const chars = raw('t2s_characters.txt');
+  const phrases = raw('t2s_phrases.txt');
+  converter.applyChineseDictionaryLines(dict, chars, 0, chars.length, false);
+  converter.applyChineseDictionaryLines(dict, phrases, 0, phrases.length, true, converter.T2S_EXCLUDED_PHRASES);
+  const fold = text => converter.convertWithChineseDictionarySameLength(text, dict);
   const at = [date(2026, 11, 18), date(2026, 11, 19)];
   const imported = { ...row('2026-11-17', 9 * 3600000, 'legacy-import', 'android'),
     name: '穿越兽世种田养狼', author: '土豆派豆', onShelf: false, bookUrl: 'android-history://x' };
