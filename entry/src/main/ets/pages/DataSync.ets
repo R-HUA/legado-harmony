@@ -143,7 +143,7 @@ struct DataSyncPage {
 
       this.sectionTitle('同步内容')
       Column() {
-        if (AccountCommerceConfig.COMMERCE_ENABLED || this.isSuperMember()) {
+        if (AccountCommerceConfig.COMMERCE_ENABLED) {
           this.fileSyncRow('本地书籍', '同步加入书架的本地书籍文件', 'BOOK')
           this.fileSyncRow('自定义字体', '同步导入的自定义字体文件', 'FONT')
           this.fileSyncRow('自定义主题', '同步自定义主题用到的图片、启动封面和预览图', 'THEME')

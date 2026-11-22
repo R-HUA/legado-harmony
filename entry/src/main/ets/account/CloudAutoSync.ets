@@ -3,6 +3,7 @@ import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
 import preferences from '@ohos.data.preferences';
 import { Book, BookTypeSupport } from '@legado/sourceengine';
+import { AccountCommerceConfig } from './AccountCommerceConfig';
 import { AccountSessionStore } from './AccountSessionStore';
 import { CloudSyncSettingsStore } from './CloudSyncSettingsStore';
 import { CloudSyncIssueStore } from './CloudSyncIssueStore';
@@ -271,6 +272,11 @@ export class CloudAutoSync {
   }
 
   private static async run(context: Context): Promise<void> {
+    if (!AccountCommerceConfig.COMMERCE_ENABLED) {
+      CloudAutoSync.publishRemoteFonts([]);
+      CloudThemeSync.clearRemote();
+      return;
+    }
     const userId = AccountSessionStore.account().userId;
     if (!userId || !AccountSessionStore.isLoggedIn() || AccountSessionStore.activeMembershipSku() !== 'SUPER_LIFETIME') {
       CloudAutoSync.publishRemoteFonts([]);
@@ -319,7 +325,8 @@ export class CloudAutoSync {
   }
 
   private static scopeEnabled(userId: string, kind: string): boolean {
-    if (!AccountSessionStore.isLoggedIn() || AccountSessionStore.account().userId !== userId ||
+    if (!AccountCommerceConfig.COMMERCE_ENABLED ||
+      !AccountSessionStore.isLoggedIn() || AccountSessionStore.account().userId !== userId ||
       AccountSessionStore.activeMembershipSku() !== 'SUPER_LIFETIME' ||
       CloudSyncSettingsStore.currentAccountId() !== userId) return false;
     const settings = CloudSyncSettingsStore.current();

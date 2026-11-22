@@ -6,6 +6,7 @@ import hash from '@ohos.file.hash';
 import preferences from '@ohos.data.preferences';
 import { util } from '@kit.ArkTS';
 import cryptoFramework from '@ohos.security.cryptoFramework';
+import { AccountCommerceConfig } from './AccountCommerceConfig';
 import { AccountSessionStore } from './AccountSessionStore';
 import { CloudSyncSettingsStore } from './CloudSyncSettingsStore';
 import { CloudSyncIssueStore } from './CloudSyncIssueStore';
@@ -91,6 +92,7 @@ export class CloudThemeSync {
   }
 
   static remotePackageIds(): string[] {
+    if (!AccountCommerceConfig.COMMERCE_ENABLED) return [];
     const raw = AppStorage.get<string>(CloudThemeSync.STORAGE_REMOTE_PACKS) || '';
     if (!raw) return [];
     try {
@@ -120,6 +122,10 @@ export class CloudThemeSync {
    */
   static async sync(context: Context, userId: string, files: CloudFileItem[], tombstones: CloudTombstone[],
     uploads: CloudUploadJob[]): Promise<void> {
+    if (!AccountCommerceConfig.COMMERCE_ENABLED) {
+      CloudThemeSync.clearRemote();
+      return;
+    }
     const state = await CloudThemeSync.loadState(context, userId);
     const synced = new Map<string, string>();
     for (const entry of state.synced) synced.set(entry.key, entry.hash);
@@ -283,7 +289,7 @@ export class CloudThemeSync {
    * 没有需要下载的返回 false；下载失败抛错。
    */
   static async ensureSchemePacks(context: Context, scheme: CustomThemeScheme | null): Promise<boolean> {
-    if (!scheme) return false;
+    if (!AccountCommerceConfig.COMMERCE_ENABLED || !scheme) return false;
     const missing = CloudThemeSync.schemePackageIds(scheme).filter((id: string): boolean =>
       !ThemePackRegistry.getByPackageId(id) && !CloudThemeSync.absent.has(id));
     if (missing.length === 0 || !await CloudThemeSync.enabled(context)) return false;
@@ -334,6 +340,7 @@ export class CloudThemeSync {
   }
 
   private static async enabled(context: Context): Promise<boolean> {
+    if (!AccountCommerceConfig.COMMERCE_ENABLED) return false;
     const userId = AccountSessionStore.account().userId;
     if (!userId || !AccountSessionStore.isLoggedIn() || AccountSessionStore.activeMembershipSku() !== 'SUPER_LIFETIME') {
       return false;
